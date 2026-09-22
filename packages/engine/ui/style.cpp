@@ -16983,7 +16983,28 @@ void endStyleMountBatch()
 				break;
 			}
 		}
-		if (!covered) topRoots.push_back(node);
+		if (covered) continue;
+		// The document root is created by Document, not by the app, so a mount
+		// never marks it pending — yet it is what :root matches, and :root is
+		// where custom properties are declared. Recomputing the app's subtree
+		// without it means every descendant var() resolves against a root that
+		// has no properties yet: the lookup misses, and a miss latches 0 into the
+		// computed style (a `padding: var(--safe-x)` silently became 0). Pull the
+		// root in, but only while it has never been styled — that is the first
+		// mount. Later incremental updates keep their narrow roots, so a theme
+		// switch does not turn into a whole-tree recompute.
+		int ultimate = node;
+		while (state.nodes[ultimate].parent >= 0) ultimate = state.nodes[ultimate].parent;
+		const bool rootNeedsFirstStyle =
+		    ultimate != node && ultimate >= 0 && ultimate < kMaxNodes && !g_nodeRefs[ultimate].tracked;
+		if (rootNeedsFirstStyle) {
+			if (!g_pendingRecomputeMark.contains(ultimate)) {
+				g_pendingRecomputeMark.insert(ultimate);
+				topRoots.push_back(ultimate);
+			}
+			continue;
+		}
+		topRoots.push_back(node);
 	}
 
 	// Incremental recompute: a near-root class change (e.g. a theme switch) only
