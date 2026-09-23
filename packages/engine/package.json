@@ -38,6 +38,10 @@
       "types": "./components/Button.d.ts",
       "default": "./components/Button.tsx"
     },
+    "./components/Checkbox": {
+      "types": "./components/Checkbox.d.ts",
+      "default": "./components/Checkbox.tsx"
+    },
     "./package.json": "./package.json",
     "./ui/*": "./ui/*"
   },
