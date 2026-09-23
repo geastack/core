@@ -102,10 +102,11 @@ declare global {
    * namespace actually defines. `warn`/`info`/`debug` would compile and then
    * fail to link, which is worse than not being declared.
    */
-  const console: {
+  interface Console {
     log(message: string): void
     error(message: string): void
   }
+  const console: Console
 
   function requestAnimationFrame(callback: (timestampMs: number) => void): number
 
