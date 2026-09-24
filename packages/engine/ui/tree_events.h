@@ -55,6 +55,7 @@ struct NodeEventListeners {
 	NodeEventListenerList touchend;
 	NodeEventListenerList input;
 	NodeEventListenerList keydown;
+	NodeEventListenerList scroll;
 
 	void clear();
 	NodeEventListenerList *listenersFor(const char *type);

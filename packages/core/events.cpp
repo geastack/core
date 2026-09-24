@@ -50,6 +50,8 @@ const char *PointerEvent::typeName() const
 		return "keydown";
 	case PointerEventType::Rotary:
 		return "rotary";
+	case PointerEventType::Scroll:
+		return "scroll";
 	}
 	return "";
 }

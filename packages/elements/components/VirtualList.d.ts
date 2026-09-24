@@ -1,4 +1,4 @@
-import type { ClassValue, TouchEventHandler } from '@geastack/core'
+import type { ClassValue, Event, TouchEventHandler } from '@geastack/core'
 
 export type VirtualListItemTemplate = (index: number, top: number) => any
 
@@ -15,6 +15,7 @@ export interface VirtualListProps {
   onTouchStart?: TouchEventHandler
   onTouchMove?: TouchEventHandler
   onTouchEnd?: TouchEventHandler
+  onScroll?: (event: Event) => void
 }
 
 export default function VirtualList(props: VirtualListProps): any

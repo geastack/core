@@ -445,6 +445,7 @@ export interface GeaEventMap {
   input: InputEvent
   keydown: KeyEvent
   rotary: RotaryEvent
+  scroll: Event
 }
 
 export type TouchEventHandler = (event: TouchEvent) => void
@@ -1523,6 +1524,7 @@ export interface NativeButtonProps extends NativeEventAttributes {
 }
 
 export interface NativeVirtualListProps extends NativeEventAttributes {
+  onScroll?: (event: Event) => void
   id?: string
   class?: ClassValue
   style?: Style

@@ -21,6 +21,18 @@ namespace gea::embedded::ui {
 
 namespace {
 
+void dispatchScrollEvent(int node)
+{
+	Tree &tree = Tree::instance();
+	if (!tree.hasListenersForType("scroll")) return;
+	gea::framework::events::PointerEvent event{};
+	event.type = gea::framework::events::PointerEventType::Scroll;
+	event.targetId = node;
+	event.bubbles = false;
+	event.cancelable = false;
+	tree.dispatchEvent(event);
+}
+
 int parseIntAttribute(const char *value, int fallback)
 {
 	if (!value || !value[0]) return fallback;
@@ -225,6 +237,7 @@ bool VirtualListRenderer::setScrollTop(int node, int scrollTop)
 	n.render.dirty = 1;
 	n.render.layout_dirty = 1;
 	Tree::instance().markScrollDirty(node);
+	dispatchScrollEvent(node);
 	return true;
 }
 
@@ -268,7 +281,11 @@ void Tree::setScrollTop(int node, int scrollTop)
 {
 	if (node < 0 || node >= nodeCount()) return;
 	Node &n = treeState().nodes[node];
-	if (!isViewLikeNodeType(n.type) || (n.type != NodeType::VirtualList && !scrollsOverflowY(n.style))) return;
+	if (n.type == NodeType::VirtualList) {
+		VirtualListRenderer::setScrollTop(node, scrollTop);
+		return;
+	}
+	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.style)) return;
 	const int maxY = ViewRenderer::scrollMaxY(n);
 	if (scrollTop < 0) scrollTop = 0;
 	if (scrollTop > maxY) scrollTop = maxY;
