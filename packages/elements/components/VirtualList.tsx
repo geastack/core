@@ -1,4 +1,4 @@
-import type { ClassValue, TouchEventHandler } from '@geastack/core'
+import type { ClassValue, Event, TouchEventHandler } from '@geastack/core'
 
 // A windowing list backed by the native <virtual-list> element. The element is
 // an ordinary overflow:scroll container that scrolls over a virtual content
@@ -25,6 +25,7 @@ export interface VirtualListProps {
   onTouchStart?: TouchEventHandler
   onTouchMove?: TouchEventHandler
   onTouchEnd?: TouchEventHandler
+  onScroll?: (event: Event) => void
 }
 
 const SLOT_COUNT = 16
@@ -94,7 +95,8 @@ export default function VirtualList({
   itemTemplate,
   onTouchStart,
   onTouchMove,
-  onTouchEnd
+  onTouchEnd,
+  onScroll
 }: VirtualListProps) {
   const rowOverscan = overscan === undefined ? 2 : overscan
   return (
@@ -105,6 +107,7 @@ export default function VirtualList({
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
+      onScroll={onScroll}
     >
       <VirtualListSlot slotIndex={0} scrollTop={scrollTop} itemHeight={itemHeight} overscan={rowOverscan} itemCount={itemCount} itemClass={itemClass} itemTemplate={itemTemplate} />
       <VirtualListSlot slotIndex={1} scrollTop={scrollTop} itemHeight={itemHeight} overscan={rowOverscan} itemCount={itemCount} itemClass={itemClass} itemTemplate={itemTemplate} />

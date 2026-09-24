@@ -34,6 +34,9 @@ const NODE_HANDLE_RECEIVER_TYPES = [
 // `NODE_HANDLE_RECEIVER_TYPES` above states.
 const EVENT_RECEIVER_TYPES = [
   "gea::framework::events::PointerEvent",
+  // The base interface every event extends, and the parameter `onScroll` and
+  // `EventTarget.addEventListener(type, listener)` declare.
+  "Event",
   "PointerEvent",
   "TouchEvent",
   "RotaryEvent",
@@ -318,6 +321,11 @@ export function createGeaHostShims(): HostShimDefinitions {
       PointerEvent: "gea::framework::events::PointerEvent",
       TouchEvent: "gea::framework::events::PointerEvent",
       RotaryEvent: "gea::framework::events::PointerEvent",
+      // The base interface, for `onScroll={e => ...}` and any listener typed by
+      // `EventTarget.addEventListener`. Without it `e` lowered to a synthesized
+      // record the listener adapter cannot build from `PointerEvent&`, so the
+      // app aborted on the first scroll.
+      Event: "gea::framework::events::PointerEvent",
       TouchPoint: "gea::framework::events::TouchPoint",
       // The text-input half of the same join. `onInput={e => ...}` /
       // `onKeyDown={e => ...}` declare `InputEvent` / `KeyEvent` (index.d.ts),
@@ -1613,6 +1621,15 @@ export function createGeaHostShims(): HostShimDefinitions {
       // member spellings, so emission refused `TouchEvent.clientX` by name --
       // the fail-closed guard reporting, correctly, that this table was the
       // thing missing.
+      // `Event.type`: the engine keeps the kind as an enum and names it with
+      // `typeName()` (events.cpp), the same string a listener was bound for.
+      type: [
+        {
+          emit: "std::string(({receiver}).typeName())",
+          returnType: "std::string",
+          receiverTypes: EVENT_RECEIVER_TYPES,
+        },
+      ],
       pointerId: [
         {
           emit: "static_cast<double>(({receiver}).pointerId)",

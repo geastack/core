@@ -57,7 +57,7 @@ void applyAudioAttribute(Tree &tree, int node, const char *name, const char *val
 // Index order mirrors NodeEventListeners' slots and is kept in sync by
 // setEventListener (on the empty->set transition) and NodeEventListeners::clear()
 // (which every removal path calls).
-constexpr int kEventTypeCount = 6;
+constexpr int kEventTypeCount = 7;
 int g_listenerTypeCounts[kEventTypeCount] = {};
 EventListenerId g_nextEventListenerId = 1;
 
@@ -75,6 +75,7 @@ int eventTypeIndex(const char *type)
 	if (sameName(type, "touchend") || sameName(type, "pointerup")) return 3;
 	if (sameName(type, "input")) return 4;
 	if (sameName(type, "keydown")) return 5;
+	if (sameName(type, "scroll")) return 6;
 	return -1;
 }
 
@@ -276,6 +277,7 @@ void NodeEventListeners::clear()
 	release(touchend, 3);
 	release(input, 4);
 	release(keydown, 5);
+	release(scroll, 6);
 }
 
 NodeEventListenerList *NodeEventListeners::listenersFor(const char *type)
@@ -287,6 +289,7 @@ NodeEventListenerList *NodeEventListeners::listenersFor(const char *type)
 	if (sameName(type, "touchend") || sameName(type, "pointerup")) return &touchend;
 	if (sameName(type, "input")) return &input;
 	if (sameName(type, "keydown")) return &keydown;
+	if (sameName(type, "scroll")) return &scroll;
 	return nullptr;
 }
 
@@ -298,7 +301,7 @@ const NodeEventListenerList *NodeEventListeners::listenersFor(const char *type) 
 bool NodeEventListeners::hasAny() const
 {
 	return !click.empty() || !touchstart.empty() || !touchmove.empty() ||
-	       !touchend.empty() || !input.empty() || !keydown.empty();
+	       !touchend.empty() || !input.empty() || !keydown.empty() || !scroll.empty();
 }
 
 EventListenerId Tree::setEventListener(int node, const char *type, gea::framework::events::EventListener listener)
@@ -367,6 +370,7 @@ bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 	event.target = gea::framework::events::EventTarget(event.targetId);
 	bool dispatched = false;
 	for (int node = event.targetId; node >= 0 && node < state.nodeCount; node = state.nodes[node].parent) {
+		if (!event.bubbles && node != event.targetId) break;
 		NodeRareData *rd = rareDataFor(node);
 		if (!rd) continue;
 		auto *initialList = rd->listeners.listenersFor(event.typeName());
@@ -408,7 +412,6 @@ bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 			cursor = nextId;
 			(*callback)(event);
 			dispatched = true;
-			if (event.propagationStopped || !event.bubbles) break;
 		}
 		if (event.propagationStopped || !event.bubbles) break;
 	}
