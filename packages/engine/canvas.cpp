@@ -945,6 +945,40 @@ private:
 	int circleBoxSpanNext_ = 0;
 };
 
+pixel::native_t Canvas::readPixelNative(int x, int y) const
+{
+	if (!pixels_ || x < 0 || x >= width_ || y < 0 || y >= height_) return 0;
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+	if (landscapeRot_) return rotGet(x, y);
+#endif
+#if GEA_PIXEL_STORAGE_PACKED
+	return pixel::packed::get(packedRow(rowToPhysical(y)), x);
+#else
+	return pixels_[rowToPhysical(y) * stride_ + x];
+#endif
+}
+
+void Canvas::writePixelNativeExact(int x, int y, pixel::native_t value)
+{
+	if (!pixels_ || x < 0 || x >= width_ || y < 0 || y >= height_) return;
+	if (x < clipStack_[clipDepth_].x0 || x > clipStack_[clipDepth_].x1 ||
+	    y < clipStack_[clipDepth_].y0 || y > clipStack_[clipDepth_].y1)
+		return;
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+	if (landscapeRot_) {
+		rotSet(x, y, value);
+		markDirty(x, y, x, y);
+		return;
+	}
+#endif
+#if GEA_PIXEL_STORAGE_PACKED
+	pixel::packed::set(packedRow(rowToPhysical(y)), x, value);
+#else
+	pixels_[rowToPhysical(y) * stride_ + x] = value;
+#endif
+	markDirty(x, y, x, y);
+}
+
 void Canvas::writePixelNative(int x, int y, pixel::native_t c)
 {
 	if (!pixels_) return;

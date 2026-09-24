@@ -177,7 +177,8 @@ int main()
 	if (!expectEqual(faceStyle.pos_offsets[1], 0, "inset right")) return 1;
 	if (!expectEqual(faceStyle.pos_offsets[2], 0, "inset bottom")) return 1;
 	if (!expectEqual(faceStyle.pos_offsets[3], 0, "inset left")) return 1;
-	if (!expectEqual(faceStyle.border_width, 2, "border shorthand width")) return 1;
+	// CSS Values 4 snaps the 1.5 device-pixel stroke down to one whole pixel.
+	if (!expectEqual(faceStyle.border_width, 1, "border shorthand width at DPR 1.5")) return 1;
 	if (!expectEqual(static_cast<int>(faceStyle.border_alpha), 107, "border shorthand alpha")) return 1;
 	if (!expectEqual(faceStyle.has_bg, 1, "gradient background fallback")) return 1;
 	if (!expectEqual(rstyle(faceStyle).transform_rotate_y, 900, "rotateY transform")) return 1;
@@ -245,10 +246,10 @@ int main()
 	const auto &staticBgRare = rstyle(staticBgStyle);
 	if (!expectEqual(staticBgStyle.has_bg, 1, "static background has_bg")) return 1;
 	if (!expectEqual(staticBgStyle.bg_fill, 1, "static background fill")) return 1;
-	if (!expectEqual(static_cast<int>(staticBgStyle.bg_alpha), 220, "static background alpha")) return 1;
-	if (!expectEqual(static_cast<int>(staticBgStyle.bg_color),
+	if (!expectEqual(static_cast<int>(staticBgStyle.bg_alpha), 0, "static image shorthand has transparent base")) return 1;
+	if (!expectEqual(static_cast<int>(staticBgRare.bg_gradient_from_color),
 	                 static_cast<int>(gea::framework::graphics::pixel::nativeColor(10, 20, 30)),
-	                 "static background base color")) return 1;
+	                 "static background first image stop")) return 1;
 	if (!expectEqual(staticBgRare.bg_gradient_has_mid, 1, "static background mid stop")) return 1;
 	if (!expectEqual(staticBgRare.bg_gradient_mid_stop, 420, "static background mid stop value")) return 1;
 	if (!expectEqual(staticBgRare.bg_gradient_to_stop, 1200, "static background late stop value")) return 1;
@@ -494,6 +495,8 @@ int main()
 	StyleSheet::instance().registerRule("absolute-parent", "position", "relative");
 	StyleSheet::instance().registerRule("absolute-parent", "width", "100");
 	StyleSheet::instance().registerRule("absolute-parent", "height", "100");
+	// This fixture fixes the outer box dimensions, including its padding.
+	StyleSheet::instance().registerRule("absolute-parent", "box-sizing", "border-box");
 	StyleSheet::instance().registerRule("absolute-parent", "padding", "10");
 	StyleSheet::instance().registerRule("absolute-child", "position", "absolute");
 	StyleSheet::instance().registerRule("absolute-child", "left", "0");
@@ -546,7 +549,14 @@ int main()
 
 	const auto &containedAbsolute = Tree::instance().node(containedAbsoluteId).layout;
 	if (!expectEqual(containedAbsolute.x, 80, "absolute child skips static parent for containing block x")) return 1;
-	if (!expectEqual(containedAbsolute.y, 5, "absolute child skips static parent for containing block y")) return 1;
+	// The wrapper's top margin collapses with its unpadded containing block.
+	// Absolute positioning still uses that block, now at viewport y=40.
+	if (!expectEqual(Tree::instance().node(containingBlockId).layout.y, 40, "static wrapper margin collapses with positioned parent")) return 1;
+	if (!expectEqual(containedAbsolute.y, 45, "absolute top is relative to shifted containing block")) return 1;
+	containingBlock.style().setProperty("padding-top", "1px");
+	Tree::instance().computeLayout(outerBlockId, 120, 120);
+	if (!expectEqual(Tree::instance().node(staticWrapperId).layout.y, 41, "padding prevents wrapper top margin collapsing")) return 1;
+	if (!expectEqual(containedAbsolute.y, 5, "absolute top skips static wrapper even when margin does not collapse")) return 1;
 
 	Tree::instance().clear();
 	StyleSheet::instance().clear();
@@ -570,6 +580,7 @@ int main()
 	StyleSheet::instance().registerRule("hour-card", "display", "grid");
 	StyleSheet::instance().registerRule("hour-card", "width", "64");
 	StyleSheet::instance().registerRule("hour-card", "height", "77");
+	StyleSheet::instance().registerRule("hour-card", "box-sizing", "border-box");
 	StyleSheet::instance().registerRule("hour-card", "padding", "5 1");
 	StyleSheet::instance().registerRule("hour-card", "gap", "3");
 	StyleSheet::instance().registerRule("hour-card", "align-content", "center");
@@ -616,6 +627,8 @@ int main()
 	Tree::instance().mount(percentParentId, 300, 180);
 	StyleSheet::instance().registerRule("percent-parent", "width", "300");
 	StyleSheet::instance().registerRule("percent-parent", "height", "180");
+	// This fixture fixes the outer box dimensions, including its padding.
+	StyleSheet::instance().registerRule("percent-parent", "box-sizing", "border-box");
 	StyleSheet::instance().registerRule("percent-parent", "padding", "20");
 	StyleSheet::instance().registerRule("percent-child", "width", "100%");
 	StyleSheet::instance().registerRule("percent-child", "height", "100%");

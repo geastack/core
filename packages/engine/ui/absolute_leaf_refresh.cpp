@@ -35,56 +35,42 @@ bool hasTransformState(const Node &node)
 	// fps before. A transform ADD routes through setStyle → clears the durable cache.
 	if (!ViewRenderer::anyTransformActive()) return false;
 	const RareStyle &rs = rstyle(node.style); // one pool lookup, not 11
-	return rs.transform_rotate != 0 ||
+	return hasIndividualLinearTransform(rs) || hadIndividualLinearTransform(node.render) ||
+	       rs.transform_rotate != 0 ||
 	       node.render.previous_transform_rotate != 0 ||
 	       rs.transform_rotate_x != 0 ||
 	       node.render.previous_transform_rotate_x != 0 ||
 	       rs.transform_rotate_y != 0 ||
 	       node.render.previous_transform_rotate_y != 0 ||
-	       rs.transform_translate_x != 0 ||
+	       composedTranslateX(rs) != 0 ||
 	       node.render.previous_transform_translate_x != 0 ||
-	       rs.transform_translate_y != 0 ||
+	       composedTranslateY(rs) != 0 ||
 	       node.render.previous_transform_translate_y != 0 ||
-	       rs.transform_translate_z != 0 ||
+	       composedTranslateZ(rs) != 0 ||
 	       node.render.previous_transform_translate_z != 0 ||
-	       rs.transform_translate_x_percent != 0 ||
+	       composedTranslateXPercent(rs) != 0 ||
 	       node.render.previous_transform_translate_x_percent != 0 ||
-	       rs.transform_translate_y_percent != 0 ||
+	       composedTranslateYPercent(rs) != 0 ||
 	       node.render.previous_transform_translate_y_percent != 0 ||
 	       rs.transform_scale_x != 1000 ||
 	       node.render.previous_transform_scale_x != 1000 ||
 	       rs.transform_scale_y != 1000 ||
+	       rs.transform_scale_z != 1000 ||
 	       node.render.previous_transform_scale_y != 1000 ||
+	       node.render.previous_transform_scale_z != 1000 ||
 	       rs.perspective > 0 ||
 	       node.render.previous_perspective > 0;
 }
 
 int alignedAbsoluteOffset(const Node &parent, const Node &child, bool horizontal)
 {
-	const bool row = usesRowLayout(parent.style);
-	const int crossAlign = child.style.align_self >= 0 ? child.style.align_self : parent.style.align_items;
-	const int align = horizontal
-		? (row ? parent.style.justify_content : crossAlign)
-		: (row ? crossAlign : parent.style.justify_content);
-	const int parentSize = horizontal ? parent.layout.width : parent.layout.height;
-	const int childSize = horizontal ? child.layout.width : child.layout.height;
-	const int beforeMargin = horizontal ? child.style.margin[3] : child.style.margin[0];
-	const int afterMargin = horizontal ? child.style.margin[1] : child.style.margin[2];
-	int available = parentSize;
-	if (available < 0) available = 0;
-	const int occupied = childSize + beforeMargin + afterMargin;
-	int free = available - occupied;
-	if (free < 0) free = 0;
-
-	int offset = beforeMargin;
-	if (align == 1) offset += free / 2;
-	else if (align == 2) offset += free;
-	return offset;
+	int x, y, width, height;
+	LayoutEngine::absoluteContainingArea(parent, child, x, y, width, height);
+	return LayoutEngine::alignedAbsoluteOffset(parent, child, horizontal, &parent, horizontal ? x : y, horizontal ? width : height);
 }
 
-int resolvedPositionOffset(const Node &parent, const Node &child, int side)
+int resolvedPositionOffset(const Node &child, int side, int basis)
 {
-	const int basis = (side == 0 || side == 2) ? parent.layout.height : parent.layout.width;
 	int offset = child.style.pos_offsets[side] != kUnset ? child.style.pos_offsets[side] : 0;
 	const int percent = child.style.pos_offset_percent[side];
 	if (percent != kUnset) {
@@ -113,6 +99,12 @@ bool retainableAbsoluteLayoutNode(const Node &node)
 {
 	if ((!isViewLikeNodeType(node.type) && node.type != NodeType::Image) || node.style.position != 1) return false;
 	if (node.parent < 0) return false;
+	const Node &parent = Tree::instance().nodes()[node.parent];
+	// A static wrapper cannot supply the offsets for a more distant containing
+	// block. Let the full positioning pass resolve that ancestor instead.
+	if (parent.parent >= 0 && parent.style.position == 0) return false;
+	// Grid area geometry and its percentage bases belong to the grid pass.
+	if (isDisplayGrid(Tree::instance().nodes()[node.parent].style)) return false;
 	if (!hasExplicitWidth(node) || !hasExplicitHeight(node)) return false;
 	if (node.first_child >= 0) {
 		if (node.style.width != kUnset && node.style.width != node.layout.width) return false;
@@ -195,7 +187,14 @@ int AbsoluteLeafRefresh::mode()
 		Node *n = &state.nodes[i];
 		if (!n->render.dirty) continue;
 		if (n->render.transform_dirty) {
+			// A transform can create/remove a fixed descendant's containing block.
+			// Reprojecting retained commands alone leaves its percentage sizes and
+			// offsets tied to the previous block, so resolve layout first.
+			if (state.fixedPositionUsed) return reject(i, 8);
 			if (retainableAbsoluteLayoutNode(*n)) continue;
+			// A transform update cannot stand in for an accompanying geometry
+			// update. This node cannot use refreshPositions(), so lay it out.
+			if (n->render.layout_dirty) return reject(i, 9);
 			if (n->layout.x != n->layout.previous_x ||
 			    n->layout.y != n->layout.previous_y ||
 			    n->layout.width != n->layout.previous_width ||
@@ -253,23 +252,25 @@ void AbsoluteLeafRefresh::refreshPositions()
 		if (n->style.width != kUnset) n->layout.width = n->style.width;
 		if (n->style.height != kUnset) n->layout.height = n->style.height;
 		Node *p = &state.nodes[n->parent];
+		int areaX, areaY, areaWidth, areaHeight;
+		LayoutEngine::absoluteContainingArea(*p, *n, areaX, areaY, areaWidth, areaHeight);
 		const int before_x = n->layout.x;
 		const int before_y = n->layout.y;
 		int parent_x = p->layout.x;
 		if (p->style.overflow == 2 && scrollsOverflowX(p->style)) parent_x -= p->layout.scroll_x;
 		if (hasPositionOffset(*n, 3))
-			n->layout.x = parent_x + resolvedPositionOffset(*p, *n, 3);
+			n->layout.x = parent_x + areaX + resolvedPositionOffset(*n, 3, areaWidth);
 		else if (hasPositionOffset(*n, 1))
-			n->layout.x = parent_x + p->layout.width - n->layout.width - resolvedPositionOffset(*p, *n, 1);
+			n->layout.x = parent_x + areaX + areaWidth - n->layout.width - resolvedPositionOffset(*n, 1, areaWidth);
 		else
 			n->layout.x = parent_x + alignedAbsoluteOffset(*p, *n, true);
 
 		int parent_y = p->layout.y;
 		if (p->style.overflow == 2 && scrollsOverflowY(p->style)) parent_y -= p->layout.scroll_y;
 		if (hasPositionOffset(*n, 0))
-			n->layout.y = parent_y + resolvedPositionOffset(*p, *n, 0);
+			n->layout.y = parent_y + areaY + resolvedPositionOffset(*n, 0, areaHeight);
 		else if (hasPositionOffset(*n, 2))
-			n->layout.y = parent_y + p->layout.height - n->layout.height - resolvedPositionOffset(*p, *n, 2);
+			n->layout.y = parent_y + areaY + areaHeight - n->layout.height - resolvedPositionOffset(*n, 2, areaHeight);
 		else
 			n->layout.y = parent_y + alignedAbsoluteOffset(*p, *n, false);
 		translateDescendantLayouts(state, i, n->layout.x - before_x, n->layout.y - before_y);

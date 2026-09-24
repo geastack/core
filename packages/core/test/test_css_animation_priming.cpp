@@ -110,12 +110,64 @@ int main()
 	if (!expectEqual(static_cast<int>(Tree::instance().node(inkVarId).style.text_color),
 	                 static_cast<int>(gea::framework::graphics::pixel::nativeColor(0, 255, 0)),
 	                 "compiled color var keyframe primed")) return 1;
-	if (!expectEqual(rstyle(Tree::instance().node(turnId).style).transform_rotate, 450, "compiled rotate keyframe primed")) return 1;
-	if (!expectEqual(rstyle(Tree::instance().node(zoomId).style).transform_scale_x, 1250, "compiled scale x keyframe primed")) return 1;
-	if (!expectEqual(rstyle(Tree::instance().node(zoomId).style).transform_scale_y, 1250, "compiled scale y keyframe primed")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(turnId).style).rotate_angle, 450, "compiled rotate keyframe primed")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(zoomId).style).scale_x, 1250, "compiled scale x keyframe primed")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(zoomId).style).scale_y, 1250, "compiled scale y keyframe primed")) return 1;
 
 	staticSheet.startCssAnimations(0);
-	if (!expectEqual(static_cast<int>(gea::css::AnimationEngine::instance().count()), 8, "started static keyframe animation count")) return 1;
+	if (!expectEqual(static_cast<int>(gea::css::AnimationEngine::instance().count()), 11, "started static keyframe animation count")) return 1;
+
+	resetNativeHost(); StyleSheet::instance().clear();
+	auto &translationSheet = StyleSheet::instance();
+	translationSheet.registerKeyframeRule("move", 0, "translate", "none");
+	translationSheet.registerKeyframeRule("move", 1000, "translate", "40px 50%");
+	translationSheet.registerRule("mover", "transform", "translateX(7px)");
+	translationSheet.registerRule("mover", "animation", "move 1s linear forwards");
+	const int mover = Tree::instance().createView(); NodeHandle(mover).classList().set("mover");
+	const auto &translated = Tree::instance().node(mover).style;
+	if (!expectEqual(rstyle(translated).translate_present, 1, "none interpolates as an identity translation context")) return 1;
+	translationSheet.startCssAnimations(0); gea::css::AnimationEngine::instance().tick(500);
+	if (!expectEqual(rstyle(translated).translate_x, 20, "individual translation keyframe interpolates pixels")) return 1;
+	if (!expectEqual(rstyle(translated).translate_y_percent, 250, "individual translation keyframe preserves own-box percentages")) return 1;
+	if (!expectEqual(rstyle(translated).transform_translate_x, 7, "individual animation does not overwrite transform list")) return 1;
+
+	// A half-way turn from x:90 to y:90 is 70.529 degrees around (1,1,0),
+	// not a 90-degree turn around a linearly blended axis.
+	resetNativeHost(); StyleSheet::instance().clear();
+	auto &rotations = StyleSheet::instance();
+	rotations.registerKeyframeRule("axes", 0, "rotate", "x 90deg");
+	rotations.registerKeyframeRule("axes", 1000, "rotate", "90deg y");
+	rotations.registerRule("axes-node", "transform", "rotate(30deg)");
+	rotations.registerRule("axes-node", "animation", "axes 1s linear forwards");
+	rotations.registerKeyframeRule("identity", 0, "rotate", "none");
+	rotations.registerKeyframeRule("identity", 1000, "rotate", "x 180deg");
+	rotations.registerRule("identity-node", "animation", "identity 1s linear forwards");
+	rotations.registerKeyframeRule("turns", 0, "rotate", "x 45deg");
+	rotations.registerKeyframeRule("turns", 1000, "rotate", "x 765deg");
+	rotations.registerRule("turns-node", "animation", "turns 1s linear forwards");
+	rotations.registerKeyframeRule("stretch", 0, "scale", "none");
+	rotations.registerKeyframeRule("stretch", 1000, "scale", "-1 3 2");
+	rotations.registerRule("stretch-node", "animation", "stretch 1s linear forwards");
+	const int axesId = Tree::instance().createView(); NodeHandle(axesId).classList().set("axes-node");
+	const int identityId = Tree::instance().createView(); NodeHandle(identityId).classList().set("identity-node");
+	const int turnsId = Tree::instance().createView(); NodeHandle(turnsId).classList().set("turns-node");
+	const int stretchId = Tree::instance().createView(); NodeHandle(stretchId).classList().set("stretch-node");
+	rotations.startCssAnimations(0); gea::css::AnimationEngine::instance().tick(500);
+	const auto &axes = rstyle(Tree::instance().node(axesId).style);
+	if (!expectEqual(axes.rotate_angle, 705, "different axes use spherical rotation interpolation")) return 1;
+	if (!expectEqual(axes.rotate_axis_x, 707107, "spherical midpoint x axis")) return 1;
+	if (!expectEqual(axes.rotate_axis_y, 707107, "spherical midpoint y axis")) return 1;
+	if (!expectEqual(axes.rotate_axis_z, 0, "spherical midpoint z axis")) return 1;
+	if (!expectEqual(axes.transform_rotate, 300, "rotation animation preserves list rotation")) return 1;
+	const auto &identity = rstyle(Tree::instance().node(identityId).style);
+	if (!expectEqual(identity.rotate_angle, 900, "none endpoint interpolates to half turn")) return 1;
+	if (!expectEqual(identity.rotate_axis_x, 1000000, "identity endpoint adopts destination axis")) return 1;
+	if (!expectEqual(identity.rotate_axis_z, 0, "identity endpoint does not introduce z rotation")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(turnsId).style).rotate_angle, 4050, "same-axis interpolation preserves authored full turns")) return 1;
+	const auto &stretch = rstyle(Tree::instance().node(stretchId).style);
+	if (!expectEqual(stretch.scale_x, 0, "signed scaling interpolates through zero")) return 1;
+	if (!expectEqual(stretch.scale_y, 2000, "nonuniform y scale interpolation")) return 1;
+	if (!expectEqual(stretch.scale_z, 1500, "independent depth scale interpolation")) return 1;
 
 	return 0;
 }

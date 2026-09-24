@@ -7,6 +7,13 @@
 
 namespace gea::embedded::ui {
 
+int resolveLayoutSizeExpression(int nodeId, int expression, bool horizontal);
+int resolveLineHeightExpression(int nodeId, int expression);
+int resolveLineHeightMultiplier(int nodeId, int bits);
+int resolveLayoutFlexBasis(int nodeId, int percentageBasis, bool horizontal);
+bool resolveLayoutBoxLengths(int nodeId, int percentageBasis);
+bool layoutSizeExpressionUsesPercentage(int nodeId, int expression);
+
 enum class Property : int {
 	Display = 0,
 	FlexDirection,
@@ -92,6 +99,7 @@ enum class Property : int {
 	TransformTranslateYPercent,
 	TransformScaleX,
 	TransformScaleY,
+	TransformScaleZ,
 	TransformOriginX,
 	TransformOriginY,
 	Perspective,
@@ -111,6 +119,86 @@ enum class Property : int {
 	TextOverflow,
 	Backface,
 	PointerEvents,
+	Order,
+	BoxSizing,
+	Float,
+	Clear,
+	WritingMode,
+	RowGap,
+	ColumnGap,
+	RowGapPercent,
+	ColumnGapPercent,
+	MarginTopAuto,
+	MarginRightAuto,
+	MarginBottomAuto,
+	MarginLeftAuto,
+	WidthExpression,
+	HeightExpression,
+	Direction,
+	MarginTopExpression,
+	MarginRightExpression,
+	MarginBottomExpression,
+	MarginLeftExpression,
+	PaddingTopExpression,
+	PaddingRightExpression,
+	PaddingBottomExpression,
+	PaddingLeftExpression,
+	JustifySelf,
+	GridRowStart,
+	GridColumnStart,
+	GridRowEnd,
+	GridColumnEnd,
+	TransformPresent,
+	RotatePresent,
+	ScalePresent,
+	FilterPresent,
+	AspectRatio,
+	FlexLineCount,
+	BorderColorCurrent,
+	BorderTopColorCurrent,
+	BorderRightColorCurrent,
+	BorderBottomColorCurrent,
+	BorderLeftColorCurrent,
+	ColorAlpha,
+	BorderAlpha,
+	BorderTopAlpha,
+	BorderRightAlpha,
+	BorderBottomAlpha,
+	BorderLeftAlpha,
+	BackgroundAlpha,
+	BackgroundImage,
+	Containment,
+	BackgroundClip,
+	FlexBasisExpression,
+	LineHeightExpression,
+	TransformStyle,
+	LineHeightMultiplier,
+	Visibility,
+	TranslatePresent,
+	TranslateX,
+	TranslateY,
+	TranslateZ,
+	TranslateXPercent,
+	TranslateYPercent,
+	TransformTranslateOuterAxes,
+	RotateAngle,
+	RotateAxisX,
+	RotateAxisY,
+	RotateAxisZ,
+	ScaleX,
+	ScaleY,
+	ScaleZ,
+	BackgroundSizeList,
+	BackgroundPositionList,
+	BackgroundRepeatList,
+	BackgroundAttachmentList,
+	BackgroundOriginList,
+	MarginTrim,
+	BorderTopRelief,
+	BorderRightRelief,
+	BorderBottomRelief,
+	BorderLeftRelief,
+	BorderRelief,
 	Count
 };
 
@@ -207,7 +295,43 @@ enum class StyleDeclaration : std::uint8_t {
 	BoxShadow,
 	TransformOrigin,
 	Perspective,
-	PerspectiveOrigin
+	PerspectiveOrigin,
+	Order,
+	BoxSizing,
+	Float,
+	Clear,
+	WritingMode,
+	FlexFlow,
+	RowGap,
+	ColumnGap,
+	Direction,
+	Font,
+	JustifySelf,
+	GridTemplate,
+	Grid,
+	GridRowStart,
+	GridColumnStart,
+	GridRowEnd,
+	GridColumnEnd,
+	GridRow,
+	GridColumn,
+	GridArea,
+	AspectRatio,
+	FlexLineCount,
+	PlaceContent,
+	PlaceSelf,
+	BackgroundColor,
+	BackgroundImage,
+	Contain,
+	BackgroundClip,
+	TransformStyle,
+	Visibility,
+	Translate,
+	BackgroundPosition,
+	BackgroundRepeat,
+	BackgroundAttachment,
+	BackgroundOrigin,
+	MarginTrim
 };
 
 class Style {
@@ -230,6 +354,8 @@ public:
 	void translateY(int value) const { set(Property::TransformTranslateY, value); }
 	void rotateDegrees(double value) const;
 	void scale(double value) const;
+	void cssRotateDegrees(double value) const;
+	void cssScale(double value) const;
 	void imageId(int value) const { set(Property::ImageId, value); }
 	void imageFit(int value) const { set(Property::ImageFit, value); }
 
@@ -262,6 +388,7 @@ struct StaticStyleSimpleSelectorSpec {
 	bool wantsRoot = false;
 	bool wantsFirstChild = false;
 	bool wantsLastChild = false;
+	bool wantsHover = false;
 };
 
 struct StaticStyleSelectorPartSpec {
@@ -306,7 +433,8 @@ enum class StaticStyleColorProperty : std::uint8_t {
 	BorderTop,
 	BorderRight,
 	BorderBottom,
-	BorderLeft
+	BorderLeft,
+	BackgroundColor
 };
 
 enum class StaticStyleLengthUnit : std::uint8_t {
@@ -497,6 +625,8 @@ public:
 	void endRuleRegistrationBatch();
 	void registerRule(const std::string &className, const std::string &property, const std::string &value, const std::string &media = std::string());
 	void registerElementRule(const std::string &elementName, const std::string &property, const std::string &value, const std::string &media = std::string());
+	// Defaults have lower cascade priority than every author selector.
+	void registerUserAgentElementRule(const std::string &elementName, const std::string &property, const std::string &value);
 	void registerSelectorRule(const std::string &selector, const std::string &property, const std::string &value, const std::string &media = std::string());
 	void registerKeyframeRule(const std::string &name, int offsetPermille, const std::string &property, const std::string &value);
 	void registerStaticRule(const char *className, const char *property, const char *value, const char *media = nullptr);
@@ -542,7 +672,8 @@ public:
 	                                         StaticStyleLengthSpec translateY,
 	                                         StaticStyleLengthSpec translateZ,
 	                                         int scaleX,
-	                                         int scaleY);
+	                                         int scaleY,
+	                                         int scaleZ = 1000);
 	void registerStaticPropertyRule(StaticStyleSelectorKind selectorKind,
 	                                const char *selector,
 	                                Property property,
@@ -641,7 +772,8 @@ public:
 	                                  bool hasOverlayGradient,
 	                                  StaticStyleBackgroundGridLine gridX,
 	                                  StaticStyleBackgroundGridLine gridY,
-	                                  const char *media = nullptr);
+	                                  const char *media = nullptr,
+	                                      bool imageOnly = false);
 	void registerStaticBackgroundFullRule(StaticStyleSelectorKind selectorKind,
 	                                      const char *selector,
 	                                      StaticStyleLinearGradientRef gradient,
@@ -650,7 +782,8 @@ public:
 	                                      StaticStyleRadialGradientRef radialGradient,
 	                                      StaticStyleBackgroundGridLine gridX,
 	                                      StaticStyleBackgroundGridLine gridY,
-	                                      const char *media = nullptr);
+	                                      const char *media = nullptr,
+	                                      bool imageOnly = false);
 	void registerStaticBackgroundSizeRule(StaticStyleSelectorKind selectorKind,
 	                                      const char *selector,
 	                                      StaticStyleLengthSpec stepX,
@@ -695,7 +828,8 @@ public:
 	                                 StaticStyleLengthSpec translateZ,
 	                                 int scaleX,
 	                                 int scaleY,
-	                                 const char *media = nullptr);
+	                                 const char *media = nullptr,
+	                                 int scaleZ = 1000);
 	void registerStaticOriginRule(StaticStyleSelectorKind selectorKind,
 	                              const char *selector,
 	                              StaticStyleOriginProperty property,
@@ -707,10 +841,13 @@ public:
 		void applyProperty(NodeHandle node, StyleDeclaration declaration, const std::string &value) const;
 		void applyProperty(NodeHandle node, const char *property, const std::string &value) const;
 		void applyProperty(NodeHandle node, const std::string &property, const std::string &value) const;
+		// Preserve CSS px units through device scaling before property-specific rounding.
+		bool applyPixelLengthProperty(NodeHandle node, StyleDeclaration declaration, double value) const;
 		bool applyNumberProperty(NodeHandle node, StyleDeclaration declaration, double value) const;
 		bool applyNumberProperty(NodeHandle node, const char *property, double value) const;
 		bool removeProperty(NodeHandle node, const std::string &property) const;
 	void recomputeSubtree(int nodeId) const;
+	void hoverChanged() const;
 	void startCssAnimations(std::uint32_t nowMs) const;
 
 private:

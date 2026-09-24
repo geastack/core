@@ -640,10 +640,11 @@ test("primitive fieldType preserves native mounted style applies when shape is m
     source,
     /root\.style\(\)\.translateX\(.*static_cast<double>\(__gea_width\)/,
   );
+  assert.match(source, /root\.style\(\)\.cssRotateDegrees\(/);
   assert.equal(
     [
       ...source.matchAll(
-        /root\.style\(\)\.rotateDegrees\(static_cast<double>\(__gea_width\)\);/g,
+        /root\.style\(\)\.(?:rotateDegrees|cssRotateDegrees)\(static_cast<double>\(__gea_width\)\);/g,
       ),
     ].length,
     2,
@@ -660,7 +661,6 @@ test("primitive fieldType preserves native mounted style applies when shape is m
     "BorderRadiusTopRight",
     "BorderRadiusBottomRight",
     "BorderRadiusBottomLeft",
-    "BorderWidth",
     "FontSize",
     "ZIndex",
     "Flex",
@@ -684,7 +684,7 @@ test("primitive fieldType preserves native mounted style applies when shape is m
     source,
     /applyProperty\(root, gea::embedded::ui::StyleDeclaration::Color, __gea_color\);/,
   );
-  assert.doesNotMatch(source, /applyNumberProperty\(root/);
+  assert.match(source, /applyNumberProperty\(root, gea::embedded::ui::StyleDeclaration::BorderWidth, static_cast<double>\(__gea_width\)\)/);
   assert.doesNotMatch(source, /gea_cpp_key\(__gea_(?:width|visible|color)\)/);
 });
 
@@ -704,6 +704,7 @@ test("template style rotate degrees lowers to direct numeric apply", () => {
           exprObjectFields: [
             { name: "transform", expr: "`rotate(${game.angle}deg)`" },
             { name: "rotate", expr: "`${game.angle}deg`" },
+            { name: "scale", expr: "game.angle" },
             { name: "width", expr: "`${game.angle}%`" },
             { name: "padding", expr: "game.angle" },
             { name: "zIndex", expr: "game.angle" },
@@ -736,10 +737,12 @@ test("template style rotate degrees lowers to direct numeric apply", () => {
   );
   assert.ok(lines, "expected the template renderer to lower rotate styles");
   const source = lines.join("\n");
+  assert.match(source, /\.style\(\)\.cssRotateDegrees\(static_cast<double>\(__gea_angle\)\);/);
+  assert.match(source, /\.style\(\)\.cssScale\(static_cast<double>\(__gea_angle\)\);/);
   assert.equal(
     [
       ...source.matchAll(
-        /\.style\(\)\.rotateDegrees\(static_cast<double>\(__gea_angle\)\);/g,
+        /\.style\(\)\.(?:rotateDegrees|cssRotateDegrees)\(static_cast<double>\(__gea_angle\)\);/g,
       ),
     ].length,
     2,
@@ -795,6 +798,8 @@ test("literal keyword inline styles lower to direct property writes in template 
             { name: "display", expr: "'flex'" },
             { name: "position", expr: "'absolute'" },
             { name: "alignItems", expr: "'center'" },
+            { name: "alignContent", expr: "'flex-start'" },
+            { name: "alignSelf", expr: "'stretch'" },
           ],
         },
       ],
@@ -824,10 +829,101 @@ test("literal keyword inline styles lower to direct property writes in template 
     source,
     /root\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, 1\);/,
   );
+  assert.match(source, /Property::AlignContent, 6\);/);
+  assert.match(source, /Property::AlignSelf, 0\);/);
   assert.doesNotMatch(
     source,
     /applyProperty\(root, "(?:display|position|align-items)"/,
   );
+});
+
+test("white-space keyword styles preserve distinct collapse and wrapping modes", () => {
+  for (const [keyword, value] of [['normal', 0], ['nowrap', 1], ['pre', 2], ['pre-wrap', 3], ['pre-line', 4], ['break-spaces', 5]]) {
+    const source = rootSetupLines("root", [{
+      index: 0, kind: "style", walk: [], exprObjectFields: [{ name: 'whiteSpace', expr: `'${keyword}'` }],
+    }]).join('\n');
+    assert.ok(source.includes(`Property::WhiteSpace, ${value});`), `${keyword}: ${source}`);
+  }
+});
+
+test("layout dependency styles reach the native property parser", () => {
+  for (const [name, expr, declaration] of [
+    ["boxSizing", "'border-box'", "BoxSizing"],
+    ["float", "'left'", "Float"],
+    ["clear", "'both'", "Clear"],
+    ["marginTrim", "'block-start block-end'", "MarginTrim"],
+    ["writingMode", "'vertical-lr'", "WritingMode"],
+    ["direction", "'rtl'", "Direction"],
+    ["flexFlow", "'row wrap'", "FlexFlow"],
+    ["rowGap", "'10%'", "RowGap"],
+    ["columnGap", "'20px'", "ColumnGap"],
+    ["backgroundPosition", "'50% 10px'", "BackgroundPosition"],
+    ["backgroundRepeat", "'no-repeat'", "BackgroundRepeat"],
+    ["backgroundAttachment", "'fixed'", "BackgroundAttachment"],
+    ["backgroundOrigin", "'content-box'", "BackgroundOrigin"],
+    ["font", "'20px/1 Ahem'", "Font"],
+    ["width", "'5ch'", "Width"],
+    ["height", "'calc(2ch + 1px)'", "Height"],
+  ]) {
+    const source = rootSetupLines("root", [{
+      index: 0, kind: "style", walk: [], exprObjectFields: [{ name, expr }],
+    }]).join("\n");
+    const property = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+    assert.ok(source.includes(`StyleDeclaration::${declaration}`) ||
+      source.includes(`applyProperty(root, "${property}"`), source);
+    assert.doesNotMatch(source, /StyleDeclaration::Ignored/);
+  }
+  const source = rootSetupLines("root", [{
+    index: 0, kind: "style", walk: [],
+    exprObjectFields: [{ name: "textAlign", expr: "'start'" }],
+  }]).join("\n");
+  assert.match(source, /Property::TextAlign, 0\);/);
+});
+
+test("fractional border widths retain numeric precision and CSS px units", () => {
+  const fields = [{
+    storeClass: "GameStore", stateType: "GameStore", storeGlobalName: "game",
+    fieldName: "width", fieldType: "double", readerName: "read_game_width",
+    field: { name: "width" }, shape: null, reader: null,
+  }];
+  for (const name of ["borderWidth", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"]) {
+    const declaration = name[0].toUpperCase() + name.slice(1);
+    for (const expr of ["1.9", "game.width", "`${game.width}px`", "'1.9px'"]) {
+      const slot = { index: 0, kind: "style", walk: [], exprObjectFields: [{ name, expr, ...(expr === "game.width" ? { exprPath: ["game", "width"] } : {}) }] };
+      const component = { id: "Border", module: "test", exportName: "Border", runtimeBase: "compiled",
+        template: { html: "<div></div>", slots: [slot] } };
+      const outputs = [
+        expr.includes("game.") ? lowerSlots([slot], fields)?.lines.join("\n") : rootSetupLines("root", [slot]).join("\n"),
+        templateMountedRenderer(component, [component], fields, new Map(), () => true)?.join("\n"),
+      ];
+      for (const source of outputs) {
+        assert.ok(source, `${name}: ${expr} must lower`);
+        assert.ok(source.includes(`StyleDeclaration::${declaration}`) || source.includes(`"${name.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}"`), source);
+        assert.doesNotMatch(source, new RegExp(`Property::${declaration}, .*std::round`));
+        assert.doesNotMatch(source, /gea_cpp_key\(__gea_width\)/);
+        if (expr.startsWith("`")) {
+          assert.match(source, /applyPixelLengthProperty\(/);
+          assert.doesNotMatch(source, /gea_cpp_(?:to_string|key)\(__gea_width\)/);
+        } else if (expr.includes("px")) {
+          assert.match(source, /applyProperty\(/);
+          assert.match(source, /px/);
+          assert.doesNotMatch(source, /applyNumberProperty\(/);
+        } else {
+          assert.match(source, /applyNumberProperty\(/);
+        }
+      }
+    }
+  }
+});
+
+test("order styles use the validated numeric declaration path", () => {
+  const lines = rootSetupLines("root", [{
+    index: 0,
+    kind: "style",
+    walk: [],
+    exprObjectFields: [{ name: "order", expr: "-2" }],
+  }]);
+  assert.match(lines.join("\n"), /StyleDeclaration::Order/);
 });
 
 test("literal keyword root setup styles lower to direct property writes", () => {
@@ -856,10 +952,7 @@ test("literal keyword root setup styles lower to direct property writes", () => 
     source,
     /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, 1\);/,
   );
-  assert.match(
-    source,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyContent, 1\);/,
-  );
+  assert.doesNotMatch(source, /Property::JustifyContent/);
   assert.match(
     source,
     /root\.style\(\)\.set\(gea::embedded::ui::Property::TextAlign, 2\);/,
@@ -868,6 +961,22 @@ test("literal keyword root setup styles lower to direct property writes", () => 
     source,
     /applyProperty\(root, "(?:display|place-items|text-align)"/,
   );
+});
+
+
+test("compound alignment styles preserve the native shorthand parser", () => {
+  const source = rootSetupLines("root", [{
+    index: 0, kind: "style", walk: [],
+    exprObjectFields: [
+      { name: "placeItems", expr: "'safe center unsafe end'" },
+      { name: "placeContent", expr: "'end space-evenly'" },
+      { name: "placeSelf", expr: "'first baseline center'" },
+    ],
+  }]).join("\n");
+  assert.match(source, /applyProperty\(root, "place-items", std::string\("safe center unsafe end"\)\)/);
+  assert.match(source, /applyProperty\(root, "place-content", std::string\("end space-evenly"\)\)/);
+  assert.match(source, /applyProperty\(root, "place-self", std::string\("first baseline center"\)\)/);
+  assert.doesNotMatch(source, /gea::Value/);
 });
 
 test("constant root setup styles lower to direct property writes", () => {
@@ -1066,16 +1175,13 @@ test("dynamic keyword inline styles lower to direct property writes in template 
   );
   assert.match(
     source,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
+    /root\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(__gea_active \? 1 : 8\)\)\);/,
   );
   assert.match(
     source,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
+    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(__gea_active \? 1 : 8\)\)\);/,
   );
-  assert.match(
-    source,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyContent, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
-  );
+  assert.doesNotMatch(source, /Property::JustifyContent/);
   assert.match(
     source,
     /root\.style\(\)\.set\(gea::embedded::ui::Property::Backface, static_cast<int>\(\(__gea_active \? 1 : 0\)\)\);/,
@@ -1138,16 +1244,13 @@ test("mounted root and row dynamic keyword styles lower to direct property write
   );
   assert.match(
     rootSource,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
+    /root\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(__gea_active \? 1 : 8\)\)\);/,
   );
   assert.match(
     rootSource,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
+    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(__gea_active \? 1 : 8\)\)\);/,
   );
-  assert.match(
-    rootSource,
-    /root\.style\(\)\.set\(gea::embedded::ui::Property::JustifyContent, static_cast<int>\(\(__gea_active \? 1 : 2\)\)\);/,
-  );
+  assert.doesNotMatch(rootSource, /Property::JustifyContent/);
   assert.doesNotMatch(rootSource, /StyleDeclaration::(?:Display|PlaceItems)/);
   assert.doesNotMatch(rootSource, /applyProperty\(root/);
 
@@ -1186,16 +1289,13 @@ test("mounted root and row dynamic keyword styles lower to direct property write
   );
   assert.match(
     rowSource,
-    /row\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(item\.visible \? 1 : 2\)\)\);/,
+    /row\.style\(\)\.set\(gea::embedded::ui::Property::AlignItems, static_cast<int>\(\(item\.visible \? 1 : 8\)\)\);/,
   );
   assert.match(
     rowSource,
-    /row\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(item\.visible \? 1 : 2\)\)\);/,
+    /row\.style\(\)\.set\(gea::embedded::ui::Property::JustifyItems, static_cast<int>\(\(item\.visible \? 1 : 8\)\)\);/,
   );
-  assert.match(
-    rowSource,
-    /row\.style\(\)\.set\(gea::embedded::ui::Property::JustifyContent, static_cast<int>\(\(item\.visible \? 1 : 2\)\)\);/,
-  );
+  assert.doesNotMatch(rowSource, /Property::JustifyContent/);
   assert.doesNotMatch(rowSource, /StyleDeclaration::(?:Display|PlaceItems)/);
   assert.doesNotMatch(rowSource, /applyProperty\(row/);
 });
@@ -1358,6 +1458,24 @@ test("string constants in inline styles lower without runtime CSS parsing", () =
     /row\.style\(\)\.set\(gea::embedded::ui::Property::Display, static_cast<int>\(\(item\.visible \? 3 : 1\)\)\);/,
   );
   assert.doesNotMatch(rowSource, /applyProperty\(row/);
+});
+
+test("background style shorthand resets images while the color longhand preserves them", () => {
+  for (const property of ["background", "backgroundColor", "backgroundImage"]) {
+    const component = {
+      id: "BackgroundPanel", module: "test", exportName: "BackgroundPanel", runtimeBase: "compiled",
+      template: { html: "<div></div>", slots: [{ index: 0, kind: "style", walk: [],
+        exprObjectFields: [{ name: property, expr: property === "backgroundImage" ? "'none'" : "'#ff0000'" }],
+      }] },
+    };
+    const source = templateMountedRenderer(component, [component], [], new Map(), () => true).join("\n");
+    if (property === "background") {
+      assert.match(source, /Property::BackgroundImage, -1/);
+      assert.match(source, /Property::BackgroundClip, 0/);
+    }
+    else if (property === "backgroundColor") assert.doesNotMatch(source, /Property::Background(?:Image|Clip)/);
+    else assert.match(source, /applyProperty\(root, "background-image", std::string\("none"\)\)/);
+  }
 });
 
 test("opaque hex inline colors lower to native style writes", () => {
@@ -1564,6 +1682,8 @@ test("typed row style values avoid primitive gea_cpp_key boxing", () => {
           { name: "padding", expr: "item.size" },
           { name: "marginLeft", expr: "item.size" },
           { name: "borderRadius", expr: "item.size" },
+          { name: "borderWidth", expr: "item.size" },
+          { name: "borderLeftWidth", expr: "`${item.size}px`" },
           { name: "zIndex", expr: "item.size" },
           { name: "flex", expr: "item.size" },
           { name: "opacity", expr: "item.visible" },
@@ -1576,6 +1696,8 @@ test("typed row style values avoid primitive gea_cpp_key boxing", () => {
   );
 
   const source = lowered.lines.join("\n");
+  assert.match(source, /applyNumberProperty\(row, gea::embedded::ui::StyleDeclaration::BorderWidth, static_cast<double>\(item.size\)\)/);
+  assert.match(source, /applyPixelLengthProperty\(row, gea::embedded::ui::StyleDeclaration::BorderLeftWidth, static_cast<double>\(item.size\)\)/);
   assert.match(
     source,
     /row\.style\(\)\.set\(gea::embedded::ui::Property::Width, .*static_cast<double>\(item\.size\)/,
@@ -1592,10 +1714,11 @@ test("typed row style values avoid primitive gea_cpp_key boxing", () => {
     source,
     /row\.style\(\)\.translateY\(.*static_cast<double>\(item\.size\)/,
   );
+  assert.match(source, /row\.style\(\)\.cssRotateDegrees\(/);
   assert.equal(
     [
       ...source.matchAll(
-        /row\.style\(\)\.rotateDegrees\(static_cast<double>\(item\.size\)\);/g,
+        /row\.style\(\)\.(?:rotateDegrees|cssRotateDegrees)\(static_cast<double>\(item\.size\)\);/g,
       ),
     ].length,
     2,
@@ -1629,7 +1752,7 @@ test("typed row style values avoid primitive gea_cpp_key boxing", () => {
     /applyProperty\(row, gea::embedded::ui::StyleDeclaration::Opacity, gea_cpp_to_string\(item\.visible\)\);/,
   );
   assert.match(source, /gea_cpp_to_string\(item\.size\)/);
-  assert.doesNotMatch(source, /applyNumberProperty\(row/);
+  assert.equal([...source.matchAll(/applyNumberProperty\(row/g)].length, 1);
   assert.doesNotMatch(source, /gea_cpp_key\(item\.(?:size|visible)\)/);
 });
 

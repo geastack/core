@@ -27,17 +27,33 @@ void LayoutSnapshot::capture()
 		// ~1ms/frame on the spinning css-3d-cube (the "snap" phase); spine read these as
 		// direct ComputedStyle fields. (Same regression class as the reproject path.)
 		const RareStyle &rs = rstyle(state.nodes[i].style);
+		state.nodes[i].render.previous_transformable_box = ViewRenderer::isTransformableBox(state.nodes[i]);
 		if (captureTransforms) {
+			state.nodes[i].render.previous_rotate_angle = rs.rotate_angle;
+			state.nodes[i].render.previous_rotate_axis_x = rs.rotate_axis_x;
+			state.nodes[i].render.previous_rotate_axis_y = rs.rotate_axis_y;
+			state.nodes[i].render.previous_rotate_axis_z = rs.rotate_axis_z;
+			state.nodes[i].render.previous_scale_x = rs.scale_x;
+			state.nodes[i].render.previous_scale_y = rs.scale_y;
+			state.nodes[i].render.previous_scale_z = rs.scale_z;
+
 			state.nodes[i].render.previous_transform_rotate = rs.transform_rotate;
 			state.nodes[i].render.previous_transform_rotate_x = rs.transform_rotate_x;
 			state.nodes[i].render.previous_transform_rotate_y = rs.transform_rotate_y;
-			state.nodes[i].render.previous_transform_translate_x = rs.transform_translate_x;
-			state.nodes[i].render.previous_transform_translate_y = rs.transform_translate_y;
-			state.nodes[i].render.previous_transform_translate_z = rs.transform_translate_z;
-			state.nodes[i].render.previous_transform_translate_x_percent = rs.transform_translate_x_percent;
-			state.nodes[i].render.previous_transform_translate_y_percent = rs.transform_translate_y_percent;
+			state.nodes[i].render.previous_transform_translate_x = composedTranslateX(rs);
+			state.nodes[i].render.previous_translate_x = rs.translate_x;
+			state.nodes[i].render.previous_translate_y = rs.translate_y;
+			state.nodes[i].render.previous_translate_z = rs.translate_z;
+			state.nodes[i].render.previous_translate_x_percent = rs.translate_x_percent;
+			state.nodes[i].render.previous_translate_y_percent = rs.translate_y_percent;
+			state.nodes[i].render.previous_transform_translate_outer_axes = rs.transform_translate_outer_axes;
+			state.nodes[i].render.previous_transform_translate_y = composedTranslateY(rs);
+			state.nodes[i].render.previous_transform_translate_z = composedTranslateZ(rs);
+			state.nodes[i].render.previous_transform_translate_x_percent = composedTranslateXPercent(rs);
+			state.nodes[i].render.previous_transform_translate_y_percent = composedTranslateYPercent(rs);
 			state.nodes[i].render.previous_transform_scale_x = rs.transform_scale_x;
 			state.nodes[i].render.previous_transform_scale_y = rs.transform_scale_y;
+			state.nodes[i].render.previous_transform_scale_z = rs.transform_scale_z;
 			state.nodes[i].render.previous_transform_origin_x = rs.transform_origin_x;
 			state.nodes[i].render.previous_transform_origin_y = rs.transform_origin_y;
 			state.nodes[i].render.previous_perspective = rs.perspective;

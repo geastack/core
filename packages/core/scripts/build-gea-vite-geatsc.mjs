@@ -1491,6 +1491,7 @@ function parseStaticSimpleSelectorSpec(rawSimple) {
     wantsRoot: false,
     wantsFirstChild: false,
     wantsLastChild: false,
+    wantsHover: false,
   }
   let i = 0
   if (simple[i] !== '.' && simple[i] !== '#' && simple[i] !== ':') {
@@ -1514,13 +1515,14 @@ function parseStaticSimpleSelectorSpec(rawSimple) {
       if (token === 'root') spec.wantsRoot = true
       else if (token === 'first-child') spec.wantsFirstChild = true
       else if (token === 'last-child') spec.wantsLastChild = true
+      else if (token === 'hover') spec.wantsHover = true
       else return null
     } else {
       return null
     }
   }
   if (!spec.tag && !spec.id && spec.classes.length === 0 &&
-      !spec.wantsRoot && !spec.wantsFirstChild && !spec.wantsLastChild) {
+      !spec.wantsRoot && !spec.wantsFirstChild && !spec.wantsLastChild && !spec.wantsHover) {
     return null
   }
   return spec
@@ -1555,7 +1557,7 @@ function staticSimpleSelectorSpecCode(simple) {
   const tag = simple.tag ? JSON.stringify(simple.tag) : 'nullptr'
   const id = simple.id ? JSON.stringify(simple.id) : 'nullptr'
   const classes = simple.classes.map((className) => JSON.stringify(className)).join(', ')
-  return `{${tag}, ${id}, {${classes}}, ${simple.wantsRoot ? 'true' : 'false'}, ${simple.wantsFirstChild ? 'true' : 'false'}, ${simple.wantsLastChild ? 'true' : 'false'}}`
+  return `{${tag}, ${id}, {${classes}}, ${simple.wantsRoot ? 'true' : 'false'}, ${simple.wantsFirstChild ? 'true' : 'false'}, ${simple.wantsLastChild ? 'true' : 'false'}, ${simple.wantsHover ? 'true' : 'false'}}`
 }
 
 function staticSelectorPartSpecCode(part) {
@@ -1872,8 +1874,8 @@ function parseStaticCssLengthSpec(rawValue) {
 
 function cssAlignKeywordValue(value) {
   const align = new Map([
-    ['flex-start', 0],
-    ['start', 0],
+    ['flex-start', 6],
+    ['start', 6],
     ['stretch', 0],
     ['normal', 0],
     ['center', 1],
@@ -1939,8 +1941,9 @@ function cssStaticColorTarget(property) {
     case 'color':
       return 'Color'
     case 'background':
-    case 'background-color':
       return 'Background'
+    case 'background-color':
+      return 'BackgroundColor'
     case 'active-background':
     case 'active-background-color':
       return 'ActiveBackground'
@@ -1997,9 +2000,6 @@ function parseStaticCssColorRef(rawValue) {
 function cssIgnoredProperty(property) {
   return new Set([
     'color-scheme',
-    'background-position',
-    'box-sizing',
-    'font',
     'grid-column',
     'isolation',
     'letter-spacing',
@@ -2008,7 +2008,6 @@ function cssIgnoredProperty(property) {
     'scroll-snap-type',
     'scrollbar-width',
     'text-shadow',
-    'transform-style',
     'transition',
     'cursor',
     '-webkit-tap-highlight-color',
@@ -2047,6 +2046,10 @@ function cssStaticPropertyValue(property, rawValue) {
       const values = new Map([['block', 0], ['none', 1], ['grid', 2], ['inline-grid', 2], ['flex', 3], ['inline-flex', 3]])
       return values.has(value) ? direct('Display', values.get(value)) : null
     }
+    case 'box-sizing':
+      if (value === 'content-box') return direct('BoxSizing', 0)
+      if (value === 'border-box') return direct('BoxSizing', 1)
+      return null
     case 'flex-direction':
       if (value === 'column') return direct('FlexDirection', 0)
       if (value === 'row') return direct('FlexDirection', 1)
@@ -2134,10 +2137,6 @@ function cssStaticPropertyValue(property, rawValue) {
       if (lower === 'none') return direct('ImageFit', 3)
       if (lower === 'scale-down') return direct('ImageFit', 4)
       return null
-    case 'rotate': {
-      const angle = parseStaticAngleTenths(value)
-      return angle === null ? null : direct('TransformRotate', angle)
-    }
     case 'text-align':
       if (value === 'left' || value === 'start') return direct('TextAlign', 0)
       if (value === 'center') return direct('TextAlign', 1)
@@ -2208,11 +2207,8 @@ function cssStaticPropertyValues(property, rawValue) {
   }
   const boxLength = directLengthValue(length)
   if (boxLength !== null) {
-    if (property === 'border') return [direct('BorderWidth', boxLength)]
-    if (property === 'border-top') return [direct('BorderTopWidth', boxLength)]
-    if (property === 'border-right') return [direct('BorderRightWidth', boxLength)]
-    if (property === 'border-bottom') return [direct('BorderBottomWidth', boxLength)]
-    if (property === 'border-left') return [direct('BorderLeftWidth', boxLength)]
+    const border = {border:'Border','border-top':'BorderTop','border-right':'BorderRight','border-bottom':'BorderBottom','border-left':'BorderLeft'}[property]
+    if (border) return [direct(`${border}Width`, boxLength), direct(`${border}Relief`, 0), direct(`${border}ColorCurrent`, 1)]
     if (property === 'margin') {
       return [
         direct('MarginTop', boxLength),
@@ -2250,14 +2246,37 @@ function cssStaticPropertyValues(property, rawValue) {
     }
   }
 
-  if (property === 'scale') {
-    const scale = parseStaticScalePermille(value)
-    if (scale !== null) {
-      return [
-        direct('TransformScaleX', scale),
-        direct('TransformScaleY', scale),
-      ]
+  if (property === 'rotate') {
+    const parts = value.toLowerCase().split(/\s+/)
+    if (parts.length > 1 && (/(deg|rad|turn|grad)$/.test(parts[0]) ||
+        (parts.length === 2 && ['x', 'y', 'z'].includes(parts[1])))) parts.push(parts.shift())
+    const none = value.toLowerCase() === 'none'
+    const angle = none ? 0 : parseStaticAngleTenths(parts.at(-1))
+    if (angle === null || ![1, 2, 4].includes(parts.length)) return []
+    if (!none && !/(deg|rad|turn)$/i.test(parts.at(-1)) && Number(parts.at(-1)) !== 0) return []
+    let axes = [0, 0, 1000000]
+    if (parts.length === 2) {
+      const axis = ['x', 'y', 'z'].indexOf(parts[0])
+      if (axis < 0) return []
+      axes = [0, 0, 0]; axes[axis] = 1000000
+    } else if (parts.length === 4) {
+      const vector = parts.slice(0, 3).map(Number)
+      if (!vector.every(Number.isFinite)) return []
+      const magnitude = Math.max(...vector.map(Math.abs))
+      axes = magnitude ? vector.map(v => roundCssNumber(v / magnitude * 1000000)) : [0, 0, 0]
     }
+    return [direct('RotatePresent', none ? 0 : 1), direct('RotateAngle', axes.some(Boolean) ? angle : 0),
+      direct('RotateAxisX', axes[0]), direct('RotateAxisY', axes[1]), direct('RotateAxisZ', axes[2])]
+  }
+  if (property === 'scale') {
+    const none = value.toLowerCase() === 'none'
+    const parts = none ? ['1'] : value.split(/\s+/)
+    if (parts.length < 1 || parts.length > 3) return []
+    const factors = parts.map(v => v.endsWith('%') ? Number(v.slice(0, -1)) / 100 : Number(v))
+    if (!factors.every(Number.isFinite)) return []
+    const scales = factors.map(v => roundCssNumber(Math.max(-32768, Math.min(32767, v * 1000))))
+    return [direct('ScalePresent', none ? 0 : 1), direct('ScaleX', scales[0]),
+      direct('ScaleY', scales[1] ?? scales[0]), direct('ScaleZ', scales[2] ?? 1000)]
   }
 
   return []
@@ -2311,27 +2330,15 @@ function cssStaticFlexValue(property, rawValue) {
   const setup = []
   const words = splitCssWords(rawValue.trim())
   if (words.length === 0) return null
+  // The compact static API has no shrink field. Preserve declarations it
+  // cannot represent through the full compiler, including keyword semantics.
+  if (words.some(word => /^(none|auto|content|max-content|min-content|fit-content)$/i.test(word))) return null
   for (const token of words) {
-    const lower = token.toLowerCase()
-    if (lower === 'none') {
-      grow = 0
-      hasBasis = false
-      continue
-    }
-    if (
-      lower === 'auto' ||
-      lower === 'content' ||
-      lower === 'max-content' ||
-      lower === 'min-content' ||
-      lower === 'fit-content' ||
-      lower.includes('%')
-    ) {
-      hasBasis = false
-      continue
-    }
     const number = Number(token)
     if (Number.isFinite(number) && token.match(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/)) {
+      if (number < 0 || numberIndex > 1) return null
       if (numberIndex === 0) grow = roundCssNumber(number)
+      else if (number !== 1) return null
       numberIndex++
       continue
     }
@@ -2399,6 +2406,7 @@ function cssStaticBorderRadiusValue(property, rawValue) {
 
 function cssStaticBorderValue(property, rawValue) {
   if (property !== 'border') return null
+  if (/\b(?:groove|ridge|inset|outset)\b/i.test(rawValue)) return null
   const parts = splitCssWords(rawValue.trim())
   if (parts.length === 0) return null
   const width = parseStaticCssLengthSpec(parts[0])
@@ -2414,6 +2422,8 @@ function cssStaticBorderValue(property, rawValue) {
 }
 
 function cssStaticBorderShorthandValue(property, rawValue) {
+  // The compact width/color API cannot carry a shaded border style.
+  if (/\b(?:groove|ridge|inset|outset)\b/i.test(rawValue)) return null
   const targets = {
     border: { width: 'BorderWidth', color: 'Border', colorProperty: 'border-color', side: false },
     'border-top': { width: 'BorderTopWidth', color: 'BorderTop', colorProperty: 'border-top-color', side: true },
@@ -2441,7 +2451,8 @@ function cssStaticBorderShorthandValue(property, rawValue) {
     }
   }
   if (!targets.side && color && !colorVar) return null
-  return { setup: width.setup, widthTarget: targets.width, width: width.spec, color, colorVar }
+  return { setup: width.setup, widthTarget: targets.width, reliefTarget: targets.width.replace('Width', 'Relief'),
+    currentColorTarget: `${targets.color}ColorCurrent`, width: width.spec, color, colorVar }
 }
 
 function staticColorCode(color) {
@@ -2781,6 +2792,9 @@ function cssStaticBackgroundValue(property, rawValue) {
   if (cssHasDynamicValue(rawValue)) return null
   const layers = splitTopLevelCss(rawValue, ',')
   if (layers.length === 0) return null
+  // The gradient registration API has no base-color field. Keep combined
+  // color/image shorthands on the complete native declaration parser.
+  if (layers.some(layer => splitCssWords(layer).some(word => parseStaticCssColor(word) || /^(?:none|border-box|padding-box|content-box)$/i.test(word)))) return null
 
   const out = {
     setup: [],
@@ -2816,6 +2830,7 @@ function cssStaticBackgroundValue(property, rawValue) {
   }
 
   if (!out.gradient) return null
+  if (layers.length !== 1 + Number(out.hasOverlayGradient) + Number(Boolean(out.radialGradient?.enabled)) + Number(Boolean(out.gridX)) + Number(Boolean(out.gridY))) return null
   if (out.gridX && out.gridY && !staticColorEquals(out.gridX.color, out.gridY.color) && out.gridOrder.join('') !== 'xy') return null
   return out
 }
@@ -2837,6 +2852,9 @@ function cssStaticBackgroundFullValue(property, rawValue) {
     return null
   const layers = splitTopLevelCss(rawValue, ',')
   if (layers.length === 0) return null
+  // The gradient registration API has no base-color field. Keep combined
+  // color/image shorthands on the complete native declaration parser.
+  if (layers.some(layer => splitCssWords(layer).some(word => parseStaticCssColor(word) || /^(?:none|border-box|padding-box|content-box)$/i.test(word)))) return null
 
   const out = {
     setup: [],
@@ -2883,6 +2901,7 @@ function cssStaticBackgroundFullValue(property, rawValue) {
   }
 
   if (!out.gradient) return null
+  if (layers.length !== 1 + Number(out.hasOverlayGradient) + Number(Boolean(out.radialGradient?.enabled)) + Number(Boolean(out.gridX)) + Number(Boolean(out.gridY))) return null
   if (out.gridX && out.gridY && !staticColorEquals(out.gridX.color, out.gridY.color) && out.gridOrder.join('') !== 'xy') return null
   return out.needsFullApi ? out : null
 }
@@ -2891,12 +2910,15 @@ function cssStaticBackgroundSizeValue(property, rawValue) {
   if (property !== 'background-size') return null
   if (cssHasDynamicValue(rawValue)) return null
   const layers = splitTopLevelCss(rawValue, ',')
-  if (layers.length === 0) return null
+  if (layers.length !== 1) return null
   const parts = splitCssWords(layers[0])
-  if (parts.length === 0) return null
-  const x = parseStaticCssLengthSpec(parts[0])
+  if (parts.length === 0 || parts.length > 2) return null
+  const parseSize = value => value.toLowerCase() === 'auto'
+    ? { setup: [], spec: { unit: 'Auto', value: '0' } }
+    : parseStaticCssLengthSpec(value)
+  const x = parseSize(parts[0])
   if (!x) return null
-  const y = parts.length > 1 ? parseStaticCssLengthSpec(parts[1]) : x
+  const y = parseSize(parts.length > 1 ? parts[1] : 'auto')
   if (!y) return null
   return { setup: [...x.setup, ...(y === x ? [] : y.setup)], stepX: x.spec, stepY: y.spec }
 }
@@ -3192,6 +3214,7 @@ const staticTransformFlags = {
   translateZ: 1 << 5,
   scaleX: 1 << 8,
   scaleY: 1 << 9,
+  scaleZ: 1 << 13,
 }
 
 function parseStaticAngleTenths(rawValue) {
@@ -3212,7 +3235,14 @@ function parseStaticScalePermille(rawValue) {
   return roundCssNumber(value * 1000)
 }
 
+function multiplyStaticScalePermille(left, right) {
+  return clampInt16(roundCssNumber((left * right) / 1000))
+}
+
 function parseStaticTransformValue(rawValue) {
+  // Multiple rotation functions need ordered composition. Use the shared C++
+  // CSS compiler rather than independently decomposing a matrix in JS.
+  if ((rawValue.match(/rotate(?:x|y|z|3d)?\s*\(/gi) || []).length > 1) return null
   const value = rawValue.trim()
   const out = {
     setup: [],
@@ -3225,6 +3255,7 @@ function parseStaticTransformValue(rawValue) {
     translateZ: zeroStaticLengthSpec(),
     scaleX: 1000,
     scaleY: 1000,
+    scaleZ: 1000,
   }
   let sawTransform = false
   let i = 0
@@ -3247,6 +3278,9 @@ function parseStaticTransformValue(rawValue) {
     if (depth !== 0) return null
     const arg = value.slice(argStart, i - 1)
     const args = splitTopLevelCss(arg, ',')
+    const axes = name === 'translatex' ? 1 : name === 'translatey' ? 2 : name === 'translatez' ? 4 :
+      (name === 'translate' || name === 'translate3d') ? (1 << Math.min(3, args.length)) - 1 : 0
+    out.flags = (out.flags & ~(axes << 10)) | ((out.flags & 7) ? 0 : (axes << 10))
     sawTransform = true
 
     const setLength = (field, flag, raw) => {
@@ -3288,19 +3322,34 @@ function parseStaticTransformValue(rawValue) {
       const sx = parseStaticScalePermille(args[0] ?? arg)
       const sy = parseStaticScalePermille(args[1] ?? args[0] ?? arg)
       if (sx === null || sy === null) return null
-      out.scaleX = sx
-      out.scaleY = sy
+      out.scaleX = multiplyStaticScalePermille(out.scaleX, sx)
+      out.scaleY = multiplyStaticScalePermille(out.scaleY, sy)
       out.flags |= staticTransformFlags.scaleX | staticTransformFlags.scaleY
+    } else if (name === 'scale3d') {
+      if (args.length !== 3) return null
+      const sx = parseStaticScalePermille(args[0])
+      const sy = parseStaticScalePermille(args[1])
+      const sz = parseStaticScalePermille(args[2])
+      if (sx === null || sy === null || sz === null) return null
+      out.scaleX = multiplyStaticScalePermille(out.scaleX, sx)
+      out.scaleY = multiplyStaticScalePermille(out.scaleY, sy)
+      out.scaleZ = multiplyStaticScalePermille(out.scaleZ, sz)
+      out.flags |= staticTransformFlags.scaleX | staticTransformFlags.scaleY | staticTransformFlags.scaleZ
     } else if (name === 'scalex') {
       const scale = parseStaticScalePermille(arg)
       if (scale === null) return null
-      out.scaleX = scale
+      out.scaleX = multiplyStaticScalePermille(out.scaleX, scale)
       out.flags |= staticTransformFlags.scaleX
     } else if (name === 'scaley') {
       const scale = parseStaticScalePermille(arg)
       if (scale === null) return null
-      out.scaleY = scale
+      out.scaleY = multiplyStaticScalePermille(out.scaleY, scale)
       out.flags |= staticTransformFlags.scaleY
+    } else if (name === 'scalez') {
+      const scale = parseStaticScalePermille(arg)
+      if (scale === null) return null
+      out.scaleZ = multiplyStaticScalePermille(out.scaleZ, scale)
+      out.flags |= staticTransformFlags.scaleZ
     } else {
       return null
     }
@@ -3313,17 +3362,29 @@ function cssStaticTransformValue(property, rawValue) {
   return parseStaticTransformValue(rawValue)
 }
 
-function staticTransformArgs(transform) {
-  return `${transform.flags}, ${transform.rotateX}, ${transform.rotateY}, ${transform.rotateZ}, ${staticLengthSpecCode(transform.translateX)}, ${staticLengthSpecCode(transform.translateY)}, ${staticLengthSpecCode(transform.translateZ)}, ${transform.scaleX}, ${transform.scaleY}`
+function staticTransformArgs(transform, mediaArg = null) {
+  const fields = `${transform.flags}, ${transform.rotateX}, ${transform.rotateY}, ${transform.rotateZ}, ${staticLengthSpecCode(transform.translateX)}, ${staticLengthSpecCode(transform.translateY)}, ${staticLengthSpecCode(transform.translateZ)}, ${transform.scaleX}, ${transform.scaleY}`
+  if (mediaArg === null) return `${fields}, ${transform.scaleZ}`
+  return `${fields}${mediaArg || ', nullptr'}, ${transform.scaleZ}`
 }
 
 const staticAnimatableLengthTargets = new Set(['Width', 'Height', 'Top', 'Left'])
-const staticAnimatableColorTargets = new Set(['Color', 'Background'])
+const staticAnimatableColorTargets = new Set(['Color', 'Background', 'BackgroundColor'])
 const staticAnimatableDirectProperties = new Set([
   'gea::embedded::ui::Property::Opacity',
+  'gea::embedded::ui::Property::RotatePresent',
+  'gea::embedded::ui::Property::RotateAngle',
+  'gea::embedded::ui::Property::RotateAxisX',
+  'gea::embedded::ui::Property::RotateAxisY',
+  'gea::embedded::ui::Property::RotateAxisZ',
+  'gea::embedded::ui::Property::ScalePresent',
+  'gea::embedded::ui::Property::ScaleX',
+  'gea::embedded::ui::Property::ScaleY',
+  'gea::embedded::ui::Property::ScaleZ',
   'gea::embedded::ui::Property::TransformRotate',
   'gea::embedded::ui::Property::TransformScaleX',
   'gea::embedded::ui::Property::TransformScaleY',
+  'gea::embedded::ui::Property::TransformScaleZ',
 ])
 
 function cssStaticFilterBlurValue(property, rawValue) {
@@ -3437,12 +3498,14 @@ function emitCssRuleRegistrations(kind, selector, name, value, mediaCondition) {
           `__gea_stylesheet.registerStaticPropertyRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${direct.property}, ${direct.value}${mediaArg});`,
         ]
       }
-      const entries = directProperties
-        .map((direct) => `{${direct.property}, ${direct.value}}`)
-        .join(', ')
-      return [
-        `__gea_stylesheet.registerStaticPropertyGroupRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, {${entries}}${mediaArg});`,
-      ]
+      // Each native compiled property group has four slots.
+      const registrations = []
+      for (let i = 0; i < directProperties.length; i += 4) {
+        const entries = directProperties.slice(i, i + 4)
+          .map(direct => `{${direct.property}, ${direct.value}}`).join(', ')
+        registrations.push(`__gea_stylesheet.registerStaticPropertyGroupRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, {${entries}}${mediaArg});`)
+      }
+      return registrations
     }
     const flex = cssStaticFlexValue(name, value)
     if (flex) {
@@ -3478,6 +3541,7 @@ function emitCssRuleRegistrations(kind, selector, name, value, mediaCondition) {
       const calls = [
         ...borderShorthand.setup,
         `__gea_stylesheet.registerStaticLengthSpecRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, gea::embedded::ui::StaticStyleLengthProperty::${borderShorthand.widthTarget}, ${staticLengthSpecCode(borderShorthand.width)}${mediaArg});`,
+        `__gea_stylesheet.registerStaticPropertyRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, gea::embedded::ui::Property::${borderShorthand.reliefTarget}, 0${mediaArg});`,
       ]
       if (borderShorthand.colorVar) {
         const colorVar = borderShorthand.colorVar
@@ -3485,6 +3549,8 @@ function emitCssRuleRegistrations(kind, selector, name, value, mediaCondition) {
       } else if (borderShorthand.color) {
         const color = borderShorthand.color
         calls.push(`__gea_stylesheet.registerStaticColorRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, gea::embedded::ui::StaticStyleColorProperty::${color.target}, ${color.color.r}, ${color.color.g}, ${color.color.b}, ${color.color.a}${mediaArg});`)
+      } else {
+        calls.push(`__gea_stylesheet.registerStaticPropertyRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, gea::embedded::ui::Property::${borderShorthand.currentColorTarget}, 1${mediaArg});`)
       }
       return calls
     }
@@ -3519,14 +3585,14 @@ function emitCssRuleRegistrations(kind, selector, name, value, mediaCondition) {
     if (fullBackground) {
       return [
         ...fullBackground.setup,
-        `__gea_stylesheet.registerStaticBackgroundFullRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticLinearGradientRefCode(fullBackground.gradient)}, ${staticLinearGradientRefCode(fullBackground.overlayGradient)}, ${fullBackground.hasOverlayGradient ? 'true' : 'false'}, ${staticRadialGradientRefCode(fullBackground.radialGradient)}, ${staticGridLineCode(fullBackground.gridX)}, ${staticGridLineCode(fullBackground.gridY)}${mediaArg});`,
+        `__gea_stylesheet.registerStaticBackgroundFullRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticLinearGradientRefCode(fullBackground.gradient)}, ${staticLinearGradientRefCode(fullBackground.overlayGradient)}, ${fullBackground.hasOverlayGradient ? 'true' : 'false'}, ${staticRadialGradientRefCode(fullBackground.radialGradient)}, ${staticGridLineCode(fullBackground.gridX)}, ${staticGridLineCode(fullBackground.gridY)}${mediaArg || ", nullptr"}, ${name === "background-image" ? "true" : "false"});`,
       ]
     }
     const background = cssStaticBackgroundValue(name, value)
     if (background) {
       return [
         ...background.setup,
-        `__gea_stylesheet.registerStaticBackgroundRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticLinearGradientCode(background.gradient)}, ${staticLinearGradientCode(background.overlayGradient)}, ${background.hasOverlayGradient ? 'true' : 'false'}, ${staticGridLineCode(background.gridX)}, ${staticGridLineCode(background.gridY)}${mediaArg});`,
+        `__gea_stylesheet.registerStaticBackgroundRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticLinearGradientCode(background.gradient)}, ${staticLinearGradientCode(background.overlayGradient)}, ${background.hasOverlayGradient ? 'true' : 'false'}, ${staticGridLineCode(background.gridX)}, ${staticGridLineCode(background.gridY)}${mediaArg || ", nullptr"}, ${name === "background-image" ? "true" : "false"});`,
       ]
     }
     const backgroundSize = cssStaticBackgroundSizeValue(name, value)
@@ -3591,7 +3657,7 @@ function emitCssRuleRegistrations(kind, selector, name, value, mediaCondition) {
     if (transform) {
       return [
         ...transform.setup,
-        `__gea_stylesheet.registerStaticTransformRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticTransformArgs(transform)}${mediaArg});`,
+        `__gea_stylesheet.registerStaticTransformRule(${staticSelectorKind(kind)}, ${JSON.stringify(selector)}, ${staticTransformArgs(transform, mediaArg)});`,
       ]
     }
   }
@@ -3810,6 +3876,9 @@ function staticCssTapeLengthSpecParts(code) {
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null
   const parts = splitTopLevelCppArgs(trimmed.slice(1, -1))
   if (parts.length !== 2) return null
+  // The tape is constexpr: a length expression's value is the id its
+  // registration returned at run time, so that rule stays a plain call.
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?f?$/i.test(parts[1].trim())) return null
   return { unit: parts[0], value: parts[1] }
 }
 
@@ -3989,31 +4058,38 @@ auto __gea_css_tape_selector_kind = [](std::uint8_t kind) {
 auto __gea_css_tape_length = [](std::uint8_t unit, float value) {
 \treturn gea::embedded::ui::StaticStyleLengthSpec{static_cast<gea::embedded::ui::StaticStyleLengthUnit>(unit), value};
 };
-auto __gea_register_static_css_tape = [&](
-\tstd::initializer_list<__GeaStaticCssTapeKind> order,
-\tstd::initializer_list<__GeaStaticCssPropertyOp> propertyOps,
-\tstd::initializer_list<__GeaStaticCssLengthOp> lengthOps,
-\tstd::initializer_list<__GeaStaticCssLengthOp> lengthSpecOps,
-\tstd::initializer_list<__GeaStaticCssColorOp> colorOps,
-\tstd::initializer_list<__GeaStaticCssColorVarOp> colorVarOps,
-\tstd::initializer_list<__GeaStaticCssCustomLengthOp> customLengthOps,
-\tstd::initializer_list<__GeaStaticCssCustomColorOp> customColorOps,
-\tstd::initializer_list<__GeaStaticCssSelectorOnlyOp> boxShadowNoneOps,
-\tstd::initializer_list<__GeaStaticCssNamedOp> fontFamilyOps,
-\tstd::initializer_list<__GeaStaticCssLengthOnlyOp> filterBlurOps,
-\tstd::initializer_list<__GeaStaticCssLineHeightOp> lineHeightOps) {
-\tauto propertyIt = propertyOps.begin();
-\tauto lengthIt = lengthOps.begin();
-\tauto lengthSpecIt = lengthSpecOps.begin();
-\tauto colorIt = colorOps.begin();
-\tauto colorVarIt = colorVarOps.begin();
-\tauto customLengthIt = customLengthOps.begin();
-\tauto customColorIt = customColorOps.begin();
-\tauto boxShadowNoneIt = boxShadowNoneOps.begin();
-\tauto fontFamilyIt = fontFamilyOps.begin();
-\tauto filterBlurIt = filterBlurOps.begin();
-\tauto lineHeightIt = lineHeightOps.begin();
-\tfor (const auto kind : order) {
+// Each tape's lists are static constexpr arrays the call points into: an
+// initializer_list argument is a temporary array, which the compiler builds on
+// the stack by copying it out of read-only data at every call.
+struct __GeaStaticCssTape {
+\tstd::size_t orderCount;
+\tconst __GeaStaticCssTapeKind *order;
+\tconst __GeaStaticCssPropertyOp *propertyOps;
+\tconst __GeaStaticCssLengthOp *lengthOps;
+\tconst __GeaStaticCssLengthOp *lengthSpecOps;
+\tconst __GeaStaticCssColorOp *colorOps;
+\tconst __GeaStaticCssColorVarOp *colorVarOps;
+\tconst __GeaStaticCssCustomLengthOp *customLengthOps;
+\tconst __GeaStaticCssCustomColorOp *customColorOps;
+\tconst __GeaStaticCssSelectorOnlyOp *boxShadowNoneOps;
+\tconst __GeaStaticCssNamedOp *fontFamilyOps;
+\tconst __GeaStaticCssLengthOnlyOp *filterBlurOps;
+\tconst __GeaStaticCssLineHeightOp *lineHeightOps;
+};
+auto __gea_register_static_css_tape = [&](const __GeaStaticCssTape &tape) {
+\tconst auto *propertyIt = tape.propertyOps;
+\tconst auto *lengthIt = tape.lengthOps;
+\tconst auto *lengthSpecIt = tape.lengthSpecOps;
+\tconst auto *colorIt = tape.colorOps;
+\tconst auto *colorVarIt = tape.colorVarOps;
+\tconst auto *customLengthIt = tape.customLengthOps;
+\tconst auto *customColorIt = tape.customColorOps;
+\tconst auto *boxShadowNoneIt = tape.boxShadowNoneOps;
+\tconst auto *fontFamilyIt = tape.fontFamilyOps;
+\tconst auto *filterBlurIt = tape.filterBlurOps;
+\tconst auto *lineHeightIt = tape.lineHeightOps;
+\tfor (std::size_t step = 0; step < tape.orderCount; ++step) {
+\t\tconst auto kind = tape.order[step];
 \t\tswitch (kind) {
 \t\tcase __GeaStaticCssTapeKind::Property: {
 \t\t\tconst auto &op = *propertyIt++;
@@ -4114,12 +4190,27 @@ function compactStaticCssTapeCalls(calls) {
     }
     usedTape = true
     const order = chunk.map((entry) => `__GeaStaticCssTapeKind::${entry.kind}`).join(', ')
-    const listFor = (kind) => {
-      const entries = chunk.filter((entry) => entry.kind === kind).map((entry) => entry.code)
-      if (entries.length === 0) return '{}'
-      return `{\n${entries.map((entry) => `\t\t${entry}`).join(',\n')}\n\t}`
+    const opTypes = {
+      Property: '__GeaStaticCssPropertyOp',
+      Length: '__GeaStaticCssLengthOp',
+      LengthSpec: '__GeaStaticCssLengthOp',
+      Color: '__GeaStaticCssColorOp',
+      ColorVar: '__GeaStaticCssColorVarOp',
+      CustomLength: '__GeaStaticCssCustomLengthOp',
+      CustomColor: '__GeaStaticCssCustomColorOp',
+      BoxShadowNone: '__GeaStaticCssSelectorOnlyOp',
+      FontFamily: '__GeaStaticCssNamedOp',
+      FilterBlur: '__GeaStaticCssLengthOnlyOp',
+      LineHeight: '__GeaStaticCssLineHeightOp',
     }
-    out.push(`__gea_register_static_css_tape(\n\t{${order}},\n\t${kinds.map(listFor).join(',\n\t')});`)
+    const arrays = [`\tstatic constexpr __GeaStaticCssTapeKind order[] = {${order}};`]
+    const pointers = kinds.map((kind) => {
+      const entries = chunk.filter((entry) => entry.kind === kind).map((entry) => entry.code)
+      if (entries.length === 0) return 'nullptr'
+      arrays.push(`\tstatic constexpr ${opTypes[kind]} ops${kind}[] = {\n${entries.map((entry) => `\t\t${entry}`).join(',\n')}\n\t};`)
+      return `ops${kind}`
+    })
+    out.push(`{\n${arrays.join('\n')}\n\t__gea_register_static_css_tape({${chunk.length}, order, ${pointers.join(', ')}});\n}`)
     chunk = []
   }
   for (const call of calls) {
@@ -4135,6 +4226,7 @@ function compactStaticCssTapeCalls(calls) {
   return { calls: out, usedTape, stringLiterals }
 }
 
+let staticCssRegistrationCalls = []
 function cssRegistrationCode(viteOutDir) {
   const calls = []
   staticCssLengthExpressionCounter = 0
@@ -4153,6 +4245,10 @@ function cssRegistrationCode(viteOutDir) {
       emitCssRules(stripAtBlocks(block.body), block.condition, calls)
     }
   }
+  // The calls themselves, before the tape packs them: a target that resolves
+  // styles at build time (the Pebble compiled UI) reads these rather than
+  // re-deriving the cascade from the CSS text.
+  staticCssRegistrationCalls = calls
   if (calls.length === 0) return ''
   const compacted = compactStaticCssTapeCalls(calls)
   const tapePrelude = compacted.usedTape ? staticCssTapePrelude(compacted.stringLiterals) : ''
@@ -4359,6 +4455,7 @@ const viteBundle = findFirstJsFile(viteOutDir)
 if (!viteBundle) fail(`Vite produced no JS bundle in ${viteOutDir}`)
 const cssPrelude = geaEmbeddedCompat ? cssRegistrationCode(viteOutDir) : ''
 const cssPreludePath = path.join(outDir, 'gea-style-registration.cppfrag')
+fs.writeFileSync(path.join(outDir, 'gea-style-registration.calls.json'), JSON.stringify(staticCssRegistrationCalls, null, 1) + '\n')
 if (cssPrelude || cppPreludeSymbol) {
   fs.writeFileSync(cssPreludePath, cssPrelude)
 } else {

@@ -4,6 +4,7 @@
 #include "tree_internal.h"
 
 #include <cstdint>
+#include <vector>
 
 #ifdef quad
 #undef quad
@@ -31,6 +32,9 @@ extern bool gScrollImageHoldPending;
 // Frame-entry tick: the first frame WITHOUT scroll activity after skipped
 // blits marks the tree dirty for one normal full refresh (images included).
 void rootScrollImageHoldTick();
+
+	bool isCollapsedFlexItem(const Node &node);
+	bool isCollapsedFlexSubtree(const Node &node);
 
 	class CameraSurfaceProvider;
 
@@ -73,7 +77,11 @@ void rootScrollImageHoldTick();
 	struct DisplayCommand
 	{
 		DisplayCommandType type;
+		bool textDecorationInk = false;
 		int16_t bx, by, bw, bh;
+		// Background paint can use descendant glyph coverage without changing
+		// foreground text color or allocating a viewport-sized mask.
+		int16_t textClipOwner = -1;
 		union
 		{
 			struct
@@ -164,6 +172,10 @@ void rootScrollImageHoldTick();
 				int16_t tl, tr, br, bl;
 				int16_t lineWidth;
 				gea::framework::graphics::pixel::native_t color;
+				// CSS radii are already normalized on the outer border box. Inner
+				// curves may exceed half the clipped box; do not clamp them again.
+				int16_t rx8[4], ry8[4];
+				uint8_t cssRadii;
 			} strokeRoundedRect;
 			struct
 			{
@@ -198,6 +210,7 @@ void rootScrollImageHoldTick();
 				gea::framework::graphics::pixel::native_t color;
 				uint8_t alpha;
 				int8_t textTransform;
+				int8_t whiteSpace;
 				// CSS backface-visibility:hidden — drop this projected label when its winding
 				// points away from the viewer, matching its (culled) back-facing parent face.
 				uint8_t backfaceHidden;
@@ -286,6 +299,7 @@ void rootScrollImageHoldTick();
 		static DisplayList &instance();
 
 		DisplayCommand *append();
+		int setRecordingTextClipOwner(int owner);
 		void clear();
 		void resetStorage();
 		// allowSkipStatic: caller guarantees this frame will use the direct
@@ -392,6 +406,7 @@ void rootScrollImageHoldTick();
 		bool reprojectDirtyRect(int *x0, int *y0, int *x1, int *y1) const;
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
+		bool hasTextClippedBackgrounds() const;
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;
@@ -402,6 +417,13 @@ void rootScrollImageHoldTick();
 	{
 	public:
 		static LayoutEngine &instance();
+		static int alignedAbsoluteOffset(const Node &parent, const Node &child, bool horizontal,
+		                                 const Node *containing = nullptr, int containingStart = 0, int containingSize = 0);
+		static int fixedContainingBlock(const Node &node);
+		static bool isViewportFixed(const Node &node);
+		static bool containsViewportFixed(int node);
+		static bool absoluteGridArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
+		static void absoluteContainingArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
 
 		int clampSize(int size, int minSize, int maxSize) const;
 		int collectChildren(int parent, int *out, int max, bool skipAbsolute) const;
@@ -409,7 +431,7 @@ void rootScrollImageHoldTick();
 		// (LayoutBox::memo_pass). Must be called before each root layoutNode()
 		// so memo hits never leak across passes/frames.
 		void beginLayoutPass();
-		void layoutNode(int id, int availableWidth, int availableHeight);
+		void layoutNode(int id, int availableWidth, int availableHeight, bool intrinsicBoxEdges = false);
 		// Scoped relayout: re-lays ONLY `scope`'s subtree using the available box
 		// remembered from its last layout, then resolves the subtree's absolute
 		// coords from the scope's (unchanged) position. Returns false — caller
@@ -426,6 +448,21 @@ void rootScrollImageHoldTick();
 		// resolveRowDirection). Exposed for refresh fast paths that mirror that
 		// flow decision without running a layout pass.
 		static bool isInlineLevelNode(const Node &n);
+		// CSS display classification without layout-only margin heuristics.
+		// Inline-level boxes blockified by float, absolute/fixed positioning, or
+		// flex/grid-item status return false.
+		static bool isCssInlineLevelBox(const Node &n, bool hypothetical = false);
+	};
+
+	// Shared order for recording, retained transform replay, and hit testing.
+	class PaintOrder
+	{
+	public:
+		static void sortChildren(int *children, int count, int contextRoot);
+		static int compareNodes(int first, int second);
+		static bool isContext(int node);
+		static bool isGroup(int node);
+		static std::vector<int> collectChildren(int node, bool groupRoot = true, bool includePositioned = true);
 	};
 
 	class ViewRenderer
@@ -434,6 +471,7 @@ void rootScrollImageHoldTick();
 		static bool recordClipBegin(const Node &node);
 		static void recordClipEnd(const Node &node);
 		static void recordBox(const Node &node, uint8_t parentAlpha = 255);
+		static int canvasBackgroundSource();
 		static void recordScrollbar(const Node &node);
 		static int scrollMaxX(const Node &node);
 		static int scrollMaxY(const Node &node);
@@ -442,6 +480,8 @@ void rootScrollImageHoldTick();
 		static void transformedCorners(const Node &node, bool usePrevious, int16_t *xs, int16_t *ys);
 		static void transformedRectCorners(const Node &node, bool usePrevious, int x, int y, int w, int h, int16_t *xs, int16_t *ys,
 																			 int16_t *xs8 = nullptr, int16_t *ys8 = nullptr);
+		static bool backfaceSubtreeHidden(const Node &node);
+		static bool isTransformableBox(const Node &node);
 		static int transformedDepth(const Node &node, bool usePrevious);
 		// True iff any node in the tree carries a transform/perspective this frame
 		// or last (cached once per refresh). Lets paint-order sorting skip the 3D
@@ -456,6 +496,7 @@ void rootScrollImageHoldTick();
 	struct InlineFlowMeasure {
 		int lineCount = 0;
 		int firstLineWidth = 0;
+		int firstLineTrailingSpace = 0;
 		int lastLineWidth = 0;
 		int maxLineWidth = 0;
 		int lineAdvance = 0;
@@ -465,16 +506,17 @@ void rootScrollImageHoldTick();
 		// identically to deleting them — and keeps the run a single unmodified
 		// string for the display list.
 		int firstLineIndentAdjust = 0;
-		// True when the first line could only be filled by cutting a word open —
-		// the run does not fit the space left on the line box it was offered, so an
-		// inline formatting context starts it on the next one instead.
-		bool firstLineForcedSplit = false;
+
 	};
 
 	class TextRenderer
 	{
 	public:
+		// Shared preparation for measuring and replaying authored text. Storage
+		// owns the result only when collapsing or case transformation is needed.
+		static const char *prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage);
 		static void layout(int id, int availableWidth);
+		static int baselineOffset(const Node &node, bool last);
 		// True when a run's line breaking is reproducible from per-glyph advances,
 		// i.e. the same wrapper the draw path uses. A host that measures whole
 		// strings for us (CoreText on Apple targets) does its own breaking, which
@@ -487,12 +529,16 @@ void rootScrollImageHoldTick();
 		// `atLineStart`, as CSS does when a line box begins.
 		static InlineFlowMeasure measureInlineFlow(const Node &node, int firstAvail, int contentWidth, bool atLineStart);
 		static void record(const Node &node, uint8_t parentAlpha = 255);
+		static void unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
+		                             int width, uint8_t *outCoverage);
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
 														int firstLineIndent = 0);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);
+		static int firstUnbreakableWidth(const Node &node);
+		static int minContentWidth(const Node &node, int *pendingWord = nullptr);
 		static int measureHeight(const char *text, int fontId, int fontSize, int textTransform = 0, int lineHeight = 0);
 		// In-place box re-measure for a rebound text node on refresh paths that
 		// skip the layout pass (root-scroll fast path): record() wraps and clips

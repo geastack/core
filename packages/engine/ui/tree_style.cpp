@@ -30,6 +30,19 @@ bool nodeParticipatesInMountedTree(const TreeState &state, int node)
 bool isTransformProperty(Property prop)
 {
 	switch (prop) {
+	case Property::RotateAngle:
+	case Property::RotateAxisX:
+	case Property::RotateAxisY:
+	case Property::RotateAxisZ:
+	case Property::ScaleX:
+	case Property::ScaleY:
+	case Property::ScaleZ:
+	case Property::TransformTranslateOuterAxes:
+	case Property::TranslateX:
+	case Property::TranslateY:
+	case Property::TranslateZ:
+	case Property::TranslateXPercent:
+	case Property::TranslateYPercent:
 	case Property::TransformRotate:
 	case Property::TransformRotateX:
 	case Property::TransformRotateY:
@@ -40,6 +53,7 @@ bool isTransformProperty(Property prop)
 	case Property::TransformTranslateYPercent:
 	case Property::TransformScaleX:
 	case Property::TransformScaleY:
+	case Property::TransformScaleZ:
 	case Property::TransformOriginX:
 	case Property::TransformOriginY:
 	case Property::Perspective:
@@ -54,12 +68,49 @@ bool isTransformProperty(Property prop)
 bool isLayoutProperty(Property prop)
 {
 	switch (prop) {
+	case Property::FlexLineCount:
+	case Property::AspectRatio:
+	case Property::TranslatePresent:
+	case Property::TransformPresent:
+	case Property::RotatePresent:
+	case Property::ScalePresent:
+	case Property::FilterPresent:
 	case Property::Display:
 	case Property::FlexDirection:
+	case Property::BoxSizing:
+	case Property::Float:
+	case Property::MarginTrim:
+	case Property::Clear:
+	case Property::WritingMode:
+	case Property::Direction:
+	case Property::RowGap:
+	case Property::ColumnGap:
+	case Property::RowGapPercent:
+	case Property::ColumnGapPercent:
+	case Property::MarginTopAuto:
+	case Property::MarginRightAuto:
+	case Property::MarginBottomAuto:
+	case Property::MarginLeftAuto:
+	case Property::MarginTopExpression:
+	case Property::MarginRightExpression:
+	case Property::MarginBottomExpression:
+	case Property::MarginLeftExpression:
+	case Property::PaddingTopExpression:
+	case Property::PaddingRightExpression:
+	case Property::PaddingBottomExpression:
+	case Property::PaddingLeftExpression:
+	case Property::WidthExpression:
+	case Property::HeightExpression:
+	case Property::Order:
 	case Property::FlexWrap:
 	case Property::JustifyContent:
 	case Property::AlignItems:
 	case Property::JustifyItems:
+	case Property::JustifySelf:
+	case Property::GridRowStart:
+	case Property::GridColumnStart:
+	case Property::GridRowEnd:
+	case Property::GridColumnEnd:
 	case Property::AlignContent:
 	case Property::AlignSelf:
 	case Property::Gap:
@@ -74,6 +125,12 @@ bool isLayoutProperty(Property prop)
 	case Property::Flex:
 	case Property::FlexShrink:
 	case Property::FlexBasis:
+	case Property::FlexBasisExpression:
+	case Property::BorderWidth:
+	case Property::BorderTopWidth:
+	case Property::BorderRightWidth:
+	case Property::BorderBottomWidth:
+	case Property::BorderLeftWidth:
 	case Property::PaddingTop:
 	case Property::PaddingRight:
 	case Property::PaddingBottom:
@@ -98,6 +155,9 @@ bool isLayoutProperty(Property prop)
 	case Property::FontSize:
 	case Property::FontWeight:
 	case Property::LineHeight:
+	case Property::LineHeightExpression:
+	case Property::LineHeightMultiplier:
+	case Property::Visibility:
 	case Property::WhiteSpace:
 	case Property::TextOverflow:
 	case Property::ImageId:
@@ -159,7 +219,51 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #else
 	if (recordInline)
 #endif
-		ensureRareData(node).inlineStyles.set(prop, value);
+	{
+		auto &overrides = ensureRareData(node).inlineStyles;
+		// Width/height and their percentage/expression companions are one
+		// authored declaration. Replaying a stale companion would override a
+		// later numeric value (or an intrinsic sizing keyword).
+		if (prop == Property::Height || prop == Property::HeightPercent || prop == Property::HeightExpression) {
+			for (Property companion : {Property::Height, Property::HeightPercent, Property::HeightExpression})
+				if (companion != prop) overrides.remove(companion);
+		}
+		if (prop == Property::Width || prop == Property::WidthPercent || prop == Property::WidthExpression) {
+			for (Property companion : {Property::Width, Property::WidthPercent, Property::WidthExpression})
+				if (companion != prop) overrides.remove(companion);
+		}
+		if (prop == Property::LineHeight || prop == Property::LineHeightExpression || prop == Property::LineHeightMultiplier)
+			for (Property companion : {Property::LineHeight, Property::LineHeightExpression, Property::LineHeightMultiplier})
+				if (companion != prop) overrides.remove(companion);
+		if (prop == Property::FlexBasis || prop == Property::FlexBasisExpression)
+			overrides.remove(prop == Property::FlexBasis ? Property::FlexBasisExpression : Property::FlexBasis);
+		if (prop >= Property::MarginTop && prop <= Property::MarginLeft)
+			overrides.remove(static_cast<Property>(static_cast<int>(Property::MarginTopExpression) + static_cast<int>(prop) - static_cast<int>(Property::MarginTop)));
+		if (prop >= Property::PaddingTop && prop <= Property::PaddingLeft)
+			overrides.remove(static_cast<Property>(static_cast<int>(Property::PaddingTopExpression) + static_cast<int>(prop) - static_cast<int>(Property::PaddingTop)));
+		if (prop == Property::BorderWidth)
+			for (Property side : {Property::BorderTopWidth, Property::BorderRightWidth, Property::BorderBottomWidth, Property::BorderLeftWidth}) overrides.remove(side);
+		if (prop == Property::BorderRelief)
+			for (int side = 0; side < 4; ++side) overrides.remove(static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side));
+
+		// Literal/currentColor companions form one authored color. A common
+		// border-color resets all side colors; later side writes retain their order.
+		if (prop == Property::BorderColor || prop == Property::BorderColorCurrent) {
+			for (Property color : {Property::BorderColor, Property::BorderColorCurrent,
+			     Property::BorderTopColor, Property::BorderRightColor, Property::BorderBottomColor, Property::BorderLeftColor,
+			     Property::BorderTopColorCurrent, Property::BorderRightColorCurrent, Property::BorderBottomColorCurrent, Property::BorderLeftColorCurrent, Property::BorderAlpha, Property::BorderTopAlpha, Property::BorderRightAlpha, Property::BorderBottomAlpha, Property::BorderLeftAlpha})
+				overrides.remove(color);
+		} else {
+			const Property colors[] = {Property::BorderTopColor, Property::BorderRightColor, Property::BorderBottomColor, Property::BorderLeftColor};
+			for (int side = 0; side < 4; ++side) {
+				const Property current = static_cast<Property>(static_cast<int>(Property::BorderTopColorCurrent) + side);
+				if (prop == colors[side] || prop == current) { overrides.remove(colors[side]); overrides.remove(current); overrides.remove(static_cast<Property>(static_cast<int>(Property::BorderTopAlpha) + side)); break; }
+			}
+		}
+		if (prop == Property::BackgroundColor) { overrides.remove(Property::BackgroundColor); overrides.remove(Property::BackgroundAlpha); }
+		if (prop == Property::Color) { overrides.remove(Property::Color); overrides.remove(Property::ColorAlpha); }
+		overrides.set(prop, value);
+	}
 	Node *n = &state.nodes[node];
 	int changed = 0;
 	int prevOpacity = -1;
@@ -195,14 +299,54 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			changed = 1;
 		}
 		break;
+	case Property::BoxSizing: if (n->style.box_sizing != value) { n->style.box_sizing = value; changed = 1; } break;
+	case Property::Float: if (n->style.float_side != value) { n->style.float_side = value; changed = 1; } break;
+	case Property::AspectRatio: if (rstyle(n->style).aspect_ratio != value) { rstyleMut(n->style).aspect_ratio = value; changed = 1; } break;
+	case Property::Containment: if (rstyle(n->style).containment != value) { rstyleMut(n->style).containment = value; changed = 1; } break;
+	case Property::FlexLineCount: if (rstyle(n->style).flex_line_count != value) { rstyleMut(n->style).flex_line_count = value; changed = 1; } break;
+	case Property::MarginTrim: if (rstyle(n->style).margin_trim != value) { rstyleMut(n->style).margin_trim = value; changed = 1; } break;
+	case Property::Clear: if (n->style.clear_side != value) { n->style.clear_side = value; changed = 1; } break;
+	case Property::Direction: if (n->style.direction != value) { n->style.direction = value; changed = 1; } break;
+	case Property::WritingMode: if (n->style.writing_mode != value) { n->style.writing_mode = value; changed = 1; } break;
+	case Property::RowGap: if (n->style.row_gap != value) { n->style.row_gap = value; changed = 1; } break;
+	case Property::ColumnGap: if (n->style.column_gap != value) { n->style.column_gap = value; changed = 1; } break;
+	case Property::RowGapPercent: if (n->style.row_gap_percent != value) { n->style.row_gap_percent = value; changed = 1; } break;
+	case Property::ColumnGapPercent: if (n->style.column_gap_percent != value) { n->style.column_gap_percent = value; changed = 1; } break;
+	case Property::MarginTopAuto: { const auto mask = (n->style.margin_auto & ~1) | (value ? 1 : 0); if (mask != n->style.margin_auto) { n->style.margin_auto = mask; changed = 1; } break; }
+	case Property::MarginRightAuto: { const auto mask = (n->style.margin_auto & ~2) | (value ? 2 : 0); if (mask != n->style.margin_auto) { n->style.margin_auto = mask; changed = 1; } break; }
+	case Property::MarginBottomAuto: { const auto mask = (n->style.margin_auto & ~4) | (value ? 4 : 0); if (mask != n->style.margin_auto) { n->style.margin_auto = mask; changed = 1; } break; }
+	case Property::MarginLeftAuto: { const auto mask = (n->style.margin_auto & ~8) | (value ? 8 : 0); if (mask != n->style.margin_auto) { n->style.margin_auto = mask; changed = 1; } break; }
+	case Property::MarginTopExpression: if (rstyle(n->style).margin_expression[0] != value) { rstyleMut(n->style).margin_expression[0] = value; changed = 1; } break;
+	case Property::MarginRightExpression: if (rstyle(n->style).margin_expression[1] != value) { rstyleMut(n->style).margin_expression[1] = value; changed = 1; } break;
+	case Property::MarginBottomExpression: if (rstyle(n->style).margin_expression[2] != value) { rstyleMut(n->style).margin_expression[2] = value; changed = 1; } break;
+	case Property::MarginLeftExpression: if (rstyle(n->style).margin_expression[3] != value) { rstyleMut(n->style).margin_expression[3] = value; changed = 1; } break;
+	case Property::PaddingTopExpression: if (rstyle(n->style).padding_expression[0] != value) { rstyleMut(n->style).padding_expression[0] = value; changed = 1; } break;
+	case Property::PaddingRightExpression: if (rstyle(n->style).padding_expression[1] != value) { rstyleMut(n->style).padding_expression[1] = value; changed = 1; } break;
+	case Property::PaddingBottomExpression: if (rstyle(n->style).padding_expression[2] != value) { rstyleMut(n->style).padding_expression[2] = value; changed = 1; } break;
+	case Property::PaddingLeftExpression: if (rstyle(n->style).padding_expression[3] != value) { rstyleMut(n->style).padding_expression[3] = value; changed = 1; } break;
+	case Property::WidthExpression: if (n->style.width_expression != value) { n->style.width_expression = value; n->style.width = n->style.width_percent = kUnset; changed = 1; } break;
+	case Property::HeightExpression: if (n->style.height_expression != value) { n->style.height_expression = value; n->style.height = n->style.height_percent = kUnset; changed = 1; } break;
+	case Property::Order:           if (n->style.order != value) { n->style.order = value; changed = 1; } break;
 	case Property::FlexWrap:        if (n->style.flex_wrap != value) { n->style.flex_wrap = value; changed = 1; } break;
 	case Property::JustifyContent:  if (n->style.justify_content != value) { n->style.justify_content = value; changed = 1; } break;
 	case Property::AlignItems:      if (n->style.align_items != value) { n->style.align_items = value; changed = 1; } break;
 	case Property::JustifyItems:    if (n->style.justify_items != value) { n->style.justify_items = value; changed = 1; } break;
 	case Property::AlignContent:    if (n->style.align_content != value) { n->style.align_content = value; changed = 1; } break;
 	case Property::AlignSelf:       if (n->style.align_self != value) { n->style.align_self = value; changed = 1; } break;
-	case Property::Gap:              if (n->style.gap != value) { n->style.gap = value; changed = 1; } break;
+	case Property::JustifySelf:     if (rstyle(n->style).justify_self != value) { rstyleMut(n->style).justify_self = value; changed = 1; } break;
+	case Property::GridRowStart: if (rstyle(n->style).grid_line[0] != value) { rstyleMut(n->style).grid_line[0] = value; changed = 1; } break;
+	case Property::GridColumnStart: if (rstyle(n->style).grid_line[1] != value) { rstyleMut(n->style).grid_line[1] = value; changed = 1; } break;
+	case Property::GridRowEnd: if (rstyle(n->style).grid_line[2] != value) { rstyleMut(n->style).grid_line[2] = value; changed = 1; } break;
+	case Property::GridColumnEnd: if (rstyle(n->style).grid_line[3] != value) { rstyleMut(n->style).grid_line[3] = value; changed = 1; } break;
+	case Property::Gap:
+		if (n->style.gap != value || n->style.row_gap != kUnset || n->style.column_gap != kUnset || n->style.row_gap_percent != kUnset || n->style.column_gap_percent != kUnset) {
+			n->style.gap = value;
+			n->style.row_gap = n->style.column_gap = n->style.row_gap_percent = n->style.column_gap_percent = kUnset;
+			changed = 1;
+		}
+		break;
 	case Property::Width:
+		if (n->style.width_expression >= 0) { n->style.width_expression = -1; changed = 1; }
 		if (n->style.width != value || n->style.width_percent != kUnset) {
 			n->style.width = value;
 			n->style.width_percent = kUnset;
@@ -210,6 +354,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		}
 		break;
 	case Property::Height:
+		if (n->style.height_expression != -1) { n->style.height_expression = -1; changed = 1; }
 		if (n->style.height != value || n->style.height_percent != kUnset) {
 			n->style.height = value;
 			n->style.height_percent = kUnset;
@@ -217,6 +362,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		}
 		break;
 	case Property::WidthPercent:
+		if (n->style.width_expression >= 0) { n->style.width_expression = -1; changed = 1; }
 		if (n->style.width_percent != value || n->style.width != kUnset) {
 			n->style.width_percent = value;
 			n->style.width = kUnset;
@@ -224,6 +370,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		}
 		break;
 	case Property::HeightPercent:
+		if (n->style.height_expression != -1) { n->style.height_expression = -1; changed = 1; }
 		if (n->style.height_percent != value || n->style.height != kUnset) {
 			n->style.height_percent = value;
 			n->style.height = kUnset;
@@ -236,16 +383,22 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::MaxHeight:       if (n->style.max_height != value) { n->style.max_height = value; changed = 1; } break;
 	case Property::Flex:             if (n->style.flex != value) { n->style.flex = value; changed = 1; } break;
 	case Property::FlexShrink:       if (n->style.flex_shrink != value) { n->style.flex_shrink = value; changed = 1; } break;
-	case Property::FlexBasis:        if (n->style.flex_basis != value) { n->style.flex_basis = value; changed = 1; } break;
-	case Property::PaddingTop:      if (n->style.padding[0] != value) { n->style.padding[0] = value; changed = 1; } break;
-	case Property::PaddingRight:    if (n->style.padding[1] != value) { n->style.padding[1] = value; changed = 1; } break;
-	case Property::PaddingBottom:   if (n->style.padding[2] != value) { n->style.padding[2] = value; changed = 1; } break;
-	case Property::PaddingLeft:     if (n->style.padding[3] != value) { n->style.padding[3] = value; changed = 1; } break;
-	case Property::MarginTop:       if (n->style.margin[0] != value) { n->style.margin[0] = value; changed = 1; } break;
-	case Property::MarginRight:     if (n->style.margin[1] != value) { n->style.margin[1] = value; changed = 1; } break;
-	case Property::MarginBottom:    if (n->style.margin[2] != value) { n->style.margin[2] = value; changed = 1; } break;
-	case Property::MarginLeft:      if (n->style.margin[3] != value) { n->style.margin[3] = value; changed = 1; } break;
-	case Property::Position:         if (n->style.position != value) { n->style.position = value; changed = 1; } break;
+	case Property::FlexBasis:
+		if (rstyle(n->style).flex_basis_expression >= 0) { rstyleMut(n->style).flex_basis_expression = -1; changed = 1; }
+		if (n->style.flex_basis != value) { n->style.flex_basis = value; changed = 1; } break;
+	case Property::FlexBasisExpression:
+		if (rstyle(n->style).flex_basis_expression != value || n->style.flex_basis != kUnset) {
+			rstyleMut(n->style).flex_basis_expression = value; n->style.flex_basis = kUnset; changed = 1;
+		} break;
+	case Property::PaddingTop: if (rstyle(n->style).padding_expression[0] >= 0) { rstyleMut(n->style).padding_expression[0] = -1; changed = 1; }      if (n->style.padding[0] != value) { n->style.padding[0] = value; changed = 1; } break;
+	case Property::PaddingRight: if (rstyle(n->style).padding_expression[1] >= 0) { rstyleMut(n->style).padding_expression[1] = -1; changed = 1; }    if (n->style.padding[1] != value) { n->style.padding[1] = value; changed = 1; } break;
+	case Property::PaddingBottom: if (rstyle(n->style).padding_expression[2] >= 0) { rstyleMut(n->style).padding_expression[2] = -1; changed = 1; }   if (n->style.padding[2] != value) { n->style.padding[2] = value; changed = 1; } break;
+	case Property::PaddingLeft: if (rstyle(n->style).padding_expression[3] >= 0) { rstyleMut(n->style).padding_expression[3] = -1; changed = 1; }     if (n->style.padding[3] != value) { n->style.padding[3] = value; changed = 1; } break;
+	case Property::MarginTop: if (rstyle(n->style).margin_expression[0] >= 0) { rstyleMut(n->style).margin_expression[0] = -1; changed = 1; } if (n->style.margin[0] != value || (n->style.margin_auto & 1)) { n->style.margin[0] = value; n->style.margin_auto &= ~1; changed = 1; } break;
+	case Property::MarginRight: if (rstyle(n->style).margin_expression[1] >= 0) { rstyleMut(n->style).margin_expression[1] = -1; changed = 1; } if (n->style.margin[1] != value || (n->style.margin_auto & 2)) { n->style.margin[1] = value; n->style.margin_auto &= ~2; changed = 1; } break;
+	case Property::MarginBottom: if (rstyle(n->style).margin_expression[2] >= 0) { rstyleMut(n->style).margin_expression[2] = -1; changed = 1; } if (n->style.margin[2] != value || (n->style.margin_auto & 4)) { n->style.margin[2] = value; n->style.margin_auto &= ~4; changed = 1; } break;
+	case Property::MarginLeft: if (rstyle(n->style).margin_expression[3] >= 0) { rstyleMut(n->style).margin_expression[3] = -1; changed = 1; } if (n->style.margin[3] != value || (n->style.margin_auto & 8)) { n->style.margin[3] = value; n->style.margin_auto &= ~8; changed = 1; } break;
+	case Property::Position:         if (value == kPositionFixed) state.fixedPositionUsed = true; if (n->style.position != value) { n->style.position = value; changed = 1; } break;
 	case Property::Top:
 		if (n->style.pos_offsets[0] != value || n->style.pos_offset_percent[0] != kUnset) {
 			n->style.pos_offsets[0] = value;
@@ -302,18 +455,35 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			changed = 1;
 		}
 		break;
-	case Property::ZIndex:          if (n->style.z_index != value) { n->style.z_index = value; changed = 1; } break;
+	case Property::ZIndex: {
+		const bool automatic = value == kZIndexAuto;
+		const int level = automatic ? 0 : std::clamp(value, -32768, 32767);
+		if (n->style.z_index != level || n->style.z_index_auto != automatic) {
+			n->style.z_index = level; n->style.z_index_auto = automatic; changed = 1;
+		}
+		break;
+	}
 	case Property::BackgroundColor: {
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (n->style.bg_color != next) { n->style.bg_color = next; changed = 1; }
 		if (n->style.bg_alpha != 255) { n->style.bg_alpha = 255; changed = 1; }
-		if (n->style.bg_fill != 0) { n->style.bg_fill = 0; changed = 1; }
-		if (rstyle(n->style).bg_gradient_has_mid != 0) { rstyleMut(n->style).bg_gradient_has_mid = 0; changed = 1; }
-		if (rstyle(n->style).bg_overlay_gradient != 0) { rstyleMut(n->style).bg_overlay_gradient = 0; changed = 1; }
-		if (rstyle(n->style).bg_radial_gradient != 0) { rstyleMut(n->style).bg_radial_gradient = 0; changed = 1; }
-		if (rstyle(n->style).bg_grid_axes != 0) { rstyleMut(n->style).bg_grid_axes = 0; changed = 1; }
 		break;
 	}
+	case Property::BackgroundAlpha: {
+		const uint8_t alpha = static_cast<uint8_t>(std::clamp(value, 0, 255));
+		if (n->style.bg_alpha != alpha) { n->style.bg_alpha = alpha; changed = 1; }
+		break;
+	}
+	case Property::BackgroundClip: if (rstyle(n->style).bg_clip != value) { rstyleMut(n->style).bg_clip = value; changed = 1; } break;
+	case Property::BackgroundSizeList: if (rstyle(n->style).bg_size_list != value) { rstyleMut(n->style).bg_size_list = value; changed = 1; } break;
+	case Property::BackgroundPositionList: if (rstyle(n->style).bg_position_list != value) { rstyleMut(n->style).bg_position_list = value; changed = 1; } break;
+	case Property::BackgroundRepeatList: if (rstyle(n->style).bg_repeat_list != value) { rstyleMut(n->style).bg_repeat_list = value; changed = 1; } break;
+	case Property::BackgroundAttachmentList: if (rstyle(n->style).bg_attachment_list != value) { rstyleMut(n->style).bg_attachment_list = value; changed = 1; } break;
+	case Property::BackgroundOriginList: if (rstyle(n->style).bg_origin_list != value) { rstyleMut(n->style).bg_origin_list = value; changed = 1; } break;
+
+	case Property::BackgroundImage:
+		changed = StyleValues::applyBackgroundImage(n->style, value, node);
+		break;
 	case Property::HasBackground:           if (n->style.has_bg != value) { n->style.has_bg = value; changed = 1; } break;
 	case Property::ActiveBackgroundColor: {
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
@@ -341,36 +511,81 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			changed = 1;
 		}
 		break;
-	case Property::BorderWidth:     if (n->style.border_width != value) { n->style.border_width = value; changed = 1; } break;
+	case Property::ColorAlpha: {
+		const uint8_t alpha = static_cast<uint8_t>(std::clamp(value, 0, 255));
+		if (n->style.text_alpha != alpha) { n->style.text_alpha = alpha; changed = 1; }
+		break;
+	}
+	case Property::BorderAlpha: {
+		const uint8_t alpha = static_cast<uint8_t>(std::clamp(value, 0, 255));
+		if (n->style.border_alpha != alpha) { n->style.border_alpha = alpha; changed = 1; }
+		break;
+	}
+	case Property::BorderTopAlpha:
+	case Property::BorderRightAlpha:
+	case Property::BorderBottomAlpha:
+	case Property::BorderLeftAlpha:
+	{
+		const int side = static_cast<int>(prop) - static_cast<int>(Property::BorderTopAlpha);
+		const uint8_t alpha = static_cast<uint8_t>(std::clamp(value, 0, 255));
+		if (rstyle(n->style).border_side_alpha[side] != alpha) { rstyleMut(n->style).border_side_alpha[side] = alpha; changed = 1; }
+		break;
+	}
+	case Property::BorderColorCurrent: changed |= setBorderColorBinding(n->style, -1, value != 0); break;
+	case Property::BorderTopColorCurrent:
+	case Property::BorderRightColorCurrent:
+	case Property::BorderBottomColorCurrent:
+	case Property::BorderLeftColorCurrent:
+		changed |= setBorderColorBinding(n->style, static_cast<int>(prop) - static_cast<int>(Property::BorderTopColorCurrent), value != 0);
+		break;
+	case Property::BorderWidth: changed |= setComputedBorderWidth(n->style, -1, value, n->parent >= 0 ? &state.nodes[n->parent].style : nullptr); break;
 	case Property::BorderColor: {
+		changed |= setBorderColorBinding(n->style, -1, false);
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (n->style.border_color != next) { n->style.border_color = next; changed = 1; }
 		if (n->style.border_alpha != 255) { n->style.border_alpha = 255; changed = 1; }
 		break;
 	}
-	case Property::BorderTopWidth: if (rstyle(n->style).border_side_width[0] != value) { rstyleMut(n->style).border_side_width[0] = value; changed = 1; } break;
-	case Property::BorderRightWidth: if (rstyle(n->style).border_side_width[1] != value) { rstyleMut(n->style).border_side_width[1] = value; changed = 1; } break;
-	case Property::BorderBottomWidth: if (rstyle(n->style).border_side_width[2] != value) { rstyleMut(n->style).border_side_width[2] = value; changed = 1; } break;
-	case Property::BorderLeftWidth: if (rstyle(n->style).border_side_width[3] != value) { rstyleMut(n->style).border_side_width[3] = value; changed = 1; } break;
+	case Property::BorderTopWidth: changed |= setComputedBorderWidth(n->style, 0, value, n->parent >= 0 ? &state.nodes[n->parent].style : nullptr); break;
+	case Property::BorderRelief:
+	case Property::BorderTopRelief:
+	case Property::BorderRightRelief:
+	case Property::BorderBottomRelief:
+	case Property::BorderLeftRelief:
+		for (int side = 0; side < 4; ++side) {
+			if (prop != Property::BorderRelief && side != static_cast<int>(prop) - static_cast<int>(Property::BorderTopRelief)) continue;
+			if (rstyle(n->style).border_relief[side] != value) {
+				rstyleMut(n->style).border_relief[side] = static_cast<uint8_t>(value);
+				changed = 1;
+			}
+		}
+		break;
+	case Property::BorderRightWidth: changed |= setComputedBorderWidth(n->style, 1, value, n->parent >= 0 ? &state.nodes[n->parent].style : nullptr); break;
+	case Property::BorderBottomWidth: changed |= setComputedBorderWidth(n->style, 2, value, n->parent >= 0 ? &state.nodes[n->parent].style : nullptr); break;
+	case Property::BorderLeftWidth: changed |= setComputedBorderWidth(n->style, 3, value, n->parent >= 0 ? &state.nodes[n->parent].style : nullptr); break;
 	case Property::BorderTopColor: {
+		changed |= setBorderColorBinding(n->style, 0, false);
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (rstyle(n->style).border_side_color[0] != next) { rstyleMut(n->style).border_side_color[0] = next; changed = 1; }
 		if (rstyle(n->style).border_side_alpha[0] != 255) { rstyleMut(n->style).border_side_alpha[0] = 255; changed = 1; }
 		break;
 	}
 	case Property::BorderRightColor: {
+		changed |= setBorderColorBinding(n->style, 1, false);
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (rstyle(n->style).border_side_color[1] != next) { rstyleMut(n->style).border_side_color[1] = next; changed = 1; }
 		if (rstyle(n->style).border_side_alpha[1] != 255) { rstyleMut(n->style).border_side_alpha[1] = 255; changed = 1; }
 		break;
 	}
 	case Property::BorderBottomColor: {
+		changed |= setBorderColorBinding(n->style, 2, false);
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (rstyle(n->style).border_side_color[2] != next) { rstyleMut(n->style).border_side_color[2] = next; changed = 1; }
 		if (rstyle(n->style).border_side_alpha[2] != 255) { rstyleMut(n->style).border_side_alpha[2] = 255; changed = 1; }
 		break;
 	}
 	case Property::BorderLeftColor: {
+		changed |= setBorderColorBinding(n->style, 3, false);
 		style_color_t next = StyleValues::pixelFromStyleValue(value);
 		if (rstyle(n->style).border_side_color[3] != next) { rstyleMut(n->style).border_side_color[3] = next; changed = 1; }
 		if (rstyle(n->style).border_side_alpha[3] != 255) { rstyleMut(n->style).border_side_alpha[3] = 255; changed = 1; }
@@ -435,12 +650,31 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::FontId:          if (n->style.font_id != value) { n->style.font_id = value; changed = 1; } break;
 	case Property::FontSize:        if (n->style.font_size != value) { n->style.font_size = value; changed = 1; } break;
 	case Property::FontWeight:      if (n->style.font_weight != value) { n->style.font_weight = value; changed = 1; } break;
-	case Property::LineHeight:      if (n->style.line_height != value) { n->style.line_height = value; changed = 1; } break;
+	case Property::LineHeight:
+		if (n->style.line_height_multiplier >= 0) { n->style.line_height_multiplier = -1; changed = 1; }
+		if (rstyle(n->style).line_height_expression >= 0) { rstyleMut(n->style).line_height_expression = -1; changed = 1; }
+		if (n->style.line_height != value) { n->style.line_height = value; changed = 1; } break;
+	case Property::LineHeightExpression: {
+		if (n->style.line_height_multiplier >= 0) { n->style.line_height_multiplier = -1; changed = 1; }
+		const int height = resolveLineHeightExpression(node, value);
+		if (rstyle(n->style).line_height_expression != value || n->style.line_height != height) {
+			rstyleMut(n->style).line_height_expression = value; n->style.line_height = height; changed = 1;
+		} break;
+	}
+	case Property::LineHeightMultiplier: {
+		const int height = resolveLineHeightMultiplier(node, value);
+		if (rstyle(n->style).line_height_expression >= 0) { rstyleMut(n->style).line_height_expression = -1; changed = 1; }
+		if (n->style.line_height_multiplier != value || n->style.line_height != height) {
+			n->style.line_height_multiplier = value; n->style.line_height = height; changed = 1;
+		} break;
+	}
 	case Property::TextAlign:       if (n->style.text_align != value) { n->style.text_align = value; changed = 1; } break;
 	case Property::TextDecoration:  if (n->style.text_decoration != value) { n->style.text_decoration = value; changed = 1; } break;
 	case Property::TextTransform:   if (n->style.text_transform != value) { n->style.text_transform = value; changed = 1; } break;
 	case Property::WhiteSpace:      if (n->style.white_space != static_cast<int8_t>(value)) { n->style.white_space = static_cast<int8_t>(value); changed = 1; } break;
 	case Property::TextOverflow:    if (n->style.text_overflow != static_cast<int8_t>(value)) { n->style.text_overflow = static_cast<int8_t>(value); changed = 1; } break;
+	case Property::TransformStyle: if (rstyle(n->style).transform_preserve_3d != (value != 0)) { rstyleMut(n->style).transform_preserve_3d = value != 0; changed = 1; } break;
+	case Property::Visibility: if (n->style.visibility != static_cast<int8_t>(value)) { n->style.visibility = static_cast<int8_t>(value); changed = 1; } break;
 	case Property::Backface:        if (n->style.backface_hidden != static_cast<int8_t>(value)) { n->style.backface_hidden = static_cast<int8_t>(value); changed = 1; } break;
 	case Property::PointerEvents:   if (n->style.pointer_events != static_cast<int8_t>(value)) { n->style.pointer_events = static_cast<int8_t>(value); changed = 1; } break;
 	case Property::Overflow: {
@@ -483,6 +717,24 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	}
 	case Property::ImageId:         if (n->image_id != value) { n->image_id = value; changed = 1; } break;
 	case Property::ImageFit:        if (n->style.image_fit != value) { n->style.image_fit = value; changed = 1; } break;
+	case Property::TransformTranslateOuterAxes: if (rstyle(n->style).transform_translate_outer_axes != value) { rstyleMut(n->style).transform_translate_outer_axes = value; changed = 1; } break;
+	case Property::RotateAngle: if (rstyle(n->style).rotate_angle != value) { rstyleMut(n->style).rotate_angle = value; changed = 1; } break;
+	case Property::RotateAxisX: if (rstyle(n->style).rotate_axis_x != value) { rstyleMut(n->style).rotate_axis_x = value; changed = 1; } break;
+	case Property::RotateAxisY: if (rstyle(n->style).rotate_axis_y != value) { rstyleMut(n->style).rotate_axis_y = value; changed = 1; } break;
+	case Property::RotateAxisZ: if (rstyle(n->style).rotate_axis_z != value) { rstyleMut(n->style).rotate_axis_z = value; changed = 1; } break;
+	case Property::ScaleX: if (rstyle(n->style).scale_x != value) { rstyleMut(n->style).scale_x = value; changed = 1; } break;
+	case Property::ScaleY: if (rstyle(n->style).scale_y != value) { rstyleMut(n->style).scale_y = value; changed = 1; } break;
+	case Property::ScaleZ: if (rstyle(n->style).scale_z != value) { rstyleMut(n->style).scale_z = value; changed = 1; } break;
+	case Property::TranslatePresent: if (rstyle(n->style).translate_present != (value != 0)) { rstyleMut(n->style).translate_present = value != 0; changed = 1; } break;
+	case Property::TranslateX: if (rstyle(n->style).translate_x != value) { rstyleMut(n->style).translate_x = value; changed = 1; } break;
+	case Property::TranslateY: if (rstyle(n->style).translate_y != value) { rstyleMut(n->style).translate_y = value; changed = 1; } break;
+	case Property::TranslateZ: if (rstyle(n->style).translate_z != value) { rstyleMut(n->style).translate_z = value; changed = 1; } break;
+	case Property::TranslateXPercent: if (rstyle(n->style).translate_x_percent != value) { rstyleMut(n->style).translate_x_percent = value; changed = 1; } break;
+	case Property::TranslateYPercent: if (rstyle(n->style).translate_y_percent != value) { rstyleMut(n->style).translate_y_percent = value; changed = 1; } break;
+	case Property::TransformPresent: if (rstyle(n->style).transform_present != (value != 0)) { rstyleMut(n->style).transform_present = value != 0; changed = 1; } break;
+	case Property::RotatePresent: if (rstyle(n->style).rotate_present != (value != 0)) { rstyleMut(n->style).rotate_present = value != 0; changed = 1; } break;
+	case Property::ScalePresent: if (rstyle(n->style).scale_present != (value != 0)) { rstyleMut(n->style).scale_present = value != 0; changed = 1; } break;
+	case Property::FilterPresent: if (rstyle(n->style).filter_present != (value != 0)) { rstyleMut(n->style).filter_present = value != 0; changed = 1; } break;
 	case Property::TransformRotate:
 		if (rstyle(n->style).transform_rotate != value) {
 			rstyleMut(n->style).transform_rotate = value;
@@ -498,6 +750,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::TransformTranslateYPercent: if (rstyle(n->style).transform_translate_y_percent != value) { rstyleMut(n->style).transform_translate_y_percent = value; changed = 1; } break;
 	case Property::TransformScaleX: if (rstyle(n->style).transform_scale_x != value) { rstyleMut(n->style).transform_scale_x = value; changed = 1; } break;
 	case Property::TransformScaleY: if (rstyle(n->style).transform_scale_y != value) { rstyleMut(n->style).transform_scale_y = value; changed = 1; } break;
+	case Property::TransformScaleZ: if (rstyle(n->style).transform_scale_z != value) { rstyleMut(n->style).transform_scale_z = value; changed = 1; } break;
 	case Property::TransformOriginX: if (rstyle(n->style).transform_origin_x != value) { rstyleMut(n->style).transform_origin_x = value; changed = 1; } break;
 	case Property::TransformOriginY: if (rstyle(n->style).transform_origin_y != value) { rstyleMut(n->style).transform_origin_y = value; changed = 1; } break;
 	case Property::Perspective: if (rstyle(n->style).perspective != value) { rstyleMut(n->style).perspective = value; changed = 1; } break;
@@ -532,7 +785,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		return;
 	}
 	perf.treeSetStyleChanged++;
-	if (isLayoutProperty(prop))
+	if (isLayoutProperty(prop) || (isTransformProperty(prop) && state.fixedPositionUsed))
 		perf.treeSetStyleLayoutChanged++;
 	if (isTransformProperty(prop))
 		perf.treeSetStyleTransformChanged++;
@@ -540,6 +793,12 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		perf.treeSetStylePaintChanged++;
 	if (state.styleInvalidationSuppressionDepth > 0) return;
 	if (!nodeParticipatesInMountedTree(state, node)) return;
+	if (prop == Property::Visibility || prop == Property::Backface || prop == Property::TransformStyle)
+		tree.markDisplayListDirty();
+	const int documentRoot = state.mountedRoot;
+	if (documentRoot >= 0 && documentRoot < state.nodeCount && isDocumentCanvasRoot(state.nodes[documentRoot]) &&
+	    (node == documentRoot || (n->parent == documentRoot && std::string_view(tagFromId(n->tag_id)) == "body")))
+		tree.markDisplayListDirty();
 	// An ImageId (src) swap on an element with a FIXED CSS display box (explicit
 	// width+height — e.g. a forecast row's 24x20 icon re-pointed at a different icon
 	// every data refresh) is PAINT-ONLY: the layout box is the styled box regardless
@@ -584,8 +843,9 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	n->render.dirty = 1;
 	// Paint-only properties (background, colors, shadows, ...) repaint in
 	// place: geometry is untouched, so they don't demand a relayout pass.
-	// Layout and transform properties keep the conservative marking.
-	if (isLayoutProperty(prop) || isTransformProperty(prop))
+	// Keep geometry dirt separate from transform dirt: coalescing both must
+	// not let a retained transform update suppress the required relayout.
+	if (isLayoutProperty(prop) || (isTransformProperty(prop) && state.fixedPositionUsed))
 		n->render.layout_dirty = 1;
 	n->render.non_scroll_dirty = 1;
 	if (isTransformProperty(prop)) {

@@ -14,6 +14,11 @@
 #include <cstring>
 #include <string>
 
+// ESP-IDF system headers may define quad as a compatibility type macro.
+#ifdef quad
+#undef quad
+#endif
+
 #ifndef GEA_EMBEDDED_RENDER_HOT_SRAM
 #define GEA_EMBEDDED_RENDER_HOT_SRAM 0
 #endif
@@ -46,26 +51,29 @@ struct ScopedRefreshStat
 
 bool hasTransformState(const Node &node)
 {
-	return rstyle(node.style).transform_rotate != 0 ||
+	return hasIndividualLinearTransform(rstyle(node.style)) || hadIndividualLinearTransform(node.render) ||
+	       rstyle(node.style).transform_rotate != 0 ||
 	       node.render.previous_transform_rotate != 0 ||
 	       rstyle(node.style).transform_rotate_x != 0 ||
 	       node.render.previous_transform_rotate_x != 0 ||
 	       rstyle(node.style).transform_rotate_y != 0 ||
 	       node.render.previous_transform_rotate_y != 0 ||
-	       rstyle(node.style).transform_translate_x != 0 ||
+	       composedTranslateX(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_x != 0 ||
-	       rstyle(node.style).transform_translate_y != 0 ||
+	       composedTranslateY(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_y != 0 ||
-	       rstyle(node.style).transform_translate_z != 0 ||
+	       composedTranslateZ(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_z != 0 ||
-	       rstyle(node.style).transform_translate_x_percent != 0 ||
+	       composedTranslateXPercent(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_x_percent != 0 ||
-	       rstyle(node.style).transform_translate_y_percent != 0 ||
+	       composedTranslateYPercent(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_y_percent != 0 ||
 	       rstyle(node.style).transform_scale_x != 1000 ||
 	       node.render.previous_transform_scale_x != 1000 ||
 	       rstyle(node.style).transform_scale_y != 1000 ||
+	       rstyle(node.style).transform_scale_z != 1000 ||
 	       node.render.previous_transform_scale_y != 1000 ||
+	       node.render.previous_transform_scale_z != 1000 ||
 	       rstyle(node.style).perspective > 0 ||
 	       node.render.previous_perspective > 0;
 }
@@ -207,19 +215,20 @@ bool currentTransformChainIsPureTranslate(const Node &node, float *outX, float *
 	bool anyTranslate = false;
 	for (;;) {
 		const Node &n = id >= 0 ? tree.node(id) : node;
-		if ((rstyle(n.style).transform_rotate % 3600) != 0 ||
+		if (hasIndividualLinearTransform(rstyle(n.style)) || (rstyle(n.style).transform_rotate % 3600) != 0 ||
 		    (rstyle(n.style).transform_rotate_x % 3600) != 0 ||
 		    (rstyle(n.style).transform_rotate_y % 3600) != 0 ||
-		    rstyle(n.style).transform_translate_z != 0 ||
+		    composedTranslateZ(rstyle(n.style)) != 0 ||
 		    rstyle(n.style).transform_scale_x != 1000 ||
 		    rstyle(n.style).transform_scale_y != 1000 ||
+		    rstyle(n.style).transform_scale_z != 1000 ||
 		    rstyle(n.style).perspective > 0)
 			return false;
 
-		const float localDx = static_cast<float>(rstyle(n.style).transform_translate_x) +
-		                      static_cast<float>(n.layout.width) * static_cast<float>(rstyle(n.style).transform_translate_x_percent) * 0.001f;
-		const float localDy = static_cast<float>(rstyle(n.style).transform_translate_y) +
-		                      static_cast<float>(n.layout.height) * static_cast<float>(rstyle(n.style).transform_translate_y_percent) * 0.001f;
+		const float localDx = static_cast<float>(composedTranslateX(rstyle(n.style))) +
+		                      static_cast<float>(n.layout.width) * static_cast<float>(composedTranslateXPercent(rstyle(n.style))) * 0.001f;
+		const float localDy = static_cast<float>(composedTranslateY(rstyle(n.style))) +
+		                      static_cast<float>(n.layout.height) * static_cast<float>(composedTranslateYPercent(rstyle(n.style))) * 0.001f;
 		if (localDx != 0.0f || localDy != 0.0f) {
 			anyTranslate = true;
 			dx += localDx;
@@ -322,11 +331,7 @@ struct WrappedLine {
 	int renderBytes = 0;
 	int consumedBytes = 0;
 	int width = 0;
-	// True when the line had to cut a word open because no break opportunity fit.
-	// An inline formatting context uses this to move a run that cannot start on
-	// the space left to the next line box, instead of splitting "technical" into
-	// "t" + "echnical".
-	bool hardSplit = false;
+
 };
 
 inline bool isWrappingSpace(int cp)
@@ -341,8 +346,8 @@ inline bool canBreakAfter(int cp)
 }
 
 // CSS white-space: normal/pre-line line breaking for the embedded renderer.
-// Prefer the last legal word boundary; only split a word when that single word
-// is wider than the line. `consumedBytes` includes discarded wrapping spaces or
+// Break at legal word boundaries. An unbreakable word can overflow the line;
+// normal wrapping must never manufacture a break inside that word. `consumedBytes` includes discarded wrapping spaces or
 // an explicit newline, while `renderBytes` contains only the visible run.
 template <typename AdvanceForCodepoint>
 WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint advanceForCodepoint)
@@ -381,17 +386,11 @@ WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint 
 		// renderer re-wraps the run at that width, so a disagreement drew one
 		// more line than the box was tall and the run overlapped its next
 		// sibling (typography's specimen paragraphs).
-		if (!isWrappingSpace(cp) && width + advance > maxWidth && bytes > 0) {
-			if (breakRenderBytes >= 0) {
-				line.renderBytes = breakRenderBytes;
-				line.consumedBytes = breakConsumedBytes;
-				line.width = breakWidth;
-			} else {
-				line.renderBytes = bytes;
-				line.consumedBytes = bytes;
-				line.width = width;
-				line.hardSplit = true;
-			}
+		// Leading collapsible spaces cannot be an empty soft-wrapped line.
+		if (!isWrappingSpace(cp) && width + advance > maxWidth && bytes > 0 && breakRenderBytes > 0) {
+			line.renderBytes = breakRenderBytes;
+			line.consumedBytes = breakConsumedBytes;
+			line.width = breakWidth;
 			return line;
 		}
 
@@ -479,8 +478,34 @@ std::string transformedTextCopy(const char *text, int textTransform)
 	return out;
 }
 
-const char *textWithTransform(const char *text, int textTransform, std::string &storage)
+const char *textWithTransform(const char *text, int textTransform, std::string &storage, int whiteSpace = -1)
 {
+	// Perform CSS segment-break/space collapsing identically in measurement
+	// and painting, while retaining the authored Node::text for later mutation.
+	// Edge trimming belongs to line layout, not to individual inline runs.
+	if (text && (whiteSpace == 0 || whiteSpace == 1 || whiteSpace == 4) &&
+	    (std::strpbrk(text, "\t\r\n\f") || std::strstr(text, "  "))) {
+		std::string normalized;
+		normalized.reserve(std::strlen(text));
+		bool space = false;
+		for (const char *p = text; *p; ++p) {
+			char c = *p;
+			if (c == '\r') { if (p[1] == '\n') ++p; c = '\n'; }
+			if (whiteSpace == 4 && (c == '\n' || c == '\f')) {
+				if (!normalized.empty() && normalized.back() == ' ') normalized.pop_back();
+				normalized += '\n';
+				space = true;
+			} else if (c == ' ' || c == '\t' || c == '\n' || c == '\f') {
+				if (!space) normalized += ' ';
+				space = true;
+			} else {
+				normalized += c;
+				space = false;
+			}
+		}
+		storage = textTransform ? transformedTextCopy(normalized.c_str(), textTransform) : std::move(normalized);
+		return storage.c_str();
+	}
 	if (!text || textTransform == 0) return text;
 	storage = transformedTextCopy(text, textTransform);
 	return storage.c_str();
@@ -684,26 +709,25 @@ int rasterizedSingleLineInkCenterOffsetY(const char *text,
 	return offset;
 }
 
-bool recordProjectedRasterText(const Node &node, uint8_t /*parentAlpha*/, int tx, int ty, int tw)
+bool recordProjectedRasterText(const Node &node, const char *text, uint8_t /*parentAlpha*/, int tx, int ty, int tw)
 {
-	if (node.style.font_id < 0 || node.text.find('\n') != std::string::npos) return false;
+	if (node.style.font_id < 0 || std::strchr(text, '\n')) return false;
 	const int fontSize = node.style.font_size > 0 ? node.style.font_size : kBitmapFontHeight;
 	gea::framework::graphics::RasterizedFont font =
 	    gea::framework::graphics::FontRegistry::rasterizedFamily(node.style.font_id, fontSize);
 	if (!font.valid()) return false;
 
 	int lineWidth = 0;
-	bool wordStart = true;
-	for (const char *p = node.text.c_str(); *p;) {
+	for (const char *p = text; *p;) {
 		gea::framework::graphics::Glyph glyph{};
-		const int cp = transformedTextCodepoint(nextUtf8Codepoint(p), node.style.text_transform, wordStart);
+		const int cp = nextUtf8Codepoint(p);
 		lineWidth += font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
 	}
 
 	int bx0, by0, bx1, by1;
 	ViewRenderer::transformedBounds(node, false, &bx0, &by0, &bx1, &by1);
 
-	if (lineWidth <= 0 || node.style.text_alpha == 0) return true;
+ if (lineWidth <= 0) return true;
 
 	const int fontLineHeight = font.lineHeight();
 	const int lineAdvance = node.style.line_height > 0 ? node.style.line_height : fontLineHeight;
@@ -743,19 +767,10 @@ bool recordProjectedRasterText(const Node &node, uint8_t /*parentAlpha*/, int tx
 	cmd->projectedText.color = node.style.text_color;
 	cmd->projectedText.alpha = node.style.text_alpha;
 	cmd->projectedText.textTransform = node.style.text_transform;
-	// CSS flattening: the label is painted into its transformed ancestor's plane
-	// (nothing below the face preserves 3D), so backface-visibility:hidden on any
-	// ancestor in the projection chain culls the flattened text together with its
-	// face. The property does not inherit, so the span itself never carries it —
-	// reading only node.style left labels floating over culled faces.
-	{
-		bool backfaceHidden = node.style.backface_hidden != 0;
-		const Tree &tree = Tree::instance();
-		const Node *nodes = tree.nodes();
-		for (int a = node.parent; !backfaceHidden && a >= 0 && a < tree.nodeCount(); a = nodes[a].parent)
-			backfaceHidden = nodes[a].style.backface_hidden != 0;
-		cmd->projectedText.backfaceHidden = backfaceHidden ? 1 : 0;
-	}
+	cmd->projectedText.whiteSpace = node.style.white_space;
+	// Flattened ancestor groups are culled by the recorder for every paint type.
+	// This command's flag describes only its own face in a preserve-3d group.
+	cmd->projectedText.backfaceHidden = node.style.backface_hidden ? 1 : 0;
 	return true;
 }
 #endif
@@ -979,11 +994,11 @@ TextLayoutMeasure measureTextLayoutForNode(const Node &node, const char *text, i
 {
 	if (contentWidth < 0) contentWidth = 0;
 	std::string transformed;
-	const char *measureText = textWithTransform(text, node.style.text_transform, transformed);
+	const char *measureText = textWithTransform(text, node.style.text_transform, transformed, node.style.white_space);
 	// white-space: nowrap lays the run out as a single line — measure against an
 	// unbounded width so the content box sizes to the full text (then max-width /
 	// the parent box clamps it). Drawing truncates/ellipsizes the overflow.
-	const int measureWidth = node.style.white_space == 1 ? 32767 : contentWidth;
+	const int measureWidth = (node.style.white_space == 1 || node.style.white_space == 2) ? 32767 : contentWidth;
 	const TextMeasure measured = TextMetrics::measure(measureText,
 	                                                  measureWidth,
 	                                                  node.style.font_id,
@@ -991,14 +1006,14 @@ TextLayoutMeasure measureTextLayoutForNode(const Node &node, const char *text, i
 	                                                  node.style.line_height,
 	                                                  node.style.font_weight);
 	TextLayoutMeasure out;
-	out.width = measured.width + node.style.padding[1] + node.style.padding[3];
-	out.height = measured.height + node.style.padding[0] + node.style.padding[2];
-	if (node.style.width != kUnset) out.width = node.style.width;
-	else if (node.style.width_percent != kUnset && node.layout.width > 0) out.width = node.layout.width;
-	if (node.style.height != kUnset) out.height = node.style.height;
-	else if (node.style.height_percent != kUnset && node.layout.height > 0) out.height = node.layout.height;
-	out.width = LayoutEngine::instance().clampSize(out.width, node.style.min_width, node.style.max_width);
-	out.height = LayoutEngine::instance().clampSize(out.height, node.style.min_height, node.style.max_height);
+	out.width = measured.width + boxInset(node.style, 1) + boxInset(node.style, 3);
+	out.height = measured.height + boxInset(node.style, 0) + boxInset(node.style, 2);
+	if (node.style.width != kUnset) out.width = contentSizeToBorderSize(node.style, node.style.width, true);
+	else if ((node.style.width_percent != kUnset || node.style.width_expression >= 0) && node.layout.width > 0) out.width = node.layout.width;
+	if (node.style.height != kUnset) out.height = contentSizeToBorderSize(node.style, node.style.height, false);
+	else if ((node.style.height_percent != kUnset || node.style.height_expression >= 0) && node.layout.height > 0) out.height = node.layout.height;
+	out.width = clampBorderBoxSize(node.style, out.width, true);
+	out.height = clampBorderBoxSize(node.style, out.height, false);
 	return out;
 }
 
@@ -1006,7 +1021,7 @@ int measureSingleLineTextWidthForNode(const Node &node, const char *text)
 {
 	if (!text || !text[0]) return 0;
 	std::string transformed;
-	const char *measureText = textWithTransform(text, node.style.text_transform, transformed);
+	const char *measureText = textWithTransform(text, node.style.text_transform, transformed, node.style.white_space);
 	return TextMetrics::measure(measureText,
 	                            32767,
 	                            node.style.font_id,
@@ -1015,19 +1030,124 @@ int measureSingleLineTextWidthForNode(const Node &node, const char *text)
 	                            node.style.font_weight).width;
 }
 
+struct TextCoverageSink {
+	int screenY = 0;
+	int screenX = 0;
+	int width = 0;
+	int clipX0 = 0;
+	int clipY0 = 0;
+	int clipX1 = -1;
+	int clipY1 = -1;
+	std::uint8_t *coverage = nullptr;
+
+	void add(int x, int y, std::uint8_t value) const
+	{
+		if (!coverage || value == 0 || y != screenY || y < clipY0 || y > clipY1 ||
+		    x < screenX || x >= screenX + width || x < clipX0 || x > clipX1) return;
+		auto &dst = coverage[x - screenX];
+		if (value > dst) dst = value;
+	}
+};
+
 class TextDrawer {
 public:
-	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0)
+	static void unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
+	                             int width, std::uint8_t *outCoverage)
+	{
+		if (!outCoverage || width <= 0) return;
+		if (command.textDecorationInk) {
+			if (command.type != DisplayCommandType::FillRect) return;
+			if (screenY < command.fill.y || screenY >= command.fill.y + command.fill.h) return;
+			int clipX0, clipY0, clipX1, clipY1;
+			gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+			if (screenY < clipY0 || screenY > clipY1) return;
+			const int left = std::max({screenX, static_cast<int>(command.fill.x), clipX0});
+			const int right = std::min({screenX + width, static_cast<int>(command.fill.x) + command.fill.w, clipX1 + 1});
+			for (int x = left; x < right; ++x) outCoverage[x - screenX] = 255;
+			return;
+		}
+		if (command.type != DisplayCommandType::DrawText) return;
+		TextCoverageSink sink;
+		sink.screenY = screenY;
+		sink.screenX = screenX;
+		sink.width = width;
+		sink.coverage = outCoverage;
+		drawWrapped(command.text.text, command.text.x, command.text.y, command.text.maxWidth,
+		            command.text.color, command.text.scale, command.text.align, command.text.containerWidth,
+			    command.text.fontId, command.text.textTransform, command.text.lineHeight,
+			    command.text.whiteSpace, command.text.textOverflow, command.text.maxHeight,
+			    command.text.firstLineIndent, &sink);
+	}
+
+#ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
+	static void rasterizedGlyphRun(const char *text, int x, int y, int fontId, int fontSize,
+	                              const TextCoverageSink &sink)
+	{
+		gea::framework::graphics::RasterizedFont font =
+		    gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize);
+		if (!font.valid()) return;
+		int penX = x;
+		for (const char *p = text; p && *p;) {
+			const int cp = nextUtf8Codepoint(p);
+			gea::framework::graphics::Glyph glyph{};
+			if (!font.glyph(cp, &glyph)) { penX += font.sizePx() / 2; continue; }
+			const int gx = penX + glyph.bearingX;
+			const int gy = y + font.ascender() - glyph.bearingY;
+			const int row = sink.screenY - gy;
+			if (row >= 0 && row < glyph.height)
+				for (int col = 0; col < glyph.width; ++col)
+					sink.add(gx + col, sink.screenY, font.coverage(glyph, row, col));
+			penX += glyph.advance;
+		}
+	}
+#endif
+
+	static void bitmapGlyphRun(const char *text, int x, int y, float scale,
+	                           const TextCoverageSink &sink)
+	{
+		if (scale < 0.1f) scale = 1.0f;
+		const int glyphWidth = std::max(1, static_cast<int>(kBitmapFontWidth * scale + 0.5f));
+		const int glyphHeight = std::max(1, static_cast<int>(kBitmapFontHeight * scale + 0.5f));
+		const int row = sink.screenY - y;
+		if (row < 0 || row >= glyphHeight) return;
+		const int srcRow = row * kBitmapFontHeight / glyphHeight;
+		const auto &font = gea::framework::graphics::FontRegistry::bitmap8x16();
+		int penX = x;
+		for (const char *p = text; p && *p;) {
+			const int cp = nextUtf8Codepoint(p);
+			if (cp == '\n') { penX = x; continue; }
+			gea::framework::graphics::Glyph glyph{};
+			font.glyph(cp, &glyph);
+			for (int col = 0; col < glyphWidth; ++col) {
+				const int srcCol = col * kBitmapFontWidth / glyphWidth;
+				sink.add(penX + col, sink.screenY, font.coverage(glyph, srcRow, srcCol));
+			}
+			penX += glyphWidth;
+		}
+	}
+
+	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, TextCoverageSink *coverageSink = nullptr)
 	{
 		if (!text || !text[0]) return;
 		std::string transformed;
-		text = textWithTransform(text, textTransform, transformed);
+		text = textWithTransform(text, textTransform, transformed, whiteSpace);
+		// Pre preserves forced breaks and paints every line without soft wrap.
+		if (whiteSpace == 2) maxWidth = 32767;
 
 		int clipX0;
 		int clipY0;
 		int clipX1;
 		int clipY1;
 		gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+		TextCoverageSink clippedSink;
+		if (coverageSink) {
+			clippedSink = *coverageSink;
+			clippedSink.clipX0 = clipX0;
+			clippedSink.clipY0 = clipY0;
+			clippedSink.clipX1 = clipX1;
+			clippedSink.clipY1 = clipY1;
+			coverageSink = &clippedSink;
+		}
 
 		const bool noWrap = whiteSpace == 1;
 		const bool ellipsis = textOverflow == 1;
@@ -1037,10 +1157,10 @@ public:
 			const int fontSize = static_cast<int>(scale * kBitmapFontHeight + 0.5f);
 			if (gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize).valid()) {
 				if (noWrap)
-					drawRasterizedSingleLine(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1);
+					drawRasterizedSingleLine(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 				else
 					drawRasterizedWrapped(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
-					                      ellipsis ? maxHeight : 0, firstLineIndent);
+					                      ellipsis ? maxHeight : 0, firstLineIndent, coverageSink);
 				return;
 			}
 		}
@@ -1048,14 +1168,14 @@ public:
 		(void)fontId;
 #endif
 		if (noWrap)
-			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1);
+			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 		else
-			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent);
+			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, coverageSink);
 	}
 
 private:
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0)
+	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1132,9 +1252,9 @@ private:
 				if (penY + lineBoxOffset > clipY1) break;
 				if (li == lineBudget - 1 && li < entry.lineCount - 1) {
 					// Last budgeted line with more text behind it: ellipsize the rest.
-					drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
-					                         fontId, fontSize, lineHeight, /*ellipsis=*/true,
-					                         clipX0, clipY0, clipX1, clipY1);
+						drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
+						                         fontId, fontSize, lineHeight, /*ellipsis=*/true,
+						                         clipX0, clipY0, clipX1, clipY1, coverageSink);
 					return;
 				}
 				const int chars = entry.renderBytes[li];
@@ -1147,7 +1267,8 @@ private:
 						const int copyLen = chars < kWrappedLineBufferBytes ? chars : kWrappedLineBufferBytes;
 						std::memcpy(lineBuffer, lineStart, copyLen);
 						lineBuffer[copyLen] = '\0';
-						gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
+						if (coverageSink) rasterizedGlyphRun(lineBuffer, lineX, lineBoxY, fontId, fontSize, *coverageSink);
+						else gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
 					}
 				}
 				lineStart += entry.consumedBytes[li];
@@ -1166,7 +1287,7 @@ private:
 				// Budget reached: ellipsize whatever remains onto this final line.
 				drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
 				                         fontId, fontSize, lineHeight, /*ellipsis=*/true,
-				                         clipX0, clipY0, clipX1, clipY1);
+				                         clipX0, clipY0, clipX1, clipY1, coverageSink);
 				return;
 			}
 			const int lineIndex = li;
@@ -1185,7 +1306,8 @@ private:
 					const int copyLen = line.renderBytes < kWrappedLineBufferBytes ? line.renderBytes : kWrappedLineBufferBytes;
 					std::memcpy(lineBuffer, lineStart, copyLen);
 					lineBuffer[copyLen] = '\0';
-					gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
+				if (coverageSink) rasterizedGlyphRun(lineBuffer, lineX, lineBoxY, fontId, fontSize, *coverageSink);
+				else gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
 				}
 			}
 
@@ -1199,7 +1321,7 @@ private:
 	// appending an ASCII "..." when text-overflow: ellipsis is set, or hard-
 	// clipping at the box edge otherwise. The truncated run always fits within
 	// maxWidth, so it never wraps and never spills past the content box.
-	static void drawRasterizedSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1)
+	static void drawRasterizedSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr)
 	{
 		gea::framework::graphics::RasterizedFont font = gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize);
 		if (!font.valid()) return;
@@ -1265,11 +1387,12 @@ private:
 		if (len <= 0) return;
 		buf[len] = '\0';
 		const int xOffset = alignedOffset(textAlign, containerWidth, drawnWidth);
-		gea::platform::display::Display::drawTextFontFamily(buf, x + xOffset, lineBoxY, color, fontId, fontSize);
+		if (coverageSink) rasterizedGlyphRun(buf, x + xOffset, lineBoxY, fontId, fontSize, *coverageSink);
+		else gea::platform::display::Display::drawTextFontFamily(buf, x + xOffset, lineBoxY, color, fontId, fontSize);
 	}
 #endif
 
-	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0)
+	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
 	{
 		if (scale < 0.1f) scale = 1.0f;
 		int glyphWidth = static_cast<int>(kBitmapFontWidth * scale + 0.5f);
@@ -1302,7 +1425,8 @@ private:
 						char buf[5] = {};
 						const int bytes = static_cast<int>(glyph - glyphStart);
 						std::memcpy(buf, glyphStart, bytes);
-						gea::platform::display::Display::drawText(buf, penX, penY, color, scale);
+						if (coverageSink) bitmapGlyphRun(buf, penX, penY, scale, *coverageSink);
+						else gea::platform::display::Display::drawText(buf, penX, penY, color, scale);
 						penX += glyphWidth;
 					}
 				}
@@ -1318,7 +1442,7 @@ private:
 	// that is what `measureBitmap` charges for, so counting bytes here put the
 	// truncation, the ellipsis budget and the alignment offset in different units
 	// from the layout that placed the text.
-	static void drawBitmapSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1)
+	static void drawBitmapSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr)
 	{
 		(void)lineHeight;
 		if (scale < 0.1f) scale = 1.0f;
@@ -1362,13 +1486,15 @@ private:
 			nextUtf8Codepoint(glyph);
 			char b[5] = {};
 			std::memcpy(b, glyphStart, static_cast<std::size_t>(glyph - glyphStart));
-			gea::platform::display::Display::drawText(b, penX, penY, color, scale);
+			if (coverageSink) bitmapGlyphRun(b, penX, penY, scale, *coverageSink);
+			else gea::platform::display::Display::drawText(b, penX, penY, color, scale);
 			penX += glyphWidth;
 		}
 		if (addEllipsis) {
 			for (int i = 0; i < 3; ++i) {
 				char b[2] = { '.', '\0' };
-				gea::platform::display::Display::drawText(b, penX, penY, color, scale);
+				if (coverageSink) bitmapGlyphRun(b, penX, penY, scale, *coverageSink);
+				else gea::platform::display::Display::drawText(b, penX, penY, color, scale);
 				penX += glyphWidth;
 			}
 		}
@@ -1580,6 +1706,25 @@ bool TextRenderer::canFragmentInlineRuns(const Node &node)
 	return cached != 0;
 }
 
+int TextRenderer::baselineOffset(const Node &node, bool last)
+{
+	const int fontSize = node.style.font_size > 0 ? node.style.font_size : 16;
+	const auto font = gea::framework::graphics::FontRegistry::rasterizedFamily(node.style.font_id, fontSize);
+	if (!font.valid()) return node.layout.height + node.style.margin[2];
+	const int lineAdvance = node.style.line_height > 0 ? node.style.line_height : font.lineHeight();
+	const int halfLeading = node.style.line_height > 0 ? (lineAdvance - font.lineHeight()) / 2 : 0;
+	int offset = boxInset(node.style, 0) + halfLeading + font.ascender();
+	if (last) {
+		std::string storage;
+		const char *text = prepareText(node.text.c_str(), node.style.text_transform, node.style.white_space, storage);
+		const int width = node.style.white_space == 1 || node.style.white_space == 2
+		    ? 32767 : std::max(1, node.layout.width - boxInsets(node.style, true));
+		const auto measured = TextMetrics::measure(text, width, node.style.font_id, fontSize, node.style.line_height, node.style.font_weight);
+		offset += std::max(0, measured.height - lineAdvance);
+	}
+	return offset;
+}
+
 InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAvail, int contentWidth, bool atLineStart)
 {
 	InlineFlowMeasure out;
@@ -1587,20 +1732,20 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 	if (!raw || !raw[0]) return out;
 	// nowrap is a single line by definition, and an author-sized box wraps within
 	// its own width — neither participates in the block's line boxes.
-	if (node.style.white_space == 1) return out;
+	if (node.style.white_space == 1 || node.style.white_space == 2) return out;
 	if (!canFragmentInlineRuns(node)) return out;
 
 	const GlyphAdvanceSource advance = advanceSourceForNode(node);
 	if (!advance.valid || advance.lineAdvance <= 0) return out;
 
 	std::string transformed;
-	const char *text = textWithTransform(raw, node.style.text_transform, transformed);
+	const char *text = textWithTransform(raw, node.style.text_transform, transformed, node.style.white_space);
 	if (!text || !text[0]) return out;
 
 	if (contentWidth < 1) contentWidth = 1;
 	if (firstAvail < 0) firstAvail = 0;
 
-	if (atLineStart) {
+	if (atLineStart && (node.style.white_space == 0 || node.style.white_space == 4)) {
 		const int lead = leadingCollapsibleBytes(text);
 		if (lead > 0) {
 			const char *p = text;
@@ -1620,7 +1765,14 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 		const int visible = line.width + (lineIndex == 0 ? out.firstLineIndentAdjust : 0);
 		if (lineIndex == 0) {
 			out.firstLineWidth = visible;
-			out.firstLineForcedSplit = line.hardSplit;
+			if (node.style.white_space == 0 || node.style.white_space == 4) {
+				const char *end = p + line.renderBytes;
+				for (const char *glyph = p; glyph < end;) {
+					const int cp = nextUtf8Codepoint(glyph);
+					out.firstLineTrailingSpace = isWrappingSpace(cp)
+					    ? out.firstLineTrailingSpace + advance(cp) : 0;
+				}
+			}
 		}
 		out.lastLineWidth = visible;
 		if (visible > out.maxLineWidth) out.maxLineWidth = visible;
@@ -1632,14 +1784,57 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 	return out;
 }
 
+int TextRenderer::firstUnbreakableWidth(const Node &node)
+{
+	std::string storage;
+	const char *text = prepareText(node.text.c_str(), node.style.text_transform, node.style.white_space, storage);
+	if (!text) return 0;
+	if (node.style.white_space == 0 || node.style.white_space == 1 || node.style.white_space == 4)
+		text += leadingCollapsibleBytes(text);
+	const bool wrapping = node.style.white_space != 1 && node.style.white_space != 2;
+	const char *end = text;
+	while (*end) {
+		const char *start = end;
+		const int cp = nextUtf8Codepoint(end);
+		if (cp == '\n' || (wrapping && isWrappingSpace(cp))) { end = start; break; }
+		if (wrapping && canBreakAfter(cp)) break;
+	}
+	return measureSingleLineTextWidthForNode(node, std::string(text, end - text).c_str());
+}
+
+int TextRenderer::minContentWidth(const Node &node, int *pendingWord)
+{
+	std::string storage;
+	const char *text = prepareText(node.text.c_str(), node.style.text_transform, node.style.white_space, storage);
+	const bool wrapping = node.style.white_space != 1 && node.style.white_space != 2;
+	const char *start = text;
+	int width = 0, current = pendingWord ? *pendingWord : 0;
+	for (const char *p = text;; ++p) {
+		if (!*p || *p == '\n' || (wrapping && (*p == ' ' || *p == '\t'))) {
+			const std::string word(start, p - start);
+			current += measureSingleLineTextWidthForNode(node, word.c_str());
+			width = std::max(width, current);
+			if (!*p) { if (pendingWord) *pendingWord = current; break; }
+			current = 0;
+			start = p + 1;
+		}
+	}
+	return width;
+}
+
+const char *TextRenderer::prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage)
+{
+	return textWithTransform(text, textTransform, storage, whiteSpace);
+}
+
 void TextRenderer::layout(int id, int avail_w)
 {
 	Node *n = &Tree::instance().nodes()[id];
 
-	int content_w = avail_w - n->style.padding[1] - n->style.padding[3]
+	int content_w = avail_w - boxInset(n->style, 1) - boxInset(n->style, 3)
 	              - n->style.margin[1] - n->style.margin[3];
-	if (n->style.width != kUnset) content_w = n->style.width - n->style.padding[1] - n->style.padding[3];
-	else if (n->style.width_percent != kUnset && n->layout.width > 0) content_w = n->layout.width - n->style.padding[1] - n->style.padding[3];
+	if (n->style.width != kUnset) content_w = contentSizeToBorderSize(n->style, n->style.width, true) - boxInset(n->style, 1) - boxInset(n->style, 3);
+	else if ((n->style.width_percent != kUnset || n->style.width_expression >= 0) && n->layout.width > 0) content_w = n->layout.width - boxInset(n->style, 1) - boxInset(n->style, 3);
 	if (content_w < 0) content_w = 0;
 
 	const TextLayoutMeasure measured = measureTextLayoutForNode(*n, n->text.c_str(), content_w);
@@ -1664,9 +1859,9 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 	// explicit width re-wraps within the fixed box; natural-width text hugs the
 	// new content (the 0x4000 bound matches setText's bbox predictor).
 	int content_w = 0x4000;
-	if (keepBoxWidth) content_w = n.layout.width;
-	else if (n.style.width != kUnset) content_w = n.style.width - n.style.padding[1] - n.style.padding[3];
-	else if (n.style.width_percent != kUnset && n.layout.width > 0) content_w = n.layout.width - n.style.padding[1] - n.style.padding[3];
+	if (keepBoxWidth) content_w = n.layout.width - boxInsets(n.style, true);
+	else if (n.style.width != kUnset) content_w = contentSizeToBorderSize(n.style, n.style.width, true) - boxInset(n.style, 1) - boxInset(n.style, 3);
+	else if ((n.style.width_percent != kUnset || n.style.width_expression >= 0) && n.layout.width > 0) content_w = n.layout.width - boxInset(n.style, 1) - boxInset(n.style, 3);
 	if (content_w < 0) content_w = 0;
 	const TextLayoutMeasure measured = measureTextLayoutForNode(n, n.text.c_str(), content_w);
 	if (keepBoxWidth) {
@@ -1683,6 +1878,12 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent)
 {
 	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent);
+}
+
+void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
+                                    int width, std::uint8_t *outCoverage)
+{
+	TextDrawer::unionCoverageRow(command, screenY, screenX, width, outCoverage);
 }
 
 int TextRenderer::measureWidth(const char *text, int fontId, int fontSize, int textTransform)
@@ -1710,13 +1911,83 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	const Node *n = &node;
 	if (n->type != NodeType::Text || n->text.empty()) return;
 
+	// A first-line background belongs to the inline fragment, not the block's
+	// entire width. Layout records this run's first line box/advance only when an
+	// ancestor has a resolved ::first-line background. Emit it before the text
+	// command so the glyphs remain painted above the inline background.
+	const int textNodeId = static_cast<int>(n - Tree::instance().nodes());
+	const NodeRareData *textRare = rareDataFor(textNodeId);
+	const NodeRareData *lineStyleRare = nullptr;
+	for (int ancestor = n->parent; ancestor >= 0 && ancestor < Tree::instance().nodeCount();
+	     ancestor = Tree::instance().node(ancestor).parent) {
+		const NodeRareData *candidate = rareDataFor(ancestor);
+		if (candidate && candidate->firstLineBackground.hasColor) {
+			lineStyleRare = candidate;
+			break;
+		}
+	}
+	if (textRare && textRare->firstLineFragment.valid && lineStyleRare &&
+	    lineStyleRare->firstLineBackground.lineValid &&
+	    textRare->firstLineFragment.width > 0 && textRare->firstLineFragment.height > 0 &&
+	    lineStyleRare->firstLineBackground.alpha > 0) {
+		const auto &fragment = textRare->firstLineFragment;
+		const auto &background = lineStyleRare->firstLineBackground;
+		const uint8_t backgroundAlpha = combineAlpha(parentAlpha, background.alpha);
+		int fragmentX = fragment.x;
+		int fragmentY = fragment.y;
+		const Tree &tree = Tree::instance();
+		if (fragment.contextNode >= 0 && fragment.contextNode < tree.nodeCount()) {
+			fragmentX += tree.node(fragment.contextNode).layout.x;
+			fragmentY += tree.node(fragment.contextNode).layout.y;
+		}
+		int ownerId = -1;
+		for (int ancestor = n->parent; ancestor >= 0 && ancestor < tree.nodeCount();
+		     ancestor = tree.node(ancestor).parent) {
+			const NodeRareData *candidate = rareDataFor(ancestor);
+			if (candidate && &candidate->firstLineBackground == &lineStyleRare->firstLineBackground) {
+				ownerId = ancestor;
+				break;
+			}
+		}
+		const bool onOwnerFirstLine = ownerId >= 0 && background.lineContextNode >= 0 &&
+		    background.lineContextNode < tree.nodeCount() &&
+		    fragmentY == tree.node(background.lineContextNode).layout.y + background.lineY;
+		if (onOwnerFirstLine) {
+		int16_t xs[4], ys[4];
+		ViewRenderer::transformedRectCorners(*n, false, fragmentX, fragmentY,
+		                                     fragment.width, fragment.height, xs, ys);
+		int bx0, by0, bx1, by1;
+		boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
+		if (backgroundAlpha != parentAlpha)
+			appendAlphaCommand(backgroundAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
+		DisplayCommand *fill = DisplayList::instance().append();
+		if (fill) {
+			fill->type = DisplayCommandType::FillQuad;
+			fill->bx = bx0; fill->by = by0;
+			fill->bw = bx1 - bx0 + 1; fill->bh = by1 - by0 + 1;
+			fill->quad.x0 = xs[0]; fill->quad.y0 = ys[0];
+			fill->quad.x1 = xs[1]; fill->quad.y1 = ys[1];
+			fill->quad.x2 = xs[2]; fill->quad.y2 = ys[2];
+			fill->quad.x3 = xs[3]; fill->quad.y3 = ys[3];
+			fill->quad.lx = static_cast<int16_t>(fragmentX); fill->quad.ly = static_cast<int16_t>(fragmentY);
+			fill->quad.lw = fragment.width; fill->quad.lh = fragment.height;
+			fill->quad.aux = 0;
+			fill->quad.color = background.color;
+			fill->quad.reprojectMode = 1;
+		}
+		if (backgroundAlpha != parentAlpha)
+			appendAlphaCommand(parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
+		}
+	}
+
+
 	int x = n->layout.x;
 	int y = n->layout.y;
 	int w = n->layout.width;
 	int h = n->layout.height;
-	int tx = x + n->style.padding[3];
-	int ty = y + n->style.padding[0];
-	int tw = w - n->style.padding[1] - n->style.padding[3];
+	int tx = x + boxInset(n->style, 3);
+	int ty = y + boxInset(n->style, 0);
+	int tw = w - boxInset(n->style, 1) - boxInset(n->style, 3);
 	if (tw < 0) tw = 0;
 	float textScale = n->style.font_size > 0 ? static_cast<float>(n->style.font_size) / kBitmapFontHeight : 1.0f;
 
@@ -1755,14 +2026,14 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		}
 	}
 	std::string transformedText;
-	const char *measureText = textWithTransform(n->text.c_str(), n->style.text_transform, transformedText);
+	const char *measureText = textWithTransform(n->text.c_str(), n->style.text_transform, transformedText, n->style.white_space);
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	if (transformed && recordProjectedRasterText(*n, parentAlpha, tx, ty, tw)) return;
+	if (transformed && recordProjectedRasterText(*n, measureText, parentAlpha, tx, ty, tw)) return;
 #endif
 	if (transformed && transformedX1 >= transformedX0 && transformedY1 >= transformedY0) {
 		const int projectedW = transformedX1 - transformedX0 + 1;
 		const int projectedH = transformedY1 - transformedY0 + 1;
-		const int contentH = h - n->style.padding[0] - n->style.padding[2];
+		const int contentH = h - boxInset(n->style, 0) - boxInset(n->style, 2);
 		const int centerX = transformedX0 + projectedW / 2;
 		const int centerY = transformedY0 + projectedH / 2;
 		float projectedScaleX = tw > 0 ? static_cast<float>(projectedW) / static_cast<float>(tw) : 1.0f;
@@ -1822,6 +2093,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	}
 
 	const bool noWrap = n->style.white_space == 1;
+	const bool noSoftWrap = noWrap || n->style.white_space == 2;
 	// Inline continuation (see LayoutBox::inline_indent): line 0 starts at
 	// `drawX + inlineIndent`, every later line at `drawX`. The tight ink/paint
 	// bounds below all assume one origin for the whole run, so an indented run
@@ -1837,7 +2109,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	if (!transformed && inlineIndent == 0) {
 		const int commandFontSize = static_cast<int>(textScale * kBitmapFontHeight + 0.5f);
 		const TextMeasure paintMeasure =
-		    TextMetrics::measure(measureText, noWrap ? 32767 : drawW, n->style.font_id, commandFontSize, commandLineHeight, n->style.font_weight);
+		    TextMetrics::measure(measureText, noSoftWrap ? 32767 : drawW, n->style.font_id, commandFontSize, commandLineHeight, n->style.font_weight);
 		if (paintMeasure.width > 0 && paintMeasure.height > 0) {
 			// CSS: a flex container's bare text becomes an anonymous flex item, so
 			// align-items centers (or end-aligns) it on the cross axis. This node
@@ -1847,11 +2119,12 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 			// axis is vertical there); a child-bearing flex container aligns its
 			// child BOXES through layout as before.
 			if (n->style.display == kDisplayFlex && n->first_child < 0 &&
-			    (n->style.align_items == 1 || n->style.align_items == 2) &&
 			    usesRowLayout(n->style)) {
-				const int contentH = h - n->style.padding[0] - n->style.padding[2];
+				const int contentH = h - boxInset(n->style, 0) - boxInset(n->style, 2);
 				const int slack = contentH - paintMeasure.height;
-				if (slack > 0) drawY += n->style.align_items == 1 ? slack / 2 : slack;
+				const int alignment = usedAlignment(n->style.align_items, slack, (n->style.flex_wrap & 3) == 2);
+				if (alignment == 1) drawY += slack / 2;
+				else if (alignment == 2) drawY += slack;
 			}
 			// nowrap truncates/clips the run to the content box, so the painted
 			// width never exceeds drawW even though the unbounded measure may.
@@ -1892,7 +2165,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				int ix1 = -1;
 				int iy1 = -1;
 				if (rasterizedTextInkBounds(measureText,
-				                            noWrap ? 32767 : drawW,
+				                            noSoftWrap ? 32767 : drawW,
 				                            n->style.text_align,
 				                            containerW,
 				                            n->style.font_id,
@@ -1953,6 +2226,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		std::fflush(stdout);
 	}
 
+
 	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, n->style.text_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
 
@@ -1977,7 +2251,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.textOverflow = n->style.text_overflow;
 	cmd->text.firstLineIndent = static_cast<int16_t>(inlineIndent);
 	{
-		const int contentH = h - n->style.padding[0] - n->style.padding[2];
+		const int contentH = h - boxInset(n->style, 0) - boxInset(n->style, 2);
 		cmd->text.maxHeight = static_cast<int16_t>(contentH > 0 ? (contentH > 32767 ? 32767 : contentH) : 0);
 	}
 
@@ -1995,6 +2269,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		DisplayCommand *deco = DisplayList::instance().append();
 		if (deco) {
 			deco->type = DisplayCommandType::FillRect;
+			deco->textDecorationInk = true;
 			deco->bx = x; deco->by = y; deco->bw = w; deco->bh = h;
 			deco->fill.x = tx;
 			deco->fill.y = lineY;

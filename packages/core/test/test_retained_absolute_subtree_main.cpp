@@ -400,5 +400,125 @@ int main()
 		return 1;
 	}
 
+	// A floating drag card with children is not a camera/world viewport. Both
+	// shapes used to enter the horizontal-pan path, shifting the entire screen
+	// and then repainting every stationary sibling to repair that shift.
+	for (bool world : {false, true}) {
+		resetNativeHost();
+		setNativeDisplaySize(120, 80);
+		setViewportMetrics(120, 80, 1.0);
+		const int root = Tree::instance().createView();
+		const int fixed = Tree::instance().createView();
+		const int moving = Tree::instance().createView();
+		const int child = Tree::instance().createView();
+		NodeHandle(root).appendChild(NodeHandle(moving));
+		NodeHandle(moving).appendChild(NodeHandle(child));
+		NodeHandle(root).appendChild(NodeHandle(fixed));
+		NodeHandle(root).style().width(120);
+		NodeHandle(root).style().height(80);
+		NodeHandle(root).style().backgroundColor(0x0000);
+		NodeHandle(root).style().set(Property::Overflow, 1);
+		NodeHandle(moving).style().position(1);
+		NodeHandle(moving).style().left(world ? -20 : 10);
+		NodeHandle(moving).style().top(0);
+		NodeHandle(moving).style().width(world ? 240 : 20);
+		NodeHandle(moving).style().height(world ? 80 : 16);
+		NodeHandle(child).style().position(1);
+		NodeHandle(child).style().left(world ? 40 : 4);
+		NodeHandle(child).style().top(4);
+		NodeHandle(child).style().width(8);
+		NodeHandle(child).style().height(8);
+		NodeHandle(child).style().backgroundColor(0xffff);
+		NodeHandle(fixed).style().position(1);
+		NodeHandle(fixed).style().left(90);
+		NodeHandle(fixed).style().top(50);
+		NodeHandle(fixed).style().width(8);
+		NodeHandle(fixed).style().height(8);
+		NodeHandle(fixed).style().backgroundColor(0xffff);
+		Tree::instance().mount(root, 120, 80);
+		refreshPerfStatsReset();
+		gea::platform::display::Display::flushStatsReset();
+		NodeHandle(moving).style().left(world ? -10 : 20);
+		Tree::instance().refresh(root, 120, 80);
+		const auto perf = refreshPerfStatsRead();
+		if (!expectEqual(perf.treePanReplayCalls, world ? 1 : 0, world ? "world pan retained" : "small drag must not pan viewport")) return 1;
+		if (!world && flushPixelCount() >= 120 * 80 / 2) {
+			std::fprintf(stderr, "small drag repainted most of screen: %d pixels\n", flushPixelCount());
+			return 1;
+		}
+		const int oldX = world ? 22 : 16;
+		const int newX = oldX + 10;
+		if (pixelLuma(displayPixelAt(oldX, 6)) > 32 ||
+		    pixelLuma(displayPixelAt(newX, 6)) < 220 ||
+		    pixelLuma(displayPixelAt(92, 52)) < 220 ||
+		    pixelLuma(displayPixelAt(102, 52)) > 32) {
+			std::fprintf(stderr, "drag/world movement left stale pixels, world=%d old=%d new=%d fixed=%d ghost=%d\n", world, pixelLuma(displayPixelAt(oldX, 6)), pixelLuma(displayPixelAt(newX, 6)), pixelLuma(displayPixelAt(92, 52)), pixelLuma(displayPixelAt(102, 52)));
+			return 1;
+		}
+	}
+
+	resetNativeHost();
+	{
+		auto &tree = Tree::instance();
+		const int root = tree.createView(), child = tree.createView(); NodeHandle(root).appendChild(NodeHandle(child));
+		auto parent = NodeHandle(root).style(), abs = NodeHandle(child).style();
+		parent.position(2); parent.width(100); parent.height(60); parent.backgroundColor(0x0000);
+		parent.setProperty("padding", "5px"); parent.setProperty("border", "2px solid #000000");
+		abs.position(1); abs.width(8); abs.height(8); abs.backgroundColor(0xffff);
+		// The retained path requires explicit zero minimums; CSS auto minimums
+		// deliberately remain on the full-layout path.
+		abs.setProperty("min-width", "0"); abs.setProperty("min-height", "0");
+		abs.setProperty("left", "10%"); abs.setProperty("top", "10%"); tree.mount(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 13, "bordered containing block initial left") ||
+		    !expectEqual(tree.node(child).layout.y, 9, "bordered containing block initial top")) return 1;
+		refreshPerfStatsReset();
+		abs.setProperty("left", "20%"); abs.setProperty("top", "20%"); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 24, "retained percentage left excludes borders") ||
+		    !expectEqual(tree.node(child).layout.y, 16, "retained percentage top excludes borders")) return 1;
+		if (pixelLuma(displayPixelAt(15, 11)) > 32 || pixelLuma(displayPixelAt(26, 18)) < 220) return 1;
+		refreshPerfStatsReset(); abs.top(24); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 24, "retained movement keeps percentage horizontal basis") ||
+		    !expectEqual(tree.node(child).layout.y, 26, "retained pixel top includes border") ||
+		    !expectEqual(refreshPerfStatsRead().treeAbsModeFast, 1, "bordered containing block remains on retained path")) return 1;
+		abs.setProperty("left", "auto"); abs.setProperty("top", "auto");
+		abs.setProperty("right", "10%"); abs.setProperty("bottom", "10%"); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 93, "retained right excludes borders") ||
+		    !expectEqual(tree.node(child).layout.y, 57, "retained bottom excludes borders")) return 1;
+		const int wrapper = tree.createView(); NodeHandle(root).appendChild(NodeHandle(wrapper));
+		NodeHandle(wrapper).appendChild(NodeHandle(child));
+		NodeHandle(wrapper).style().width(40); NodeHandle(wrapper).style().height(30);
+		NodeHandle(wrapper).style().setProperty("padding", "5px");
+		tree.refresh(root, 120, 80);
+		refreshPerfStatsReset(); abs.setProperty("right", "20%"); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 82, "static wrapper does not replace the containing block on mutation") ||
+		    !expectEqual(refreshPerfStatsRead().treeAbsModeFast, 0, "static wrapper delegates positioning to full layout")) return 1;
+	}
+
+	resetNativeHost();
+	{
+		auto &tree = Tree::instance();
+		const int root = tree.createView(), before = tree.createView(), child = tree.createView();
+		NodeHandle(root).appendChild(NodeHandle(before)); NodeHandle(root).appendChild(NodeHandle(child));
+		auto parent = NodeHandle(root).style(), preceding = NodeHandle(before).style(), abs = NodeHandle(child).style();
+		parent.position(2); parent.width(100); parent.height(60); parent.backgroundColor(0x0000);
+		parent.setProperty("padding", "5px"); parent.setProperty("border", "2px solid #000000");
+		preceding.height(20); preceding.setProperty("margin-bottom", "7px"); preceding.position(2); preceding.top(10);
+		abs.position(1); abs.width(8); abs.height(8); abs.backgroundColor(0xffff);
+		abs.setProperty("min-width", "0"); abs.setProperty("min-height", "0");
+		tree.mount(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 7, "block static position starts at content left") ||
+		    !expectEqual(tree.node(child).layout.y, 34, "block static position follows sibling before relative offset")) return 1;
+		refreshPerfStatsReset(); abs.left(20); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.x, 22, "retained explicit inset uses padding edge") ||
+		    !expectEqual(tree.node(child).layout.y, 34, "retained movement preserves block static anchor") ||
+		    !expectEqual(refreshPerfStatsRead().treeAbsModeFast, 1, "static anchor remains usable on retained path")) return 1;
+		if (pixelLuma(displayPixelAt(9, 36)) > 32 || pixelLuma(displayPixelAt(24, 36)) < 220) return 1;
+		refreshPerfStatsReset(); abs.width(12); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.y, 34, "retained resize preserves static anchor") ||
+		    !expectEqual(refreshPerfStatsRead().treeAbsModeFast, 1, "static anchor supports retained resize")) return 1;
+		preceding.height(30); tree.refresh(root, 120, 80);
+		if (!expectEqual(tree.node(child).layout.y, 44, "normal sibling resize recomputes static anchor")) return 1;
+	}
+
 	return 0;
 }

@@ -23,6 +23,10 @@ export function styleDeclarationEnumForPropertyName(propertyName: string): strin
   return STYLE_DECLARATION_ENUM_BY_PROPERTY.get(propertyName) ?? null
 }
 
+export function isBorderWidthStylePropertyName(propertyName: string): boolean {
+  return /^border-(?:(?:top|right|bottom|left)-)?width$/.test(propertyName)
+}
+
 export function isPxLengthStylePropertyName(propertyName: string): boolean {
   return PX_LENGTH_STYLE_PROPERTIES.has(propertyName)
 }
@@ -46,18 +50,17 @@ export function styleKeywordPropertyValuesForPropertyName(propertyName: string, 
   if (propertyName === 'flex-direction') return keywordValue('FlexDirection', FLEX_DIRECTION_KEYWORDS, value)
   if (propertyName === 'flex-wrap') return keywordValue('FlexWrap', FLEX_WRAP_KEYWORDS, value)
   if (propertyName === 'justify-content') return keywordValue('JustifyContent', FLEX_ALIGN_KEYWORDS, value)
-  if (propertyName === 'align-items') return keywordValue('AlignItems', FLEX_ALIGN_KEYWORDS, value)
-  if (propertyName === 'justify-items') return keywordValue('JustifyItems', FLEX_ALIGN_KEYWORDS, value)
+  if (propertyName === 'align-items') return keywordValue('AlignItems', SELF_ALIGN_KEYWORDS, value)
+  if (propertyName === 'justify-items') return keywordValue('JustifyItems', SELF_ALIGN_KEYWORDS, value)
   if (propertyName === 'align-content') return keywordValue('AlignContent', FLEX_ALIGN_KEYWORDS, value)
   if (propertyName === 'align-self') return keywordValue('AlignSelf', ALIGN_SELF_KEYWORDS, value)
   if (propertyName === 'place-items') {
-    const align = FLEX_ALIGN_KEYWORDS.get(value)
+    const align = SELF_ALIGN_KEYWORDS.get(value)
     return align === undefined
       ? null
       : [
           { property: 'AlignItems', value: align },
           { property: 'JustifyItems', value: align },
-          { property: 'JustifyContent', value: align },
         ]
   }
   if (propertyName === 'position') return keywordValue('Position', POSITION_KEYWORDS, value)
@@ -142,9 +145,20 @@ function keywordValue(property: string, map: Map<string, number>, value: string)
 
 const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['color-scheme', 'Ignored'],
-  ['background-position', 'Ignored'],
-  ['box-sizing', 'Ignored'],
-  ['font', 'Ignored'],
+  ['background-position', 'BackgroundPosition'],
+  ['background-repeat', 'BackgroundRepeat'],
+  ['background-attachment', 'BackgroundAttachment'],
+  ['background-origin', 'BackgroundOrigin'],
+  ['box-sizing', 'BoxSizing'],
+  ['float', 'Float'],
+  ['clear', 'Clear'],
+  ['margin-trim', 'MarginTrim'],
+  ['writing-mode', 'WritingMode'],
+  ['direction', 'Direction'],
+  ['flex-flow', 'FlexFlow'],
+  ['row-gap', 'RowGap'],
+  ['column-gap', 'ColumnGap'],
+  ['font', 'Font'],
   ['grid-column', 'Ignored'],
   ['isolation', 'Ignored'],
   ['letter-spacing', 'Ignored'],
@@ -162,12 +176,15 @@ const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['display', 'Display'],
   ['flex-direction', 'FlexDirection'],
   ['flex-wrap', 'FlexWrap'],
+  ['order', 'Order'],
   ['justify-content', 'JustifyContent'],
   ['align-items', 'AlignItems'],
   ['justify-items', 'JustifyItems'],
   ['align-content', 'AlignContent'],
   ['align-self', 'AlignSelf'],
   ['place-items', 'PlaceItems'],
+  ['place-content', 'PlaceContent'],
+  ['place-self', 'PlaceSelf'],
   ['grid-template-columns', 'GridTemplateColumns'],
   ['grid-template-rows', 'GridTemplateRows'],
   ['content', 'Content'],
@@ -201,9 +218,11 @@ const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['z-index', 'ZIndex'],
   ['active-background-color', 'ActiveBackgroundColor'],
   ['active-background', 'ActiveBackgroundColor'],
-  ['background-color', 'Background'],
+  ['background-color', 'BackgroundColor'],
   ['background', 'Background'],
-  ['background-image', 'Background'],
+  ['background-image', 'BackgroundImage'],
+  ['background-clip', 'BackgroundClip'],
+  ['contain', 'Contain'],
   ['background-size', 'BackgroundSize'],
   ['color', 'Color'],
   ['opacity', 'Opacity'],
@@ -347,7 +366,7 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
   ['justify-items', ['JustifyItems']],
   ['align-content', ['AlignContent']],
   ['align-self', ['AlignSelf']],
-  ['place-items', ['AlignItems', 'JustifyItems', 'JustifyContent']],
+  ['place-items', ['AlignItems', 'JustifyItems']],
   ['position', ['Position']],
   ['text-align', ['TextAlign']],
   ['white-space', ['WhiteSpace']],
@@ -374,27 +393,35 @@ const DISPLAY_KEYWORDS = new Map<string, number>([
 const FLEX_DIRECTION_KEYWORDS = new Map<string, number>([
   ['column', 0],
   ['row', 1],
+  ['column-reverse', 2],
+  ['row-reverse', 3],
 ])
 
 const FLEX_WRAP_KEYWORDS = new Map<string, number>([
   ['nowrap', 0],
   ['wrap', 1],
+  ['wrap-reverse', 2],
 ])
 
 const FLEX_ALIGN_KEYWORDS = new Map<string, number>([
-  ['flex-start', 0],
-  ['start', 0],
+  ['stretch', 0],
+  ['normal', 0],
+  ['flex-start', 6],
+  ['start', 7],
   ['center', 1],
   ['flex-end', 2],
-  ['end', 2],
+  ['end', 8],
   ['space-between', 3],
   ['space-around', 4],
+  ['space-evenly', 14],
   ['baseline', 5],
 ])
 
+const SELF_ALIGN_KEYWORDS = new Map([...FLEX_ALIGN_KEYWORDS].filter(([key]) => !key.startsWith('space-')))
+
 const ALIGN_SELF_KEYWORDS = new Map<string, number>([
   ['auto', -1],
-  ...FLEX_ALIGN_KEYWORDS,
+  ...SELF_ALIGN_KEYWORDS,
 ])
 
 const POSITION_KEYWORDS = new Map<string, number>([
@@ -413,9 +440,11 @@ const TEXT_ALIGN_KEYWORDS = new Map<string, number>([
 
 const WHITE_SPACE_KEYWORDS = new Map<string, number>([
   ['normal', 0],
-  ['pre-line', 0],
   ['nowrap', 1],
-  ['pre', 1],
+  ['pre', 2],
+  ['pre-wrap', 3],
+  ['pre-line', 4],
+  ['break-spaces', 5],
 ])
 
 const TEXT_OVERFLOW_KEYWORDS = new Map<string, number>([

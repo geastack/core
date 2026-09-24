@@ -3,6 +3,8 @@
 #include "display.h"
 #include "ui/internal.h"
 #include "ui/tree_internal.h"
+#include "ui/node.h"
+#include "ui/style.h"
 
 #include <algorithm>
 #include <array>
@@ -1088,10 +1090,432 @@ bool expect_temperature_dial_ticks_replay_quickly()
 	}
 	return true;
 }
+bool expect_retained_paint_order_matches_full_record()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	resetNativeHost(); setNativeDisplaySize(100, 100); setViewportMetrics(100, 100, 1.0);
+	auto &tree = Tree::instance();
+	const int root = tree.createView(), first = tree.createView(), label = tree.createView(), later = tree.createView();
+	NodeHandle(root).appendChild(NodeHandle(first)); NodeHandle(first).appendChild(NodeHandle(label));
+	NodeHandle(root).appendChild(NodeHandle(later));
+	auto rootStyle = NodeHandle(root).style();
+	rootStyle.width(100); rootStyle.height(100); rootStyle.backgroundColor(0xffff);
+	rootStyle.setProperty("transform-style", "preserve-3d");
+	for (int id : {first, later}) {
+		auto style = NodeHandle(id).style();
+		style.setProperty("position", "absolute"); style.left(20); style.top(20);
+		style.width(60); style.height(60); style.setProperty("transform", "translateZ(0px)");
+	}
+	NodeHandle(first).style().backgroundColor(0xf800); NodeHandle(later).style().backgroundColor(0x001f);
+	auto labelStyle = NodeHandle(label).style();
+	labelStyle.setProperty("position", "absolute"); labelStyle.left(8); labelStyle.top(8);
+	labelStyle.width(20); labelStyle.height(20); labelStyle.backgroundColor(0x07e0);
+	tree.mount(root, 100, 100);
+	auto &list = DisplayList::instance();
+	for (int depth : {10, -10, 0, 10, 0, -10}) {
+		NodeHandle(first).style().setProperty("transform", depth > 0 ? "translateZ(10px)" : depth < 0 ? "translateZ(-10px)" : "translateZ(0px)");
+		tree.refresh(root, 100, 100);
+		list.armTransformReproject(true);
+		if (!list.tryReprojectTransformed()) {
+			std::fprintf(stderr, "[%s] paint-order probe unexpectedly rejected retained reprojection\n", kTestName);
+			return false;
+		}
+		list.replayDirectDirtyRegion(0, 0, 99, 99);
+		const auto retained = snapshotPixels<100, 100>();
+		if (displayPixelAt(30, 30) != gea::framework::graphics::pixel::fromRgb565(depth > 0 ? 0x07e0 : 0x001f) ||
+		    displayPixelAt(60, 60) != gea::framework::graphics::pixel::fromRgb565(depth > 0 ? 0xf800 : 0x001f) ||
+		    tree.hitTestNode(30, 30) != (depth > 0 ? label : later)) {
+			std::fprintf(stderr, "[%s] retained paint/hit order wrong at depth %d: pixels=%04x,%04x hit=%d expected=%d\n", kTestName, depth, displayPixelAt(30, 30), displayPixelAt(60, 60), tree.hitTestNode(30, 30), depth > 0 ? label : later);
+			return false;
+		}
+		list.clear(); list.recordNode(root, 255); list.replayDirectDirtyRegion(0, 0, 99, 99);
+		if (snapshotPixels<100, 100>() != retained) {
+			std::fprintf(stderr, "[%s] retained paint order differs from full record at depth %d\n", kTestName, depth);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool expect_flat_dom_boundary_limits_3d_sorting_and_hit_order()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	const auto green = gea::framework::graphics::pixel::fromRgb565(0x07e0);
+
+	for (const bool fixed : {false, true}) {
+		resetNativeHost(); setNativeDisplaySize(100, 100); setViewportMetrics(100, 100, 1.0);
+		auto &tree = Tree::instance();
+		const int context = tree.createView(), wrapper = tree.createView();
+		const int red = tree.createView(), sibling = tree.createView();
+		NodeHandle(context).appendChild(NodeHandle(wrapper));
+		NodeHandle(wrapper).appendChild(NodeHandle(red));
+		NodeHandle(context).appendChild(NodeHandle(sibling));
+		auto contextStyle = NodeHandle(context).style();
+		contextStyle.width(100); contextStyle.height(100);
+		contextStyle.setProperty("transform-style", "preserve-3d");
+		if (fixed) contextStyle.setProperty("transform", "translateX(0px)");
+		for (int id : {red, sibling}) {
+			auto style = NodeHandle(id).style();
+			style.setProperty("position", fixed && id == red ? "fixed" : "absolute");
+			style.left(0); style.top(0); style.width(80); style.height(80);
+		}
+		NodeHandle(red).style().backgroundColor(0xf800);
+		NodeHandle(sibling).style().backgroundColor(0x07e0);
+		NodeHandle(red).style().setProperty("transform", "translateZ(20px)");
+		NodeHandle(sibling).style().setProperty("transform", "translateZ(10px)");
+		tree.mount(context, 100, 100);
+		auto &list = DisplayList::instance();
+		for (const char *depth : {"translateZ(20px)", "translateZ(5px)", "translateZ(30px)"}) {
+			NodeHandle(red).style().setProperty("transform", depth);
+			tree.refresh(context, 100, 100);
+			list.armTransformReproject(true);
+			if (list.tryReprojectTransformed()) list.replayDirectDirtyRegion(0, 0, 99, 99);
+			else { list.clear(); list.recordNode(context, 255); list.replayDirectDirtyRegion(0, 0, 99, 99); }
+			if (displayPixelAt(20, 20) != green || tree.hitTestNode(20, 20) != sibling) {
+				std::fprintf(stderr, "[%s] flat DOM parent let %s descendant escape preserve-3d: pixel=%04x hit=%d expected=%d\n",
+				             kTestName, fixed ? "fixed" : "absolute", displayPixelAt(20, 20), tree.hitTestNode(20, 20), sibling);
+				return false;
+			}
+		}
+	}
+
+	// A nested preserve-3d context is atomic in the outer painter order. Its
+	// face's positive Z cannot lift it above a later positioned tooltip.
+	resetNativeHost(); setNativeDisplaySize(100, 100); setViewportMetrics(100, 100, 1.0);
+	auto &tree = Tree::instance();
+	const int contain = tree.createView(), wrapper = tree.createView();
+	const int cube = tree.createView(), face = tree.createView(), tooltip = tree.createView();
+	NodeHandle(contain).appendChild(NodeHandle(wrapper));
+	NodeHandle(wrapper).appendChild(NodeHandle(cube));
+	NodeHandle(cube).appendChild(NodeHandle(face));
+	NodeHandle(contain).appendChild(NodeHandle(tooltip));
+	NodeHandle(contain).style().setProperty("position", "relative");
+	NodeHandle(contain).style().width(100); NodeHandle(contain).style().height(100);
+	NodeHandle(cube).style().setProperty("transform-style", "preserve-3d");
+	NodeHandle(face).style().width(30); NodeHandle(face).style().height(30);
+	NodeHandle(face).style().backgroundColor(0xf800);
+	NodeHandle(face).style().setProperty("transform", "translateZ(75px)");
+	NodeHandle(tooltip).style().setProperty("position", "absolute");
+	NodeHandle(tooltip).style().left(0); NodeHandle(tooltip).style().top(0);
+	NodeHandle(tooltip).style().width(80); NodeHandle(tooltip).style().height(80);
+	NodeHandle(tooltip).style().backgroundColor(0x07e0);
+	tree.mount(contain, 100, 100); tree.refresh(contain, 100, 100);
+	DisplayList::instance().clear(); DisplayList::instance().recordNode(contain, 255); DisplayList::instance().replayDirectDirtyRegion(0, 0, 99, 99);
+	if (displayPixelAt(10, 10) != green || tree.hitTestNode(10, 10) != tooltip) {
+		std::fprintf(stderr, "[%s] nested preserve-3d face escaped into outer painter order: pixel=%04x hit=%d expected=%d\n",
+		             kTestName, displayPixelAt(10, 10), tree.hitTestNode(10, 10), tooltip);
+		return false;
+	}
+
+	// A flat positioned group at negative Z remains behind a sibling at a
+	// nearer negative Z even when its child has a positive local Z. An excluded
+	// child's zero depth must not clamp the group's depth to the context plane.
+	resetNativeHost(); setNativeDisplaySize(100, 100); setViewportMetrics(100, 100, 1.0);
+	auto &negativeTree = Tree::instance();
+	const int stage = negativeTree.createView(), flat = negativeTree.createView();
+	const int raisedChild = negativeTree.createView(), nearerSibling = negativeTree.createView();
+	NodeHandle(stage).appendChild(NodeHandle(flat));
+	NodeHandle(flat).appendChild(NodeHandle(raisedChild));
+	NodeHandle(stage).appendChild(NodeHandle(nearerSibling));
+	NodeHandle(stage).style().width(100); NodeHandle(stage).style().height(100);
+	NodeHandle(stage).style().setProperty("transform-style", "preserve-3d");
+	for (int id : {flat, nearerSibling}) {
+		auto style = NodeHandle(id).style();
+		style.setProperty("position", "absolute"); style.left(0); style.top(0); style.width(80); style.height(80);
+	}
+	NodeHandle(flat).style().setProperty("transform", "translateZ(-30px)");
+	NodeHandle(raisedChild).style().setProperty("position", "absolute");
+	NodeHandle(raisedChild).style().left(0); NodeHandle(raisedChild).style().top(0);
+	NodeHandle(raisedChild).style().width(80); NodeHandle(raisedChild).style().height(80);
+	NodeHandle(raisedChild).style().backgroundColor(0xf800);
+	NodeHandle(raisedChild).style().setProperty("transform", "translateZ(20px)");
+	NodeHandle(nearerSibling).style().backgroundColor(0x07e0);
+	NodeHandle(nearerSibling).style().setProperty("transform", "translateZ(-20px)");
+	negativeTree.mount(stage, 100, 100); negativeTree.refresh(stage, 100, 100);
+	DisplayList::instance().clear(); DisplayList::instance().recordNode(stage, 255); DisplayList::instance().replayDirectDirtyRegion(0, 0, 99, 99);
+	if (displayPixelAt(20, 20) != green || negativeTree.hitTestNode(20, 20) != nearerSibling) {
+		std::fprintf(stderr, "[%s] flat negative-Z group was promoted by descendant depth: pixel=%04x hit=%d expected=%d\n",
+		             kTestName, displayPixelAt(20, 20), negativeTree.hitTestNode(20, 20), nearerSibling);
+		return false;
+	}
+	return true;
+}
+
+bool expect_nonreplaced_inline_transform_is_ignored()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	resetNativeHost(); setNativeDisplaySize(120, 100); setViewportMetrics(120, 100, 1.0);
+	auto &tree = Tree::instance();
+	const int root = tree.createView(), stage = tree.createView(), span = tree.createView();
+	const int text = tree.createText(), image = tree.createImage();
+	const int absSpan = tree.createView(), flexParent = tree.createView(), flexSpan = tree.createView();
+	NodeHandle(root).appendChild(NodeHandle(stage));
+	NodeHandle(stage).appendChild(NodeHandle(span));
+	NodeHandle(span).appendChild(NodeHandle(text));
+	NodeHandle(stage).appendChild(NodeHandle(image));
+	NodeHandle(stage).appendChild(NodeHandle(absSpan));
+	NodeHandle(stage).appendChild(NodeHandle(flexParent));
+	NodeHandle(flexParent).appendChild(NodeHandle(flexSpan));
+	NodeHandle(span).setTagName("span");
+	NodeHandle(absSpan).setTagName("span");
+	NodeHandle(flexSpan).setTagName("span");
+	// Layout's legacy margin heuristic may treat this as a standalone row item,
+	// but CSS still gives it a non-replaced inline box that is not transformable.
+	NodeHandle(span).style().setProperty("margin-top", "5px");
+	NodeHandle(span).style().setProperty("transform-style", "preserve-3d");
+	NodeHandle(span).style().setProperty("transform", "rotateX(90deg)");
+	tree.setText(text, "Test");
+	NodeHandle(image).style().width(20); NodeHandle(image).style().height(20);
+	NodeHandle(image).style().setProperty("transform", "rotateX(90deg)");
+	NodeHandle(absSpan).style().setProperty("position", "absolute");
+	NodeHandle(absSpan).style().setProperty("transform", "rotateX(90deg)");
+	NodeHandle(flexParent).style().setProperty("display", "flex");
+	tree.mount(root, 120, 100); tree.refresh(root, 120, 100);
+	if (ViewRenderer::isTransformableBox(tree.node(span)) ||
+	    !ViewRenderer::isTransformableBox(tree.node(image)) ||
+	    !ViewRenderer::isTransformableBox(tree.node(absSpan)) ||
+	    !ViewRenderer::isTransformableBox(tree.node(flexSpan))) {
+		std::fprintf(stderr, "[%s] CSS transformability classification missed inline, replaced, or blockified box semantics\n", kTestName);
+		return false;
+	}
+	const Node &textNode = tree.node(text);
+	int16_t textX = 0, textY = 0;
+	ViewRenderer::transformedPoint(textNode, false, textNode.layout.x + 1, textNode.layout.y + 1, 0, &textX, &textY);
+	if (textX != textNode.layout.x + 1 || textY != textNode.layout.y + 1) {
+		std::fprintf(stderr, "[%s] non-replaced inline span transform affected its text: (%d,%d) -> (%d,%d)\n",
+		             kTestName, textNode.layout.x + 1, textNode.layout.y + 1, textX, textY);
+		return false;
+	}
+	const Node &imageNode = tree.node(image);
+	int16_t imageX = 0, imageY = 0;
+	ViewRenderer::transformedPoint(imageNode, false, imageNode.layout.x, imageNode.layout.y, 0, &imageX, &imageY);
+	if (imageY == imageNode.layout.y) {
+		std::fprintf(stderr, "[%s] replaced inline image lost its CSS transform\n", kTestName);
+		return false;
+	}
+
+	// A retained inline span becomes a transformable block through a class
+	// transition. The old frame must keep its old effective transformability,
+	// while the current frame starts applying the existing translate.
+	resetNativeHost(); setNativeDisplaySize(120, 100); setViewportMetrics(120, 100, 1.0);
+	const int retainedRoot = tree.createView(), retained = tree.createView(), retainedText = tree.createText();
+	NodeHandle(retainedRoot).appendChild(NodeHandle(retained));
+	NodeHandle(retained).appendChild(NodeHandle(retainedText));
+	NodeHandle(retained).setTagName("span");
+	NodeHandle(retainedRoot).style().width(120); NodeHandle(retainedRoot).style().height(100);
+	NodeHandle(retainedRoot).style().backgroundColor(0xffff);
+	NodeHandle(retained).style().setProperty("transform", "translateX(30px)");
+	NodeHandle(retained).style().backgroundColor(0xf800);
+	tree.setText(retainedText, "X");
+	StyleSheet::instance().registerRule("retained-transformable-block", "display", "block");
+	tree.mount(retainedRoot, 120, 100); tree.refresh(retainedRoot, 120, 100);
+	if (ViewRenderer::isTransformableBox(tree.node(retained))) {
+		std::fprintf(stderr, "[%s] retained transition fixture did not begin as inline\n", kTestName);
+		return false;
+	}
+	const int oldX = tree.node(retained).layout.x + 1;
+	const int oldY = tree.node(retained).layout.y + 1;
+	NodeHandle(retained).classList().set("retained-transformable-block");
+	tree.refresh(retainedRoot, 120, 100);
+	int16_t currentX = 0, currentY = 0;
+	ViewRenderer::transformedPoint(tree.node(retained), false, oldX, oldY, 0, &currentX, &currentY);
+	const int movedHit = tree.hitTestNode(currentX, currentY);
+	if (!tree.node(retained).render.previous_transformable_box ||
+	    currentX == oldX ||
+	    displayPixelAt(oldX, oldY) != 0xffff || (movedHit != retained && movedHit != retainedText)) {
+		std::fprintf(stderr, "[%s] retained inline-to-block transformability transition stale: prevBox=%u currentBox=%d old=(%d,%d) current=(%d,%d) oldPixel=%04x hit=%d\n",
+		             kTestName, tree.node(retained).render.previous_transformable_box,
+		             ViewRenderer::isTransformableBox(tree.node(retained)), oldX, oldY, currentX, currentY,
+		             displayPixelAt(oldX, oldY), tree.hitTestNode(currentX, currentY));
+		return false;
+	}
+	const std::uint16_t movedPixel = displayPixelAt(currentX, currentY);
+	NodeHandle(retained).classList().set("");
+	tree.refresh(retainedRoot, 120, 100);
+	int16_t inlineX = 0, inlineY = 0;
+	ViewRenderer::transformedPoint(tree.node(retained), false, oldX, oldY, 0, &inlineX, &inlineY);
+	const int inlineHit = tree.hitTestNode(oldX, oldY);
+	if (tree.node(retained).render.previous_transformable_box || inlineX != oldX || inlineY != oldY ||
+	    movedPixel == 0xffff || displayPixelAt(currentX, currentY) != 0xffff ||
+	    (inlineHit != retained && inlineHit != retainedText)) {
+		std::fprintf(stderr, "[%s] retained block-to-inline transformability transition stale: prevBox=%u inline=(%d,%d) expected=(%d,%d) movedPixel=%04x hit=%d\n",
+		             kTestName, tree.node(retained).render.previous_transformable_box, inlineX, inlineY, oldX, oldY,
+		             displayPixelAt(currentX, currentY), inlineHit);
+		return false;
+	}
+	return true;
+}
+
+bool expect_transform_scale_z_composes_and_reprojects()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	resetNativeHost();
+	setNativeDisplaySize(160, 120);
+	setViewportMetrics(160, 120, 1.0);
+	auto &tree = Tree::instance();
+	const int root = tree.createView();
+	const int repeated = tree.createView();
+	const int combined = tree.createView();
+	const int zero = tree.createView();
+	const int negative = tree.createView();
+	for (int child : {repeated, combined, zero, negative}) NodeHandle(root).appendChild(NodeHandle(child));
+	auto rootStyle = NodeHandle(root).style();
+	rootStyle.width(160); rootStyle.height(120);
+	rootStyle.setProperty("perspective", "200px");
+	for (int child : {repeated, combined, zero, negative}) {
+		auto style = NodeHandle(child).style();
+		style.width(40); style.height(40);
+		style.setProperty("position", "absolute");
+		style.setProperty("transform-origin", "0 0 0");
+	}
+	NodeHandle(repeated).style().setProperty("transform", "scaleZ(2) scaleZ(3)");
+	NodeHandle(combined).style().setProperty("transform", "scale3d(1, 1, 6)");
+	NodeHandle(zero).style().setProperty("transform", "scaleZ(0)");
+	NodeHandle(negative).style().setProperty("transform", "scaleZ(-1)");
+	tree.mount(root, 160, 120);
+	tree.refresh(root, 160, 120);
+	auto project = [&](int id, bool previous, int16_t &x, int16_t &y) {
+		ViewRenderer::transformedPoint(tree.node(id), previous, 20, 20, 30, &x, &y);
+	};
+	int16_t repeatedX = 0, repeatedY = 0, combinedX = 0, combinedY = 0;
+	int16_t zeroX = 0, zeroY = 0, negativeX = 0, negativeY = 0;
+	project(repeated, false, repeatedX, repeatedY);
+	project(combined, false, combinedX, combinedY);
+	project(zero, false, zeroX, zeroY);
+	project(negative, false, negativeX, negativeY);
+	if (repeatedX != combinedX || repeatedY != combinedY ||
+	    (zeroX == repeatedX && zeroY == repeatedY) ||
+	    (negativeX == zeroX && negativeY == zeroY)) {
+		std::fprintf(stderr,
+		             "[%s] scaleZ composition/projection mismatch: repeated=(%d,%d) scale3d=(%d,%d) zero=(%d,%d) negative=(%d,%d)\n",
+		             kTestName, repeatedX, repeatedY, combinedX, combinedY, zeroX, zeroY, negativeX, negativeY);
+		return false;
+	}
+	// Reprojection consumes the captured previous transform values as well.
+	project(repeated, true, repeatedX, repeatedY);
+	project(combined, true, combinedX, combinedY);
+	return repeatedX == combinedX && repeatedY == combinedY;
+}
+
+bool expect_preserve3d_alone_establishes_fixed_containing_block()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	resetNativeHost(); setNativeDisplaySize(100, 100); setViewportMetrics(100, 100, 1.0);
+	auto &tree = Tree::instance();
+	const int root = tree.createView(), context = tree.createView(), fixed = tree.createView();
+	NodeHandle(root).appendChild(NodeHandle(context));
+	NodeHandle(context).appendChild(NodeHandle(fixed));
+	NodeHandle(root).style().width(100); NodeHandle(root).style().height(100);
+	NodeHandle(root).style().backgroundColor(0xffff);
+	NodeHandle(context).style().setProperty("position", "absolute");
+	NodeHandle(context).style().left(20); NodeHandle(context).style().top(20);
+	NodeHandle(context).style().width(60); NodeHandle(context).style().height(60);
+	NodeHandle(context).style().setProperty("transform-style", "preserve-3d");
+	NodeHandle(fixed).style().setProperty("position", "fixed");
+	NodeHandle(fixed).style().left(5); NodeHandle(fixed).style().top(5);
+	NodeHandle(fixed).style().width(20); NodeHandle(fixed).style().height(20);
+	NodeHandle(fixed).style().backgroundColor(0xf800);
+	tree.mount(root, 100, 100); tree.refresh(root, 100, 100);
+	const auto red = gea::framework::graphics::pixel::fromRgb565(0xf800);
+	const auto white = gea::framework::graphics::pixel::fromRgb565(0xffff);
+	if (displayPixelAt(26, 26) != red || displayPixelAt(6, 6) != white || tree.hitTestNode(26, 26) != fixed) {
+		std::fprintf(stderr, "[%s] preserve-3d-only fixed containing block not applied: anchored=%04x viewport=%04x hit=%d\n",
+		             kTestName, displayPixelAt(26, 26), displayPixelAt(6, 6), tree.hitTestNode(26, 26));
+		return false;
+	}
+	return true;
+}
+
+bool expect_flat_backface_groups_update_retained_frames()
+{
+	using namespace gea::embedded::ui;
+	using namespace gea::embedded::test;
+	resetNativeHost();
+	setNativeDisplaySize(120, 80);
+	setViewportMetrics(120, 80, 1.0);
+	auto &tree = Tree::instance();
+	const int root = tree.createView(), face = tree.createView(), child = tree.createView();
+	NodeHandle(root).appendChild(NodeHandle(face));
+	NodeHandle(face).appendChild(NodeHandle(child));
+	auto rootStyle = NodeHandle(root).style(), faceStyle = NodeHandle(face).style(), childStyle = NodeHandle(child).style();
+	rootStyle.width(120); rootStyle.height(80); rootStyle.backgroundColor(0xffff);
+	faceStyle.setProperty("position", "absolute"); faceStyle.left(20); faceStyle.top(20);
+	faceStyle.width(40); faceStyle.height(40);
+	faceStyle.setProperty("backface-visibility", "hidden");
+	faceStyle.setProperty("transform", "rotateY(180deg)");
+	childStyle.width(40); childStyle.height(40); childStyle.backgroundColor(0x0000);
+	tree.mount(root, 120, 80);
+	auto check = [&](bool visible, const char *label) {
+		tree.refresh(root, 120, 80);
+		const int expected = visible ? 0 : 0xffff;
+		if (displayPixelAt(40, 40) == expected) return true;
+		std::fprintf(stderr, "[%s] %s expected 0x%04x, got 0x%04x\n", kTestName, label, expected, displayPixelAt(40, 40));
+		return false;
+	};
+	if (!check(false, "flat backface hides child")) return false;
+	DisplayList::instance().armTransformReproject(true);
+	if (!DisplayList::instance().tryReprojectTransformed()) {
+		std::fprintf(stderr, "[%s] unchanged hidden groups should retain reprojection eligibility\n", kTestName);
+		return false;
+	}
+	faceStyle.setProperty("transform", "rotateY(0deg)");
+	if (!check(true, "turning forward restores omitted commands")) return false;
+	DisplayList::instance().armTransformReproject(true);
+	if (!DisplayList::instance().tryReprojectTransformed()) {
+		std::fprintf(stderr, "[%s] unchanged visible groups should retain reprojection eligibility\n", kTestName);
+		return false;
+	}
+	for (int frame = 0; frame < 16; ++frame) {
+		faceStyle.setProperty("transform", frame % 4 == 3 ? "rotateY(180deg)" : frame % 2 ? "rotateY(20deg)" : "rotateY(0deg)");
+		if (!check(frame % 4 != 3, "animated flattened group visibility")) return false;
+	}
+	faceStyle.setProperty("transform", "rotateY(180deg)");
+	if (!check(false, "turning backward clears child")) return false;
+	childStyle.setProperty("transform", "rotateY(180deg)");
+	if (!check(false, "counterrotation cannot escape flattened hidden group")) return false;
+	faceStyle.setProperty("transform-style", "preserve-3d");
+	if (!check(true, "preserve-3d child retains its own visible backface")) return false;
+	faceStyle.setProperty("overflow", "hidden");
+	if (!check(false, "overflow hidden forces flattening")) return false;
+	faceStyle.setProperty("overflow", "clip");
+	if (!check(true, "overflow clip preserves 3D")) return false;
+	faceStyle.setProperty("filter", "blur(0px)");
+	if (!check(false, "identity filter still forces flattening")) return false;
+	faceStyle.setProperty("filter", "none");
+	faceStyle.setProperty("opacity", "0.5");
+	if (!check(false, "opacity forces flattening")) return false;
+	faceStyle.setProperty("opacity", "1");
+	faceStyle.setProperty("transform-style", "flat");
+	faceStyle.setProperty("backface-visibility", "visible");
+	if (!check(true, "backface visibility mutation restores group")) return false;
+	faceStyle.setProperty("backface-visibility", "hidden");
+	if (!check(false, "backface visibility mutation hides group")) return false;
+	faceStyle.setProperty("transform", "scaleX(-1)");
+	childStyle.setProperty("transform", "none");
+	if (!check(true, "2D reflection does not create back face")) return false;
+	faceStyle.setProperty("transform", "rotateY(180deg)");
+	StyleSheet::instance().registerRule("preserved-face", "transform-style", "preserve-3d");
+	NodeHandle(face).classList().set("preserved-face");
+	faceStyle.removeProperty("transform-style");
+	if (!check(true, "class preserve-3d after inline removal")) return false;
+	NodeHandle(face).classList().set("");
+	return check(false, "class removal restores flat group");
+}
 }  // namespace
 
 int main()
 {
+	if (!expect_retained_paint_order_matches_full_record()) return 1;
+	if (!expect_flat_dom_boundary_limits_3d_sorting_and_hit_order()) return 1;
+	if (!expect_nonreplaced_inline_transform_is_ignored()) return 1;
+	if (!expect_transform_scale_z_composes_and_reprojects()) return 1;
+	if (!expect_preserve3d_alone_establishes_fixed_containing_block()) return 1;
+	if (!expect_flat_backface_groups_update_retained_frames()) return 1;
 	if (!expect_display_antialiasing_quality_gate()) return 1;
 	if (!expect_rotated_fill_quad_antialiases_edges()) return 1;
 	if (!expect_tiny_transformed_rounded_rect_keeps_compact_aa()) return 1;

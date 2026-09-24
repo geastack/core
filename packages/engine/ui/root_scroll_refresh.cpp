@@ -33,26 +33,29 @@ namespace {
 
 bool hasTransformState(const Node &node)
 {
-	return rstyle(node.style).transform_rotate != 0 ||
+	return hasIndividualLinearTransform(rstyle(node.style)) || hadIndividualLinearTransform(node.render) ||
+	       rstyle(node.style).transform_rotate != 0 ||
 	       node.render.previous_transform_rotate != 0 ||
 	       rstyle(node.style).transform_rotate_x != 0 ||
 	       node.render.previous_transform_rotate_x != 0 ||
 	       rstyle(node.style).transform_rotate_y != 0 ||
 	       node.render.previous_transform_rotate_y != 0 ||
-	       rstyle(node.style).transform_translate_x != 0 ||
+	       composedTranslateX(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_x != 0 ||
-	       rstyle(node.style).transform_translate_y != 0 ||
+	       composedTranslateY(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_y != 0 ||
-	       rstyle(node.style).transform_translate_z != 0 ||
+	       composedTranslateZ(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_z != 0 ||
-	       rstyle(node.style).transform_translate_x_percent != 0 ||
+	       composedTranslateXPercent(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_x_percent != 0 ||
-	       rstyle(node.style).transform_translate_y_percent != 0 ||
+	       composedTranslateYPercent(rstyle(node.style)) != 0 ||
 	       node.render.previous_transform_translate_y_percent != 0 ||
 	       rstyle(node.style).transform_scale_x != 1000 ||
 	       node.render.previous_transform_scale_x != 1000 ||
 	       rstyle(node.style).transform_scale_y != 1000 ||
+	       rstyle(node.style).transform_scale_z != 1000 ||
 	       node.render.previous_transform_scale_y != 1000 ||
+	       node.render.previous_transform_scale_z != 1000 ||
 	       rstyle(node.style).perspective > 0 ||
 	       node.render.previous_perspective > 0;
 }
@@ -168,7 +171,7 @@ bool flowsChildrenAsRow(const TreeState &state, const Node &p)
 	bool anyInFlow = false;
 	for (int c = p.first_child; c >= 0; c = state.nodes[c].next_sibling) {
 		const Node &child = state.nodes[c];
-		if (child.style.display == kDisplayNone || child.style.position == 1) continue;
+		if (child.style.display == kDisplayNone || isOutOfFlowPosition(child.style.position)) continue;
 		if (!LayoutEngine::isInlineLevelNode(child)) return false;
 		anyInFlow = true;
 	}
@@ -198,13 +201,13 @@ void shiftSiblingsForRemeasuredText(TreeState &state, int id, int oldWidth, int 
 	int totalFlex = 0;
 	for (int c = p.first_child; c >= 0; c = state.nodes[c].next_sibling) {
 		const Node &child = state.nodes[c];
-		if (child.style.display == kDisplayNone || child.style.position == 1) continue;
+		if (child.style.display == kDisplayNone || isOutOfFlowPosition(child.style.position)) continue;
 		totalFlex += child.style.flex;
 	}
 	if (totalFlex > 0) return;
 	for (int c = n.next_sibling; c >= 0; c = state.nodes[c].next_sibling) {
 		Node &sib = state.nodes[c];
-		if (sib.style.display == kDisplayNone || sib.style.position == 1) continue;
+		if (sib.style.display == kDisplayNone || isOutOfFlowPosition(sib.style.position)) continue;
 		if (row) sib.layout.x += delta;
 		else sib.layout.y += delta;
 		translateSlotDescendants(state, c, row ? delta : 0, row ? 0 : delta);
@@ -299,11 +302,13 @@ int RootScrollOnlyRefresh::refreshNode(int root,
                                        int width,
                                        int height)
 {
-	(void)root;
 	auto &state = treeState();
 	int foundNode = -1;
 	*extraDirtyCount = 0;
 	*slotCount = 0;
+	// A scroll blit would move fixed pixels along with the scrolling content.
+	// Fall back to layout and repaint until the blit path can exclude them.
+	if (LayoutEngine::containsViewportFixed(root)) return -1;
 
 	// Pass 1: exactly one pure-scroll node.
 	for (int i = 0; i < state.nodeCount; i++) {

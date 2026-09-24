@@ -7,6 +7,7 @@
 #include "style.h"
 
 #include <string>
+#include <string_view>
 
 namespace gea::embedded::ui {
 
@@ -105,6 +106,10 @@ public:
 
 	int hitTest(int x, int y);
 	int hitTestNode(int x, int y);
+	// Hover-capable pointing devices only; touch dragging remains pointerMove.
+	// Negative coordinates clear hover when the pointer leaves the surface.
+	int pointerHover(int x, int y);
+	bool isHovered(int node) const;
 	void pointerDown(int x, int y);
 	int pointerMove(int x, int y);
 	int pointerUp();
@@ -175,6 +180,20 @@ bool dispatchDocumentPointer(gea::framework::events::PointerEvent &event);
 // tagFromId returns the stable interned string (id 0 = "").
 int16_t internTag(const char *tag);
 const char *tagFromId(int16_t id);
+
+inline bool isDocumentCanvasRoot(const Node &node)
+{
+	return node.parent < 0 && std::string_view(tagFromId(node.tag_id)) == "html";
+}
+
+
+// HTML importers mark DOM text separately from Gea's styleable TextElement.
+// The former inherits text properties but is never an element selector target.
+inline bool isAnonymousTextNode(const Node &node)
+{
+	if (node.type != NodeType::Text) return false;
+	return std::string_view(tagFromId(node.tag_id)) == "#text";
+}
 
 // Blink-style rare-data pool accessors. A node's cold/optional state lives in a
 // pooled NodeRareData block referenced by Node::rare_data (-1 = none).

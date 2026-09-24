@@ -7,8 +7,24 @@
 
 namespace gea::embedded::ui {
 
+struct ComputedStyle;
+struct BackgroundPlacement {
+	int x, y, width, height;
+	int repeatX = 0, repeatY = 0; // repeat, no-repeat, round, space
+	int attachment = 0; // scroll, fixed, local
+	int origin = 1; // border, padding, content
+	int areaX = 0, areaY = 0, areaWidth = 0, areaHeight = 0;
+};
+
 class StyleValues {
 public:
+	// Image handles belong to the stylesheet pool; -1 is CSS none.
+	static bool applyBackgroundImage(ComputedStyle &style, int handle, int nodeId);
+	// 0: border-box, 1: padding-box, 2: content-box. Lists repeat by image layer.
+	static int backgroundClip(const ComputedStyle &style, int layer);
+	static bool hasTextBackgroundClip(const ComputedStyle &style);
+	static BackgroundPlacement backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
+	                                              int x, int y, int width, int height);
 	// Convert a raw style-value colour int into this board's native pixel, applied
 	// once when the colour is written into node.style. The style-value int holds
 	// the authoring colour in the board's pre-panel form: raw (unswapped) RGB565 on

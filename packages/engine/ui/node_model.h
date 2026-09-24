@@ -3,6 +3,7 @@
 
 #include "pixel.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstddef>
 #include <deque>
@@ -28,6 +29,18 @@ using style_color_t = gea::framework::graphics::pixel::native_t;
 #endif
 inline constexpr int kMaxNodes = GEA_EMBEDDED_MAX_NODES;
 inline constexpr int kUnset = -32768;
+// Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
+inline constexpr int kZIndexAuto = INT32_MIN;
+// Dimension expression slots use nonnegative values for pooled expressions,
+// -1 for no expression, and these tags for intrinsic sizing keywords.
+inline constexpr int kSizeMinContent = -2;
+inline constexpr int kSizeMaxContent = -3;
+inline constexpr int kSizeFitContent = -4;
+
+inline bool isIntrinsicSizeExpression(int value)
+{
+	return value >= kSizeFitContent && value <= kSizeMinContent;
+}
 inline constexpr int kScrollDirtyWordCount = (kMaxNodes + 63) / 64;
 inline constexpr int kMaxGridTracks = 8;
 // Layout-time track capacity: IMPLICIT rows (an auto-flowing grid of N
@@ -37,6 +50,7 @@ inline constexpr int kMaxGridTracks = 8;
 // Template-declared tracks stay capped at kMaxGridTracks; rows beyond the
 // template are implicit (auto-sized), so only the layout locals grow.
 inline constexpr int kMaxGridLayoutTracks = 96;
+inline constexpr int kGridLineSpan = 65536;
 
 #ifndef GEA_EMBEDDED_RARE_STYLE_SRAM_POOL_ENTRIES
 #define GEA_EMBEDDED_RARE_STYLE_SRAM_POOL_ENTRIES 0
@@ -54,6 +68,45 @@ inline constexpr int8_t kDisplayBlock = 0;
 inline constexpr int8_t kDisplayNone = 1;
 inline constexpr int8_t kDisplayGrid = 2;
 inline constexpr int8_t kDisplayFlex = 3;
+inline constexpr int kPositionFixed = 3;
+inline bool isOutOfFlowPosition(int position) { return position == 1 || position == kPositionFixed; }
+// Existing alignment values occupy the low nibble. Overflow-position is
+// independent of the alignment keyword and fits in the existing int8 fields.
+inline constexpr int kAlignSafe = 16;
+inline constexpr int kAlignUnsafe = 32;
+inline constexpr int kAlignStart = 7;
+inline constexpr int kAlignEnd = 8;
+inline constexpr int kAlignLastBaseline = 9;
+inline constexpr int kAlignSelfStart = 10;
+inline constexpr int kAlignSelfEnd = 11;
+inline constexpr int kAlignLeft = 12;
+inline constexpr int kAlignRight = 13;
+inline constexpr int kAlignSpaceEvenly = 14;
+inline bool isDistributedAlignment(int alignment)
+{
+	const int keyword = alignment & 15;
+	return keyword == 3 || keyword == 4 || keyword == kAlignSpaceEvenly;
+}
+inline int distributedAlignmentOffset(int alignment, int free, int index, int count)
+{
+	// Cumulative division keeps rounding error from accumulating across gaps.
+	// Distributed alignment falls back to safe start/center on overflow.
+	if (free <= 0 || count <= 0) return 0;
+	switch (alignment & 15) {
+	case 3: return count > 1 ? free * index / (count - 1) : 0;
+	case 4: return free * (2 * index + 1) / (2 * count);
+	case kAlignSpaceEvenly: return free * (index + 1) / (count + 1);
+	default: return 0;
+	}
+}
+inline int usedAlignment(int alignment, int freeSpace, bool reversed = false)
+{
+	if (alignment < 0) return alignment;
+	const int keyword = (alignment & kAlignSafe) && freeSpace < 0 ? kAlignStart : alignment & 15;
+	if (keyword == kAlignStart) return reversed ? 2 : 6;
+	if (keyword == kAlignEnd) return reversed ? 6 : 2;
+	return keyword;
+}
 
 enum class NodeType : int8_t {
 	View = 0,
@@ -80,6 +133,26 @@ inline bool isNativeButtonNodeType(NodeType type)
 // or embedded inline in ComputedStyle when GEA_EMBEDDED_RARE_STYLE_INLINE is set (defined
 // BEFORE ComputedStyle so it can be a by-value member).
 struct RareStyle {
+	// Logical edges: block-start/end, inline-start/end.
+	uint8_t margin_trim = 0;
+	// IEEE float bits travel through the existing integer style-value transport.
+	// Negative ratios mean `auto <ratio>` (prefer a replaced element's natural ratio).
+	int32_t aspect_ratio = 0;
+	int32_t flex_line_count = 1;
+	int32_t flex_basis_expression = -1;
+	int32_t line_height_expression = -1;
+	// Individual grid item alignment; auto defers to the parent's justify-items.
+	int8_t justify_self = -1;
+	// Computed contain flags: size, inline-size, layout, style, paint.
+	// Currently consumed by document background propagation.
+	uint8_t containment = 0;
+	uint16_t bg_clip = 0; // Interned clip list; zero is border-box.
+	// row-start, column-start, row-end, column-end; zero is auto. Positive
+	// spans carry kGridLineSpan, while signed integers retain explicit lines.
+	int32_t grid_line[4] = {};
+	// Deferred box edges; absent expressions do not allocate a rare-style record.
+	int32_t margin_expression[4] = {-1, -1, -1, -1};
+	int32_t padding_expression[4] = {-1, -1, -1, -1};
 	// --- grid (display:grid track templates) ---
 	int8_t grid_column_count = 0;
 	int8_t grid_row_count = 0;
@@ -90,6 +163,19 @@ struct RareStyle {
 
 	// --- transform / perspective (defaults must match NodeLifecycle::init:
 	//     scale 1000 = 1.0x, origins 500 = 50% center; the rest 0) ---
+	// Authored identity effects still establish positioning containing blocks.
+	uint8_t transform_present = 0;
+	uint8_t transform_preserve_3d = 0;
+	uint8_t rotate_present = 0;
+	int16_t rotate_angle = 0;
+	int32_t rotate_axis_x = 0, rotate_axis_y = 0, rotate_axis_z = 1000000;
+	int16_t scale_x = 1000, scale_y = 1000, scale_z = 1000;
+	uint8_t scale_present = 0;
+	uint8_t translate_present = 0;
+	uint8_t transform_translate_outer_axes = 0;
+	int16_t translate_x = 0, translate_y = 0, translate_z = 0;
+	int16_t translate_x_percent = 0, translate_y_percent = 0;
+	uint8_t filter_present = 0;
 	int16_t transform_rotate = 0;
 	int16_t transform_rotate_x = 0;
 	int16_t transform_rotate_y = 0;
@@ -100,6 +186,7 @@ struct RareStyle {
 	int16_t transform_translate_y_percent = 0;
 	int16_t transform_scale_x = 1000;
 	int16_t transform_scale_y = 1000;
+	int16_t transform_scale_z = 1000;
 	int16_t transform_origin_x = 500;
 	int16_t transform_origin_y = 500;
 	int16_t perspective = 0;
@@ -119,6 +206,11 @@ struct RareStyle {
 	// --- per-side borders (default white/opaque, matching NodeLifecycle::init;
 	//     only relevant when a side width > 0, which is rare) ---
 	int16_t border_side_width[4] = {};
+	// 0: flat; 1: groove; 2: ridge; 3: inset; 4: outset.
+	uint8_t border_relief[4] = {};
+	// Bits 0..3: explicit side colors; bit 4: literal common color;
+	// bits 5..8: explicit side currentColor. Unspecified colors use currentColor.
+	uint16_t border_color_flags = 0;
 	style_color_t border_side_color[4] = {
 		gea::framework::graphics::pixel::nativeColor(255, 255, 255),
 		gea::framework::graphics::pixel::nativeColor(255, 255, 255),
@@ -131,6 +223,10 @@ struct RareStyle {
 	// --- linear / overlay / radial gradients + background grid (defaults match
 	//     NodeLifecycle::init: alphas 255, stops 500/1000, angle 1800, radial
 	//     center/extent 500/1000) ---
+	uint16_t bg_image_layer_count = 1; // Includes none layers.
+	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
+	int32_t bg_attachment_list = -1, bg_origin_list = -1;
+	uint16_t bg_gradient_layer = 0, bg_overlay_gradient_layer = 0, bg_radial_gradient_layer = 0;
 	style_color_t bg_gradient_from_color = 0;
 	style_color_t bg_gradient_mid_color = 0;
 	style_color_t bg_gradient_to_color = 0;
@@ -171,6 +267,19 @@ struct RareStyle {
 		uint8_t bg_grid_line_y = 0;
 	};
 
+// Individual translation is applied outside the transform list. Its translation
+// therefore adds to the list translation, while authored values stay independent.
+inline bool hasIndividualLinearTransform(const RareStyle &s)
+{
+	return ((s.rotate_angle % 3600) != 0 && (s.rotate_axis_x || s.rotate_axis_y || s.rotate_axis_z)) ||
+	       s.scale_x != 1000 || s.scale_y != 1000 || s.scale_z != 1000;
+}
+inline int composedTranslateX(const RareStyle &s) { return int(s.transform_translate_x) + s.translate_x; }
+inline int composedTranslateY(const RareStyle &s) { return int(s.transform_translate_y) + s.translate_y; }
+inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_translate_z) + s.translate_z; }
+inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
+inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
+
 struct ComputedStyle {
 	int8_t display;
 	// True iff the `display` property was explicitly authored (a CSS rule or
@@ -182,14 +291,27 @@ struct ComputedStyle {
 	int8_t display_explicit;
 	int8_t flex_direction;
 	int8_t flex_direction_explicit;
-	int8_t flex_wrap;
+	int8_t flex_wrap; // low bits: 0 nowrap, 1 wrap, 2 wrap-reverse; bit 2: balance
 	int8_t justify_content;
 	int8_t align_items;
 	int8_t justify_items;
 	int8_t align_content;
 	int8_t align_self;
 	int16_t gap;
+	int8_t box_sizing; // 0: content-box (CSS initial), 1: border-box
+	int8_t float_side; // 0: none, 1: left, 2: right
+	int8_t clear_side; // 0: none, 1: left, 2: right, 3: both
+	int8_t writing_mode; // -1: inherit, 0: horizontal-tb, 1: vertical-lr, 2: vertical-rl, 3: sideways-rl, 4: sideways-lr
+	int8_t direction; // -1: inherit, 0: ltr, 1: rtl
+	uint8_t margin_auto; // TRBL bit mask; numeric margins remain zero for auto
+	int16_t row_gap, column_gap; // kUnset falls back to native gap
+	int16_t row_gap_percent, column_gap_percent;
+	int32_t order; // Stable ordering of flex/grid items; never changes tree order.
+	// Inherited unitless line-height number as IEEE float bits; -1 means length/normal.
+	// Keep this common inherited value out of the much larger rare-style allocation.
+	int32_t line_height_multiplier;
 
+	int32_t width_expression, height_expression;
 	int16_t width, height;
 	int16_t width_percent, height_percent;
 	int16_t min_width, min_height;
@@ -207,6 +329,7 @@ struct ComputedStyle {
 	int16_t margin[4];
 
 	int8_t position;
+	int8_t z_index_auto;
 	int16_t pos_offsets[4];
 	int16_t pos_offset_percent[4];
 	int16_t z_index;
@@ -246,10 +369,10 @@ struct ComputedStyle {
 	int16_t mask_right_fade_width;
 	int8_t image_fit;
 	// CSS `backface-visibility`: 0 = visible (default), 1 = hidden. When hidden, a
-	// transformed face/text whose projected winding points away from the viewer is
-	// culled — a closed opaque shape's back faces are occluded anyway, and this skips
-	// the wasted overdraw. Default 0 = never culled (lone/visible quads stay drawn).
+	// flat element's entire painted subtree is culled when its back faces the viewer.
+	// A preserve-3d element keeps its descendants' individual visibility.
 	int8_t backface_hidden;
+	int8_t visibility; // 0 visible, 1 hidden, 2 collapse (inherited)
 	// CSS `text-decoration` — 0 = none (default), 1 = underline, 2 =
 	// line-through. The text renderer paints a font-size-relative line at
 	// the appropriate y-offset for each decorated run.
@@ -257,10 +380,8 @@ struct ComputedStyle {
 	// CSS `text-transform` — 0 = none, 1 = uppercase, 2 = lowercase,
 	// 3 = capitalize. Rendering applies this without mutating Node::text.
 	int8_t text_transform;
-	// CSS `white-space` — 0 = normal (text wraps to fit the content width,
-	// the default), 1 = nowrap (the run is laid out as a single line and is
-	// never broken on the available width). Inherited, matching CSS. nowrap is
-	// the precondition for `text-overflow: ellipsis` to do anything.
+	// CSS `white-space`: 0 normal, 1 nowrap, 2 pre, 3 pre-wrap, 4 pre-line,
+	// 5 break-spaces. Inherited; space preservation and soft wrapping differ.
 	int8_t white_space;
 	// CSS `text-overflow` — 0 = clip (default), 1 = ellipsis. Only consulted
 	// when the line cannot wrap (white-space: nowrap): an overflowing single
@@ -387,6 +508,131 @@ RareStyle &rstyleMut(ComputedStyle &style);
 void releaseRareStyle(int16_t &handle);  // frees the entry (or no-op when embedded)
 void resetRareStylePool();               // drops all entries (or no-op when embedded)
 
+inline bool styleHasBackgroundImage(const ComputedStyle &style)
+{
+	const auto &rare = rstyle(style);
+	return style.bg_fill != 0 || rare.bg_radial_gradient || rare.bg_overlay_gradient || rare.bg_grid_axes;
+}
+
+// Authored inheritance stays in the property override; ComputedStyle always
+// contains resolved device-pixel widths, so descendants never re-evaluate em.
+inline constexpr int kInheritedBorderWidth = -1;
+inline int computedBorderWidth(const ComputedStyle &style, int side)
+{
+	const int specific = rstyle(style).border_side_width[side];
+	return specific > style.border_width ? specific : style.border_width;
+}
+
+inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, const ComputedStyle *parent)
+{
+	int widths[4];
+	for (int i = 0; i < 4; ++i) {
+		widths[i] = computedBorderWidth(style, i);
+		if (side < 0 || side == i)
+			widths[i] = value == kInheritedBorderWidth ? (parent ? computedBorderWidth(*parent, i) : 0) : value;
+	}
+	const bool uniform = side < 0 && widths[0] == widths[1] && widths[0] == widths[2] && widths[0] == widths[3];
+	// A side can override a wider common border with a narrower or zero edge.
+	// Materialize the other sides before clearing that common width.
+	const int common = side < 0 ? (uniform ? widths[0] : 0) : (widths[side] < style.border_width ? 0 : style.border_width);
+	bool changed = common != style.border_width;
+	int stored[4];
+	for (int i = 0; i < 4; ++i) {
+		stored[i] = side < 0 ? (uniform ? 0 : widths[i]) : (common != style.border_width || side == i ? widths[i] : rstyle(style).border_side_width[i]);
+		changed |= stored[i] != rstyle(style).border_side_width[i];
+	}
+	if (!changed) return false;
+	style.border_width = common;
+	bool needsRare = false;
+	for (int i = 0; i < 4; ++i) needsRare |= stored[i] != rstyle(style).border_side_width[i];
+	if (needsRare) {
+		auto &rare = rstyleMut(style);
+		for (int i = 0; i < 4; ++i) rare.border_side_width[i] = stored[i];
+	}
+	return true;
+}
+
+inline bool setBorderColorBinding(ComputedStyle &style, int side, bool current)
+{
+	const unsigned previous = rstyle(style).border_color_flags;
+	unsigned next;
+	if (side < 0) next = current ? 0u : 16u; // shorthand resets every side
+	else {
+		next = previous | (1u << side);
+		if (current) next |= 1u << (side + 5);
+		else next &= ~(1u << (side + 5));
+	}
+	if (next == previous) return false;
+	rstyleMut(style).border_color_flags = static_cast<uint16_t>(next);
+	return true;
+}
+
+inline bool borderColorIsCurrent(const ComputedStyle &style, int side = -1)
+{
+	const unsigned flags = rstyle(style).border_color_flags;
+	if (side >= 0 && (flags & (1u << side))) return flags & (1u << (side + 5));
+	return !(flags & 16u);
+}
+
+inline style_color_t borderPaintColor(const ComputedStyle &style, int side = -1)
+{
+	if (borderColorIsCurrent(style, side)) return style.text_color;
+	return side >= 0 && (rstyle(style).border_color_flags & (1u << side))
+	    ? rstyle(style).border_side_color[side] : style.border_color;
+}
+
+inline uint8_t borderPaintAlpha(const ComputedStyle &style, int side = -1)
+{
+	if (borderColorIsCurrent(style, side)) return style.text_alpha;
+	return side >= 0 && (rstyle(style).border_color_flags & (1u << side))
+	    ? rstyle(style).border_side_alpha[side] : style.border_alpha;
+}
+
+inline bool borderColorsDiffer(const ComputedStyle &style)
+{
+	for (int side = 1; side < 4; ++side)
+		if (borderPaintColor(style, side) != borderPaintColor(style, 0) ||
+		    borderPaintAlpha(style, side) != borderPaintAlpha(style, 0)) return true;
+	return false;
+}
+
+inline bool borderUsesCurrentColor(const ComputedStyle &style)
+{
+	for (int side = 0; side < 4; ++side)
+		if ((style.border_width > 0 || rstyle(style).border_side_width[side] > 0) && borderColorIsCurrent(style, side)) return true;
+	return false;
+}
+
+// Layout boxes include padding and borders. CSS width/height can select either
+// the content box or border box, but child origins always use these insets.
+inline int boxInset(const ComputedStyle &style, int side)
+{
+	const int sideWidth = rstyle(style).border_side_width[side];
+	return style.padding[side] + (sideWidth > style.border_width ? sideWidth : style.border_width);
+}
+inline int boxInsets(const ComputedStyle &style, bool horizontal)
+{
+	return horizontal ? boxInset(style, 1) + boxInset(style, 3) : boxInset(style, 0) + boxInset(style, 2);
+}
+inline int contentSizeToBorderSize(const ComputedStyle &style, int size, bool horizontal)
+{
+	const int insets = boxInsets(style, horizontal);
+	const int result = size + (style.box_sizing == 0 ? insets : 0);
+	return result < insets ? insets : result;
+}
+
+inline int clampBorderBoxSize(const ComputedStyle &style, int size, bool horizontal)
+{
+	const int minSize = horizontal ? style.min_width : style.min_height;
+	const int maxSize = horizontal ? style.max_width : style.max_height;
+	if (maxSize != kUnset) {
+		const int limit = contentSizeToBorderSize(style, maxSize, horizontal);
+		if (size > limit) size = limit;
+	}
+	const int floor = contentSizeToBorderSize(style, minSize == kUnset ? 0 : minSize, horizontal);
+	return size < floor ? floor : size;
+}
+
 inline bool isDisplayNone(const ComputedStyle &style)
 {
 	return style.display == kDisplayNone;
@@ -417,22 +663,37 @@ inline bool usesRowLayout(const ComputedStyle &style)
 	return style.flex_direction_explicit ? style.flex_direction == 1 : true;
 }
 
+// Keep specified axes separate: changing the other axis must undo CSS's
+// visible->auto / clip->hidden computed-value conversion.
+inline bool isScrollableOverflow(int value) { return value == 1 || value == 2; }
+inline int usedOverflow(int axis, int other)
+{
+	return isScrollableOverflow(other) ? (axis == 0 ? 2 : axis == 3 ? 1 : axis) : axis;
+}
+inline int overflowX(const ComputedStyle &style) { return usedOverflow(style.overflow_x, style.overflow_y); }
+inline int overflowY(const ComputedStyle &style) { return usedOverflow(style.overflow_y, style.overflow_x); }
 inline int8_t aggregateOverflow(int8_t overflowX, int8_t overflowY)
 {
-	if (overflowX == 2 || overflowY == 2) return 2;
-	if (overflowX != 0 || overflowY != 0) return 1;
-	return 0;
+	const int x = usedOverflow(overflowX, overflowY), y = usedOverflow(overflowY, overflowX);
+	if (x == 2 || y == 2) return 2;
+	if (x == 1 || y == 1) return 1;
+	return x == 3 || y == 3 ? 3 : 0;
 }
-
-inline bool scrollsOverflowX(const ComputedStyle &style)
+inline bool overflowEstablishesContext(const ComputedStyle &style)
 {
-	return style.overflow_x == 2;
+	return isScrollableOverflow(overflowX(style)) || isScrollableOverflow(overflowY(style));
 }
-
-inline bool scrollsOverflowY(const ComputedStyle &style)
+// Grouping effects force the used transform-style to flat.
+inline bool preserves3D(const ComputedStyle &style)
 {
-	return style.overflow_y == 2;
+	const auto &rare = rstyle(style);
+	return rare.transform_preserve_3d && style.opacity == 255 &&
+	    !isScrollableOverflow(overflowX(style)) && !isScrollableOverflow(overflowY(style)) &&
+	    !rare.filter_present && !rare.filter_blur_radius && !(rare.containment & 16) &&
+	    !style.mask_right_fade_width;
 }
+inline bool scrollsOverflowX(const ComputedStyle &style) { return overflowX(style) == 2; }
+inline bool scrollsOverflowY(const ComputedStyle &style) { return overflowY(style) == 2; }
 
 inline bool hasSideBorder(const ComputedStyle &style)
 {
@@ -449,8 +710,15 @@ inline bool hasAnyBorder(const ComputedStyle &style)
 	return style.border_width > 0 || hasSideBorder(style);
 }
 
+inline bool hasBorderRelief(const ComputedStyle &style)
+{
+	const auto &r = rstyle(style);
+	return r.border_relief[0] || r.border_relief[1] || r.border_relief[2] || r.border_relief[3];
+}
+
 struct LayoutBox {
 	int16_t x, y;
+	int32_t width_expression, height_expression;
 	int16_t width, height;
 
 	// Inline formatting: x offset, inside this box's content area, at which the
@@ -461,6 +729,11 @@ struct LayoutBox {
 	// every box that starts its own line, which is every box outside an inline
 	// formatting row.
 	int16_t inline_indent = 0;
+	// The hypothetical block-start margin edge of an out-of-flow child,
+	// relative to its static-position parent. Capture before relative offsets
+	// and absolute-coordinate conversion; retained refresh reuses this anchor.
+	int16_t static_block_start = 0;
+	uint8_t static_block_axis = 0;  // 0: unavailable, 1: y, 2: x
 
 	int16_t previous_x, previous_y;
 	int16_t previous_width, previous_height;
@@ -503,21 +776,29 @@ struct LayoutBox {
 };
 
 struct RenderState {
+	int16_t previous_rotate_angle;
+	int32_t previous_rotate_axis_x, previous_rotate_axis_y, previous_rotate_axis_z;
+	int16_t previous_scale_x, previous_scale_y, previous_scale_z;
 	int16_t previous_transform_rotate;
 	int16_t previous_transform_rotate_x;
 	int16_t previous_transform_rotate_y;
-	int16_t previous_transform_translate_x;
-	int16_t previous_transform_translate_y;
-	int16_t previous_transform_translate_z;
-	int16_t previous_transform_translate_x_percent;
-	int16_t previous_transform_translate_y_percent;
+	int16_t previous_translate_x, previous_translate_y, previous_translate_z;
+	int16_t previous_translate_x_percent, previous_translate_y_percent;
+	uint8_t previous_transform_translate_outer_axes;
+	int32_t previous_transform_translate_x;
+	int32_t previous_transform_translate_y;
+	int32_t previous_transform_translate_z;
+	int32_t previous_transform_translate_x_percent;
+	int32_t previous_transform_translate_y_percent;
 	int16_t previous_transform_scale_x;
 	int16_t previous_transform_scale_y;
+	int16_t previous_transform_scale_z;
 	int16_t previous_transform_origin_x;
 	int16_t previous_transform_origin_y;
 	int16_t previous_perspective;
 	int16_t previous_perspective_origin_x;
 	int16_t previous_perspective_origin_y;
+	uint8_t previous_transformable_box;
 	int16_t previous_filter_blur_radius;
 
 	uint8_t dirty;
@@ -560,6 +841,12 @@ struct RenderState {
 	uint8_t inline_baseline;
 };
 
+inline bool hadIndividualLinearTransform(const RenderState &s)
+{
+	return ((s.previous_rotate_angle % 3600) != 0 && (s.previous_rotate_axis_x || s.previous_rotate_axis_y || s.previous_rotate_axis_z)) ||
+	       s.previous_scale_x != 1000 || s.previous_scale_y != 1000 || s.previous_scale_z != 1000;
+}
+
 struct Node {
 	NodeType type;
 	ComputedStyle style;
@@ -593,5 +880,18 @@ struct Node {
 	// 2 bytes instead of inlining those tables. Reset to -1 by Node{} / node reuse.
 	int16_t rare_data = -1;
 };
+
+// Overflow clips the padding edge on each non-visible axis. Open axes span
+// the positive display coordinate range and remain stationary during replay.
+inline void overflowClipBounds(const Node &node, int &x, int &y, int &w, int &h)
+{
+	const auto &s = node.style;
+	const int left = boxInset(s, 3) - s.padding[3], right = boxInset(s, 1) - s.padding[1];
+	const int top = boxInset(s, 0) - s.padding[0], bottom = boxInset(s, 2) - s.padding[2];
+	x = overflowX(s) ? node.layout.x + left : 0;
+	y = overflowY(s) ? node.layout.y + top : 0;
+	w = overflowX(s) ? std::max(0, node.layout.width - left - right) : 32767;
+	h = overflowY(s) ? std::max(0, node.layout.height - top - bottom) : 32767;
+}
 
 }  // namespace gea::embedded::ui

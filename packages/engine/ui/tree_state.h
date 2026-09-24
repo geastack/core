@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace gea::embedded::ui {
@@ -73,6 +74,35 @@ struct NodeStyleOverrideStore {
 	const NodeStyleOverride &at(std::size_t index) const;
 };
 
+// CSS ::first-line painting is uncommon and line fragments are useful only
+// for nodes inside a block with a first-line background. Keep this metadata in
+// the node's rare allocation instead of charging every Node for it.
+struct FirstLineBackground {
+	style_color_t color = 0;
+	std::uint8_t alpha = 0;
+	bool hasColor = false;
+	std::int16_t lineY = 0;
+	std::int16_t lineHeight = 0;
+	std::int16_t lineContextNode = -1;
+	bool lineValid = false;
+};
+
+struct FirstLineFragment {
+	std::int16_t x = 0;
+	std::int16_t y = 0;
+	std::int16_t width = 0;
+	std::int16_t height = 0;
+	std::int16_t contextNode = -1;
+	bool valid = false;
+};
+
+struct InlineStaticPosition {
+	std::int16_t x = 0;
+	std::int16_t y = 0;
+	bool continuationLine = false;
+	bool valid = false;
+};
+
 struct NodeCustomProperty {
 	CssAtomId nameId = kInvalidCssAtom;
 	std::string value;
@@ -126,22 +156,42 @@ struct VirtualListNodeState {
 // properties, and virtual-list windowing state. Stored in a shared pool and
 // referenced by a single int16 handle on the node (Node::rare_data) instead of
 // inlining a fixed slot on every node, so a plain styled node allocates nothing.
+struct GridTrackLayout {
+	std::vector<int> columnStart, columnEnd, rowStart, rowEnd;
+	int columnOrigin = 0, rowOrigin = 0;
+};
+
 struct NodeRareData {
 	NodeAttributeStore attributes;
 	NodeEventListeners listeners;
 	NodeCustomPropertyStore customProperties;
+	// Authored inline values survive rebuilding the computed custom-property map.
+	NodeCustomPropertyStore inlineCustomProperties;
 	NodeStyleOverrideStore defaultStyles;
 	NodeStyleOverrideStore inlineStyles;
+	CssAtomId inlineGridTemplates[2] = {kInvalidCssAtom, kInvalidCssAtom};
+	uint8_t inlineGridShorthandMask = 0;
+	std::unique_ptr<GridTrackLayout> gridLayout;
 	VirtualListNodeState virtualList;
+	FirstLineBackground firstLineBackground;
+	FirstLineFragment firstLineFragment;
+	InlineStaticPosition inlineStaticPosition;
 
 	void clear()
 	{
 		attributes.clear();
 		listeners.clear();
 		customProperties.clear();
+		inlineCustomProperties.clear();
 		defaultStyles.clear();
 		inlineStyles.clear();
+		inlineGridTemplates[0] = inlineGridTemplates[1] = kInvalidCssAtom;
+		inlineGridShorthandMask = 0;
+		gridLayout.reset();
 		virtualList = VirtualListNodeState{};
+	firstLineBackground = FirstLineBackground{};
+	firstLineFragment = FirstLineFragment{};
+	inlineStaticPosition = InlineStaticPosition{};
 	}
 };
 
@@ -162,6 +212,9 @@ struct TreeState {
 	int mountedRoot = -1;
 	int mountedWidth = 0;
 	int mountedHeight = 0;
+	// Conservative fast-out for fixed-descendant clip/scroll checks. Set on
+	// first use and retained until tree state is reset.
+	bool fixedPositionUsed = false;
 	int lastFrameMs = 0;
 	// Monotonic counter bumped on every mount()/refresh() — i.e. whenever the
 	// reactive tree is (re)built. Lets native renderers (macOS) skip an entire
@@ -226,6 +279,7 @@ struct TreeState {
 	// consulted by InputRenderer::record on the pixel target. The macOS
 	// renderer ignores these (NSResponder owns its own caret).
 	int activeInputId = -1;
+	int hoveredNodeId = -1;
 	int caretLastFlipMs = 0;
 	bool caretVisible = true;
 };

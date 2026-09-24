@@ -65,7 +65,12 @@ public:
       while (groupEnd < running_.size() && sameTimeline(first, running_[groupEnd])) ++groupEnd;
       if (pr.active) {
         for (std::size_t j = i; j < groupEnd; ++j) {
-          applyValue(running_[j].anim, sampleTrack(running_[j].anim, pr.p));
+          const auto &a = running_[j].anim;
+          if (!a.rotationAxes.empty())
+            applyRotationSample(a, pr.p, [&](Property property, int value) {
+              gea::embedded::ui::applyAnimatedStyleValue(a.nodeId, property, value);
+            });
+          else applyValue(a, sampleTrack(a, pr.p));
         }
       }
       if (pr.done)

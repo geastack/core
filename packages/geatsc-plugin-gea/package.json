@@ -1,6 +1,6 @@
 {
   "name": "@geastack/geatsc-plugin-gea",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Gea IR backend plugin for geatsc.",
   "license": "Apache-2.0",
   "repository": {

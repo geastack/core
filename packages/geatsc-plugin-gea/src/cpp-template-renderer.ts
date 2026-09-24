@@ -29,6 +29,7 @@ import type {
 import {
   cppString,
   isPxLengthStylePropertyName,
+  isBorderWidthStylePropertyName,
   isRuntimeNumericConstantIdentifier,
   nativeStyleColorExpression,
   opaqueCssHexColor,
@@ -111,7 +112,7 @@ interface LoweredExpression {
   expr: string
   deps: string[]
   fields: StoreFieldRef[]
-  styleUnit?: 'percent' | 'color' | 'keyword'
+  styleUnit?: 'percent' | 'color' | 'keyword' | 'px'
 }
 
 interface LoweredClassObject {
@@ -1881,7 +1882,7 @@ function keyedListPayload(slot: GeaIrSlot): { itemParam?: string; rowTemplate?: 
 interface RowExpr {
   cpp: string
   kind: 'string' | 'number' | 'boolean'
-  styleUnit?: 'percent' | 'color' | 'keyword'
+  styleUnit?: 'percent' | 'color' | 'keyword' | 'px'
 }
 
 function rowExprAsString(expr: RowExpr): string {
@@ -1959,7 +1960,7 @@ function lowerRowPxLengthStyleExpr(
   if (!parts || parts.length !== 2) return null
   if (parts[0].kind !== 'expr' || parts[1].kind !== 'text' || parts[1].value !== 'px') return null
   const lowered = lowerRowExpr(parts[0].value, itemParam, indexParam, itemKind, constants)
-  return lowered ? { cpp: rowExprAsNumber(lowered), kind: 'number' } : null
+  return lowered ? { cpp: rowExprAsNumber(lowered), kind: 'number', styleUnit: isBorderWidthStylePropertyName(propertyName) ? 'px' : undefined } : null
 }
 
 function lowerRowPercentLengthStyleExpr(
@@ -2550,7 +2551,7 @@ function lowerPxLengthStyleValue(
   if (parts[0].kind !== 'expr' || parts[1].kind !== 'text' || parts[1].value !== 'px') return null
   const value = lowerTemplateExpression(parts[0].value, storeFields, constants, propBindings)
   if (!value) return null
-  return mergeLowered('number', loweredAsKind(value, 'number'), [value])
+  return { ...mergeLowered('number', loweredAsKind(value, 'number'), [value]), styleUnit: isBorderWidthStylePropertyName(propertyName) ? 'px' : undefined }
 }
 
 function lowerPercentLengthStyleValue(
@@ -2658,6 +2659,10 @@ function rotateDegreesTemplateExpression(
 }
 
 function directNumberStyleApplyLine(node: string, propertyName: string, value: string): string | null {
+  if (isBorderWidthStylePropertyName(propertyName)) {
+    const declaration = styleDeclarationEnumForPropertyName(propertyName)
+    return `gea::embedded::ui::StyleSheet::instance().applyNumberProperty(${node}, gea::embedded::ui::StyleDeclaration::${declaration}, static_cast<double>(${value}));`
+  }
   const rawNumber = rawNumberExpression(value)
   const properties = styleRawNumberPropertyEnumsForPropertyName(propertyName)
   if (properties) {
@@ -2669,8 +2674,9 @@ function directNumberStyleApplyLine(node: string, propertyName: string, value: s
   }
   if (propertyName === 'translate-x') return `${node}.style().translateX(${rawNumber});`
   if (propertyName === 'translate-y') return `${node}.style().translateY(${rawNumber});`
-  if (propertyName === 'scale') return `${node}.style().scale(static_cast<double>(${value}));`
-  if (propertyName === 'transform' || propertyName === 'rotate') return `${node}.style().rotateDegrees(static_cast<double>(${value}));`
+  if (propertyName === 'scale') return `${node}.style().cssScale(static_cast<double>(${value}));`
+  if (propertyName === 'rotate') return `${node}.style().cssRotateDegrees(static_cast<double>(${value}));`
+  if (propertyName === 'transform') return `${node}.style().rotateDegrees(static_cast<double>(${value}));`
   return null
 }
 
@@ -2682,7 +2688,8 @@ function opacityNumberExpression(value: string): string {
   return `([](double __v) -> int { if (!std::isfinite(__v)) return 0; if (__v <= 1.0) __v *= 255.0; if (__v < 0.0) __v = 0.0; if (__v > 255.0) __v = 255.0; return static_cast<int>(__v + 0.5); })(static_cast<double>(${value}))`
 }
 
-function styleNumberApplyLine(node: string, propertyName: string, value: string, styleUnit?: 'percent' | 'color' | 'keyword'): string | null {
+function styleNumberApplyLine(node: string, propertyName: string, value: string, styleUnit?: 'percent' | 'color' | 'keyword' | 'px'): string | null {
+  if (styleUnit === 'px') return `gea::embedded::ui::StyleSheet::instance().applyPixelLengthProperty(${node}, gea::embedded::ui::StyleDeclaration::${styleDeclarationEnumForPropertyName(propertyName)}, static_cast<double>(${value}));`
   if (styleUnit === 'percent') return directPercentStyleApplyLine(node, propertyName, value)
   if (styleUnit === 'color') return directColorStyleApplyLine(node, propertyName, value)
   if (styleUnit === 'keyword') return directKeywordStyleApplyLine(node, propertyName, value)
@@ -2739,7 +2746,10 @@ function keywordCommonValue(entries: StylePropertyValue[] | null): number | null
 
 function directColorStyleApplyLine(node: string, propertyName: string, value: string): string | null {
   const target = styleOpaqueColorTargetForPropertyName(propertyName)
-  if (target === 'background') return `${node}.style().backgroundColor(static_cast<int>(${value}));`
+  if (target === 'background') {
+    const resetImage = propertyName === 'background' ? `${node}.style().set(gea::embedded::ui::Property::BackgroundImage, -1); ${node}.style().set(gea::embedded::ui::Property::BackgroundClip, 0); ` : ''
+    return `${resetImage}${node}.style().backgroundColor(static_cast<int>(${value}));`
+  }
   if (target === 'color') return `${node}.style().color(static_cast<int>(${value}));`
   if (target === 'active-background') {
     return `${node}.style().set(gea::embedded::ui::Property::ActiveBackgroundColor, static_cast<int>(${value})); ${node}.style().set(gea::embedded::ui::Property::HasActiveBackground, 1);`

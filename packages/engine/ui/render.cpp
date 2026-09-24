@@ -6,6 +6,7 @@
 #include "graphics/font.h"
 #include "memory.h"
 #include "tree_state.h"
+#include "style_values.h"
 #include <pixel.h>
 
 #include <algorithm>
@@ -516,6 +517,7 @@ int gLastScrollUiFrame = -1000;
 			int commandCapacity = 0;
 			bool commandsExternal = false;
 			int commandCount = 0;
+			bool textClippedBackgrounds = false;
 			// Sticky: an append() was dropped because the command buffer is full.
 			// Reset by clear(); lets a caller detect a truncated record.
 			bool commandOverflow = false;
@@ -775,6 +777,7 @@ int gLastScrollUiFrame = -1000;
 				commandCapacity = 0;
 				commandsExternal = false;
 				commandCount = 0;
+				textClippedBackgrounds = false;
 				appendOverride = nullptr;
 				appendOverrideCount = nullptr;
 				appendOverrideCapacity = 0;
@@ -1344,7 +1347,7 @@ int gLastScrollUiFrame = -1000;
 			return node.first_child < 0 &&
 						 node.type == NodeType::View &&
 						 node.style.has_bg &&
-						 node.style.bg_fill == 0 &&
+						 !styleHasBackgroundImage(node.style) && rstyle(node.style).bg_clip == 0 &&
 						 !hasAnyBorder(node.style);
 		}
 
@@ -1577,8 +1580,13 @@ int gLastScrollUiFrame = -1000;
 			return true;
 		}
 
-		bool roundedRectScreenSpanHasCircularRadii(const RoundedRectScreenSpan &r)
+		bool roundedRectScreenSpanFitsCanvas(const RoundedRectScreenSpan &r)
 		{
+			// Both direct replay and batching call a Canvas primitive that clamps
+			// radii to half the box. Larger CSS curves require the exact shader.
+			const int maxRadius8 = std::min(r.w, r.h) * 4;
+			if (r.tlRx8 > maxRadius8 || r.trRx8 > maxRadius8 ||
+			    r.brRx8 > maxRadius8 || r.blRx8 > maxRadius8) return false;
 			return std::abs(r.tlRx8 - r.tlRy8) <= 1 &&
 						 std::abs(r.trRx8 - r.trRy8) <= 1 &&
 						 std::abs(r.brRx8 - r.brRy8) <= 1 &&
@@ -1643,7 +1651,7 @@ int gLastScrollUiFrame = -1000;
 			RoundedRectScreenSpan span{};
 			if (!transformedRoundedRectToScreenSpan(r, &span))
 				return false;
-			if (!roundedRectScreenSpanHasCircularRadii(span))
+			if (!roundedRectScreenSpanFitsCanvas(span))
 				return false;
 
 			if (drawCircleLikeScreenSpan(span, r.color))
@@ -2660,14 +2668,22 @@ int gLastScrollUiFrame = -1000;
 			}
 		}
 
-		GEA_RENDER_HOT_SRAM void drawProjectedText(const DisplayCommand &command)
+		GEA_RENDER_HOT_SRAM void drawProjectedText(const DisplayCommand &authoredCommand,
+		    uint8_t *coverageRow = nullptr, int coverageX = 0)
 		{
+			// Keep deferred commands pointing to authored node storage. Normalize
+			// locally on replay, using the same content as layout and cache hashing.
+			std::string preparedText;
+			DisplayCommand command = authoredCommand;
+			command.projectedText.text = TextRenderer::prepareText(command.projectedText.text,
+			    command.projectedText.textTransform, command.projectedText.whiteSpace, preparedText);
+			command.projectedText.textTransform = 0;
 			auto *canvas = gea::platform::display::Display::canvas();
 			if (!canvas || !canvas->pixels() || canvas->width() <= 0 || canvas->height() <= 0)
 				return;
 			if (!command.projectedText.text || !command.projectedText.text[0])
 				return;
-			if (command.projectedText.alpha == 0 || command.projectedText.srcW <= 0 || command.projectedText.srcH <= 0)
+			if ((!coverageRow && command.projectedText.alpha == 0) || command.projectedText.srcW <= 0 || command.projectedText.srcH <= 0)
 				return;
 
 			// Back-face cull (CSS backface-visibility:hidden) — same winding test as the gradient
@@ -2704,7 +2720,7 @@ int gLastScrollUiFrame = -1000;
 				return;
 
 			const int parentAlpha = gea::platform::display::Display::alpha();
-			if (parentAlpha == 0)
+			if (!coverageRow && parentAlpha == 0)
 				return;
 
 			const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
@@ -3067,6 +3083,10 @@ int gLastScrollUiFrame = -1000;
 						if (coverage <= 0)
 							continue;
 
+						if (coverageRow) {
+							coverageRow[xi - coverageX] = std::max<int>(coverageRow[xi - coverageX], coverage);
+							continue;
+						}
 						int alpha = (coverage * static_cast<int>(command.projectedText.alpha) + 127) / 255;
 						if (parentAlpha != 255) // parentAlpha==255 makes the second scale an identity
 							alpha = (alpha * parentAlpha + 127) / 255;
@@ -4515,6 +4535,64 @@ int gLastScrollUiFrame = -1000;
 			return true;
 		}
 
+		void cssRoundedBorderContours(const decltype(DisplayCommand{}.strokeRoundedRect) &s,
+		                              TransformedRoundedRectCommand &outer,
+		                              TransformedRoundedRectCommand &inner)
+		{
+			outer.lx = s.x; outer.ly = s.y; outer.lw = s.w; outer.lh = s.h;
+			outer.tlRx8 = s.rx8[0]; outer.tlRy8 = s.ry8[0];
+			outer.trRx8 = s.rx8[1]; outer.trRy8 = s.ry8[1];
+			outer.brRx8 = s.rx8[2]; outer.brRy8 = s.ry8[2];
+			outer.blRx8 = s.rx8[3]; outer.blRy8 = s.ry8[3];
+			inner = outer;
+			inner.lx += s.lineWidth; inner.ly += s.lineWidth;
+			inner.lw = std::max(0, s.w - 2 * s.lineWidth);
+			inner.lh = std::max(0, s.h - 2 * s.lineWidth);
+			inner.tlRx8 = std::max(0, s.rx8[0] - 8 * s.lineWidth); inner.tlRy8 = std::max(0, s.ry8[0] - 8 * s.lineWidth);
+			inner.trRx8 = std::max(0, s.rx8[1] - 8 * s.lineWidth); inner.trRy8 = std::max(0, s.ry8[1] - 8 * s.lineWidth);
+			inner.brRx8 = std::max(0, s.rx8[2] - 8 * s.lineWidth); inner.brRy8 = std::max(0, s.ry8[2] - 8 * s.lineWidth);
+			inner.blRx8 = std::max(0, s.rx8[3] - 8 * s.lineWidth); inner.blRy8 = std::max(0, s.ry8[3] - 8 * s.lineWidth);
+		}
+
+		int cssRoundedBorderCoverage(const TransformedRoundedRectCommand &outer,
+		                             const TransformedRoundedRectCommand &inner,
+		                             int x, int y, int samples)
+		{
+			int coverage = 0;
+			for (int iy = 0; iy < samples; ++iy) for (int ix = 0; ix < samples; ++ix) {
+				const float px = x + (ix + 0.5f) / samples, py = y + (iy + 0.5f) / samples;
+				coverage += roundedRectContainsFast(outer, px, py) && !roundedRectContainsFast(inner, px, py);
+			}
+			return coverage;
+		}
+
+		void drawCssRoundedBorder(const DisplayCommand &command)
+		{
+			const auto &s = command.strokeRoundedRect;
+			auto *canvas = gea::platform::display::Display::canvas();
+			if (!canvas || !canvas->pixels() || s.w <= 0 || s.h <= 0 || s.lineWidth <= 0) return;
+			TransformedRoundedRectCommand outer{}, inner{};
+			cssRoundedBorderContours(s, outer, inner);
+			int x0, y0, x1, y1;
+			gea::platform::display::Display::clip(&x0, &y0, &x1, &y1);
+			x0 = std::max({x0, 0, int(s.x)}); y0 = std::max({y0, 0, int(s.y)});
+			x1 = std::min({x1, canvas->width() - 1, s.x + s.w - 1});
+			y1 = std::min({y1, canvas->height() - 1, s.y + s.h - 1});
+			if (x1 < x0 || y1 < y0) return;
+			const int samples = std::max(1, gea::framework::graphics::Canvas::antialiasSamples());
+			const int alpha = gea::platform::display::Display::alpha();
+			if (!alpha) return;
+			const int stride = canvas->strideBytes() / sizeof(gea::framework::graphics::pixel::native_t);
+			for (int y = y0; y <= y1; ++y) {
+				auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+				for (int x = x0; x <= x1; ++x) {
+					const int coverage = cssRoundedBorderCoverage(outer, inner, x, y, samples);
+					if (coverage) paintCoveragePixel(row[x], s.color, alpha, coverage, samples * samples);
+				}
+			}
+			canvas->markDirty(x0, y0, x1, y1);
+		}
+
 		void drawTransformedRoundedRect(const DisplayCommand &command)
 		{
 			auto *canvas = gea::platform::display::Display::canvas();
@@ -4631,28 +4709,20 @@ int gLastScrollUiFrame = -1000;
 		bool hasRetainedTransformState(const Node &node)
 		{
 			const RareStyle &rs = rstyle(node.style); // one pool lookup, not 11
-			return rs.transform_rotate != 0 ||
-						 node.render.previous_transform_rotate != 0 ||
-						 rs.transform_rotate_x != 0 ||
-						 node.render.previous_transform_rotate_x != 0 ||
-						 rs.transform_rotate_y != 0 ||
-						 node.render.previous_transform_rotate_y != 0 ||
-						 rs.transform_translate_x != 0 ||
-						 node.render.previous_transform_translate_x != 0 ||
-						 rs.transform_translate_y != 0 ||
-						 node.render.previous_transform_translate_y != 0 ||
-						 rs.transform_translate_z != 0 ||
-						 node.render.previous_transform_translate_z != 0 ||
-						 rs.transform_translate_x_percent != 0 ||
-						 node.render.previous_transform_translate_x_percent != 0 ||
-						 rs.transform_translate_y_percent != 0 ||
-						 node.render.previous_transform_translate_y_percent != 0 ||
-						 rs.transform_scale_x != 1000 ||
-						 node.render.previous_transform_scale_x != 1000 ||
-						 rs.transform_scale_y != 1000 ||
-						 node.render.previous_transform_scale_y != 1000 ||
-						 rs.perspective > 0 ||
-						 node.render.previous_perspective > 0;
+			const bool currentTransformable = ViewRenderer::isTransformableBox(node);
+			return (currentTransformable && hasIndividualLinearTransform(rs)) ||
+			       (node.render.previous_transformable_box && hadIndividualLinearTransform(node.render)) ||
+			       (currentTransformable && (rs.transform_rotate != 0 || rs.transform_rotate_x != 0 ||
+			        rs.transform_rotate_y != 0 || composedTranslateX(rs) != 0 || composedTranslateY(rs) != 0 ||
+			        composedTranslateZ(rs) != 0 || composedTranslateXPercent(rs) != 0 ||
+			        composedTranslateYPercent(rs) != 0 || rs.transform_scale_x != 1000 ||
+			        rs.transform_scale_y != 1000 || rs.transform_scale_z != 1000 || rs.perspective > 0)) ||
+			       (node.render.previous_transformable_box && (node.render.previous_transform_rotate != 0 ||
+			        node.render.previous_transform_rotate_x != 0 || node.render.previous_transform_rotate_y != 0 ||
+			        node.render.previous_transform_translate_x != 0 || node.render.previous_transform_translate_y != 0 ||
+			        node.render.previous_transform_translate_z != 0 || node.render.previous_transform_translate_x_percent != 0 ||
+			        node.render.previous_transform_translate_y_percent != 0 || node.render.previous_transform_scale_x != 1000 ||
+			        node.render.previous_transform_scale_y != 1000 || node.render.previous_transform_scale_z != 1000 || node.render.previous_perspective > 0));
 		}
 
 		struct ClipMath
@@ -4671,10 +4741,9 @@ int gLastScrollUiFrame = -1000;
 
 			static void clampToNode(const Node &node, int *cx0, int *cy0, int *cx1, int *cy1)
 			{
-				int nx0 = node.layout.x;
-				int ny0 = node.layout.y;
-				int nx1 = node.layout.x + node.layout.width - 1;
-				int ny1 = node.layout.y + node.layout.height - 1;
+				int nx0, ny0, w, h;
+				overflowClipBounds(node, nx0, ny0, w, h);
+				int nx1 = nx0 + w - 1, ny1 = ny0 + h - 1;
 				if (*cx0 < nx0)
 					*cx0 = nx0;
 				if (*cy0 < ny0)
@@ -4688,71 +4757,129 @@ int gLastScrollUiFrame = -1000;
 
 		struct ChildZSorter
 		{
+			struct Key { int phase, level; };
+			static bool effectGroup(const Node &node)
+			{
+				const auto &s = node.style;
+				const auto &rs = rstyle(s);
+				const bool transformable = ViewRenderer::isTransformableBox(node);
+				return s.opacity < 255 || s.mask_right_fade_width > 0 || rs.filter_present || rs.filter_blur_radius ||
+				    (transformable && (rs.translate_present || rs.transform_present || rs.rotate_present || rs.scale_present ||
+				     rs.transform_preserve_3d || rs.perspective || rs.transform_rotate || rs.transform_rotate_x || rs.transform_rotate_y ||
+				     composedTranslateX(rs) || composedTranslateY(rs) || composedTranslateZ(rs) ||
+				     composedTranslateXPercent(rs) || composedTranslateYPercent(rs) ||
+				     rs.transform_scale_x != 1000 || rs.transform_scale_y != 1000 || rs.transform_scale_z != 1000)) || (rs.containment & (4 | 16));
+			}
+			static Key key(int id)
+			{
+				const Node *nodes = Tree::instance().nodes();
+				const Node &n = nodes[id];
+				const auto &s = n.style;
+				const bool positioned = s.position != 0;
+				const bool item = n.parent >= 0 && !isOutOfFlowPosition(s.position) &&
+				    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+				const int level = !s.z_index_auto && (positioned || item) ? s.z_index : 0;
+				if (level < 0) return {0, level};
+				if (level > 0) return {5, level};
+				if (positioned || effectGroup(n) || (item && !s.z_index_auto)) return {4, 0};
+				if (item) return {3, 0};
+				if (s.float_side) return {2, 0};
+				return {LayoutEngine::isInlineLevelNode(n) ? 3 : 1, 0};
+			}
+
+			static int compareKeys(int first, int second)
+			{
+				const auto a = key(first), b = key(second);
+				return a.phase != b.phase ? a.phase - b.phase : a.level - b.level;
+			}
+
+			static bool participatesIn3DContext(int node, int contextRoot)
+			{
+				const Node *nodes = Tree::instance().nodes();
+				if (contextRoot < 0 || !ViewRenderer::isTransformableBox(nodes[contextRoot]) || !preserves3D(nodes[contextRoot].style))
+					return false;
+				// A 3D rendering context follows DOM ancestry, not containing-block
+				// ancestry. Every parent between a participant and the context root
+				// must preserve 3D; a flat parent composites its descendants as a
+				// single plane and prevents abs/fixed descendants from being hoisted
+				// into this context.
+				for (int parent = nodes[node].parent; parent >= 0 && parent != contextRoot; parent = nodes[parent].parent)
+					if (!ViewRenderer::isTransformableBox(nodes[parent]) || !preserves3D(nodes[parent].style))
+						return false;
+				for (int parent = nodes[node].parent; parent >= 0; parent = nodes[parent].parent)
+					if (parent == contextRoot)
+						return true;
+				return false;
+			}
+
 			static int depth(int node)
 			{
 				Node *nodes = Tree::instance().nodes();
 				return ViewRenderer::transformedDepth(nodes[node], false);
 			}
 
-			static int subtreeDepth(int node)
+			static int subtreeDepth(int node, int contextRoot)
 			{
 				Tree &tree = Tree::instance();
 				Node *nodes = tree.nodes();
-				if (node < 0 || node >= tree.nodeCount())
+				if (node < 0 || node >= tree.nodeCount() || !participatesIn3DContext(node, contextRoot))
 					return 0;
 				// Memoize per node per refresh. The child z-sort runs at every tree level,
 				// so an ancestor's sort recurses a subtree that a descendant's sort then
 				// re-walks. Caching collapses those repeated O(subtree) walks to O(1).
 				static int memo[kMaxNodes];
 				static uint64_t memoSerial[kMaxNodes];
+				static int memoContextRoot[kMaxNodes];
 				const uint64_t serial = tree.refreshSerial();
-				if (node < kMaxNodes && memoSerial[node] == serial)
+				if (node < kMaxNodes && memoSerial[node] == serial && memoContextRoot[node] == contextRoot)
 					return memo[node];
 				int maxDepth = depth(node);
 				for (int child = nodes[node].first_child; child >= 0 && child < tree.nodeCount(); child = nodes[child].next_sibling)
 				{
-					maxDepth = std::max(maxDepth, subtreeDepth(child));
+					if (participatesIn3DContext(child, contextRoot))
+						maxDepth = std::max(maxDepth, subtreeDepth(child, contextRoot));
 				}
 				if (node < kMaxNodes)
 				{
 					memo[node] = maxDepth;
 					memoSerial[node] = serial;
+					memoContextRoot[node] = contextRoot;
 				}
 				return maxDepth;
 			}
 
 			static bool afterByDepth(int existing, int existingDepth, int candidate, int candidateDepth)
 			{
-				Node *nodes = Tree::instance().nodes();
-				if (nodes[existing].style.z_index != nodes[candidate].style.z_index)
-					return nodes[existing].style.z_index > nodes[candidate].style.z_index;
+				const int order = compareKeys(existing, candidate);
+				if (order) return order > 0;
 				return existingDepth > candidateDepth;
 			}
 
-			static void sort(int *children, int child_count)
+			static void sort(int *children, int child_count, int contextRoot)
 			{
 				if (child_count < 2)
 					return;
 				// Fast path: when document order already equals paint order, skip the
-				// sort entirely. That holds whenever no sibling carries a z-index AND no
-				// transform/3D depth is active — the overwhelmingly common 2D case
+				// sort entirely when every sibling has the same paint phase and stack
+				// level and no transform/3D depth is active — the common 2D case
 				// (typography, breakout). subtreeDepth() recurses the whole subtree and
 				// each node costs 5 double-precision projections, so this avoids it
 				// entirely for 2D trees.
-				const bool transforms = ViewRenderer::anyTransformActive();
-				Node *nodes = Tree::instance().nodes();
+				const bool transforms = contextRoot >= 0 && ViewRenderer::isTransformableBox(Tree::instance().nodes()[contextRoot]) &&
+				                        preserves3D(Tree::instance().nodes()[contextRoot].style) &&
+				                        ViewRenderer::anyTransformActive();
 				if (!transforms)
 				{
-					bool anyZ = false;
-					for (int i = 0; i < child_count; i++)
+					bool mixed = false;
+					for (int i = 1; i < child_count; i++)
 					{
-						if (nodes[children[i]].style.z_index != 0)
+						if (compareKeys(children[0], children[i]))
 						{
-							anyZ = true;
+							mixed = true;
 							break;
 						}
 					}
-					if (!anyZ)
+					if (!mixed)
 						return;
 				}
 				// Precompute each child's painter's-depth key ONCE. Recomputing
@@ -4761,12 +4888,12 @@ int gLastScrollUiFrame = -1000;
 				// css-animation-showcase: 21 children → ~440 comparisons, each doing a
 				// recursive subtree walk of 5 projections/node). Computing it up front is
 				// O(k * subtree) + O(k^2) integer comparisons. Depth only varies under an
-				// active transform; without one it's constant, so skip the walk. sort()
-				// is not re-entrant (it finishes before recordNode recurses), so a static
-				// scratch buffer is safe and keeps it off the recursion stack.
-				static int depthKey[kMaxChildren];
+				// active transform; without one it's constant, so skip the walk. A
+				// context may include hoisted descendants beyond the immediate-child
+				// scratch limit, so size this buffer to its actual participant count.
+				std::vector<int> depthKey(child_count);
 				for (int i = 0; i < child_count; i++)
-					depthKey[i] = transforms ? subtreeDepth(children[i]) : 0;
+					depthKey[i] = transforms ? subtreeDepth(children[i], contextRoot) : 0;
 				for (int i = 1; i < child_count; i++)
 				{
 					const int childKey = children[i];
@@ -4794,10 +4921,15 @@ int gLastScrollUiFrame = -1000;
 				c->by += dy;
 				switch (c->type)
 				{
-				case DisplayCommandType::PushClip:
-					c->clip.x += dx;
-					c->clip.y += dy;
+				case DisplayCommandType::PushClip: {
+					const int id = c->clip.nodeId;
+					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
+					if (!owner || overflowX(owner->style)) c->clip.x += dx;
+					else c->bx -= dx;
+					if (!owner || overflowY(owner->style)) c->clip.y += dy;
+					else c->by -= dy;
 					break;
+				}
 				case DisplayCommandType::FillRect:
 					c->fill.x += dx;
 					c->fill.y += dy;
@@ -4936,8 +5068,6 @@ int gLastScrollUiFrame = -1000;
 					if (rowX0 > rowX1)
 						continue;
 					int spanW = rowX1 - rowX0 + 1;
-					if (spanW > gea::platform::display::kWidth)
-						spanW = gea::platform::display::kWidth;
 					const long long off = static_cast<long long>(y) * scrW + rowX0;
 					gea::platform::display::Display::blitImage(color + off, alpha + off, spanW, 1, rowX0, y);
 				}
@@ -5340,12 +5470,14 @@ int gLastScrollUiFrame = -1000;
 														 static_cast<long long>(scrW) * scrH;
 				const bool bgCacheable = bgBuf && bgCanvas && bgCanvas->pixels() && bgOpaque && bgLarge &&
 																 scrW > 0 && scrH > 0 && bgCap >= scrW * scrH;
-				const std::uint16_t bgKeyNow[10] = {
+				const std::uint16_t bgKeyNow[14] = {
 						static_cast<std::uint16_t>(c.gradient.fromColor), static_cast<std::uint16_t>(c.gradient.midColor), static_cast<std::uint16_t>(c.gradient.toColor), c.gradient.midStop,
 						c.gradient.toStop, static_cast<std::uint16_t>(c.gradient.angle), c.gradient.fromAlpha,
-						c.gradient.midAlpha, c.gradient.toAlpha, c.gradient.hasMid};
-				static std::uint16_t bgKey[10];
-				static std::uint16_t bgLastKey[10];
+						c.gradient.midAlpha, c.gradient.toAlpha, c.gradient.hasMid,
+						static_cast<std::uint16_t>(c.gradient.x), static_cast<std::uint16_t>(c.gradient.y),
+						static_cast<std::uint16_t>(c.gradient.w), static_cast<std::uint16_t>(c.gradient.h)};
+				static std::uint16_t bgKey[14];
+				static std::uint16_t bgLastKey[14];
 				static int bgStable = 0;
 				static bool bgValid = false;
 				static int bgKW = 0, bgKH = 0;
@@ -5359,8 +5491,6 @@ int gLastScrollUiFrame = -1000;
 						if (rowX0 > rowX1)
 							continue;
 						int spanW = rowX1 - rowX0 + 1;
-						if (spanW > gea::platform::display::kWidth)
-							spanW = gea::platform::display::kWidth;
 						gea::platform::display::Display::blitImage(
 								bgBuf + static_cast<long long>(y) * scrW + rowX0, nullptr, spanW, 1, rowX0, y);
 					}
@@ -5582,62 +5712,64 @@ int gLastScrollUiFrame = -1000;
 					if (rowX0 > rowX1)
 						continue;
 					const uint8_t *bayerRow = bayer4[y & 3];
-					int spanW = rowX1 - rowX0 + 1;
-					if (spanW > gea::platform::display::kWidth)
-						spanW = gea::platform::display::kWidth;
-					float projection = (static_cast<float>(rowX0) + 0.5f) * stepX + (static_cast<float>(y) + 0.5f) * stepY;
-					bool rowOpaque = true;
-					if (stepX == 0.0f)
+					// Keep the device-sized buffer, but cover wider simulator viewports in chunks.
+					for (int chunkX = rowX0; chunkX <= rowX1; chunkX += gea::platform::display::kWidth)
 					{
-						// Vertical gradient (the common `to bottom` case): the projection —
-						// hence the permille bucket, LUT entry, and alpha — is constant
-						// across the row; only the 4-periodic bayer COLUMN pattern varies.
-						// Compute the 4-pixel pattern once with exactly the per-pixel math
-						// (bit-identical) and fill the row at store speed instead of paying
-						// the DDA + clamp + LUT + dither chain per pixel.
-						const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
-						const DitherStop &e = lut[permille];
-						gea::framework::graphics::pixel::native_t pattern[4];
-						for (int k = 0; k < 4; k++)
+						const int spanW = std::min(gea::platform::display::kWidth, rowX1 - chunkX + 1);
+						float projection = (static_cast<float>(chunkX) + 0.5f) * stepX + (static_cast<float>(y) + 0.5f) * stepY;
+						bool rowOpaque = true;
+						if (stepX == 0.0f)
 						{
+							// Vertical gradient (the common `to bottom` case): the projection —
+							// hence the permille bucket, LUT entry, and alpha — is constant
+							// across the row; only the 4-periodic bayer COLUMN pattern varies.
+							// Compute the 4-pixel pattern once with exactly the per-pixel math
+							// (bit-identical) and fill the row at store speed instead of paying
+							// the DDA + clamp + LUT + dither chain per pixel.
+							const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
+							const DitherStop &e = lut[permille];
+							gea::framework::graphics::pixel::native_t pattern[4];
+							for (int k = 0; k < 4; k++)
+							{
 #if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
-							const int threshold = bayerRow[k] * 16 + 8;
+								const int threshold = bayerRow[k] * 16 + 8;
+								const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
+								const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
+								const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
+								pattern[k] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
+#else
+								pattern[k] = e.color;
+#endif
+							}
+							for (int i = 0; i < spanW; i++)
+								rowColor[i] = pattern[(chunkX + i) & 3];
+							std::memset(rowAlpha, e.alpha, static_cast<std::size_t>(spanW));
+							rowOpaque = e.alpha == 255;
+						}
+						else
+						for (int i = 0; i < spanW; i++, projection += stepX)
+						{
+							const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
+							const DitherStop &e = lut[permille];
+#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
+							const int threshold = bayerRow[(chunkX + i) & 3] * 16 + 8;
 							const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
 							const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
 							const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
-							pattern[k] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
+							rowColor[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
 #else
-							pattern[k] = e.color;
+							rowColor[i] = e.color; // full colour: no dither (8888 doesn't band)
 #endif
+							rowAlpha[i] = e.alpha;
+							if (e.alpha != 255)
+								rowOpaque = false;
 						}
-						for (int i = 0; i < spanW; i++)
-							rowColor[i] = pattern[(rowX0 + i) & 3];
-						std::memset(rowAlpha, e.alpha, static_cast<std::size_t>(spanW));
-						rowOpaque = e.alpha == 255;
+						// alpha=nullptr -> blitImage's opaque memcpy (baseAlpha==255) or whole-row
+						// global blend (baseAlpha<255); the rowAlpha mask -> per-pixel combine
+						// with baseAlpha. Equivalent to the old fillRun(combineAlpha(baseAlpha,
+						// localAlpha)). baseAlpha is read from Display::alpha() inside blitImage.
+						gea::platform::display::Display::blitImage(rowColor, rowOpaque ? nullptr : rowAlpha, spanW, 1, chunkX, y);
 					}
-					else
-					for (int i = 0; i < spanW; i++, projection += stepX)
-					{
-						const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
-						const DitherStop &e = lut[permille];
-#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
-						const int threshold = bayerRow[(rowX0 + i) & 3] * 16 + 8;
-						const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
-						const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
-						const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
-						rowColor[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
-#else
-						rowColor[i] = e.color; // full colour: no dither (8888 doesn't band)
-#endif
-						rowAlpha[i] = e.alpha;
-						if (e.alpha != 255)
-							rowOpaque = false;
-					}
-					// alpha=nullptr -> blitImage's opaque memcpy (baseAlpha==255) or whole-row
-					// global blend (baseAlpha<255); the rowAlpha mask -> per-pixel combine
-					// with baseAlpha. Equivalent to the old fillRun(combineAlpha(baseAlpha,
-					// localAlpha)). baseAlpha is read from Display::alpha() inside blitImage.
-					gea::platform::display::Display::blitImage(rowColor, rowOpaque ? nullptr : rowAlpha, spanW, 1, rowX0, y);
 				}
 
 				// Once the gradient has been identical for 2 frames, render it in full into
@@ -5993,40 +6125,42 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					const float dy = (static_cast<float>(y) + 0.5f - centerY) * invRadiusY;
 					const uint8_t *bayerRow = bayer4[y & 3];
-					int spanW = rowX1 - rowX0 + 1;
-					if (spanW > gea::platform::display::kWidth)
-						spanW = gea::platform::display::kWidth;
-					bool rowOpaque = true;
-					for (int i = 0; i < spanW; ++i)
+					// Keep the device-sized buffer, but cover wider simulator viewports in chunks.
+					for (int chunkX = rowX0; chunkX <= rowX1; chunkX += gea::platform::display::kWidth)
 					{
-						const int xx = rowX0 + i;
-						const int mi = mirrorSum - xx - rowX0;  // index of xx's mirror in this span
-						int permille;
-						if (mirrorable && mi >= 0 && mi < i)
+						const int spanW = std::min(gea::platform::display::kWidth, rowX1 - chunkX + 1);
+						bool rowOpaque = true;
+						for (int i = 0; i < spanW; ++i)
 						{
-							permille = rowPermille[mi];
-						}
-						else
-						{
-							const float dx = (static_cast<float>(xx) + 0.5f - centerX) * invRadiusX;
-							permille = static_cast<int>(std::sqrt(dx * dx + dy * dy) * 1000.0f + 0.5f);
-						}
-						rowPermille[i] = static_cast<std::uint16_t>(permille > 1000 ? 1000 : permille);
-						const LinearGradientDrawer::DitherStop &e = lut[rowPermille[i]];
+							const int xx = chunkX + i;
+							const int mi = mirrorSum - xx - chunkX;  // index of xx's mirror in this span
+							int permille;
+							if (mirrorable && mi >= 0 && mi < i)
+							{
+								permille = rowPermille[mi];
+							}
+							else
+							{
+								const float dx = (static_cast<float>(xx) + 0.5f - centerX) * invRadiusX;
+								permille = static_cast<int>(std::sqrt(dx * dx + dy * dy) * 1000.0f + 0.5f);
+							}
+							rowPermille[i] = static_cast<std::uint16_t>(permille > 1000 ? 1000 : permille);
+							const LinearGradientDrawer::DitherStop &e = lut[rowPermille[i]];
 #if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
-						const int threshold = bayerRow[xx & 3] * 16 + 8;
-						const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
-						const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
-						const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
-						rowColor[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
+							const int threshold = bayerRow[xx & 3] * 16 + 8;
+							const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
+							const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
+							const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
+							rowColor[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
 #else
-						rowColor[i] = e.color; // full colour: no dither
+							rowColor[i] = e.color; // full colour: no dither
 #endif
-						rowAlpha[i] = e.alpha;
-						if (e.alpha != 255)
-							rowOpaque = false;
+							rowAlpha[i] = e.alpha;
+							if (e.alpha != 255)
+								rowOpaque = false;
+						}
+						gea::platform::display::Display::blitImage(rowColor, rowOpaque ? nullptr : rowAlpha, spanW, 1, chunkX, y);
 					}
-					gea::platform::display::Display::blitImage(rowColor, rowOpaque ? nullptr : rowAlpha, spanW, 1, rowX0, y);
 				}
 
 				// Bake the full box into the cache once params are stable for 2 frames.
@@ -6055,6 +6189,93 @@ int gLastScrollUiFrame = -1000;
 
 		struct DisplayCommandDrawer
 		{
+			struct TextInkCommand {
+				const DisplayCommand *command;
+				int x0, y0, x1, y1;
+			};
+
+			static void collectTextInk(int id, int owner, int x0, int y0, int x1, int y1,
+			                           std::vector<TextInkCommand> &ink)
+			{
+				auto &tree = Tree::instance();
+				if (id < 0 || id >= tree.nodeCount()) return;
+				const auto &node = tree.nodes()[id];
+				if (node.style.display == 1 || (id != owner && isOutOfFlowPosition(node.style.position))) return;
+				if (state.hasNodeScratchFor(id) && node.style.visibility == 0) {
+					const int begin = state.nodeDrawStart[id], end = state.nodeDrawEnd[id];
+					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
+						const auto &c = state.commands[ci];
+						if (c.type == DisplayCommandType::DrawText || c.type == DisplayCommandType::DrawProjectedText || c.textDecorationInk)
+							ink.push_back({&c, x0, y0, x1, y1});
+					}
+				}
+				// Match the overflow clip recorded for descendants of this node.
+				// Positioned in-flow and stacking-context descendants still contribute;
+				// their opacity does not change the shape of the mask.
+				const int clipIndex = state.hasNodeScratchFor(id) ? state.nodeDrawEnd[id] : -1;
+				if (clipIndex >= 0 && clipIndex < state.commandCount) {
+					const auto &clip = state.commands[clipIndex];
+					if (clip.type == DisplayCommandType::PushClip && clip.clip.nodeId == id) {
+						x0 = std::max<int>(x0, clip.clip.x); y0 = std::max<int>(y0, clip.clip.y);
+						x1 = std::min<int>(x1, clip.clip.x+clip.clip.w-1); y1 = std::min<int>(y1, clip.clip.y+clip.clip.h-1);
+					}
+				}
+				if (x0 > x1 || y0 > y1) return;
+				for (int child = node.first_child; child >= 0; child = tree.nodes()[child].next_sibling)
+					collectTextInk(child, owner, x0, y0, x1, y1, ink);
+			}
+
+			static void replayTextClipped(const DisplayCommand &command)
+			{
+				using gea::platform::display::Display;
+				using namespace gea::framework::graphics;
+				auto *canvas = Display::canvas();
+				if (!canvas) return;
+				int x0, y0, x1, y1;
+				Display::clip(&x0, &y0, &x1, &y1);
+				x0 = std::max({x0, 0, static_cast<int>(command.bx)});
+				y0 = std::max({y0, 0, static_cast<int>(command.by)});
+				x1 = std::min({x1, canvas->width()-1, command.bx+command.bw-1});
+				y1 = std::min({y1, canvas->height()-1, command.by+command.bh-1});
+				if (x0 > x1 || y0 > y1) return;
+				std::vector<TextInkCommand> ink;
+				collectTextInk(command.textClipOwner, command.textClipOwner, x0, y0, x1, y1, ink);
+				if (ink.empty()) return;
+				DisplayCommand paint = command;
+				paint.textClipOwner = -1;
+				// Stack-local, bounded scratch remains safe if independent dirty rows
+				// are replayed on separate workers. No viewport-sized backing store.
+				constexpr int chunkSize = 128;
+				pixel::native_t before[chunkSize];
+				uint8_t coverage[chunkSize];
+				for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; x += chunkSize) {
+					const int width = std::min(chunkSize, x1-x+1);
+					std::fill_n(coverage, width, 0);
+					Display::pushClip(x, y, width, 1);
+					for (const auto &entry : ink) {
+						if (y < entry.y0 || y > entry.y1 || x > entry.x1 || x+width <= entry.x0) continue;
+						const auto &c = *entry.command;
+						Display::pushClip(entry.x0, entry.y0, entry.x1-entry.x0+1, entry.y1-entry.y0+1);
+						if (c.type == DisplayCommandType::DrawText)
+							TextRenderer::unionCoverageRow(c, y, x, width, coverage);
+						else if (c.type == DisplayCommandType::DrawProjectedText)
+							drawProjectedText(c, coverage, x);
+						else if (c.textDecorationInk && c.type == DisplayCommandType::FillRect && y >= c.fill.y && y < c.fill.y+c.fill.h)
+							for (int px = std::max({x, entry.x0, static_cast<int>(c.fill.x)}); px < std::min({x+width, entry.x1+1, c.fill.x+c.fill.w}); ++px)
+								coverage[px-x] = 255;
+						Display::popClip();
+					}
+					if (std::any_of(coverage, coverage+width, [](uint8_t a) { return a != 0; })) {
+						for (int i = 0; i < width; ++i) before[i] = canvas->readPixelNative(x+i, y);
+						replay(paint);
+						for (int i = 0; i < width; ++i) if (coverage[i] != 255)
+							canvas->writePixelNativeExact(x+i, y, coverage[i] == 0 ? before[i] :
+							    pixel::blendNative(canvas->readPixelNative(x+i, y), before[i], coverage[i]));
+					}
+					Display::popClip();
+				}
+			}
+
 			static void noteReplayCommand(const DisplayCommand &c)
 			{
 				auto &perf = refreshPerfStatsMutable();
@@ -6084,6 +6305,11 @@ int gLastScrollUiFrame = -1000;
 
 			static void GEA_RENDER_HOT_SRAM replay(const DisplayCommand &c)
 			{
+				if (c.textClipOwner >= 0 && c.type != DisplayCommandType::SetAlpha &&
+				    c.type != DisplayCommandType::PushClip && c.type != DisplayCommandType::PopClip) {
+					replayTextClipped(c);
+					return;
+				}
 				noteReplayCommand(c);
 				const std::int64_t __replayT0 = refreshPerfNowUs();
 				switch (c.type)
@@ -6130,6 +6356,7 @@ int gLastScrollUiFrame = -1000;
 					gea::platform::display::Display::strokeRect(c.stroke.x, c.stroke.y, c.stroke.w, c.stroke.h, c.stroke.color);
 					break;
 				case DisplayCommandType::StrokeRoundedRect:
+					if (c.strokeRoundedRect.cssRadii) { drawCssRoundedBorder(c); break; }
 					gea::platform::display::Display::strokeRoundedRect(c.strokeRoundedRect.x, c.strokeRoundedRect.y,
 																														 c.strokeRoundedRect.w, c.strokeRoundedRect.h,
 																														 c.strokeRoundedRect.tl, c.strokeRoundedRect.tr, c.strokeRoundedRect.br, c.strokeRoundedRect.bl,
@@ -6311,7 +6538,7 @@ int gLastScrollUiFrame = -1000;
 				const bool simpleBackgroundLeaf = node.first_child < 0 &&
 																					node.type == NodeType::View &&
 																					node.style.has_bg &&
-																					node.style.bg_fill == 0 &&
+																					!styleHasBackgroundImage(node.style) && rstyle(node.style).bg_clip == 0 &&
 																					!hasAnyBorder(node.style);
 				if (!simpleBackgroundLeaf)
 					return -1;
@@ -6375,7 +6602,28 @@ int gLastScrollUiFrame = -1000;
 				cmd->filterBlur.sourceAlphaCap = static_cast<int16_t>(filterBlurSourceAlphaCap(node, parentAlpha));
 			}
 
-			static void recordNode(int id, uint8_t parent_alpha, int cx0, int cy0, int cx1, int cy1, const Node *mask_node, bool insideDirty = false)
+			struct RecordClipFrame {
+				const Node &node;
+				const RecordClipFrame *parent;
+			};
+
+			// Fixed descendants are painted in place in z-order, but their viewport
+			// containing block is outside the ordinary ancestors' overflow clips.
+			struct SuspendedRecordClips {
+				const RecordClipFrame *clips;
+				explicit SuspendedRecordClips(const RecordClipFrame *value) : clips(value) {
+					for (auto *frame = clips; frame; frame = frame->parent)
+						ViewRenderer::recordClipEnd(frame->node);
+				}
+				static void restore(const RecordClipFrame *frame) {
+					if (!frame) return;
+					restore(frame->parent);
+					ViewRenderer::recordClipBegin(frame->node);
+				}
+				~SuspendedRecordClips() { restore(clips); }
+			};
+
+			static void recordNode(int id, uint8_t parent_alpha, int cx0, int cy0, int cx1, int cy1, const Node *mask_node, bool insideDirty = false, const RecordClipFrame *clips = nullptr, bool groupRoot = true, bool includePositioned = true)
 			{
 				if (!state.hasNodeScratchFor(id))
 					return;
@@ -6391,7 +6639,7 @@ int gLastScrollUiFrame = -1000;
 					return;
 				}
 				Node *n = &Tree::instance().nodes()[id];
-				if (n->style.display == 1)
+				if (n->style.display == 1 || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
 					return;
@@ -6413,14 +6661,35 @@ int gLastScrollUiFrame = -1000;
 				// guarantees the parent's background fill is what replays in the
 				// dirty rect — same semantics as display:none, without forcing app
 				// code to choose between the two patterns.
-				if (n->style.opacity == 0)
+				bool contributesTextMask = false;
+				if (n->style.opacity == 0) {
+					const auto *nodes = Tree::instance().nodes();
+					for (int ancestor = id; ancestor >= 0; ancestor = nodes[ancestor].parent) {
+						if (isOutOfFlowPosition(nodes[ancestor].style.position)) break;
+						const int parent = nodes[ancestor].parent;
+						if (parent >= 0 && StyleValues::hasTextBackgroundClip(nodes[parent].style)) {
+							contributesTextMask = true; break;
+						}
+					}
+				}
+				if (n->style.opacity == 0 && !contributesTextMask)
 				{
 					state.clearNodeRange(id);
 					return;
 				}
 
-				int overlaps_clip = ClipMath::nodeOverlapsClip(*n, cx0, cy0, cx1, cy1);
-				if (!overlaps_clip && (!isViewLikeNodeType(n->type) || n->style.overflow != 0))
+				const bool viewportFixed = LayoutEngine::isViewportFixed(*n);
+				SuspendedRecordClips suspended(viewportFixed ? clips : nullptr);
+				if (viewportFixed) {
+					clips = nullptr;
+					cx0 = cy0 = 0;
+					const auto *canvas = gea::platform::display::Display::canvas();
+					cx1 = (canvas ? canvas->width() : treeState().mountedWidth) - 1;
+					cy1 = (canvas ? canvas->height() : treeState().mountedHeight) - 1;
+				}
+				int overlaps_clip = isDocumentCanvasRoot(*n) || ClipMath::nodeOverlapsClip(*n, cx0, cy0, cx1, cy1);
+				if (!overlaps_clip && (!isViewLikeNodeType(n->type) || (overflowX(n->style) && overflowY(n->style))) &&
+				    !LayoutEngine::containsViewportFixed(id))
 				{
 					state.clearNodeRange(id);
 					return;
@@ -6432,7 +6701,10 @@ int gLastScrollUiFrame = -1000;
 				int h = n->layout.height;
 
 				DisplayList &list = DisplayList::instance();
-				int pushed_clip = overlaps_clip ? ViewRenderer::recordClipBegin(*n) : 0;
+				// A culled ancestor may still be traversed to reach a fixed child.
+				// Keep its clip active for ordinary children; the fixed child alone
+				// suspends that clip when it enters viewport coordinates.
+				int pushed_clip = 0;
 				uint8_t cur_alpha = parent_alpha;
 				const Node *active_mask = mask_node;
 
@@ -6457,6 +6729,7 @@ int gLastScrollUiFrame = -1000;
 					active_mask = n;
 
 				int draw_start = state.commandCount;
+				const bool paintsOwnBox = overlaps_clip && n->style.visibility == 0;
 				const bool nativeTextInput = isNativeTextInputView(*n);
 				const bool filtered = overlaps_clip && rstyle(n->style).filter_blur_radius > 0;
 				uint8_t draw_alpha = cur_alpha;
@@ -6474,26 +6747,26 @@ int gLastScrollUiFrame = -1000;
 				if (filtered)
 					recordFilterBlur(id, *n, DisplayCommandType::BeginFilterBlur, draw_alpha);
 
-				if (overlaps_clip && !nativeTextInput)
+				if (paintsOwnBox && !nativeTextInput)
 					ViewRenderer::recordBox(*n, draw_alpha);
 
-				if (overlaps_clip && n->type == NodeType::Text)
+				if (paintsOwnBox && n->type == NodeType::Text)
 				{
 					TextRenderer::record(*n, draw_alpha);
 				}
-				else if (overlaps_clip && n->type == NodeType::Image)
+				else if (paintsOwnBox && n->type == NodeType::Image)
 				{
 					ImageRenderer::record(*n);
 				}
-				else if (overlaps_clip && n->type == NodeType::Canvas)
+				else if (paintsOwnBox && n->type == NodeType::Canvas)
 				{
 					CanvasRenderer::record(*n);
 				}
-				else if (overlaps_clip && n->type == NodeType::Camera)
+				else if (paintsOwnBox && n->type == NodeType::Camera)
 				{
 					CameraRenderer::record(*n);
 				}
-				else if (overlaps_clip && n->type == NodeType::View)
+				else if (paintsOwnBox && n->type == NodeType::View)
 				{
 					// `<input>` JSX elements lower to a View node with tag_name "input".
 					// On native text-input targets, UIKit/AppKit owns the full visual
@@ -6509,14 +6782,10 @@ int gLastScrollUiFrame = -1000;
 				if (draw_end > draw_start && state.drawNodeOrderCount < state.nodeScratchCapacity)
 					state.drawNodeOrder[state.drawNodeOrderCount++] = id;
 
-				int depth = state.recordDepth++;
-				int child_count = 0;
-				int *children = state.childrenForDepth(depth);
-				if (children)
-				{
-					child_count = LayoutEngine::instance().collectChildren(id, children, kMaxChildren, false);
-					ChildZSorter::sort(children, child_count);
-				}
+				// A box's own background, border and outline are outside its content clip.
+				pushed_clip = ViewRenderer::recordClipBegin(*n);
+				++state.recordDepth;
+				const auto children = PaintOrder::collectChildren(id, groupRoot, includePositioned);
 
 				int child_cx0 = cx0, child_cy0 = cy0, child_cx1 = cx1, child_cy1 = cy1;
 				if (pushed_clip && id == state.recordExpandedClipNode)
@@ -6529,12 +6798,38 @@ int gLastScrollUiFrame = -1000;
 				else if (pushed_clip)
 					ClipMath::clampToNode(*n, &child_cx0, &child_cy0, &child_cx1, &child_cy1);
 
-				for (int i = 0; i < child_count; i++)
-					recordNode(children[i], cur_alpha, child_cx0, child_cy0, child_cx1, child_cy1, active_mask, insideDirty || n->render.dirty);
+				const RecordClipFrame ownClip{*n, clips};
+				for (int child : children) {
+					// A positioned descendant can paint in this context while its
+					// intervening non-stacking ancestors still supply overflow clips.
+					Node *nodes = Tree::instance().nodes();
+					std::vector<int> ancestors;
+					bool dirty = insideDirty || n->render.dirty;
+					for (int p = nodes[child].parent; p >= 0 && p != id; p = nodes[p].parent) {
+						dirty |= nodes[p].render.dirty;
+						if (nodes[p].style.overflow != 0) ancestors.push_back(p);
+					}
+					std::vector<RecordClipFrame> frames;
+					frames.reserve(ancestors.size());
+					const RecordClipFrame *childClips = pushed_clip ? &ownClip : clips;
+					int x0 = child_cx0, y0 = child_cy0, x1 = child_cx1, y1 = child_cy1;
+					for (auto p = ancestors.rbegin(); p != ancestors.rend(); ++p) {
+						const Node &ancestor = nodes[*p];
+						if (ViewRenderer::recordClipBegin(ancestor)) {
+							frames.push_back({ancestor, childClips}); childClips = &frames.back();
+							if (*p == state.recordExpandedClipNode) {
+								x0 = state.recordExpandedClipX0; y0 = state.recordExpandedClipY0;
+								x1 = state.recordExpandedClipX1; y1 = state.recordExpandedClipY1;
+							} else ClipMath::clampToNode(ancestor, &x0, &y0, &x1, &y1);
+						}
+					}
+					recordNode(child, cur_alpha, x0, y0, x1, y1, active_mask, dirty, childClips, PaintOrder::isGroup(child), PaintOrder::isContext(child));
+					for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame) ViewRenderer::recordClipEnd(frame->node);
+				}
 
 				state.recordDepth--;
 
-				if (overlaps_clip && !nativeTextInput)
+				if (paintsOwnBox && !nativeTextInput)
 					ViewRenderer::recordScrollbar(*n);
 
 				if (filtered && !nativeTextInput)
@@ -6650,6 +6945,7 @@ int gLastScrollUiFrame = -1000;
 
 			bool append(const DisplayCommand &c)
 			{
+				if (c.textClipOwner >= 0) return false;
 				if (c.type == DisplayCommandType::FillRoundedRect)
 					return appendBox(c.fillRoundedRect.x,
 													 c.fillRoundedRect.y,
@@ -6677,7 +6973,7 @@ int gLastScrollUiFrame = -1000;
 
 				RoundedRectScreenSpan span{};
 				if (!transformedRoundedRectToScreenSpan(r, &span) ||
-						!roundedRectScreenSpanHasCircularRadii(span))
+						!roundedRectScreenSpanFitsCanvas(span))
 					return false;
 				if (roundedRectScreenSpanIsCircle(span))
 				{
@@ -7160,21 +7456,18 @@ int gLastScrollUiFrame = -1000;
 					if (count >= kScratchDepth)
 						return -1;
 					chain[count++] = cursor;
+					if (LayoutEngine::isViewportFixed(nodes[cursor])) break;
 				}
 				int pushed = 0;
-				for (int i = count - 1; i >= 0; i--)
+				for (int i = count - 1; i > 0; i--)
 				{
 					const int id = chain[i];
 					if (!nodeRecordsOverflowClip(id, nodes, nodeCount))
 						continue;
 					const Node &clip = nodes[id];
-					auto *canvas = gea::platform::display::Display::canvas();
-					if (canvas && canvas->width() > 0 && canvas->height() > 0 &&
-							clip.layout.x <= 0 && clip.layout.y <= 0 &&
-							clip.layout.x + clip.layout.width >= canvas->width() &&
-							clip.layout.y + clip.layout.height >= canvas->height())
-						continue;
-					gea::platform::display::Display::pushClip(clip.layout.x, clip.layout.y, clip.layout.width, clip.layout.height);
+					int x, y, w, h;
+					overflowClipBounds(clip, x, y, w, h);
+					gea::platform::display::Display::pushClip(x, y, w, h);
 					pushed++;
 				}
 				return pushed;
@@ -7285,6 +7578,7 @@ int gLastScrollUiFrame = -1000;
 
 			static bool canUseSimpleDirtyReplay(int width, int height)
 			{
+				if (DisplayList::instance().hasTextClippedBackgrounds()) return false;
 #if GEA_EMBEDDED_SIMPLE_REPLAY_DEBUG
 				static int dbgN = 0;
 				const bool dbg = (dbgN++ % 600) == 0;
@@ -8053,7 +8347,8 @@ int gLastScrollUiFrame = -1000;
 			// fully paint, so a replay of that region reproduces the full replay instead of
 			// re-blending antialiased edges over their own previous blend. Display::clear()
 			// leaves 0 on every backend (see each target's clearNoFlush), and Tree::mount()
-			// is the only place it runs.
+			// is the only place it runs. HTML documents instead use the white UA
+			// canvas recorded below their root background.
 			static void GEA_RENDER_HOT_SRAM restoreClearBaseInRegion(int x0, int y0, int x1, int y1)
 			{
 				if (x0 > x1 || y0 > y1)
@@ -8061,7 +8356,10 @@ int gLastScrollUiFrame = -1000;
 				Tree &tree = Tree::instance();
 				if (regionHasOpaqueBase(x0, y0, x1, y1, tree.nodes(), tree.nodeCount()))
 					return;
-				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, 0x0000);
+				const int root = tree.mountedRoot();
+				const auto base = root >= 0 && root < tree.nodeCount() && isDocumentCanvasRoot(tree.nodes()[root])
+				    ? gea::framework::graphics::pixel::nativeColor(255, 255, 255) : 0;
+				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, base);
 			}
 
 			// Painter's-algorithm occlusion cull: the LAST node (in draw order) whose
@@ -8223,6 +8521,7 @@ int gLastScrollUiFrame = -1000;
 
 			static bool replayFillRectInRegion(const DisplayCommand &c, const DisplayReplayRegion &region)
 			{
+				if (c.textClipOwner >= 0) return false;
 				if (c.type != DisplayCommandType::FillRect || !commandOverlapsRegion(c, region))
 					return false;
 				int x0 = c.fill.x;
@@ -8246,6 +8545,7 @@ int gLastScrollUiFrame = -1000;
 
 			static bool replayContainedRoundedRectFillInRegion(const DisplayCommand &c, int x0, int y0, int x1, int y1)
 			{
+				if (c.textClipOwner >= 0) return false;
 				if (c.type != DisplayCommandType::FillRoundedRect)
 					return false;
 				if (!regionInsideRetainedBackground(c, x0, y0, x1, y1))
@@ -8703,19 +9003,119 @@ int gLastScrollUiFrame = -1000;
 
 	} // namespace
 
+	void PaintOrder::sortChildren(int *children, int count, int contextRoot)
+	{
+		ChildZSorter::sort(children, count, contextRoot);
+	}
+
+	bool PaintOrder::isContext(int id)
+	{
+		const auto *nodes = Tree::instance().nodes();
+		const auto &n = nodes[id];
+		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.style.position) &&
+		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		return n.parent < 0 || n.style.position == kPositionFixed || ChildZSorter::effectGroup(n) ||
+		    (!n.style.z_index_auto && (n.style.position != 0 || item));
+	}
+
+	bool PaintOrder::isGroup(int id)
+	{
+		const auto *nodes = Tree::instance().nodes();
+		const auto &n = nodes[id];
+		const bool item = n.parent >= 0 &&
+		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		return isContext(id) || n.style.position != 0 || n.style.float_side || item;
+	}
+
+	std::vector<int> PaintOrder::collectChildren(int root, bool groupRoot, bool includePositioned)
+	{
+		const auto *nodes = Tree::instance().nodes();
+		std::vector<int> result;
+		if (!groupRoot) return result; // Ordinary boxes contribute only their own paint.
+		// CSS painting follows stacking contexts rather than DOM parentage.
+		// Float, flex/grid-item and positioned-auto groups keep their ordinary
+		// contents together, while their positioned descendants participate in
+		// the enclosing real context. Ordinary block/inline wrappers contribute
+		// separate entries so block backgrounds remain below floats and text.
+		auto walk = [&](auto &&self, int parent, bool withinGroup) -> void {
+			std::vector<int> children;
+			for (int child = nodes[parent].first_child; child >= 0; child = nodes[child].next_sibling)
+				if (!isDisplayNone(nodes[child].style)) children.push_back(child);
+			if (nodes[parent].style.display == kDisplayFlex || isDisplayGrid(nodes[parent].style)) {
+				std::stable_sort(children.begin(), children.end(), [&](int a, int b) {
+					const int oa = isOutOfFlowPosition(nodes[a].style.position) ? 0 : nodes[a].style.order;
+					const int ob = isOutOfFlowPosition(nodes[b].style.position) ? 0 : nodes[b].style.order;
+					return oa < ob;
+				});
+			}
+			for (int child : children) {
+				const auto &n = nodes[child];
+				if (n.style.blink_interval_ms > 0 && !n.style.blink_visible) continue;
+				const bool context = isContext(child), positioned = n.style.position != 0 || context;
+				const bool group = isGroup(child);
+				if (positioned) {
+					if (includePositioned) result.push_back(child);
+					if (!context && includePositioned) self(self, child, true);
+				} else {
+					if (!withinGroup) result.push_back(child);
+					self(self, child, withinGroup || group);
+				}
+			}
+		};
+		walk(walk, root, false);
+		sortChildren(result.data(), static_cast<int>(result.size()), root);
+		return result;
+	}
+
+	int PaintOrder::compareNodes(int first, int second)
+	{
+		// This is also the recorder's traversal, so retained draws cannot invent a
+		// second hierarchy or lose document-order ties after a depth crossing.
+		static int ranks[kMaxNodes];
+		static uint64_t serial = ~0ull;
+		static uint32_t recordSerial = 0;
+		auto &tree = Tree::instance();
+		if (serial != tree.refreshSerial() || recordSerial != state.displayListSerial) {
+			std::fill(std::begin(ranks), std::end(ranks), -1);
+			int next = 0;
+			auto visit = [&](auto &&self, int node, bool groupRoot, bool positioned) -> void {
+				ranks[node] = next++;
+				for (int child : collectChildren(node, groupRoot, positioned))
+					self(self, child, isGroup(child), isContext(child));
+			};
+			for (int id = 0; id < tree.nodeCount(); ++id)
+				if (tree.nodes()[id].parent < 0) visit(visit, id, true, true);
+			serial = tree.refreshSerial(); recordSerial = state.displayListSerial;
+		}
+		return ranks[first] - ranks[second];
+	}
+
 	DisplayList &DisplayList::instance()
 	{
 		static DisplayList displayList;
 		return displayList;
 	}
 
+	static int recordingTextClipOwner = -1;
+
+	int DisplayList::setRecordingTextClipOwner(int owner)
+	{
+		const int previous = recordingTextClipOwner;
+		recordingTextClipOwner = owner;
+		return previous;
+	}
+
 	DisplayCommand *DisplayList::append()
 	{
+		if (recordingTextClipOwner >= 0) state.textClippedBackgrounds = true;
 		if (state.appendOverride)
 		{
 			if (!state.appendOverrideCount || *state.appendOverrideCount >= state.appendOverrideCapacity)
 				return nullptr;
-			return &state.appendOverride[(*state.appendOverrideCount)++];
+			auto *command = &state.appendOverride[(*state.appendOverrideCount)++];
+			command->textClipOwner = recordingTextClipOwner;
+			command->textDecorationInk = false;
+			return command;
 		}
 		if (!state.commands)
 		{
@@ -8773,7 +9173,10 @@ int gLastScrollUiFrame = -1000;
 			state.commandOverflow = true;
 			return nullptr;
 		}
-		return &state.commands[state.commandCount++];
+		auto *command = &state.commands[state.commandCount++];
+		command->textClipOwner = recordingTextClipOwner;
+		command->textDecorationInk = false;
+		return command;
 	}
 
 	void DisplayList::clear()
@@ -8785,6 +9188,7 @@ int gLastScrollUiFrame = -1000;
 		state.filterBlurCacheHits = 0;
 		state.filterBlurCacheMisses = 0;
 		state.commandCount = 0;
+		state.textClippedBackgrounds = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
 		if (!state.ensureNodeScratchCapacity(tree.nodeCount()))
@@ -9030,6 +9434,18 @@ int gLastScrollUiFrame = -1000;
 			logReprojectReject("scratch", nodeCount);
 #endif
 			return false;
+		}
+
+		// A flat hidden face can remove its entire paint subtree. Rebuild when
+		// its visibility changes; an unchanged hidden group needs no commands,
+		// and an unchanged visible group can still use the reprojection path.
+		// The recorder gives even an empty visible container a valid range.
+		for (int i = 0; i < state.drawNodeOrderCount; ++i)
+			if (state.drawNodeOrder[i] < 0 || state.drawNodeOrder[i] >= nodeCount) return false;
+		for (int id = 0; id < nodeCount; ++id) {
+			if (!nodes[id].style.backface_hidden || !ViewRenderer::isTransformableBox(nodes[id]) || preserves3D(nodes[id].style)) continue;
+			const bool wasRecorded = state.nodeDrawStart[id] >= 0;
+			if (wasRecorded == ViewRenderer::backfaceSubtreeHidden(nodes[id])) return false;
 		}
 
 		// Validate first (no partial patching): every recorded command's screen geometry
@@ -9285,86 +9701,17 @@ int gLastScrollUiFrame = -1000;
 		state.reprojectDirtyX1 = rdX1;
 		state.reprojectDirtyY1 = rdY1;
 
-		// CRITICAL: the full record re-sorts children back-to-front every frame
-		// (ChildZSorter, recordNode); the replay walks drawNodeOrder. Patching geometry
-		// alone leaves the draw order frozen at the arming frame's pose, so as the cube
-		// spins the faces composite in stale z-order — the far faces blend wrong (read
-		// too transparent). Re-sort drawNodeOrder by current projected depth + z-index
-		// here, ascending = back-to-front, matching ChildZSorter::afterByDepth. Commands
-		// don't move; only the per-node draw order the replay follows.
-		const int dn = state.drawNodeOrderCount;
-		static int sortDepth[kMaxNodes];
-		static int sortZ[kMaxNodes];
-		const auto nodeHasCommands = [&](int id) -> bool
-		{
-			return id >= 0 && id < nodeCount &&
-			       state.nodeDrawStart[id] >= 0 &&
-			       state.nodeDrawEnd[id] > state.nodeDrawStart[id];
-		};
-		const auto outermostStackingZ = [&](int id) -> int
-		{
-			int z = 0;
-			for (int p = id; p >= 0 && p < nodeCount; p = nodes[p].parent)
-			{
-				const int nodeZ = nodes[p].style.z_index;
-				if (nodeZ != 0)
-					z = nodeZ;
-			}
-			return z;
-		};
-		for (int i = 0; i < dn; i++)
-		{
-			int node = state.drawNodeOrder[i];
-			if (node < 0 || node >= nodeCount)
-			{
-				sortDepth[i] = 0;
-				sortZ[i] = 0;
-				continue;
-			}
-			// Key each node by its compositing-group ROOT: skip commandless wrappers
-			// only while they wrap a single child (e.g. a label <span> around text), then
-			// climb through contiguous painted ancestors. This keeps a face and its label
-			// together so stable sort draws the label after the face, while stopping at
-			// commandless multi-child 3D containers so sibling faces sort independently.
-			int root = node;
-			for (;;)
-			{
-				const int p = nodes[root].parent;
-				if (p < 0 || p >= nodeCount)
-					break;
-				if (!nodeHasCommands(p))
-				{
-					if (nodes[p].first_child != root || nodes[p].last_child != root)
-						break;
-					root = p;
-					continue;
-				}
-				root = p;
-			}
-			if (!nodeHasCommands(root))
-				root = node;
-			sortDepth[i] = ViewRenderer::transformedDepth(nodes[root], false);
-			sortZ[i] = outermostStackingZ(node);
-		}
-		for (int i = 1; i < dn; i++)
-		{
+		// Reproduce the recorder's traversal order after transforms change. Comparing
+		// the diverging branches preserves parent/child groups, paint phases,
+		// stack levels, projected depth, and order-modified document ties.
+		for (int i = 1; i < state.drawNodeOrderCount; ++i) {
 			const int node = state.drawNodeOrder[i];
-			const int dp = sortDepth[i];
-			const int zi = sortZ[i];
 			int j = i - 1;
-			while (j >= 0)
-			{
-				const bool pAfter = (sortZ[j] != zi) ? (sortZ[j] > zi) : (sortDepth[j] > dp);
-				if (!pAfter)
-					break;
+			while (j >= 0 && PaintOrder::compareNodes(state.drawNodeOrder[j], node) > 0) {
 				state.drawNodeOrder[j + 1] = state.drawNodeOrder[j];
-				sortDepth[j + 1] = sortDepth[j];
-				sortZ[j + 1] = sortZ[j];
-				j--;
+				--j;
 			}
 			state.drawNodeOrder[j + 1] = node;
-			sortDepth[j + 1] = dp;
-			sortZ[j + 1] = zi;
 		}
 		return true;
 	}
@@ -9407,6 +9754,18 @@ int gLastScrollUiFrame = -1000;
 				}
 			}
 		}
+		if (isDocumentCanvasRoot(nodes[id])) {
+			// The UA canvas is below the root's opacity/visibility scope and is
+			// independent of its layout box. Replaying it clears removed or
+			// translucent propagated backgrounds across the whole viewport.
+			if (DisplayCommand *cmd = append()) {
+				cmd->type = DisplayCommandType::FillRect;
+				cmd->bx = cmd->by = cmd->fill.x = cmd->fill.y = 0;
+				cmd->bw = cmd->fill.w = cx1 + 1;
+				cmd->bh = cmd->fill.h = cy1 + 1;
+				cmd->fill.color = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+			}
+		}
 		RenderRecorder::recordNode(id, parent_alpha, 0, 0, cx1, cy1, nullptr);
 	}
 
@@ -9437,6 +9796,7 @@ int gLastScrollUiFrame = -1000;
 
 	bool DisplayList::canReplayDirectDirtyRegions(int width, int height) const
 	{
+		if (hasTextClippedBackgrounds()) return false;
 		Tree &tree = Tree::instance();
 		Node *nodes = tree.nodes();
 		if (state.drawNodeOrderCount <= 0)
@@ -9456,6 +9816,10 @@ int gLastScrollUiFrame = -1000;
 	}
 
 	int DisplayList::commandCount() const { return state.commandCount; }
+	bool DisplayList::hasTextClippedBackgrounds() const
+	{
+		return state.textClippedBackgrounds;
+	}
 
 	void DisplayList::clearRetainedBackgroundRecolors()
 	{
@@ -9689,21 +10053,16 @@ int gLastScrollUiFrame = -1000;
 			int y0 = 0;
 			int x1 = width - 1;
 			int y1 = height - 1;
-			for (int a = nodes[id].parent; a >= 0 && a < nodeCount; a = nodes[a].parent)
+			for (int a = LayoutEngine::isViewportFixed(nodes[id]) ? -1 : nodes[id].parent; a >= 0 && a < nodeCount; a = nodes[a].parent)
 			{
 				const Node &ancestor = nodes[a];
 				if (!isViewLikeNodeType(ancestor.type) || ancestor.style.overflow == 0 || ancestor.first_child < 0)
+				{
+					if (LayoutEngine::isViewportFixed(ancestor)) break;
 					continue;
-				const int ax1 = ancestor.layout.x + ancestor.layout.width - 1;
-				const int ay1 = ancestor.layout.y + ancestor.layout.height - 1;
-				if (ancestor.layout.x > x0)
-					x0 = ancestor.layout.x;
-				if (ancestor.layout.y > y0)
-					y0 = ancestor.layout.y;
-				if (ax1 < x1)
-					x1 = ax1;
-				if (ay1 < y1)
-					y1 = ay1;
+				}
+				ClipMath::clampToNode(ancestor, &x0, &y0, &x1, &y1);
+				if (LayoutEngine::isViewportFixed(ancestor)) break;
 			}
 			*cx0 = x0;
 			*cy0 = y0;
@@ -9763,7 +10122,7 @@ int gLastScrollUiFrame = -1000;
 					continue;
 				const Node &probe = nodes[id];
 				const bool paintsBox =
-						(probe.style.has_bg && probe.style.bg_alpha > 0) ||
+						(probe.style.has_bg && (probe.style.bg_alpha > 0 || styleHasBackgroundImage(probe.style))) ||
 						rstyle(probe.style).box_shadow_alpha > 0;
 				if (!paintsBox)
 					continue;
@@ -10893,6 +11252,15 @@ int gLastScrollUiFrame = -1000;
 			case DisplayCommandType::StrokeRoundedRect:
 			{
 				auto r = command.strokeRoundedRect;
+				if (r.cssRadii) {
+					TransformedRoundedRectCommand outer{}, inner{};
+					cssRoundedBorderContours(r, outer, inner);
+					const int samples = std::max(1, aaSamples);
+					const int coverage = cssRoundedBorderCoverage(outer, inner, x, y, samples);
+					*outColor = r.color;
+					*outAlpha = combinedCoverageAlpha(255, coverage, samples * samples);
+					return *outAlpha > 0;
+				}
 				const int maxRadius = std::min(r.w / 2, r.h / 2);
 				r.tl = static_cast<std::int16_t>(std::clamp(static_cast<int>(r.tl), 0, maxRadius));
 				r.tr = static_cast<std::int16_t>(std::clamp(static_cast<int>(r.tr), 0, maxRadius));
@@ -11713,6 +12081,7 @@ int gLastScrollUiFrame = -1000;
 
 	bool DisplayList::recolorRetainedSolidBackground(int node, gea::framework::graphics::pixel::native_t oldColor, gea::framework::graphics::pixel::native_t newColor, int *x0, int *y0, int *x1, int *y1)
 	{
+		if (hasTextClippedBackgrounds()) return false;
 		Tree &tree = Tree::instance();
 		if (!state.commands || node < 0 || node >= tree.nodeCount())
 			return false;
@@ -11884,8 +12253,8 @@ int gLastScrollUiFrame = -1000;
 		// gate: without it a clipped-out node re-recorded a full background fill into
 		// an empty range, which `old_len == 0 && tmp_len > 0` below (correctly) refuses
 		// to splice — and the refusal cost the whole frame its retained display list.
-		const bool outsideRecordClip = nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
-		if (!outsideRecordClip &&
+		const bool outsideRecordClip = !isDocumentCanvasRoot(*n) && nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
+		if (!outsideRecordClip && n->style.visibility == 0 && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
 				n->style.display != 1 &&
 				n->style.opacity != 0 &&
 				!(n->style.blink_interval_ms > 0 && !n->style.blink_visible) &&
@@ -12018,6 +12387,10 @@ int gLastScrollUiFrame = -1000;
 
 	void DisplayList::replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin)
 	{
+		const auto &tree = Tree::instance();
+		const int root = tree.mountedRoot();
+		if (root >= 0 && root < tree.nodeCount() && isDocumentCanvasRoot(tree.nodes()[root]))
+			DisplayCommandReplayer::restoreClearBaseInRegion(x0, y0, x1, y1);
 		DisplayCommandReplayer::replaySimpleClippedDirtyRegion(x0, y0, x1, y1, origin);
 	}
 

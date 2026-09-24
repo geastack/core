@@ -185,6 +185,8 @@ export type StyleLength =
   | `max(${string})`
   | `clamp(${string})`
 export type StyleBox = StyleLength | string
+export type StylePreferredSize = StyleLength | 'auto' | 'min-content' | 'max-content' | 'fit-content'
+export type StyleOverflow = 'visible' | 'hidden' | 'clip' | 'scroll' | 'auto' | 'overlay'
 export type ClassMap = Record<string, string | number | boolean | null | undefined>
 export type ClassValue = string | ClassMap
 
@@ -213,15 +215,27 @@ export interface TouchHost {
 export declare const touch: TouchHost
 
 export interface Style {
+  font?: string
   display?: 'block' | 'flex' | 'grid' | 'none'
-  flexDirection?: 'row' | 'column'
-  flexWrap?: 'nowrap' | 'wrap'
+  visibility?: 'visible' | 'hidden' | 'collapse'
+  flexDirection?: 'row' | 'column' | 'row-reverse' | 'column-reverse'
+  flexWrap?: 'nowrap' | 'wrap' | 'wrap-reverse'
+  flexFlow?: string
+  boxSizing?: 'content-box' | 'border-box'
+  float?: 'none' | 'left' | 'right'
+  clear?: 'none' | 'left' | 'right' | 'both'
+  writingMode?: 'horizontal-tb' | 'vertical-lr' | 'vertical-rl' | 'sideways-lr' | 'sideways-rl'
+  direction?: 'ltr' | 'rtl'
+  rowGap?: StyleLength
+  columnGap?: StyleLength
+  order?: number
+  alignContent?: 'flex-start' | 'center' | 'flex-end' | 'stretch' | 'space-between' | 'space-around'
   justifyContent?: 'flex-start' | 'center' | 'flex-end' | 'space-between' | 'space-around'
   alignItems?: 'flex-start' | 'center' | 'flex-end' | 'stretch'
   alignSelf?: 'auto' | 'flex-start' | 'center' | 'flex-end' | 'stretch'
   gap?: StyleLength
-  width?: StyleLength
-  height?: StyleLength
+  width?: StylePreferredSize
+  height?: StylePreferredSize
   minWidth?: StyleLength
   minHeight?: StyleLength
   maxWidth?: StyleLength
@@ -257,9 +271,10 @@ export interface Style {
   fontFamily?: string
   fontSize?: StyleLength
   textAlign?: 'left' | 'center' | 'right'
-  overflow?: 'visible' | 'hidden' | 'scroll' | 'auto'
-  overflowX?: 'visible' | 'hidden' | 'scroll' | 'auto'
-  overflowY?: 'visible' | 'hidden' | 'scroll' | 'auto'
+  whiteSpace?: 'normal' | 'nowrap' | 'pre' | 'pre-wrap' | 'pre-line' | 'break-spaces'
+  overflow?: StyleOverflow | `${StyleOverflow} ${StyleOverflow}`
+  overflowX?: StyleOverflow
+  overflowY?: StyleOverflow
   transform?: string | number
   rotate?: string | number
   scale?: string | number

@@ -41,8 +41,23 @@ bool DisplayInvalidation::rebuildsNodeDisplayCommands(Property prop)
 	case Property::Display:
 	case Property::Opacity:
 	case Property::BackgroundColor:
+	case Property::BackgroundAlpha:
+	case Property::BackgroundClip:
+	case Property::BackgroundImage:
+	case Property::Containment:
 	case Property::ActiveBackgroundColor:
 	case Property::Color:
+	case Property::ColorAlpha:
+	case Property::BorderAlpha:
+	case Property::BorderTopAlpha:
+	case Property::BorderRightAlpha:
+	case Property::BorderBottomAlpha:
+	case Property::BorderLeftAlpha:
+	case Property::BorderColorCurrent:
+	case Property::BorderTopColorCurrent:
+	case Property::BorderRightColorCurrent:
+	case Property::BorderBottomColorCurrent:
+	case Property::BorderLeftColorCurrent:
 	case Property::BorderColor:
 	case Property::BorderTopWidth:
 	case Property::BorderRightWidth:
@@ -63,6 +78,19 @@ bool DisplayInvalidation::rebuildsNodeDisplayCommands(Property prop)
 	case Property::TransformRotate:
 	case Property::TransformRotateX:
 	case Property::TransformRotateY:
+	case Property::TranslateX:
+	case Property::RotateAngle:
+	case Property::RotateAxisX:
+	case Property::RotateAxisY:
+	case Property::RotateAxisZ:
+	case Property::ScaleX:
+	case Property::ScaleY:
+	case Property::ScaleZ:
+	case Property::TransformTranslateOuterAxes:
+	case Property::TranslateY:
+	case Property::TranslateZ:
+	case Property::TranslateXPercent:
+	case Property::TranslateYPercent:
 	case Property::TransformTranslateX:
 	case Property::TransformTranslateY:
 	case Property::TransformTranslateZ:
@@ -70,6 +98,7 @@ bool DisplayInvalidation::rebuildsNodeDisplayCommands(Property prop)
 	case Property::TransformTranslateYPercent:
 	case Property::TransformScaleX:
 	case Property::TransformScaleY:
+	case Property::TransformScaleZ:
 	case Property::TransformOriginX:
 	case Property::TransformOriginY:
 	case Property::Perspective:

@@ -37,7 +37,15 @@ void Tree::markNodeDisplayCommandsDirty(int node)
 {
 	if (node < 0 || node >= kMaxNodes) return;
 	refreshPerfStatsMutable().treeMarkNodeCommandDirtyCalls++;
-	treeState().nodeCommandDirty[node] = 1;
+	auto &state = treeState();
+	state.nodeCommandDirty[node] = 1;
+	const int root = state.mountedRoot;
+	if (root >= 0 && root < state.nodeCount && node < state.nodeCount && isDocumentCanvasRoot(state.nodes[root]) &&
+	    (node == root || (state.nodes[node].parent == root && std::string_view(tagFromId(state.nodes[node].tag_id)) == "body"))) {
+		// The affected canvas pixels extend beyond the root/body layout boxes.
+		// A body mutation can also move background ownership to or from html.
+		markDisplayListDirty();
+	}
 }
 
 void Tree::markScrollDirty(int node)

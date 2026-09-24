@@ -86,15 +86,15 @@ void InputRenderer::layout(int id, int)
 
 	const char *content = inputContentText(id, nullptr, n.style.text_color);
 	const char *measureText = inputMeasureText(id);
-	int width = TextRenderer::measureWidth(content, n.style.font_id, n.style.font_size, n.style.text_transform) + n.style.padding[1] + n.style.padding[3];
-	int height = TextRenderer::measureHeight(measureText, n.style.font_id, n.style.font_size, n.style.text_transform, n.style.line_height) + n.style.padding[0] + n.style.padding[2];
+	int width = TextRenderer::measureWidth(content, n.style.font_id, n.style.font_size, n.style.text_transform) + boxInset(n.style, 1) + boxInset(n.style, 3);
+	int height = TextRenderer::measureHeight(measureText, n.style.font_id, n.style.font_size, n.style.text_transform, n.style.line_height) + boxInset(n.style, 0) + boxInset(n.style, 2);
 
-	if (n.style.width != kUnset) width = n.style.width;
-	else if (n.style.width_percent != kUnset && n.layout.width > 0) width = n.layout.width;
-	if (n.style.height != kUnset) height = n.style.height;
-	else if (n.style.height_percent != kUnset && n.layout.height > 0) height = n.layout.height;
-	n.layout.width = LayoutEngine::instance().clampSize(width, n.style.min_width, n.style.max_width);
-	n.layout.height = LayoutEngine::instance().clampSize(height, n.style.min_height, n.style.max_height);
+	if (n.style.width != kUnset) width = contentSizeToBorderSize(n.style, n.style.width, true);
+	else if ((n.style.width_percent != kUnset || n.style.width_expression >= 0) && n.layout.width > 0) width = n.layout.width;
+	if (n.style.height != kUnset) height = contentSizeToBorderSize(n.style, n.style.height, false);
+	else if ((n.style.height_percent != kUnset || n.style.height_expression >= 0) && n.layout.height > 0) height = n.layout.height;
+	n.layout.width = clampBorderBoxSize(n.style, width, true);
+	n.layout.height = clampBorderBoxSize(n.style, height, false);
 	n.layout.scroll_content_height = n.layout.height;
 	n.layout.scroll_y = 0;
 }
@@ -114,10 +114,10 @@ void InputRenderer::record(int id)
 	const int y = n.layout.y;
 	const int w = n.layout.width;
 	const int h = n.layout.height;
-	const int padLeft = n.style.padding[3];
-	const int padRight = n.style.padding[1];
-	const int padTop = n.style.padding[0];
-	const int padBottom = n.style.padding[2];
+	const int padLeft = boxInset(n.style, 3);
+	const int padRight = boxInset(n.style, 1);
+	const int padTop = boxInset(n.style, 0);
+	const int padBottom = boxInset(n.style, 2);
 	const int contentX = x + padLeft;
 	const int contentY = y + padTop;
 	int contentW = w - padLeft - padRight;

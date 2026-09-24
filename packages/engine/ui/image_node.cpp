@@ -19,21 +19,23 @@ class ImageFitResolver {
 public:
 	static ImageFitRect resolve(const Node &node, int imageWidth, int imageHeight)
 	{
+		const int contentWidth = node.layout.width - boxInsets(node.style, true);
+		const int contentHeight = node.layout.height - boxInsets(node.style, false);
 		ImageFitRect rect{
-			node.layout.x,
-			node.layout.y,
-			node.layout.width,
-			node.layout.height,
+			node.layout.x + boxInset(node.style, 3),
+			node.layout.y + boxInset(node.style, 0),
+			contentWidth,
+			contentHeight,
 		};
 
 		if (node.style.image_fit == 1 || node.style.image_fit == 4) {
-			const int scaledWidth = (imageWidth * node.layout.height) / imageHeight;
-			const int scaledHeight = (imageHeight * node.layout.width) / imageWidth;
-			if (scaledWidth <= node.layout.width) {
+			const int scaledWidth = (imageWidth * contentHeight) / imageHeight;
+			const int scaledHeight = (imageHeight * contentWidth) / imageWidth;
+			if (scaledWidth <= contentWidth) {
 				rect.width = scaledWidth;
-				rect.height = node.layout.height;
+				rect.height = contentHeight;
 			} else {
-				rect.width = node.layout.width;
+				rect.width = contentWidth;
 				rect.height = scaledHeight;
 			}
 			if (node.style.image_fit == 4 && rect.width >= imageWidth && rect.height >= imageHeight) {
@@ -42,13 +44,13 @@ public:
 			}
 			center(node, rect);
 		} else if (node.style.image_fit == 2) {
-			const int scaledWidth = (imageWidth * node.layout.height) / imageHeight;
-			const int scaledHeight = (imageHeight * node.layout.width) / imageWidth;
-			if (scaledWidth >= node.layout.width) {
+			const int scaledWidth = (imageWidth * contentHeight) / imageHeight;
+			const int scaledHeight = (imageHeight * contentWidth) / imageWidth;
+			if (scaledWidth >= contentWidth) {
 				rect.width = scaledWidth;
-				rect.height = node.layout.height;
+				rect.height = contentHeight;
 			} else {
-				rect.width = node.layout.width;
+				rect.width = contentWidth;
 				rect.height = scaledHeight;
 			}
 			center(node, rect);
@@ -64,8 +66,8 @@ public:
 private:
 	static void center(const Node &node, ImageFitRect &rect)
 	{
-		rect.x = node.layout.x + (node.layout.width - rect.width) / 2;
-		rect.y = node.layout.y + (node.layout.height - rect.height) / 2;
+		rect.x = node.layout.x + boxInset(node.style, 3) + (node.layout.width - boxInsets(node.style, true) - rect.width) / 2;
+		rect.y = node.layout.y + boxInset(node.style, 0) + (node.layout.height - boxInsets(node.style, false) - rect.height) / 2;
 	}
 };
 
@@ -109,10 +111,12 @@ void ImageRenderer::layout(int id)
 	int iw = images.width(n->image_id);
 	int ih = images.height(n->image_id);
 
-	if (n->style.width == kUnset && n->style.width_percent == kUnset && iw > 0) n->layout.width = iw;
-	if (n->style.height == kUnset && n->style.height_percent == kUnset && ih > 0) n->layout.height = ih;
-	n->layout.width = LayoutEngine::instance().clampSize(n->layout.width, n->style.min_width, n->style.max_width);
-	n->layout.height = LayoutEngine::instance().clampSize(n->layout.height, n->style.min_height, n->style.max_height);
+	if (n->style.width == kUnset && n->style.width_percent == kUnset && n->style.width_expression < 0 && iw > 0)
+		n->layout.width = iw + boxInsets(n->style, true);
+	if (n->style.height == kUnset && n->style.height_percent == kUnset && n->style.height_expression < 0 && ih > 0)
+		n->layout.height = ih + boxInsets(n->style, false);
+	n->layout.width = clampBorderBoxSize(n->style, n->layout.width, true);
+	n->layout.height = clampBorderBoxSize(n->style, n->layout.height, false);
 }
 
 void ImageRenderer::record(const Node &node)

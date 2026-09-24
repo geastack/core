@@ -44,6 +44,7 @@ int main()
 
 	StyleSheet::instance().registerRule("stale-percent-parent", "width", "180");
 	StyleSheet::instance().registerRule("stale-percent-parent", "height", "120");
+	StyleSheet::instance().registerRule("stale-percent-parent", "box-sizing", "border-box");
 	StyleSheet::instance().registerRule("stale-percent-parent", "padding", "10");
 	StyleSheet::instance().registerRule("stale-percent-child", "width", "100%");
 	StyleSheet::instance().registerRule("stale-percent-child", "height", "100%");
@@ -60,6 +61,11 @@ int main()
 	if (!expectEqual(child.layout.y, 10, "child y")) return 1;
 	if (!expectEqual(child.layout.width, 160, "child width")) return 1;
 	if (!expectEqual(child.layout.height, 100, "child height")) return 1;
+
+	parent.style().setProperty("box-sizing", "content-box");
+	Tree::instance().computeLayout(parentId, 300, 180);
+	if (!expectEqual(child.layout.width, 180, "content-box child width")) return 1;
+	if (!expectEqual(child.layout.height, 120, "content-box child height")) return 1;
 
 	return 0;
 }

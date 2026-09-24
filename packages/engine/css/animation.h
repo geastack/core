@@ -7,6 +7,7 @@
 // (inline). Part of the gea CSS animation engine. See docs/geaos-grand-vision.md (M1).
 
 #include <cmath>
+#include <algorithm>
 #include <cstdint>
 #include <initializer_list>
 #include <vector>
@@ -30,6 +31,7 @@ inline ValueKind kindOf(Property p)
   case Property::Color:
   case Property::BorderColor:
     return ValueKind::Color;
+  case Property::RotateAngle:
   case Property::TransformRotate:
   case Property::TransformRotateX:
   case Property::TransformRotateY:
@@ -119,11 +121,17 @@ private:
 
 // One animated property on one node. A 2-keyframe track is a CSS transition; an
 // N-keyframe track is a @keyframes rule. Easing applies per segment (CSS default).
+struct RotationAxis { double x = 0, y = 0, z = 1; };
+struct RotationValue { double angle; RotationAxis axis; };
+
 struct Animation {
   int nodeId = -1;
   Property property = Property::Opacity;
   ValueKind kind = ValueKind::Scalar;
   KeyframeList keyframes;  // >= 2, sorted by offset
+  // Only an individual rotate track owns axes. Keep its angle and axis coupled
+  // during interpolation; independent scalar axis tracks produce wrong turns.
+  std::vector<RotationAxis> rotationAxes;
   Easing easing = Easing::ease();
   uint32_t durationMs = 300;
   uint32_t delayMs = 0;
@@ -146,6 +154,62 @@ struct Animation {
     return a;
   }
 };
+
+inline RotationValue sampleRotation(const Animation &a, double p)
+{
+  const auto &kf = a.keyframes;
+  std::size_t i = 0;
+  while (i + 1 < kf.size() && kf[i + 1].offset <= p) ++i;
+  if (i + 1 == kf.size() || p <= kf.front().offset)
+    return {kf[i].value, a.rotationAxes[i]};
+  const double span = kf[i + 1].offset - kf[i].offset;
+  const double t = span > 0 ? (p - kf[i].offset) / span : 0;
+  const double u = a.easing.kind() == EasingKind::Linear ? t : a.easing(t);
+  RotationValue from{kf[i].value, a.rotationAxes[i]}, to{kf[i + 1].value, a.rotationAxes[i + 1]};
+  auto normalize = [](RotationValue &r) {
+    const double length = std::sqrt(r.axis.x*r.axis.x + r.axis.y*r.axis.y + r.axis.z*r.axis.z);
+    if (length == 0) { r.angle = 0; r.axis = {}; }
+    else { r.axis.x /= length; r.axis.y /= length; r.axis.z /= length; }
+  };
+  normalize(from); normalize(to);
+  const bool sameAxis = std::abs(from.axis.x-to.axis.x) < 1e-9 &&
+      std::abs(from.axis.y-to.axis.y) < 1e-9 && std::abs(from.axis.z-to.axis.z) < 1e-9;
+  // Preserve full turns about a common axis. An identity endpoint adopts the
+  // other endpoint's axis (CSS Transforms 2, interpolation of rotate3d).
+  if (sameAxis || from.angle == 0 || to.angle == 0)
+    return {lerp(from.angle, to.angle, u), from.angle != 0 ? from.axis : to.axis};
+  constexpr double radians = 3.14159265358979323846 / 180;
+  const double s0 = std::sin(from.angle*radians/2), s1 = std::sin(to.angle*radians/2);
+  double q0[4] = {from.axis.x*s0, from.axis.y*s0, from.axis.z*s0, std::cos(from.angle*radians/2)};
+  double q1[4] = {to.axis.x*s1, to.axis.y*s1, to.axis.z*s1, std::cos(to.angle*radians/2)};
+  double dot = 0;
+  for (int k = 0; k < 4; ++k) dot += q0[k]*q1[k];
+  if (dot < 0) { for (double &v : q1) v = -v; dot = -dot; }
+  dot = std::clamp(dot, 0.0, 1.0);
+  double w0 = 1-u, w1 = u;
+  if (dot < 0.999999) {
+    const double theta = std::acos(dot), divisor = std::sin(theta);
+    w0 = std::sin((1-u)*theta)/divisor; w1 = std::sin(u*theta)/divisor;
+  }
+  double q[4], norm = 0;
+  for (int k = 0; k < 4; ++k) { q[k] = w0*q0[k] + w1*q1[k]; norm += q[k]*q[k]; }
+  norm = std::sqrt(norm);
+  if (norm == 0) return {0, {}};
+  for (double &v : q) v /= norm;
+  const double axisLength = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]);
+  if (axisLength < 1e-12) return {0, {}};
+  return {2*std::atan2(axisLength, q[3])/radians, {q[0]/axisLength,q[1]/axisLength,q[2]/axisLength}};
+}
+
+template <typename Apply>
+inline void applyRotationSample(const Animation &a, double p, Apply apply)
+{
+  const auto r = sampleRotation(a, p);
+  apply(Property::RotateAngle, static_cast<int>(std::llround(r.angle*10)));
+  apply(Property::RotateAxisX, static_cast<int>(std::llround(r.axis.x*1000000)));
+  apply(Property::RotateAxisY, static_cast<int>(std::llround(r.axis.y*1000000)));
+  apply(Property::RotateAxisZ, static_cast<int>(std::llround(r.axis.z*1000000)));
+}
 
 inline double sampleSegment(const Animation &a, const Keyframe &k0, const Keyframe &k1, double p)
 {

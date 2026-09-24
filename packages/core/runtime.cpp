@@ -35,6 +35,13 @@
 #define GEA_EMBEDDED_WIFI_EARLY_CONNECT 0
 #endif
 
+// UI/audio applications can keep touch event-driven rather than spending CPU
+// on back-to-back no-op frames between samples. Touch events still request an
+// immediate frame; animations continue on the configured frame timer.
+#ifndef GEA_EMBEDDED_CONTINUOUS_TOUCH_FRAMES
+#define GEA_EMBEDDED_CONTINUOUS_TOUCH_FRAMES 1
+#endif
+
 #include "css/declarative.h"
 #include "css/engine.h"
 #include "ui/style.h"
@@ -190,6 +197,7 @@ void dispatch_event(const events::Event &event, const RuntimeOptions &options)
 		for (;;) {
 			const bool catchUp = services::FrameScheduler::takeCatchUpRequest();
 			const bool activeDrag =
+				GEA_EMBEDDED_CONTINUOUS_TOUCH_FRAMES &&
 				events::TouchRuntime::gestureActiveWithin(services::FrameScheduler::nowMs(), 50);
 			// TE single-clock: never run a frame back-to-back here — the panel TE posts the
 			// next frame exactly one VBlank later, which is the whole point. Back-to-back

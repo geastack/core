@@ -176,6 +176,7 @@ void Tree::clear()
 	// switch and bounded at kMaxNodes (~512).
 	for (int i = 0; i < kMaxNodes; i++) state.nodes[i] = Node{};
 	state.nodeCount = 0;
+	state.fixedPositionUsed = false;
 	state.mountedRoot = -1;
 	state.mountedWidth = 0;
 	state.mountedHeight = 0;
@@ -258,6 +259,10 @@ int Tree::cloneNode(int sourceId, bool deep)
 		cloneRd.customProperties = srcRd->customProperties;
 		cloneRd.defaultStyles = srcRd->defaultStyles;
 		cloneRd.inlineStyles = srcRd->inlineStyles;
+		cloneRd.inlineCustomProperties = srcRd->inlineCustomProperties;
+		cloneRd.inlineGridTemplates[0] = srcRd->inlineGridTemplates[0];
+		cloneRd.inlineGridTemplates[1] = srcRd->inlineGridTemplates[1];
+		cloneRd.inlineGridShorthandMask = srcRd->inlineGridShorthandMask;
 	}
 	state.classLists[id] = state.classLists[sourceId];
 	// Listeners deliberately NOT copied (DOM cloneNode semantics) — compiled
@@ -596,6 +601,7 @@ void Tree::removeNode(int id)
 {
 	auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount || !state.nodeActive[id]) return;
+	if (containsNode(id, state.hoveredNodeId)) pointerHover(-1, -1);
 	while (state.nodes[id].first_child >= 0) {
 		removeNode(state.nodes[id].first_child);
 		if (id >= state.nodeCount || !state.nodeActive[id]) return;

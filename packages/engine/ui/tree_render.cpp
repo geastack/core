@@ -408,37 +408,44 @@ namespace gea::embedded::ui
 		bool hasTransformState(const Node &node)
 		{
 			const RareStyle &rs = rstyle(node.style); // one pool lookup, not 11
-			return rs.transform_rotate != 0 ||
+			return hasIndividualLinearTransform(rs) || hadIndividualLinearTransform(node.render) ||
+	       rs.transform_rotate != 0 ||
 						 node.render.previous_transform_rotate != 0 ||
 						 rs.transform_rotate_x != 0 ||
 						 node.render.previous_transform_rotate_x != 0 ||
 						 rs.transform_rotate_y != 0 ||
 						 node.render.previous_transform_rotate_y != 0 ||
-						 rs.transform_translate_x != 0 ||
+						 composedTranslateX(rs) != 0 ||
 						 node.render.previous_transform_translate_x != 0 ||
-						 rs.transform_translate_y != 0 ||
+						 composedTranslateY(rs) != 0 ||
 						 node.render.previous_transform_translate_y != 0 ||
-						 rs.transform_translate_z != 0 ||
+						 composedTranslateZ(rs) != 0 ||
 						 node.render.previous_transform_translate_z != 0 ||
-						 rs.transform_translate_x_percent != 0 ||
+						 composedTranslateXPercent(rs) != 0 ||
 						 node.render.previous_transform_translate_x_percent != 0 ||
-						 rs.transform_translate_y_percent != 0 ||
+						 composedTranslateYPercent(rs) != 0 ||
 						 node.render.previous_transform_translate_y_percent != 0 ||
 						 rs.transform_scale_x != 1000 ||
 						 node.render.previous_transform_scale_x != 1000 ||
 						 rs.transform_scale_y != 1000 ||
+						 rs.transform_scale_z != 1000 ||
 						 node.render.previous_transform_scale_y != 1000 ||
+						 node.render.previous_transform_scale_z != 1000 ||
 						 rs.perspective > 0 ||
 						 node.render.previous_perspective > 0;
 		}
 
 		bool hasThreeDimensionalTransformState(const Node &node)
 		{
-			return rstyle(node.style).transform_rotate_x != 0 ||
+			const auto &r = rstyle(node.style);
+			return ((r.rotate_angle % 3600) && (r.rotate_axis_x || r.rotate_axis_y)) ||
+			    ((node.render.previous_rotate_angle % 3600) && (node.render.previous_rotate_axis_x || node.render.previous_rotate_axis_y)) ||
+			    r.scale_z != 1000 || node.render.previous_scale_z != 1000 ||
+			    rstyle(node.style).transform_rotate_x != 0 ||
 						 node.render.previous_transform_rotate_x != 0 ||
 						 rstyle(node.style).transform_rotate_y != 0 ||
 						 node.render.previous_transform_rotate_y != 0 ||
-						 rstyle(node.style).transform_translate_z != 0 ||
+						 composedTranslateZ(rstyle(node.style)) != 0 ||
 						 node.render.previous_transform_translate_z != 0 ||
 						 rstyle(node.style).perspective > 0 ||
 						 node.render.previous_perspective > 0;
@@ -1158,16 +1165,17 @@ namespace gea::embedded::ui
 
 		bool panNodeHasTransform(const Node &n)
 		{
-			return rstyle(n.style).transform_rotate != 0 || n.render.previous_transform_rotate != 0 ||
+			return hasIndividualLinearTransform(rstyle(n.style)) || hadIndividualLinearTransform(n.render) ||
+	       rstyle(n.style).transform_rotate != 0 || n.render.previous_transform_rotate != 0 ||
 						 rstyle(n.style).transform_rotate_x != 0 || n.render.previous_transform_rotate_x != 0 ||
 						 rstyle(n.style).transform_rotate_y != 0 || n.render.previous_transform_rotate_y != 0 ||
-						 rstyle(n.style).transform_translate_x != 0 || n.render.previous_transform_translate_x != 0 ||
-						 rstyle(n.style).transform_translate_y != 0 || n.render.previous_transform_translate_y != 0 ||
-						 rstyle(n.style).transform_translate_z != 0 || n.render.previous_transform_translate_z != 0 ||
-						 rstyle(n.style).transform_translate_x_percent != 0 || n.render.previous_transform_translate_x_percent != 0 ||
-						 rstyle(n.style).transform_translate_y_percent != 0 || n.render.previous_transform_translate_y_percent != 0 ||
+						 composedTranslateX(rstyle(n.style)) != 0 || n.render.previous_transform_translate_x != 0 ||
+						 composedTranslateY(rstyle(n.style)) != 0 || n.render.previous_transform_translate_y != 0 ||
+						 composedTranslateZ(rstyle(n.style)) != 0 || n.render.previous_transform_translate_z != 0 ||
+						 composedTranslateXPercent(rstyle(n.style)) != 0 || n.render.previous_transform_translate_x_percent != 0 ||
+						 composedTranslateYPercent(rstyle(n.style)) != 0 || n.render.previous_transform_translate_y_percent != 0 ||
 						 rstyle(n.style).transform_scale_x != 1000 || n.render.previous_transform_scale_x != 1000 ||
-						 rstyle(n.style).transform_scale_y != 1000 || n.render.previous_transform_scale_y != 1000 ||
+						 rstyle(n.style).transform_scale_y != 1000 || rstyle(n.style).transform_scale_z != 1000 || n.render.previous_transform_scale_y != 1000 || n.render.previous_transform_scale_z != 1000 ||
 						 rstyle(n.style).perspective > 0 || n.render.previous_perspective > 0;
 		}
 
@@ -1187,7 +1195,7 @@ namespace gea::embedded::ui
 		// that paints nothing or a single solid background color, with no gradient/grid,
 		// border, radius, shadow, blur, mask, or partial opacity. Images/text/canvas and
 		// anything non-uniform return false → they get repainted after the shift.
-		bool panNodeIsHorizontallyScrollSafe(const Node &n)
+		bool panNodeIsHorizontallyScrollSafe(const Node &n, int viewportX, int viewportWidth)
 		{
 			if (n.type != NodeType::View)
 				return false;
@@ -1212,7 +1220,18 @@ namespace gea::embedded::ui
 				return false;
 			if (n.style.has_bg)
 			{
-				if (n.style.bg_fill == 1)
+				// A narrow solid rectangle still has horizontal edges: scrolling
+				// it creates a ghost just like scrolling text or a rounded control.
+				if (n.style.bg_alpha != 255 || panNodeHasTransform(n) ||
+				    n.layout.x > viewportX || n.layout.x + n.layout.width < viewportX + viewportWidth)
+					return false;
+				for (int parent = n.parent; parent >= 0; parent = treeState().nodes[parent].parent) {
+					const Node &clip = treeState().nodes[parent];
+					if (panNodeHasTransform(clip) || (clip.style.overflow &&
+					    (clip.layout.x > viewportX || clip.layout.x + clip.layout.width < viewportX + viewportWidth)))
+						return false;
+				}
+				if (styleHasBackgroundImage(n.style))
 					return false; // gradient fill (linear/radial/overlay)
 				if (rstyle(n.style).bg_grid_axes != 0)
 					return false; // grid overlay
@@ -1259,7 +1278,7 @@ namespace gea::embedded::ui
 				resetPanCoverage();
 				return false;
 			}
-			if (gHorizontalPanFastPathDisabled)
+			if (gHorizontalPanFastPathDisabled || LayoutEngine::containsViewportFixed(root))
 			{
 				resetPanCoverage();
 				return false;
@@ -1339,6 +1358,13 @@ namespace gea::embedded::ui
 				return false;
 			if (absDx >= vw)
 				return false; // teleport — a full repaint is simpler and safer
+
+			// Shifting the viewport is useful for a camera/world that spans it,
+			// not a small floating subtree (drag previews, tooltips). For those,
+			// the shift corrupts every stationary sibling and step 5 repaints
+			// nearly the entire screen instead of just the old/new card bounds.
+			if (W->layout.width < vw || W->layout.height < vh)
+				return false;
 
 			// 3. Decide what the memcpy can't reproduce and must be repainted explicitly:
 			//    every wrapper descendant that did NOT translate uniformly with the camera.
@@ -1460,7 +1486,7 @@ namespace gea::embedded::ui
 					continue;
 				if (n->render.dirty)
 					continue;
-				if (panNodeIsHorizontallyScrollSafe(*n))
+				if (panNodeIsHorizontallyScrollSafe(*n, vx, vw))
 					continue;
 				const DirtyRegions::Rect b = transformedBoundsRect(*n, false, i);
 				if (b.x0 > b.x1 || b.y0 > b.y1)
@@ -1808,6 +1834,16 @@ namespace gea::embedded::ui
 		auto &state = treeState();
 		if (root < 0 || root >= state.nodeCount)
 			return;
+		const bool viewportChanged = gLayoutViewportRoot != root ||
+		    gLayoutViewportWidth != width || gLayoutViewportHeight != height;
+		if (viewportChanged) {
+			state.displayListDirty = true;
+			state.displayListRebuildStructural = true;
+			state.nodes[root].render.dirty = true;
+			state.nodes[root].render.layout_dirty = true;
+		}
+		state.mountedWidth = width;
+		state.mountedHeight = height;
 		// Bump before the scroll-only fast path returns: a scroll-only refresh still
 		// moves content, so native renderers must re-sync.
 		state.refreshSerial++;
@@ -1815,7 +1851,21 @@ namespace gea::embedded::ui
 		perf.treeRefreshCalls++;
 		DisplayList::instance().clearRetainedBackgroundRecolors();
 
-		if (state.pendingScrollIntoViewNode < 0 && RootScrollOnlyRefresh::refresh(root, width, height))
+		const bool textClipDependencies = DisplayList::instance().hasTextClippedBackgrounds();
+		if (textClipDependencies) {
+			bool changed = state.displayListDirty;
+			for (int i = 0; !changed && i < state.nodeCount; ++i)
+				changed = state.nodes[i].render.dirty || state.nodes[i].render.layout_dirty || state.nodes[i].render.transform_dirty;
+			if (changed) {
+				// Background ink depends on descendants, including those whose own
+				// foreground is transparent. Rebuild and repaint these dependencies
+				// together before considering retained translation/recolor shortcuts.
+				state.displayListDirty = true;
+				state.displayListRebuildStructural = true;
+				state.nodes[root].render.dirty = true;
+			}
+		}
+		if (!textClipDependencies && state.pendingScrollIntoViewNode < 0 && RootScrollOnlyRefresh::refresh(root, width, height))
 			return;
 
 		// This frame is NOT a pure scroll, so the software scroll register's
@@ -1899,7 +1949,7 @@ namespace gea::embedded::ui
 			}
 			if (anyLayoutDirty)
 			{
-			if (state.pendingScrollIntoViewNode < 0)
+			if (!viewportChanged && state.pendingScrollIntoViewNode < 0)
 			{
 				int scope = scopedRelayoutRoot(state, root);
 				if (scope >= 0)

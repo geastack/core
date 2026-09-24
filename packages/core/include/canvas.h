@@ -95,6 +95,11 @@ public:
 	int width() const;
 	int height() const;
 	int strideBytes() const;
+	// Read or replace one logical framebuffer pixel in native format. Reads are
+	// independent of the current clip; writes obey the clip and mark the logical
+	// pixel dirty. Writes replace exactly (they do not apply global alpha).
+	pixel::native_t readPixelNative(int x, int y) const;
+	void writePixelNativeExact(int x, int y, pixel::native_t value);
 
 	// Software-scroll register: rotates the logical → physical row mapping
 	// inside a scroll region without moving any pixels. A pixel write at

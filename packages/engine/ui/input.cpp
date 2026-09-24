@@ -300,6 +300,7 @@ public:
 	// velocity samples from a touch the new app never saw.
 	void reset()
 	{
+		treeState().hoveredNodeId = -1;
 		activeTouchNode_ = -1;
 		savedBackgroundColor_ = 0;
 		savedHasBackground_ = 0;
@@ -396,20 +397,6 @@ public:
 private:
 	InputController() = default;
 
-	void sortChildrenByZIndex(int *children, int childCount) const
-	{
-		Node *nodes = Tree::instance().nodes();
-		for (int i = 1; i < childCount; i++) {
-			const int key = children[i];
-			int j = i - 1;
-			while (j >= 0 && nodes[children[j]].style.z_index > nodes[key].style.z_index) {
-				children[j + 1] = children[j];
-				j--;
-			}
-			children[j + 1] = key;
-		}
-	}
-
 	static bool pointInsideNodeHitArea(const Node &node, int x, int y)
 	{
 		if (node.layout.width <= 0 || node.layout.height <= 0) return false;
@@ -451,10 +438,10 @@ private:
 		return true;
 	}
 
-	int hitTestNodeId(int id, int x, int y)
+	int hitTestNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.style.display == 1) return -1;
+		if (node.style.display == 1 || isCollapsedFlexSubtree(node)) return -1;
 		// CSS `pointer-events: none` — this node and its subtree are never the
 		// target of a pointer event, so the hit-test falls through to whatever is
 		// painted behind it. Without this, a decorative overlay image positioned
@@ -463,39 +450,63 @@ private:
 		if (node.style.pointer_events == 1) return -1;
 
 		const bool inside = pointInsideNodeHitArea(node, x, y);
-		if (!inside && node.style.overflow != 0) return -1;
+		if (LayoutEngine::isViewportFixed(node)) clipped = false;
+		int clipX, clipY, clipW, clipH;
+		overflowClipBounds(node, clipX, clipY, clipW, clipH);
+		const bool outsideClip = x < clipX || y < clipY || x >= clipX + clipW || y >= clipY + clipH;
+		const bool childClipped = clipped || (outsideClip && node.style.overflow != 0);
+		if (childClipped && (!inside || clipped) && !LayoutEngine::containsViewportFixed(id)) return -1;
 
-		int children[kMaxChildren];
-		const int childCount = LayoutEngine::instance().collectChildren(id, children, kMaxChildren, false);
-		sortChildrenByZIndex(children, childCount);
-
-		for (int i = childCount - 1; i >= 0; i--) {
-			const int result = hitTestNodeId(children[i], x, y);
+		const auto children = PaintOrder::collectChildren(id, groupRoot, includePositioned);
+		for (auto child = children.rbegin(); child != children.rend(); ++child) {
+			bool inheritedClip = childClipped, ignored = false;
+			const Node *nodes = Tree::instance().nodes();
+			for (int p = nodes[*child].parent; p >= 0 && p != id; p = nodes[p].parent) {
+				const auto &ancestor = nodes[p];
+				if (ancestor.style.pointer_events == 1) ignored = true;
+				int ax, ay, aw, ah;
+				overflowClipBounds(ancestor, ax, ay, aw, ah);
+				if (ancestor.style.overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
+			}
+			if (ignored) continue;
+			const int result = hitTestNodeId(*child, x, y, inheritedClip, PaintOrder::isGroup(*child), PaintOrder::isContext(*child));
 			if (result >= 0) return result;
 		}
 
-		if (!inside) return -1;
+		if (!inside || clipped || node.style.visibility != 0) return -1;
 		return id;
 	}
 
-	int findScrollNodeId(int id, int x, int y)
+	int findScrollNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.style.display == 1) return -1;
+		if (node.style.display == 1 || isCollapsedFlexSubtree(node)) return -1;
 
 		const bool inside = pointInsideNodeHitArea(node, x, y);
-		if (!inside && node.style.overflow != 0) return -1;
+		if (LayoutEngine::isViewportFixed(node)) clipped = false;
+		int clipX, clipY, clipW, clipH;
+		overflowClipBounds(node, clipX, clipY, clipW, clipH);
+		const bool outsideClip = x < clipX || y < clipY || x >= clipX + clipW || y >= clipY + clipH;
+		const bool childClipped = clipped || (outsideClip && node.style.overflow != 0);
+		if (childClipped && (!inside || clipped) && !LayoutEngine::containsViewportFixed(id)) return -1;
 
-		int children[kMaxChildren];
-		const int childCount = LayoutEngine::instance().collectChildren(id, children, kMaxChildren, false);
-		sortChildrenByZIndex(children, childCount);
+		const auto children = PaintOrder::collectChildren(id, groupRoot, includePositioned);
+		for (auto child = children.rbegin(); child != children.rend(); ++child) {
+			bool inheritedClip = childClipped, ignored = false;
+			const Node *nodes = Tree::instance().nodes();
+			for (int p = nodes[*child].parent; p >= 0 && p != id; p = nodes[p].parent) {
+				const auto &ancestor = nodes[p];
 
-		for (int i = childCount - 1; i >= 0; i--) {
-			const int result = findScrollNodeId(children[i], x, y);
+				int ax, ay, aw, ah;
+				overflowClipBounds(ancestor, ax, ay, aw, ah);
+				if (ancestor.style.overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
+			}
+			if (ignored) continue;
+			const int result = findScrollNodeId(*child, x, y, inheritedClip, PaintOrder::isGroup(*child), PaintOrder::isContext(*child));
 			if (result >= 0) return result;
 		}
 
-		if (!inside) return -1;
+		if (!inside || clipped || node.style.visibility != 0) return -1;
 		const bool scrollableVirtualList = node.type == NodeType::VirtualList && VirtualListRenderer::scrollMaxY(id) > 0;
 		const bool scrollableView = node.type != NodeType::VirtualList && isViewLikeNodeType(node.type) &&
 		                            (nodeCanScrollX(id, node) || nodeCanScrollY(id, node));
@@ -824,6 +835,25 @@ int Tree::hitTest(int x, int y)
 int Tree::hitTestNode(int x, int y)
 {
 	return InputController::instance().hitTestNode(x, y);
+}
+
+int Tree::pointerHover(int x, int y)
+{
+	auto &state = treeState();
+	const int target = x < 0 || y < 0 ? -1 : hitTestNode(x, y);
+	if (target != state.hoveredNodeId) {
+		state.hoveredNodeId = target;
+		StyleSheet::instance().hoverChanged();
+	}
+	return target;
+}
+
+bool Tree::isHovered(int node) const
+{
+	const auto &state = treeState();
+	const int target = state.hoveredNodeId;
+	return target >= 0 && target < state.nodeCount && state.nodeActive[target] &&
+	       containsNode(mountedRoot(), target) && containsNode(node, target);
 }
 
 void Tree::pointerDown(int x, int y)
