@@ -12,6 +12,19 @@ export interface CheckboxProps {
   onClick?: PressHandler
 }
 
+const resolveClass = (val?: ClassValue | null): string => {
+  if (!val) return ''
+  if (typeof val === 'string') return val
+  if (Array.isArray(val)) return val.map(resolveClass).filter(Boolean).join(' ')
+  if (typeof val === 'object') {
+    return Object.entries(val)
+      .filter(([_, enabled]) => Boolean(enabled))
+      .map(([key]) => key)
+      .join(' ')
+  }
+  return ''
+}
+
 export function Checkbox({
   checked = false,
   indeterminate = false,
@@ -29,6 +42,7 @@ export function Checkbox({
   }
 
   const handlePress = (e: any) => {
+    if (disabled) return
     toggle()
     onPress?.(e)
     onClick?.(e)
@@ -46,7 +60,7 @@ export function Checkbox({
     indeterminate && 'gea-checkbox-indeterminate',
     !indeterminate && checked && 'gea-checkbox-checked',
     !indeterminate && !checked && 'gea-checkbox-unchecked',
-    cls,
+    resolveClass(cls),
   ]
     .filter(Boolean)
     .join(' ')
