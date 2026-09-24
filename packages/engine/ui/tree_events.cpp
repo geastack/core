@@ -370,6 +370,7 @@ bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 	event.target = gea::framework::events::EventTarget(event.targetId);
 	bool dispatched = false;
 	for (int node = event.targetId; node >= 0 && node < state.nodeCount; node = state.nodes[node].parent) {
+		if (!event.bubbles && node != event.targetId) break;
 		NodeRareData *rd = rareDataFor(node);
 		if (!rd) continue;
 		auto *initialList = rd->listeners.listenersFor(event.typeName());
@@ -411,7 +412,6 @@ bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 			cursor = nextId;
 			(*callback)(event);
 			dispatched = true;
-			if (event.propagationStopped) break;
 		}
 		if (event.propagationStopped || !event.bubbles) break;
 	}

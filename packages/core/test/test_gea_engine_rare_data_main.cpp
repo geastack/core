@@ -115,6 +115,30 @@ int probe()
 		             kTestName, stopChildHits, stopParentHits);
 		return 33;
 	}
+	int nextChildHits = 0;
+	tree.setEventListener(stopChildId, "click", [&](gea::framework::events::PointerEvent &) { nextChildHits++; });
+	{
+		gea::framework::events::PointerEvent ev{};
+		ev.type = gea::framework::events::PointerEventType::Click;
+		ev.targetId = stopChildId;
+		tree.dispatchEvent(ev);
+	}
+	if (stopChildHits != 2 || nextChildHits != 1 || stopParentHits != 0) {
+		std::fprintf(stderr, "[%s] stopPropagation skipped a target listener or reached parent\n", kTestName);
+		return 39;
+	}
+	int parentScrollHits = 0;
+	tree.setEventListener(perParentId, "scroll", [&](gea::framework::events::PointerEvent &) { parentScrollHits++; });
+	{
+		gea::framework::events::PointerEvent ev{};
+		ev.type = gea::framework::events::PointerEventType::Scroll;
+		ev.targetId = perChildId;
+		ev.bubbles = false;
+		if (tree.dispatchEvent(ev) || parentScrollHits != 0) {
+			std::fprintf(stderr, "[%s] non-bubbling scroll reached parent without target listener\n", kTestName);
+			return 40;
+		}
+	}
 
 	// Removing a node must reclaim its rare-data block (no leak, no stale fire).
 	tree.removeNode(perChildId);
