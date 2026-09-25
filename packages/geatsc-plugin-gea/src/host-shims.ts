@@ -518,9 +518,12 @@ export function createGeaHostShims(): HostShimDefinitions {
       // NVS-backed facade rather than the standalone in-memory runtime store. This
       // also makes the `localStorage.length` property read lower to the facade.
       localStorage: "gea::host::Storage",
+      // The Web's `performance`, whose `now()` reads the clock `Profiler`
+      // reads, in milliseconds from the process's start (performance.h).
+      performance: "gea::host::performance",
     },
     // The C++ type of each object named above, read off the host's own headers
-    // (`packages/host/include/host/{navigator,window,storage}.h`). See
+    // (`packages/host/include/host/{navigator,window,storage,performance}.h`). See
     // `HostShimDefinitions.hostGlobalObjectTypes` for why the value spelling
     // alone is not enough.
     hostGlobalObjectTypes: {
@@ -533,6 +536,8 @@ export function createGeaHostShims(): HostShimDefinitions {
       // two names differ here where they coincide for the other two rows,
       // which is precisely why this table cannot be derived from its sibling.
       localStorage: "gea::host::StorageFacade",
+      // `inline constexpr PerformanceFacade performance{}` -- performance.h.
+      performance: "gea::host::PerformanceFacade",
     },
     hostNamespaces: {
       navigator: "gea::host::navigator",
@@ -1346,6 +1351,9 @@ export function createGeaHostShims(): HostShimDefinitions {
         nowUs: "gea::host::Profiler.nowUs",
         nowCycles: "gea::host::Profiler.nowCycles",
       },
+      performance: {
+        now: "gea::host::performance.now",
+      },
       localStorage: {
         getItem: "gea::host::Storage.getItem",
         setItem: "gea::host::Storage.setItem",
@@ -1392,6 +1400,7 @@ export function createGeaHostShims(): HostShimDefinitions {
       __gea_Clock: ["epochMs"],
       Profiler: ["nowUs"],
       __gea_Profiler: ["nowUs"],
+      performance: ["now"],
       Battery: ["level"],
       __gea_Battery: ["level"],
       Notify: ["seq"],
@@ -2612,6 +2621,13 @@ export function createGeaHostShims(): HostShimDefinitions {
       __gea_Profiler: {
         nowUs: {
           emit: "gea::host::Profiler.nowUs({args})",
+          returnType: "double",
+          noThrow: true,
+        },
+      },
+      performance: {
+        now: {
+          emit: "gea::host::performance.now({args})",
           returnType: "double",
           noThrow: true,
         },

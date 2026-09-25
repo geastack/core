@@ -25,6 +25,7 @@
 #include "host/gpio.h"
 #include "host/clock.h"
 #include "host/profiler.h"
+#include "host/performance.h"
 #include "host/storage.h"
 #include "host/battery.h"
 #include "host/notify.h"
