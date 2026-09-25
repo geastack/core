@@ -205,6 +205,7 @@ constexpr ComputedStyle makeDefaultStyle()
 #if GEA_CSS_TEXT_ALIGN
 	style.text_align = 0;
 	style.text_align_last = 0;
+	style.vertical_align = 0;
 #if GEA_CSS_TEXT_DECORATION
 	style.text_decoration = 0;
 #endif

@@ -961,6 +961,8 @@ public:
 			int wrapSpans = 0;
 			int wrapAdvance = 0;
 			int wrapLastWidth = 0;
+			bool lineAligned = false;
+			int topItemHeight = 0, bottomItemHeight = 0;
 			std::vector<int> lineStaticChildren;
 
 			for (; j < childCount_; j++) {
@@ -1067,11 +1069,45 @@ public:
 								                              j, m.firstLineTrailingSpace});
 					}
 				}
-				const int ascent = cn.computedStyle().margin[0] + childBaseline(cn);
-				const int descent = cn.layout.height + cn.computedStyle().margin[2] - childBaseline(cn);
-				if (ascent > lineAscent) lineAscent = ascent;
-				if (descent > lineDescent) lineDescent = descent;
+				const int outerHeight = cn.style.margin[0] + cn.layout.height + cn.style.margin[2];
+				if (cn.style.vertical_align) lineAligned = true;
+				if (cn.style.vertical_align == 1) topItemHeight = std::max(topItemHeight, outerHeight);
+				else if (cn.style.vertical_align == 2) bottomItemHeight = std::max(bottomItemHeight, outerHeight);
+				else {
+					int ascent = 0, descent = 0;
+					lineExtent(cn, ascent, descent);
+					if (ascent > lineAscent) lineAscent = ascent;
+					if (descent > lineDescent) lineDescent = descent;
+				}
 				pen += gap + itemMain;
+			}
+			// A line with vertically aligned items is sized as CSS sizes it: from
+			// the block's strut and every item's reach, which may be negative when
+			// the line-height is below the font size. top/bottom items only grow a
+			// line shorter than themselves.
+			if (lineAligned) {
+				const auto strut = TextRenderer::inlineFontMetrics(node_.style);
+				lineAscent = lineIsContinuation ? std::max(strut.strutAscent, inheritedAscent) : strut.strutAscent;
+				lineDescent = lineIsContinuation ? std::max(strut.strutDescent, inheritedDescent) : strut.strutDescent;
+				for (int k = i; k < j; ++k) {
+					const Node &item = nodes[children_[k]];
+					if (item.style.vertical_align == 1 || item.style.vertical_align == 2) continue;
+					int ascent = 0, descent = 0;
+					if (k == wrapIdx) {
+						const int run = isFragmentableRun(item) ? -1 : transparentInlineRun(item);
+						ascent = item.style.margin[0] + childBaseline(item);
+						descent = runLineDescent(run >= 0 ? nodes[run] : item, wrapAdvance);
+					} else if (isLineBreak(item)) {
+						ascent = childBaseline(item);
+						descent = item.layout.height - childBaseline(item);
+					} else {
+						lineExtent(item, ascent, descent);
+					}
+					lineAscent = std::max(lineAscent, ascent);
+					lineDescent = std::max(lineDescent, descent);
+				}
+				if (bottomItemHeight > lineAscent + lineDescent) lineAscent = bottomItemHeight - lineDescent;
+				if (topItemHeight > lineAscent + lineDescent) lineDescent = topItemHeight - lineAscent;
 			}
 			const bool endedWithBreak = j > i && isLineBreak(nodes[children_[j - 1]]);
 			const bool trailingWrappedStaticBoundary = j >= childCount_ && !endedWithBreak && wrapIdx >= 0;
@@ -1331,7 +1367,10 @@ public:
 			}
 
 			int y = baseline - childBaseline(cn);
-			const int align = usedAlignment(crossAlignFor(cn), lineCross - cn.layout.height - cn.computedStyle().margin[0] - cn.computedStyle().margin[2]);
+			if (cn.style.vertical_align == 1) y = lineTop + cn.style.margin[0];
+			else if (cn.style.vertical_align == 2) y = lineTop + lineCross - cn.layout.height - cn.style.margin[2];
+			else y += verticalAlignShift(cn);
+			const int align = usedAlignment(crossAlignFor(cn), lineCross - cn.layout.height - cn.style.margin[0] - cn.style.margin[2]);
 			if (align != 5) {
 				const int crossBefore = cn.computedStyle().margin[0];
 				const int crossAfter = cn.computedStyle().margin[2];
@@ -2061,6 +2100,58 @@ private:
 	// places runs at `top + ascender - bearingY`, so this matches the drawn
 	// pixels exactly. Flex items synthesize missing baselines from border edges;
 	// inline boxes use margin edges.
+	// CSS aligns a non-replaced inline box by its line-height box, which can
+	// differ from its layout box when the line-height is below the font size.
+	bool alignsByLineHeight(const Node &item) const
+	{
+		return item.type == NodeType::Text ||
+		       (item.type == NodeType::View && item.first_child >= 0 && LayoutEngine::isCssInlineLevelBox(item) &&
+		        LayoutEngine::isInlineLevelNode(item));
+	}
+
+	// The aligned box of an item, as its reach above and below the item's
+	// own baseline.
+	void alignedBox(const Node &item, int &above, int &below) const
+	{
+		if (alignsByLineHeight(item)) {
+			const auto own = TextRenderer::inlineFontMetrics(item.style);
+			above = own.strutAscent;
+			below = own.strutDescent;
+			return;
+		}
+		above = item.style.margin[0] + childBaseline(item);
+		below = item.layout.height + item.style.margin[2] - childBaseline(item);
+	}
+
+	// vertical-align of a one-line inline item: how far below its baseline
+	// position it sits. top and bottom align to the line box instead.
+	int verticalAlignShift(const Node &item) const
+	{
+		const int align = item.style.vertical_align;
+		if (align < 3) return 0;
+		const auto parent = TextRenderer::inlineFontMetrics(node_.style);
+		int above = 0, below = 0;
+		alignedBox(item, above, below);
+		if (align == 3) return (above - below) / 2 - parent.xHeight / 2;
+		if (align == 4) return above - parent.ascent;
+		if (align == 5) return parent.descent - below;
+		return align == 6 ? parent.fontSize / 5 : -(parent.fontSize / 3);
+	}
+
+	// How far an item reaches above and below the line's baseline. A shifted
+	// item contributes its aligned box; baseline items keep their layout box.
+	void lineExtent(const Node &item, int &ascent, int &descent) const
+	{
+		const int shift = verticalAlignShift(item);
+		if (item.style.vertical_align >= 3) alignedBox(item, ascent, descent);
+		else {
+			ascent = item.style.margin[0] + childBaseline(item);
+			descent = item.layout.height + item.style.margin[2] - childBaseline(item);
+		}
+		ascent -= shift;
+		descent += shift;
+	}
+
 	int childBaseline(const Node &childNode, bool last = false) const
 	{
 		if ((childNode.type == NodeType::Text || isLineBreak(childNode)) && childNode.computedStyle().font_id >= 0)

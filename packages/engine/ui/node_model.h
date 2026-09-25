@@ -771,9 +771,9 @@ struct ComputedStyle {
 	// linear/overlay/radial gradients + background-grid moved to RareStyle (rare).
 #if GEA_CSS_ACTIVE_BACKGROUND
 	style_color_t active_bg_color;
-#else
-	static constexpr style_color_t active_bg_color = 0;
-#endif
+	// CSS `vertical-align` of an inline-level box: 0 baseline, 1 top, 2 bottom,
+	// 3 middle, 4 text-top, 5 text-bottom, 6 sub, 7 super. Sits in padding.
+	int8_t vertical_align;
 	style_color_t text_color;
 #if GEA_CSS_OPACITY
 	uint8_t opacity;

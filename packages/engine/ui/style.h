@@ -205,6 +205,7 @@ enum class Property : int {
 	BlockEllipsis,
 	ColumnCountSet,
 	ColumnWidthSet,
+	VerticalAlign,
 	Count
 };
 
@@ -353,7 +354,8 @@ enum class StyleDeclaration : std::uint8_t {
 	BlockEllipsis,
 	Columns,
 	ColumnCount,
-	ColumnWidth
+	ColumnWidth,
+	VerticalAlign
 };
 
 class Style {

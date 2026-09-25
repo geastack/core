@@ -548,6 +548,10 @@ void rootScrollImageHoldTick();
 		static const char *prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage);
 		static void layout(int id, int availableWidth);
 		static int baselineOffset(const Node &node, bool last);
+		// Font metrics vertical-align works with: the content area around the
+		// baseline, the x-height, and the strut (the line-height box) of `style`.
+		struct InlineFontMetrics { int ascent, descent, xHeight, fontSize, strutAscent, strutDescent; };
+		static InlineFontMetrics inlineFontMetrics(const ComputedStyle &style);
 		// True when a run's line breaking is reproducible from per-glyph advances,
 		// i.e. the same wrapper the draw path uses. A host that measures whole
 		// strings for us (CoreText on Apple targets) does its own breaking, which
