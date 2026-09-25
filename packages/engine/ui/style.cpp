@@ -4931,7 +4931,9 @@ struct ParsedBoxShadow {
 	ParsedCssColor color;
 };
 
-ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
+// Gea paints one shadow per box: the first inset layer when there is one,
+// otherwise the first outer layer.
+ParsedBoxShadow parseBoxShadow(const std::string &value, int nodeId)
 {
 	ParsedBoxShadow out;
 	out.color.r = 0;
@@ -4949,6 +4951,7 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 		return out;
 	}
 
+	ParsedBoxShadow outer;
 	for (const auto &rawLayer : splitTopLevel(text, ',')) {
 		const auto tokens = splitFunctionAwareWords(rawLayer);
 		bool inset = false;
@@ -4968,18 +4971,20 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 			if (lower == "outset") continue;
 			lengths.push_back(token);
 		}
-		if (!inset) continue;
-		out.valid = true;
-		out.inset = true;
-		out.color = color;
-		if (!lengths.empty()) out.offsetX = parseLengthForNode(lengths[0], nodeId, LengthAxis::Horizontal);
-		if (lengths.size() > 1) out.offsetY = parseLengthForNode(lengths[1], nodeId, LengthAxis::Vertical);
-		if (lengths.size() > 2) out.blur = parseLengthForNode(lengths[2], nodeId, LengthAxis::None);
-		if (lengths.size() > 3) out.spread = parseLengthForNode(lengths[3], nodeId, LengthAxis::None);
-		if (out.blur < 0) out.blur = 0;
-		if (out.blur > 96) out.blur = 96;
-		return out;
+		if (!inset && outer.valid) continue;
+		ParsedBoxShadow &layer = inset ? out : outer;
+		layer.valid = true;
+		layer.inset = inset;
+		layer.color = color;
+		if (!lengths.empty()) layer.offsetX = parseLengthForNode(lengths[0], nodeId, LengthAxis::Horizontal);
+		if (lengths.size() > 1) layer.offsetY = parseLengthForNode(lengths[1], nodeId, LengthAxis::Vertical);
+		if (lengths.size() > 2) layer.blur = parseLengthForNode(lengths[2], nodeId, LengthAxis::None);
+		if (lengths.size() > 3) layer.spread = parseLengthForNode(lengths[3], nodeId, LengthAxis::None);
+		if (layer.blur < 0) layer.blur = 0;
+		if (layer.blur > 96) layer.blur = 96;
+		if (inset) return out;
 	}
+	if (outer.valid) return outer;
 
 	out.valid = true;
 	out.inset = false;
@@ -4989,8 +4994,8 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 
 void applyBoxShadowValue(NodeHandle node, const std::string &value, StyleApplicationSource source)
 {
-	const ParsedBoxShadow shadow = parseInsetBoxShadow(value, node.id());
-	if (!shadow.valid || !shadow.inset || shadow.color.a == 0) {
+	const ParsedBoxShadow shadow = parseBoxShadow(value, node.id());
+	if (!shadow.valid || shadow.color.a == 0) {
 		setStyleValue(node, Property::BoxShadowInset, 0, source);
 		setStyleValue(node, Property::BoxShadowOffsetX, 0, source);
 		setStyleValue(node, Property::BoxShadowOffsetY, 0, source);
@@ -5006,7 +5011,7 @@ void applyBoxShadowValue(NodeHandle node, const std::string &value, StyleApplica
 	setStyleValue(node, Property::BoxShadowSpread, shadow.spread, source);
 	setStyleValue(node, Property::BoxShadowColor, cssColorStyleValue(shadow.color), source);
 	setStyleValue(node, Property::BoxShadowAlpha, shadow.color.a, source);
-	setStyleValue(node, Property::BoxShadowInset, 1, source);
+	setStyleValue(node, Property::BoxShadowInset, shadow.inset ? 1 : 0, source);
 }
 
 int numericLength(double value)
@@ -6256,6 +6261,7 @@ bool compileBoxShadowValue(const std::string &value, CssCompiledValue &compiled)
 	compiled.values[1] = 0;
 	if (text.empty() || lowerText == "none") return true;
 
+	// aux: 1 = inset layer, 2 = outer layer (see parseBoxShadow for the choice).
 	for (const auto &rawLayer : splitTopLevel(text, ',')) {
 		const auto tokens = splitFunctionAwareWords(rawLayer);
 		bool inset = false;
@@ -6282,24 +6288,14 @@ bool compileBoxShadowValue(const std::string &value, CssCompiledValue &compiled)
 			if (!parseCompiledLengthSpec(token, length)) return false;
 			if (lengths.size() < 4) lengths.push_back(length);
 		}
-		if (!inset) continue;
-		compiled.aux = 1;
-		for (std::size_t i = 0; i < lengths.size(); ++i) compiled.lengths[i] = lengths[i];
+		if (!inset && compiled.aux == 2) continue;
+		compiled.aux = inset ? 1 : 2;
+		for (std::size_t i = 0; i < 4; ++i) compiled.lengths[i] = i < lengths.size() ? lengths[i] : CssLengthSpec{};
 		compiled.values[0] = static_cast<std::int32_t>(cssColorStyleValue(color));
 		compiled.values[1] = color.a;
-		return true;
+		if (inset) return true;
 	}
 	return true;
-}
-
-bool boxShadowValueHasInsetLayer(const std::string &value)
-{
-	for (const auto &rawLayer : splitTopLevel(value, ',')) {
-		for (const auto &token : splitFunctionAwareWords(rawLayer)) {
-			if (toLowerAscii(trimCssValue(token)) == "inset") return true;
-		}
-	}
-	return false;
 }
 
 bool compileBorderWidthBox(const std::string &value, CssCompiledValue &compiled)
@@ -7489,12 +7485,7 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		return storeCompiledCssValue(compiled);
 	case CssDeclarationId::BoxShadow:
 		if (!compiledCssValueFeatureEnabled(kCssCompiledFeatureEffects)) return kNoCompiledCssValue;
-		if (hasDynamicCssValue(value)) {
-			if (boxShadowValueHasInsetLayer(value)) return kNoCompiledCssValue;
-			compiled.kind = CssCompiledKind::BoxShadow;
-			compiled.aux = 0;
-			return storeCompiledCssValue(compiled);
-		}
+		if (hasDynamicCssValue(value)) return kNoCompiledCssValue;
 		if (!compileBoxShadowValue(value, compiled)) return kNoCompiledCssValue;
 		compiled.kind = CssCompiledKind::BoxShadow;
 		return storeCompiledCssValue(compiled);
@@ -10847,7 +10838,7 @@ bool applyCompiledBoxShadowValue(NodeHandle node, const CssCompiledValue &compil
 	              source);
 	setStyleValue(node, Property::BoxShadowColor, compiled.values[0], source);
 	setStyleValue(node, Property::BoxShadowAlpha, compiled.values[1], source);
-	setStyleValue(node, Property::BoxShadowInset, 1, source);
+	setStyleValue(node, Property::BoxShadowInset, compiled.aux == 1 ? 1 : 0, source);
 	return true;
 }
 

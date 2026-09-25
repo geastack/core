@@ -2262,11 +2262,10 @@ bool shadowContourRow(const ShadowContour &shape, int y, int &left, int &right)
 	return left <= right;
 }
 
-void appendShadowRect(const Node &node, uint8_t parentAlpha, int x, int y, int w, int h)
+void appendShadowRect(const Node &node, uint8_t parentAlpha, uint8_t alpha, int x, int y, int w, int h)
 {
 	if (w <= 0 || h <= 0) return;
-	const auto color = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0);
-	const auto alpha = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0);
+	const auto color = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0);
 	if (!ViewGeometry::hasTransformChain(node, false)) {
 		appendFillRectWithAlpha(x, y, w, h, color, alpha, parentAlpha, x, y, w, h);
 		return;
@@ -2308,7 +2307,7 @@ void recordSharpInsetShadow(const Node &node, uint8_t parentAlpha, const ShadowC
 	}
 	struct Run { int left = 0, right = -1, y = 0, height = 0; } runs[2];
 	auto flush = [&](Run &run) {
-		if (run.height > 0) appendShadowRect(node, parentAlpha, run.left, run.y, run.right - run.left + 1, run.height);
+		if (run.height > 0) appendShadowRect(node, parentAlpha, rstyle(node.style).box_shadow_alpha, run.left, run.y, run.right - run.left + 1, run.height);
 		run.height = 0;
 	};
 	for (int y = static_cast<int>(clip.y); y < clip.y + clip.h; ++y) {
@@ -2331,6 +2330,225 @@ void recordSharpInsetShadow(const Node &node, uint8_t parentAlpha, const ShadowC
 		}
 	}
 	for (auto &run : runs) flush(run);
+}
+
+// Outer shadows start from the border box, not the padding box.
+ShadowContour borderBoxShadowContour(const Node &node)
+{
+	ShadowContour box{float(node.layout.x), float(node.layout.y), float(node.layout.width), float(node.layout.height)};
+	int16_t rx8[4], ry8[4];
+	resolvedBorderRadii8(node, rx8, ry8);
+	for (int i = 0; i < 4; ++i) {
+		box.rx[i] = rx8[i] * 0.125f;
+		box.ry[i] = ry8[i] * 0.125f;
+	}
+	constrainShadowRadii(box);
+	return box;
+}
+
+// CSS Backgrounds' outset-adjusted radius: a small radius grows by less than
+// the spread, so a near-square corner stays near square, unless the radius
+// already covers the whole side (a pill or a circle keeps its shape).
+float outsetShadowRadius(float radius, float outset, float coverage)
+{
+	if (outset <= 0) return std::max(0.0f, radius + outset);
+	if (radius > outset || coverage > 1) return radius + outset;
+	const float remainder = 1 - radius / outset;
+	return radius + outset * (1 - remainder * remainder * remainder * (1 - coverage * coverage * coverage));
+}
+
+ShadowContour outerShadowShape(const ShadowContour &box, int spread, int ox, int oy)
+{
+	ShadowContour shape = box;
+	shape.x += ox - spread;
+	shape.y += oy - spread;
+	shape.w = std::max(0.0f, box.w + 2 * spread);
+	shape.h = std::max(0.0f, box.h + 2 * spread);
+	for (int i = 0; i < 4; ++i) {
+		const float coverage = box.w > 0 && box.h > 0 ? 2 * std::min(box.rx[i] / box.w, box.ry[i] / box.h) : 0;
+		shape.rx[i] = outsetShadowRadius(box.rx[i], spread, coverage);
+		shape.ry[i] = outsetShadowRadius(box.ry[i], spread, coverage);
+	}
+	constrainShadowRadii(shape);
+	return shape;
+}
+
+// The contour `d` px outside (negative: inside) a rounded shape.
+ShadowContour offsetShadowContour(const ShadowContour &shape, float d)
+{
+	ShadowContour out = shape;
+	out.x -= d;
+	out.y -= d;
+	out.w = std::max(0.0f, shape.w + 2 * d);
+	out.h = std::max(0.0f, shape.h + 2 * d);
+	for (int i = 0; i < 4; ++i) {
+		out.rx[i] = std::max(0.0f, shape.rx[i] + d);
+		out.ry[i] = std::max(0.0f, shape.ry[i] + d);
+	}
+	constrainShadowRadii(out);
+	return out;
+}
+
+// Gaussian coverage `d` px outside a straight shadow edge. CSS makes the blur
+// radius twice the standard deviation.
+uint8_t outerShadowAlphaAt(float d, int blur, uint8_t baseAlpha)
+{
+	return static_cast<uint8_t>(std::lround(baseAlpha * 0.5f * std::erfc(d * 1.41421356f / blur)));
+}
+
+// Paints `outer` minus `hole` minus the border-box knockout, merging rows with
+// equal spans into rectangles so every pixel composites once.
+void appendShadowSpans(const Node &node, uint8_t parentAlpha, uint8_t alpha, const ShadowContour &outer,
+                       const ShadowContour *hole, const ShadowContour &box)
+{
+	if (alpha == 0 || outer.w <= 0 || outer.h <= 0) return;
+	const int top = static_cast<int>(std::floor(outer.y));
+	const int bottom = static_cast<int>(std::ceil(outer.y + outer.h));
+	const int bx = static_cast<int>(std::floor(outer.x));
+	const int bw = static_cast<int>(std::ceil(outer.x + outer.w)) - bx;
+	// One alpha scope for the whole contour; transformed quads carry their own.
+	const bool transformed = ViewGeometry::hasTransformChain(node, false);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, alpha);
+	const bool scoped = !transformed && effectiveAlpha != parentAlpha;
+	if (scoped) appendAlphaCommand(effectiveAlpha, bx, top, bw, bottom - top);
+	struct Run { int left = 0, right = -1, y = 0, height = 0; } runs[4];
+	auto flush = [&](Run &run) {
+		if (run.height <= 0) return;
+		const int w = run.right - run.left + 1;
+		if (transformed) appendShadowRect(node, parentAlpha, alpha, run.left, run.y, w, run.height);
+		else appendFillRectRaw(run.left, run.y, w, run.height, rstyle(node.style).box_shadow_color, run.left, run.y, w, run.height);
+		run.height = 0;
+	};
+	auto cut = [](int (*spans)[2], int &count, int left, int right) {
+		int kept[4][2], n = 0;
+		for (int i = 0; i < count; ++i) {
+			const int s0 = spans[i][0], s1 = spans[i][1];
+			if (right < s0 || left > s1) {
+				kept[n][0] = s0; kept[n][1] = s1; ++n;
+				continue;
+			}
+			if (s0 < left && n < 4) { kept[n][0] = s0; kept[n][1] = left - 1; ++n; }
+			if (s1 > right && n < 4) { kept[n][0] = right + 1; kept[n][1] = s1; ++n; }
+		}
+		for (int i = 0; i < n; ++i) { spans[i][0] = kept[i][0]; spans[i][1] = kept[i][1]; }
+		count = n;
+	};
+	for (int y = top; y < bottom; ++y) {
+		int spans[4][2], count = 0, left = 0, right = -1;
+		if (shadowContourRow(outer, y, left, right)) { spans[0][0] = left; spans[0][1] = right; count = 1; }
+		if (count && hole && shadowContourRow(*hole, y, left, right)) cut(spans, count, left, right);
+		if (count && shadowContourRow(box, y, left, right)) cut(spans, count, left, right);
+		for (int i = 0; i < 4; ++i) {
+			auto &run = runs[i];
+			if (i >= count) { flush(run); continue; }
+			if (run.height && run.left == spans[i][0] && run.right == spans[i][1]) { ++run.height; continue; }
+			flush(run);
+			run = Run{spans[i][0], spans[i][1], y, 1};
+		}
+	}
+	for (auto &run : runs) flush(run);
+	if (scoped) appendAlphaCommand(parentAlpha, bx, top, bw, bottom - top);
+}
+
+// One native rounded fill (lineWidth 0) or ring for a shadow contour.
+void appendShadowRoundedRect(const Node &node, uint8_t parentAlpha, uint8_t alpha, const ShadowContour &shape, int lineWidth)
+{
+	const int x = static_cast<int>(shape.x), y = static_cast<int>(shape.y);
+	const int w = static_cast<int>(shape.w), h = static_cast<int>(shape.h);
+	if (alpha == 0 || w <= 0 || h <= 0) return;
+	int16_t radii[4];
+	for (int i = 0; i < 4; ++i) radii[i] = static_cast<int16_t>(std::lround(shape.rx[i]));
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, alpha);
+	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, x, y, w, h);
+	DisplayCommand *cmd = DisplayList::instance().append();
+	if (cmd) {
+		cmd->bx = x; cmd->by = y; cmd->bw = w; cmd->bh = h;
+		if (lineWidth > 0) {
+			cmd->type = DisplayCommandType::StrokeRoundedRect;
+			cmd->strokeRoundedRect = {};
+			auto &ring = cmd->strokeRoundedRect;
+			ring.x = x; ring.y = y; ring.w = w; ring.h = h;
+			ring.tl = radii[0]; ring.tr = radii[1]; ring.br = radii[2]; ring.bl = radii[3];
+			for (int i = 0; i < 4; ++i) ring.rx8[i] = ring.ry8[i] = static_cast<int16_t>(radii[i] * 8);
+			ring.lineWidth = lineWidth;
+			ring.color = rstyle(node.style).box_shadow_color;
+		} else {
+			cmd->type = DisplayCommandType::FillRoundedRect;
+			auto &fill = cmd->fillRoundedRect;
+			fill.x = x; fill.y = y; fill.w = w; fill.h = h;
+			fill.tl = radii[0]; fill.tr = radii[1]; fill.br = radii[2]; fill.bl = radii[3];
+			fill.color = rstyle(node.style).box_shadow_color;
+		}
+	}
+	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, x, y, w, h);
+}
+
+// True when `inner`'s bounding rectangle lies inside the convex `outer`: its
+// four corners do, so an opaque box over `outer` hides all of `inner`.
+bool shadowContourInside(const ShadowContour &inner, const ShadowContour &outer)
+{
+	if (inner.w <= 0 || inner.h <= 0) return true;
+	for (int i = 0; i < 4; ++i) {
+		const bool right = i == 1 || i == 2, bottom = i >= 2;
+		const float px = right ? inner.x + inner.w : inner.x;
+		const float py = bottom ? inner.y + inner.h : inner.y;
+		if (px < outer.x || px > outer.x + outer.w || py < outer.y || py > outer.y + outer.h) return false;
+		const float rx = outer.rx[i], ry = outer.ry[i];
+		if (rx <= 0 || ry <= 0) continue;
+		const float dx = (right ? px - (outer.x + outer.w - rx) : outer.x + rx - px) / rx;
+		const float dy = (bottom ? py - (outer.y + outer.h - ry) : outer.y + ry - py) / ry;
+		if (dx > 0 && dy > 0 && dx * dx + dy * dy > 1) return false;
+	}
+	return true;
+}
+
+// An opaque border-box background paints over whatever the shadow puts under
+// the box, so the knockout can be skipped in favour of native rounded fills.
+bool outerShadowKnockoutHidden(const Node &node, uint8_t parentAlpha)
+{
+	if (!node.style.has_bg || combineAlpha(parentAlpha, node.style.bg_alpha) != 255) return false;
+	if (StyleValues::backgroundClip(node.style, rstyle(node.style).bg_image_layer_count - 1) != 0) return false;
+	if (ViewGeometry::hasTransformChain(node, false) || isDocumentCanvasRoot(node)) return false;
+	const int canvasSource = ViewRenderer::canvasBackgroundSource();
+	return canvasSource < 0 || &treeState().nodes[canvasSource] != &node;
+}
+
+// Outer box-shadow: the spread shape, offset, blurred and painted only outside
+// the border box. Blur is a Gaussian approximated by constant-alpha bands
+// across [-blur, blur] around the shape edge.
+void recordOuterBoxShadow(const Node &node, uint8_t parentAlpha)
+{
+	const auto &r = rstyle(node.style);
+	if (r.box_shadow_inset || r.box_shadow_alpha == 0) return;
+	if (node.layout.width <= 0 || node.layout.height <= 0) return;
+	const ShadowContour box = borderBoxShadowContour(node);
+	const ShadowContour shape = outerShadowShape(box, r.box_shadow_spread, r.box_shadow_offset_x, r.box_shadow_offset_y);
+	bool native = outerShadowKnockoutHidden(node, parentAlpha);
+	for (int i = 0; i < 4; ++i) native &= std::fabs(shape.rx[i] - shape.ry[i]) < 0.5f;
+	const int blur = std::max<int>(0, r.box_shadow_blur_radius);
+	// Natively painted parts the opaque box fully covers are skipped: a full-
+	// screen card would otherwise refill its whole core on every dirty rect.
+	if (blur == 0) {
+		if (!native) appendShadowSpans(node, parentAlpha, r.box_shadow_alpha, shape, nullptr, box);
+		else if (!shadowContourInside(shape, box)) appendShadowRoundedRect(node, parentAlpha, r.box_shadow_alpha, shape, 0);
+		return;
+	}
+	// Span bands cost a command per corner row, so they get fewer, wider bands.
+	const int band = std::max(1, blur / (native ? 8 : 5));
+	const ShadowContour core = offsetShadowContour(shape, static_cast<float>(-blur));
+	const uint8_t coreAlpha = outerShadowAlphaAt(static_cast<float>(-blur), blur, r.box_shadow_alpha);
+	if (!native) appendShadowSpans(node, parentAlpha, coreAlpha, core, nullptr, box);
+	else if (!shadowContourInside(core, box)) appendShadowRoundedRect(node, parentAlpha, coreAlpha, core, 0);
+	for (int d = -blur; d < blur; d += band) {
+		const ShadowContour outer = offsetShadowContour(shape, static_cast<float>(d + band));
+		const uint8_t alpha = outerShadowAlphaAt(d + band * 0.5f, blur, r.box_shadow_alpha);
+		if (native) {
+			if (!shadowContourInside(outer, box)) appendShadowRoundedRect(node, parentAlpha, alpha, outer, band);
+		} else {
+			const ShadowContour inner = offsetShadowContour(shape, static_cast<float>(d));
+			appendShadowSpans(node, parentAlpha, alpha, outer, &inner, box);
+		}
+	}
 }
 
 void recordInsetBoxShadow(const Node &node, uint8_t parentAlpha)
@@ -2403,7 +2621,13 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_bounds") ViewRenderer:
 	int rotate = use_prev ? n->render.previous_transform_rotate : rstyle(n->computedStyle()).transform_rotate;
 
 	auto expandForBlur = [&]() {
-		const int radius = use_prev ? n->render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(n->computedStyle()).filter_blur_radius : 0);
+		// An outer box-shadow paints beyond the box as well.
+		const int shadow = use_prev ? n->render.previous_box_shadow_extent : boxShadowExtent(n->style);
+		*x0 -= shadow;
+		*y0 -= shadow;
+		*x1 += shadow;
+		*y1 += shadow;
+		const int radius = use_prev ? n->render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(n->style).filter_blur_radius : 0);
 		if (radius <= 0) return;
 		const int extentX = std::max(1, radius) * 5;
 		const int extentY = std::max(1, radius) * 5;
@@ -2578,6 +2802,9 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 		}
 	}
 	if (w <= 0 || h <= 0) return;
+#if GEA_CSS_BOX_SHADOW
+	recordOuterBoxShadow(*n, parentAlpha);
+#endif
 
 	if (n->computedStyle().has_bg) {
 		// The color is the bottom layer; image longhands never replace it.
