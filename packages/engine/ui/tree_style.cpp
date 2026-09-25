@@ -770,6 +770,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 				rstyleMut(n->style).border_relief[side] = static_cast<uint8_t>(value);
 				changed = 1;
 			}
+			// border-style: none leaves the side without a border.
+			if (value & kBorderStyleNone) changed |= setComputedBorderWidth(n->style, side, 0, nullptr);
 		}
 		break;
 #endif

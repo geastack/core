@@ -364,6 +364,11 @@ enum class StyleDeclaration : std::uint8_t {
 	ColumnWidth,
 	ColumnFill,
 	ColumnSpan,
+	BorderStyle,
+	BorderTopStyle,
+	BorderRightStyle,
+	BorderBottomStyle,
+	BorderLeftStyle,
 	VerticalAlign
 };
 
