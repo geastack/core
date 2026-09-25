@@ -1556,7 +1556,7 @@ void appendReliefBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
 	for (int side = 0; side < 4; ++side) {
 		if (widths[side] <= 0) continue;
-		const int relief = rstyle(node.computedStyle()).border_relief[side];
+		const int relief = rstyle(node.style).border_relief[side] & ~kBorderStyleNone;
 		const int bands = relief == 1 || relief == 2 ? 2 : 1;
 		const auto color = borderPaintColor(node.computedStyle(), side);
 		int r, g, b; pixel::unpackRgb565(color, &r, &g, &b);
