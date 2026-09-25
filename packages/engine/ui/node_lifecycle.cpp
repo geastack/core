@@ -426,6 +426,7 @@ void NodeLifecycle::init(Node *n, NodeType type)
 #if GEA_CSS_FILTERS
 	n->render.previous_filter_blur_radius = 0;
 #endif
+	n->render.previous_box_shadow_extent = 0;
 	n->render.inline_baseline = 0;
 	n->render.dirty = 0;
 	n->render.canvas_pixels_only_dirty = 0;
