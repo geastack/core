@@ -783,6 +783,9 @@ struct ComputedStyle {
 	static constexpr int32_t blink_started_ms = 0;
 	static constexpr uint8_t blink_visible = 1;
 #endif
+	// CSS `text-align-last`: 0 = auto (follow text-align), otherwise a text_align
+	// value plus one. Inherited. Sits in padding, so ComputedStyle keeps its size.
+	int8_t text_align_last;
 
 #if GEA_CSS_BORDER_WIDTHS && !GEA_CSS_U8_BORDER
 	int16_t border_width;

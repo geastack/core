@@ -171,6 +171,7 @@ void InputRenderer::record(int id)
 			cmd->text.textOverflow = n.computedStyle().text_overflow;
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
+			cmd->text.alignLast = -1;
 		}
 	}
 

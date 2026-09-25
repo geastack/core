@@ -200,6 +200,10 @@ void rootScrollImageHoldTick();
 				// Inline continuation offset for the run's FIRST line only (see
 				// LayoutBox::inline_indent). 0 for every run that starts its own line.
 				int16_t firstLineIndent;
+				// text-align-last: -1 when every line uses `align`. Otherwise bits 0-1
+				// align lines a forced break ends, and bit 2 marks a run whose final
+				// line also ends its paragraph.
+				int8_t alignLast;
 			} text;
 			struct
 			{
@@ -474,6 +478,9 @@ void rootScrollImageHoldTick();
 		// Inline-level boxes blockified by float, absolute/fixed positioning, or
 		// flex/grid-item status return false.
 		static bool isCssInlineLevelBox(const Node &n, bool hypothetical = false);
+		// True when the line box closes right after node `id`: a forced break, a
+		// block-level box, or the end of its block container follows it.
+		static bool endsFormattingLine(int id);
 	};
 
 	// Shared order for recording, retained transform replay, and hit testing.
@@ -555,7 +562,7 @@ void rootScrollImageHoldTick();
 		                             int width, uint8_t *outCoverage);
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
-														int firstLineIndent = 0);
+														int firstLineIndent = 0, int alignLast = -1);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);
