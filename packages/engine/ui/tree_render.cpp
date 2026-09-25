@@ -2459,6 +2459,11 @@ namespace gea::embedded::ui
 				int dy = n->layout.y - n->layout.previous_y - inherited_dy;
 				if (dx || dy)
 				{
+					if (DisplayList::instance().hasColumnCopies())
+					{
+						can_keep_display_list = 0;
+						break;
+					}
 					if (n->first_child >= 0)
 						DisplayList::instance().translateSubtreeCommands(i, dx, dy);
 					else

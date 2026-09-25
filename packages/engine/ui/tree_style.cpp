@@ -93,6 +93,11 @@ bool isLayoutProperty(Property prop)
 	case Property::ColumnCountSet:
 	case Property::ColumnWidthSet:
 	case Property::BlockEllipsisString:
+	case Property::ColumnCount:
+	case Property::ColumnWidth:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll:
 	case Property::VerticalAlign:
 #if GEA_CSS_TEXT_ALIGN
 	// Line shifts and inline static positions follow physicalTextAlign.
@@ -362,17 +367,28 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: if ((GEA_CSS_MARGIN_TRIM ? rstyle(style).margin_trim : 0) != value) { rstyleMut(style).margin_trim = value; changed = 1; } break;
 #endif
-	case Property::MaxLines: if (rstyle(n->style).max_lines != value) { rstyleMut(n->style).max_lines = value; changed = 1; } break;
-	case Property::BlockEllipsisString: if (rstyle(n->style).block_ellipsis != value) { rstyleMut(n->style).block_ellipsis = value; changed = 1; } break;
+#if GEA_CSS_LINE_CLAMP
+	case Property::MaxLines: if (rstyle(style).max_lines != value) { rstyleMut(style).max_lines = value; changed = 1; } break;
+	case Property::BlockEllipsisString: if (rstyle(style).block_ellipsis != value) { rstyleMut(style).block_ellipsis = value; changed = 1; } break;
+#endif
+#if GEA_CSS_MULTICOL
+	case Property::ColumnCount: if (rstyle(style).column_count != value) { rstyleMut(style).column_count = value; changed = 1; } break;
+	case Property::ColumnWidth: if (rstyle(style).column_width != value) { rstyleMut(style).column_width = value; changed = 1; } break;
+#endif
+#if GEA_CSS_LINE_CLAMP || GEA_CSS_MULTICOL
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
-	case Property::ColumnWidthSet: {
+	case Property::ColumnWidthSet:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(prop);
 		const int next = value ? rstyle(style).line_clamp_flags | bit : rstyle(style).line_clamp_flags & ~bit;
 		if (rstyle(style).line_clamp_flags != next) { rstyleMut(style).line_clamp_flags = next; changed = 1; }
 		break;
 	}
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Clear: if (style.clear_side != value) { style.clear_side = value; changed = 1; } break;
 #endif

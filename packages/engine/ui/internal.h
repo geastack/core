@@ -458,6 +458,10 @@ void rootScrollImageHoldTick();
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
 		bool hasTextClippedBackgrounds() const;
+		// True when the list holds multicol column copies (replicateColumns). In-place
+		// translation and re-recording do not update them, so callers fall back to a
+		// full record.
+		bool hasColumnCopies() const;
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;
@@ -544,6 +548,10 @@ void rootScrollImageHoldTick();
 		// True when the line box closes right after node `id`: a forced break, a
 		// block-level box, or the end of its block container follows it.
 		static bool endsFormattingLine(int id);
+		// A block container with a column count or width (CSS Multi-column).
+		static bool multicolContainer(const Node &node);
+		// Resolved direction: true for rtl.
+		static bool rightToLeftDirection(const Node &node);
 	};
 
 	// Shared order for recording, retained transform replay, and hit testing.
