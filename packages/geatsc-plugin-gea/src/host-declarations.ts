@@ -65,6 +65,7 @@ const geaGpioHostMethods = ['configureOutput', 'configureInput', 'write', 'read'
 const geaLedHostMethods = ['set', 'off', 'attach', 'setPixel', 'show', 'detach']
 const geaClockHostMethods = ['epochMs']
 const geaProfilerHostMethods = ['nowUs', 'nowCycles']
+const geaPerformanceHostMethods = ['now']
 const geaStorageHostMethods = ['getItem', 'setItem', 'removeItem', 'clear', 'key']
 const geaBatteryHostMethods = ['level']
 const geaNotifyHostMethods = ['text', 'seq']
@@ -135,6 +136,9 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ...geaLedHostMethods.map((method): [string, string[]] => [`gea::host::Led.${method}`, geaHostDeclarations]),
       ...geaClockHostMethods.map((method): [string, string[]] => [`gea::host::Clock.${method}`, geaHostDeclarations]),
       ...geaProfilerHostMethods.map((method): [string, string[]] => [`gea::host::Profiler.${method}`, geaHostDeclarations]),
+      // The `performance` global is this facade object, as `localStorage` is `Storage`.
+      ['gea::host::performance', geaHostDeclarations],
+      ...geaPerformanceHostMethods.map((method): [string, string[]] => [`gea::host::performance.${method}`, geaHostDeclarations]),
       ...geaStorageHostMethods.map((method): [string, string[]] => [`gea::host::Storage.${method}`, geaHostDeclarations]),
       ...geaBatteryHostMethods.map((method): [string, string[]] => [`gea::host::Battery.${method}`, geaHostDeclarations]),
       ...geaNotifyHostMethods.map((method): [string, string[]] => [`gea::host::Notify.${method}`, geaHostDeclarations]),
