@@ -80,6 +80,8 @@ inline constexpr int8_t kDisplayNone = 1;
 inline constexpr int8_t kDisplayGrid = 2;
 inline constexpr int8_t kDisplayFlex = 3;
 inline constexpr int kPositionFixed = 3;
+// position: sticky stays in flow; the absolute-coordinate pass shifts it.
+inline constexpr int kPositionSticky = 4;
 inline bool isOutOfFlowPosition(int position) { return position == 1 || position == kPositionFixed; }
 // Existing alignment values occupy the low nibble. Overflow-position is
 // independent of the alignment keyword and fits in the existing int8 fields.

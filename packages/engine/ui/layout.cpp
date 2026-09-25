@@ -3708,7 +3708,8 @@ bool establishesTransformContainingBlock(const Node &node)
 
 bool establishesAbsoluteContainingBlock(const Node &node)
 {
-	return isOutOfFlowPosition(node.computedStyle().position) || node.computedStyle().position == 2 || establishesTransformContainingBlock(node);
+	return isOutOfFlowPosition(node.style.position) || node.style.position == 2 || node.style.position == kPositionSticky ||
+	       establishesTransformContainingBlock(node);
 }
 
 int containingBlockForAbsoluteNode(int node, int root, Node *nodes)
@@ -4638,7 +4639,75 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	return true;
 }
 
+namespace {
+
+int stickyInset(const Node &node, int side, int basis)
+{
+	int inset = node.style.pos_offsets[side] != kUnset ? node.style.pos_offsets[side] : 0;
+	if (node.style.pos_offset_percent[side] != kUnset) inset += basis * node.style.pos_offset_percent[side] / 1000;
+	return inset;
+}
+
+bool hasStickyInset(const Node &node, int side)
+{
+	return node.style.pos_offsets[side] != kUnset || node.style.pos_offset_percent[side] != kUnset;
+}
+
+// position: sticky (CSS Position 3): shift the box, never out of its
+// containing block, just enough to keep it inset from its scrollport edges.
+// `port` is that scrollport, x0 y0 x1 y1 exclusive, in resolved coordinates.
+void applyStickyOffset(Node &node, const Node &block, const int port[4])
+{
+	const int portW = port[2] - port[0], portH = port[3] - port[1];
+	auto axis = [&](int start, int size, int marginStart, int marginEnd, int portStart, int portEnd,
+	                int blockStart, int blockEnd, int startSide, int endSide, int basis) {
+		int shift = 0;
+		if (hasStickyInset(node, startSide)) {
+			const int limit = portStart + stickyInset(node, startSide, basis);
+			if (start < limit) shift = std::min(limit - start, std::max(0, blockEnd - marginEnd - (start + size)));
+		}
+		if (hasStickyInset(node, endSide)) {
+			const int limit = portEnd - stickyInset(node, endSide, basis);
+			if (start + size + shift > limit)
+				shift = std::max(limit - (start + size), std::min(0, blockStart + marginStart - start));
+		}
+		return shift;
+	};
+	const int blockX0 = block.layout.x + boxInset(block.style, 3), blockX1 = block.layout.x + block.layout.width - boxInset(block.style, 1);
+	const int blockY0 = block.layout.y + boxInset(block.style, 0), blockY1 = block.layout.y + block.layout.height - boxInset(block.style, 2);
+	node.layout.y += axis(node.layout.y, node.layout.height, node.style.margin[0], node.style.margin[2], port[1], port[3],
+	                      blockY0, blockY1, 0, 2, portH);
+	node.layout.x += axis(node.layout.x, node.layout.width, node.style.margin[3], node.style.margin[1], port[0], port[2],
+	                      blockX0, blockX1, 3, 1, portW);
+}
+
+// A scroll container's padding box, in resolved coordinates.
+void scrollportOf(const Node &node, int port[4])
+{
+	port[0] = node.layout.x + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[3]);
+	port[1] = node.layout.y + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[0]);
+	port[2] = node.layout.x + node.layout.width - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[1]);
+	port[3] = node.layout.y + node.layout.height - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[2]);
+}
+
+}  // namespace
+
 void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
+{
+	Node *nodes = Tree::instance().nodes();
+	if (nodes[id].parent < 0) treeState().stickyPresent = false;
+	// A subtree pass (scoped relayout) inherits its nearest scroll container's
+	// scrollport; its ancestors are already resolved.
+	int port[4] = {0, 0, Tree::instance().mountedWidth(), Tree::instance().mountedHeight()};
+	for (int ancestor = nodes[id].parent; ancestor >= 0; ancestor = nodes[ancestor].parent) {
+		if (!overflowEstablishesContext(nodes[ancestor].style)) continue;
+		scrollportOf(nodes[ancestor], port);
+		break;
+	}
+	resolveAbsoluteCoordsIn(id, parent_x, parent_y, port);
+}
+
+void LayoutEngine::resolveAbsoluteCoordsIn(int id, int parent_x, int parent_y, const int *scrollport)
 {
 	Node *nodes = Tree::instance().nodes();
 	Node *node = &nodes[id];
@@ -4647,6 +4716,10 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		node->layout.x += parent_x;
 		node->layout.y += parent_y;
 	}
+	if (node->style.position == kPositionSticky && node->parent >= 0 && !isDisplayNone(node->style)) {
+		applyStickyOffset(*node, nodes[node->parent], scrollport);
+		treeState().stickyPresent = true;
+	}
 
 	int childParentX = node->layout.x;
 	int childParentY = node->layout.y;
@@ -4654,9 +4727,15 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		if (scrollsOverflowX(node->computedStyle())) childParentX -= node->layout.scroll_x;
 		if (scrollsOverflowY(node->computedStyle())) childParentY -= node->layout.scroll_y;
 	}
+	// A scroll container's padding box is the scrollport of sticky descendants.
+	int port[4];
+	if (overflowEstablishesContext(node->style)) {
+		scrollportOf(*node, port);
+		scrollport = port;
+	}
 
 	for (int child = node->first_child; child >= 0; child = nodes[child].next_sibling) {
-		resolveAbsoluteCoords(child, childParentX, childParentY);
+		resolveAbsoluteCoordsIn(child, childParentX, childParentY, scrollport);
 	}
 }
 

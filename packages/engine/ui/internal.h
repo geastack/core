@@ -470,6 +470,9 @@ void rootScrollImageHoldTick();
 		bool layoutNodeScoped(int scope, int treeRoot);
 		void repositionChildren(int id);
 		void resolveAbsoluteCoords(int id, int parentX, int parentY);
+		// resolveAbsoluteCoords below its entry: `scrollport` is the nearest
+		// scroll container's padding box (or the viewport) for sticky boxes.
+		void resolveAbsoluteCoordsIn(int id, int parentX, int parentY, const int *scrollport);
 		// True when `n` is an inline-level box (a span/text/image without an
 		// explicit block-level display) — the inline-formatting input that makes a
 		// plain block flow its children as a row (LayoutNodePass::
