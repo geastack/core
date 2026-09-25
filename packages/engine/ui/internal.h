@@ -332,6 +332,14 @@ void rootScrollImageHoldTick();
 		bool canReplayDirectDirtyRegions(int width, int height) const;
 		void translateNodeCommands(int node, int dx, int dy);
 		void translateSubtreeCommands(int node, int dx, int dy);
+#if GEA_CSS_STICKY
+		// True when a replay of the region paints nothing that moves with
+		// `moving`'s content except `owner`'s subtree: an opaque cover hides
+		// everything drawn before it, and no node under `moving` outside `owner`
+		// draws into the region after it. Clip scopes and scrollbar thumbs,
+		// which live outside node paint ranges, are not considered.
+		bool regionPaintedOnlyBy(int x0, int y0, int x1, int y1, int owner, int moving) const;
+#endif
 		// After translating a subtree in place, content that was fully outside the
 		// record-time clip (culled: no commands recorded) may now overlap the
 		// viewport. The retained list is then incomplete — replay would paint stale
@@ -443,6 +451,19 @@ void rootScrollImageHoldTick();
 		static int fixedContainingBlock(const Node &node);
 		static bool isViewportFixed(const Node &node);
 		static bool containsViewportFixed(int node);
+#if GEA_CSS_STICKY
+		// A pure scroll of `scrollNode` moves the content under it by the scroll
+		// delta. The placed sticky boxes whose scrollport is that node or above
+		// it change their offset with it: their TreeState::stickyBoxes slots go
+		// to `slots` and the count is returned. -1 when the fast path cannot
+		// re-stick them in place: more boxes than slots, a box moved since its
+		// pass placed it, or a sticky box inside one of those.
+		static int stickyBoxesScrolledBy(int scrollNode, int *slots);
+		// After that shift: re-apply the offset of the box in `slot` at the new
+		// scroll position and move its subtree with it. Returns the box's
+		// shift on top of the content's in *dx, *dy.
+		static void restickScrolledBox(int slot, int *dx, int *dy);
+#endif
 		static bool absoluteGridArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
 		static void absoluteContainingArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
 
@@ -485,6 +506,9 @@ void rootScrollImageHoldTick();
 		bool layoutNodeScoped(int scope, int treeRoot);
 		void repositionChildren(int id);
 		void resolveAbsoluteCoords(int id, int parentX, int parentY);
+		// resolveAbsoluteCoords below its entry: `scrollport` is the nearest
+		// scroll container's padding box (or the viewport) for sticky boxes.
+		void resolveAbsoluteCoordsIn(int id, int parentX, int parentY, const int *scrollport);
 		// True when `n` is an inline-level box (a span/text/image without an
 		// explicit block-level display) — the inline-formatting input that makes a
 		// plain block flow its children as a row (LayoutNodePass::

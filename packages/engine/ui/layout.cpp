@@ -3825,7 +3825,8 @@ bool establishesTransformContainingBlock(const Node &node)
 
 bool establishesAbsoluteContainingBlock(const Node &node)
 {
-	return isOutOfFlowPosition(node.computedStyle().position) || node.computedStyle().position == 2 || establishesTransformContainingBlock(node);
+	return isOutOfFlowPosition(node.computedStyle().position) || node.computedStyle().position == 2 || (GEA_CSS_STICKY && node.computedStyle().position == kPositionSticky) ||
+	       establishesTransformContainingBlock(node);
 }
 
 int containingBlockForAbsoluteNode(int node, int root, Node *nodes)
@@ -4772,7 +4773,186 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	return true;
 }
 
+#if GEA_CSS_STICKY
+namespace {
+
+int stickyInset(const Node &node, int side, int basis)
+{
+	int inset = node.style.pos_offsets[side] != kUnset ? node.style.pos_offsets[side] : 0;
+	if (node.style.pos_offset_percent[side] != kUnset) inset += basis * node.style.pos_offset_percent[side] / 1000;
+	return inset;
+}
+
+bool hasStickyInset(const Node &node, int side)
+{
+	return node.style.pos_offsets[side] != kUnset || node.style.pos_offset_percent[side] != kUnset;
+}
+
+// position: sticky (CSS Position 3): shift the box, never out of its
+// containing block, just enough to keep it inset from its scrollport edges.
+// `port` is that scrollport, x0 y0 x1 y1 exclusive, in resolved coordinates.
+void applyStickyOffset(Node &node, const Node &block, const int port[4])
+{
+	const int portW = port[2] - port[0], portH = port[3] - port[1];
+	auto axis = [&](int start, int size, int marginStart, int marginEnd, int portStart, int portEnd,
+	                int blockStart, int blockEnd, int startSide, int endSide, int basis) {
+		int shift = 0;
+		if (hasStickyInset(node, startSide)) {
+			const int limit = portStart + stickyInset(node, startSide, basis);
+			if (start < limit) shift = std::min(limit - start, std::max(0, blockEnd - marginEnd - (start + size)));
+		}
+		if (hasStickyInset(node, endSide)) {
+			const int limit = portEnd - stickyInset(node, endSide, basis);
+			if (start + size + shift > limit)
+				shift = std::max(limit - (start + size), std::min(0, blockStart + marginStart - start));
+		}
+		return shift;
+	};
+	const int blockX0 = block.layout.x + boxInset(block.computedStyle(), 3), blockX1 = block.layout.x + block.layout.width - boxInset(block.computedStyle(), 1);
+	const int blockY0 = block.layout.y + boxInset(block.computedStyle(), 0), blockY1 = block.layout.y + block.layout.height - boxInset(block.computedStyle(), 2);
+	node.layout.y += axis(node.layout.y, node.layout.height, node.computedStyle().margin[0], node.computedStyle().margin[2], port[1], port[3],
+	                      blockY0, blockY1, 0, 2, portH);
+	node.layout.x += axis(node.layout.x, node.layout.width, node.computedStyle().margin[3], node.computedStyle().margin[1], port[0], port[2],
+	                      blockX0, blockX1, 3, 1, portW);
+}
+
+// A scroll container's padding box, in resolved coordinates.
+void scrollportOf(const Node &node, int port[4])
+{
+	port[0] = node.layout.x + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[3]);
+	port[1] = node.layout.y + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[0]);
+	port[2] = node.layout.x + node.layout.width - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[1]);
+	port[3] = node.layout.y + node.layout.height - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[2]);
+}
+
+// The scrollport resolveAbsoluteCoords hands `id`: its nearest ancestor that
+// establishes one, or the viewport (-1).
+int scrollportOwner(int id, const Node *nodes)
+{
+	for (int ancestor = nodes[id].parent; ancestor >= 0; ancestor = nodes[ancestor].parent)
+		if (overflowEstablishesContext(nodes[ancestor].computedStyle())) return ancestor;
+	return -1;
+}
+
+void noteStickyBox(int id, const Node &node, int dx, int dy)
+{
+	TreeState &state = treeState();
+	const TreeState::StickyBox box{static_cast<std::int16_t>(id), static_cast<std::int16_t>(dx), static_cast<std::int16_t>(dy),
+	                               static_cast<std::int16_t>(node.layout.x), static_cast<std::int16_t>(node.layout.y)};
+	for (int i = 0; i < state.stickyCount; ++i) {
+		if (state.stickyBoxes[i].node != id) continue;
+		state.stickyBoxes[i] = box;
+		return;
+	}
+	if (state.stickyCount == TreeState::kMaxStickyBoxes) state.stickyOverflow = true;
+	else state.stickyBoxes[state.stickyCount++] = box;
+}
+
+// A subtree pass places the sticky boxes inside `id` again.
+void forgetStickyBoxesIn(int id, const Node *nodes, int nodeCount)
+{
+	TreeState &state = treeState();
+	for (int i = 0; i < state.stickyCount;) {
+		int cursor = state.stickyBoxes[i].node;
+		while (cursor >= 0 && cursor < nodeCount && cursor != id) cursor = nodes[cursor].parent;
+		if (cursor == id) state.stickyBoxes[i] = state.stickyBoxes[--state.stickyCount];
+		else ++i;
+	}
+}
+
+void translateDescendants(Node *nodes, int id, int dx, int dy)
+{
+	for (int child = nodes[id].first_child; child >= 0; child = nodes[child].next_sibling) {
+		nodes[child].layout.x += dx;
+		nodes[child].layout.y += dy;
+		translateDescendants(nodes, child, dx, dy);
+	}
+}
+
+}  // namespace
+
+int LayoutEngine::stickyBoxesScrolledBy(int scrollNode, int *slots)
+{
+	const TreeState &state = treeState();
+	if (state.stickyOverflow) return -1;
+	const Node *nodes = Tree::instance().nodes();
+	const int nodeCount = Tree::instance().nodeCount();
+	int count = 0;
+	for (int i = 0; i < state.stickyCount; ++i) {
+		const TreeState::StickyBox &box = state.stickyBoxes[i];
+		if (box.node >= nodeCount) continue;
+		// Only a box under the scroll node moves with it, and its offset holds
+		// when a scrollport below the scroll node moves along with it.
+		bool under = false, nested = false;
+		for (int ancestor = nodes[box.node].parent; ancestor >= 0; ancestor = nodes[ancestor].parent) {
+			if (ancestor == scrollNode) {
+				under = true;
+				break;
+			}
+			if (overflowEstablishesContext(nodes[ancestor].computedStyle())) break;
+			if (nodes[ancestor].computedStyle().position == kPositionSticky) nested = true;
+		}
+		if (!under) continue;
+		const Node &node = nodes[box.node];
+		if (nested || node.computedStyle().position != kPositionSticky || isDisplayNone(node.computedStyle()) ||
+		    node.layout.x != box.x || node.layout.y != box.y)
+			return -1;
+		slots[count++] = i;
+	}
+	return count;
+}
+
+void LayoutEngine::restickScrolledBox(int slot, int *dx, int *dy)
+{
+	Node *nodes = Tree::instance().nodes();
+	TreeState::StickyBox &box = treeState().stickyBoxes[slot];
+	Node &node = nodes[box.node];
+	int port[4] = {0, 0, Tree::instance().mountedWidth(), Tree::instance().mountedHeight()};
+	const int owner = scrollportOwner(box.node, nodes);
+	if (owner >= 0) scrollportOf(nodes[owner], port);
+	// The shift carried the box with the content: take its offset out, then
+	// stick it again as resolveAbsoluteCoordsIn would.
+	node.layout.x -= box.dx;
+	node.layout.y -= box.dy;
+	const int flowX = node.layout.x, flowY = node.layout.y;
+	applyStickyOffset(node, nodes[node.parent], port);
+	*dx = node.layout.x - flowX - box.dx;
+	*dy = node.layout.y - flowY - box.dy;
+	box.dx = static_cast<std::int16_t>(node.layout.x - flowX);
+	box.dy = static_cast<std::int16_t>(node.layout.y - flowY);
+	box.x = node.layout.x;
+	box.y = node.layout.y;
+	if (*dx || *dy) translateDescendants(nodes, box.node, *dx, *dy);
+}
+#endif
+
 void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
+{
+#if GEA_CSS_STICKY
+	Node *nodes = Tree::instance().nodes();
+	TreeState &state = treeState();
+	if (nodes[id].parent < 0) {
+		state.stickyPresent = false;
+		state.stickyCount = 0;
+		state.stickyOverflow = false;
+	} else if (state.stickyCount) {
+		forgetStickyBoxesIn(id, nodes, Tree::instance().nodeCount());
+	}
+	// A subtree pass (scoped relayout) inherits its nearest scroll container's
+	// scrollport; its ancestors are already resolved.
+	int port[4] = {0, 0, Tree::instance().mountedWidth(), Tree::instance().mountedHeight()};
+	for (int ancestor = nodes[id].parent; ancestor >= 0; ancestor = nodes[ancestor].parent) {
+		if (!overflowEstablishesContext(nodes[ancestor].computedStyle())) continue;
+		scrollportOf(nodes[ancestor], port);
+		break;
+	}
+	resolveAbsoluteCoordsIn(id, parent_x, parent_y, port);
+#else
+	resolveAbsoluteCoordsIn(id, parent_x, parent_y, nullptr);
+#endif
+}
+
+void LayoutEngine::resolveAbsoluteCoordsIn(int id, int parent_x, int parent_y, const int *scrollport)
 {
 	Node *nodes = Tree::instance().nodes();
 	Node *node = &nodes[id];
@@ -4781,6 +4961,14 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		node->layout.x += parent_x;
 		node->layout.y += parent_y;
 	}
+#if GEA_CSS_STICKY
+	if (node->computedStyle().position == kPositionSticky && node->parent >= 0 && !isDisplayNone(node->computedStyle())) {
+		const int flowX = node->layout.x, flowY = node->layout.y;
+		applyStickyOffset(*node, nodes[node->parent], scrollport);
+		noteStickyBox(id, *node, node->layout.x - flowX, node->layout.y - flowY);
+		treeState().stickyPresent = true;
+	}
+#endif
 
 	int childParentX = node->layout.x;
 	int childParentY = node->layout.y;
@@ -4788,9 +4976,17 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		if (scrollsOverflowX(node->computedStyle())) childParentX -= node->layout.scroll_x;
 		if (scrollsOverflowY(node->computedStyle())) childParentY -= node->layout.scroll_y;
 	}
+#if GEA_CSS_STICKY
+	// A scroll container's padding box is the scrollport of sticky descendants.
+	int port[4];
+	if (overflowEstablishesContext(node->computedStyle())) {
+		scrollportOf(*node, port);
+		scrollport = port;
+	}
+#endif
 
 	for (int child = node->first_child; child >= 0; child = nodes[child].next_sibling) {
-		resolveAbsoluteCoords(child, childParentX, childParentY);
+		resolveAbsoluteCoordsIn(child, childParentX, childParentY, scrollport);
 	}
 }
 

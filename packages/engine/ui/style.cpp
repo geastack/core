@@ -4998,6 +4998,9 @@ int positionValue(const std::string &value)
 	if (value == "absolute") return 1;
 	if (value == "fixed") return kPositionFixed;
 	if (value == "relative") return 2;
+#if GEA_CSS_STICKY
+	if (value == "sticky" || value == "-webkit-sticky") return kPositionSticky;
+#endif
 	return 0;
 }
 

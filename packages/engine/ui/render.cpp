@@ -10577,6 +10577,35 @@ int gLastScrollUiFrame = -1000;
 		return true;
 	}
 
+#if GEA_CSS_STICKY
+	bool DisplayList::regionPaintedOnlyBy(int x0, int y0, int x1, int y1, int owner, int moving) const
+	{
+		if (!state.commands || state.drawNodeOrderCount >= state.nodeScratchCapacity)
+			return false;
+		Tree &tree = Tree::instance();
+		Node *nodes = tree.nodes();
+		const int nodeCount = tree.nodeCount();
+		const int cull = DisplayCommandReplayer::occlusionCullStartIndex(x0, y0, x1, y1, nodes, nodeCount);
+		if (cull <= 0)
+			return false;
+		auto within = [&](int id, int ancestor) {
+			for (int cursor = id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
+				if (cursor == ancestor)
+					return true;
+			return false;
+		};
+		for (int oi = cull; oi < state.drawNodeOrderCount; oi++)
+		{
+			const int id = state.drawNodeOrder[oi];
+			if (id < 0 || id >= nodeCount || id == moving || !within(id, moving) || within(id, owner))
+				continue;
+			if (DisplayCommandReplayer::commandRangeBBoxOverlaps(state.nodeDrawStart[id], state.nodeDrawEnd[id], x0, y0, x1, y1))
+				return false;
+		}
+		return true;
+	}
+#endif
+
 	void DisplayList::translateNodeCommands(int node, int dx, int dy)
 	{
 		if (!state.commands || node < 0 || node >= Tree::instance().nodeCount())

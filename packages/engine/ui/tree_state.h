@@ -366,6 +366,25 @@ struct TreeState {
 	static constexpr bool transformPresent = false;
 	static constexpr bool transformScanValid = true;
 #endif
+	// A position: sticky box was placed by the last absolute-coordinate pass.
+	// Its offset depends on the scroll position, so scroll-only fast paths that
+	// shift content without that pass must re-stick it or stand down.
+#if GEA_CSS_STICKY
+	bool stickyPresent = false;
+	// The sticky boxes those passes placed: the offset each one added and where
+	// it left the box, so the root scroll fast path can re-stick them without
+	// the pass (LayoutEngine::stickyBoxesScrolledBy). More boxes than slots
+	// set stickyOverflow until the next root pass.
+	struct StickyBox {
+		std::int16_t node, dx, dy, x, y;
+	};
+	static constexpr int kMaxStickyBoxes = 32;
+	StickyBox stickyBoxes[kMaxStickyBoxes];
+	std::uint8_t stickyCount = 0;
+	bool stickyOverflow = false;
+#else
+	static constexpr bool stickyPresent = false;
+#endif
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —
