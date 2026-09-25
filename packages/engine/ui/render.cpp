@@ -5805,6 +5805,26 @@ int gLastScrollUiFrame = -1000;
 				if (x1 < x0 || y1 < y0)
 					return;
 
+				// An opaque constant gradient, e.g. linear-gradient(green, green), is a
+				// solid fill: dithering it would speckle a colour a plain fill paints flat.
+				const auto &g = c.gradient;
+				if (g.fromColor == g.toColor && g.fromAlpha == 255 && g.toAlpha == 255 &&
+				    (!g.hasMid || (g.midColor == g.fromColor && g.midAlpha == 255)))
+				{
+					if (g.tl == 0 && g.tr == 0 && g.br == 0 && g.bl == 0)
+					{
+						gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, g.fromColor);
+						return;
+					}
+					for (int y = y0; y <= y1; y++)
+					{
+						int rowX0 = x0, rowX1 = x1;
+						roundedRowSpan(c, y, &rowX0, &rowX1);
+						if (rowX0 <= rowX1) gea::platform::display::Display::fillRect(rowX0, y, rowX1 - rowX0 + 1, 1, g.fromColor);
+					}
+					return;
+				}
+
 				// Static-background gradient cache: a large opaque gradient (the app backdrop)
 				// is re-rasterized over the moving content's dirty region every frame (~23ms
 				// on css-3d-cube). Render it once into a full-screen buffer, then per frame
