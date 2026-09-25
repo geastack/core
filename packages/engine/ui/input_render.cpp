@@ -263,6 +263,7 @@ void InputRenderer::record(int id)
 			cmd->text.textOverflow = scrolled ? 0 : style.text_overflow;
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
+			cmd->text.alignLast = -1;
 		}
 	}
 

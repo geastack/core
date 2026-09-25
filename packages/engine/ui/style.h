@@ -223,6 +223,7 @@ enum class Property : int {
 	SvgStrokeLinecap,
 	SvgStrokeLinejoin,
 	SvgFillRule,
+	TextAlignLast,
 	Count
 };
 
@@ -366,7 +367,8 @@ enum class StyleDeclaration : std::uint8_t {
 	SvgStrokeOpacity,
 	SvgStrokeLinecap,
 	SvgStrokeLinejoin,
-	SvgFillRule
+	SvgFillRule,
+	TextAlignLast
 };
 
 class Style {
