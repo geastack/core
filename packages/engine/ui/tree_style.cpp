@@ -878,10 +878,16 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::BorderLeftRelief:
 		for (int side = 0; side < 4; ++side) {
 			if (prop != Property::BorderRelief && side != static_cast<int>(prop) - static_cast<int>(Property::BorderTopRelief)) continue;
+			const bool wasNone = rstyle(style).border_relief[side] & kBorderStyleNone;
 			if (rstyle(style).border_relief[side] != value) {
 				rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
 				changed = 1;
 			}
+			// border-style: none leaves the side without a border but keeps its
+			// declared width, which comes back when the style does.
+			const bool isNone = value & kBorderStyleNone;
+			if (isNone && !wasNone) changed |= setComputedBorderWidth(style, side, computedBorderWidth(style, side), nullptr);
+			else if (wasNone && !isNone) changed |= setComputedBorderWidth(style, side, rstyle(style).border_none_width[side], nullptr);
 		}
 		break;
 #endif

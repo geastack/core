@@ -1254,6 +1254,11 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "border-right-width") == 0) return CssDeclarationId::BorderRightWidth;
 	if (std::strcmp(property, "border-bottom-width") == 0) return CssDeclarationId::BorderBottomWidth;
 	if (std::strcmp(property, "border-left-width") == 0) return CssDeclarationId::BorderLeftWidth;
+	if (std::strcmp(property, "border-style") == 0) return CssDeclarationId::BorderStyle;
+	if (std::strcmp(property, "border-top-style") == 0) return CssDeclarationId::BorderTopStyle;
+	if (std::strcmp(property, "border-right-style") == 0) return CssDeclarationId::BorderRightStyle;
+	if (std::strcmp(property, "border-bottom-style") == 0) return CssDeclarationId::BorderBottomStyle;
+	if (std::strcmp(property, "border-left-style") == 0) return CssDeclarationId::BorderLeftStyle;
 	if (std::strcmp(property, "border-top-color") == 0) return CssDeclarationId::BorderTopColor;
 	if (std::strcmp(property, "border-right-color") == 0) return CssDeclarationId::BorderRightColor;
 	if (std::strcmp(property, "border-bottom-color") == 0) return CssDeclarationId::BorderBottomColor;
@@ -6584,7 +6589,12 @@ bool compileBorderShorthandValue(const std::string &value, CssCompiledValue &com
 		else if (!parseCompiledLengthSpec(part, compiled.lengths[0])) return false;
 		foundWidth = true;
 	}
-	if (noStroke) compiled.lengths[0] = {0.0f, CssLengthUnit::Px};
+	// none and hidden record kBorderStyleNone, so a later border-width alone
+	// cannot bring the border back (CSS Backgrounds 3.3); the width stays 0.
+	if (noStroke) {
+		compiled.lengths[0] = {0.0f, CssLengthUnit::Px};
+		compiled.values[2] = kBorderStyleNone;
+	}
 	compiled.aux = 0;
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
@@ -7023,6 +7033,43 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 	out[3] = {Property::BlockEllipsisString, customAtom};
 	out[4] = {Property::LineClampDiscard, 0};
 	return 5;
+}
+
+// border-style and its longhands as per-side relief writes (CSS Backgrounds
+// 3.3); none and hidden set kBorderStyleNone, which keeps the side's width 0.
+// dashed, dotted and double paint as solid.
+int borderStyleWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+{
+	int first = -1;
+	switch (declaration) {
+	case CssDeclarationId::BorderStyle: first = 0; break;
+	case CssDeclarationId::BorderTopStyle: first = 0; break;
+	case CssDeclarationId::BorderRightStyle: first = 1; break;
+	case CssDeclarationId::BorderBottomStyle: first = 2; break;
+	case CssDeclarationId::BorderLeftStyle: first = 3; break;
+	default: return -1;
+	}
+	const auto words = splitWords(toLowerAscii(trimCssValue(value)));
+	const bool shorthand = declaration == CssDeclarationId::BorderStyle;
+	if (words.empty() || words.size() > (shorthand ? 4u : 1u)) return 0;
+	int reliefs[4];
+	for (std::size_t i = 0; i < words.size(); ++i) {
+		const auto &w = words[i];
+		if (w == "none" || w == "hidden") reliefs[i] = kBorderStyleNone;
+		else if (w == "solid" || w == "dashed" || w == "dotted" || w == "double") reliefs[i] = 0;
+		else if (w == "groove" || w == "ridge" || w == "inset" || w == "outset")
+			reliefs[i] = w == "groove" ? 1 : w == "ridge" ? 2 : w == "inset" ? 3 : 4;
+		else return 0;
+	}
+	if (!shorthand) {
+		out[0] = {static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + first), reliefs[0]};
+		return 1;
+	}
+	// top, right, bottom, left from one to four values.
+	const int count = static_cast<int>(words.size());
+	const int side[4] = {reliefs[0], reliefs[count > 1 ? 1 : 0], reliefs[count > 2 ? 2 : 0], reliefs[count > 3 ? 3 : count > 1 ? 1 : 0]};
+	for (int i = 0; i < 4; ++i) out[i] = {static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + i), side[i]};
+	return 4;
 }
 
 // Only whether columns are set matters: line-clamp skips multicol containers.
@@ -7567,6 +7614,7 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 	StaticStylePropertyValue clampWrites[4];
 	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = multicolWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = borderStyleWrites(declaration, value, clampWrites);
 	if (const int count = clampCount; count >= 0) {
 		if (count == 0) return kNoCompiledCssValue;
 		compiled.kind = CssCompiledKind::DirectPropertyGroup;
@@ -8420,18 +8468,27 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		return true;
 #endif
 #if GEA_CSS_BORDER_RELIEF
+	case Property::BorderRelief:
 	case Property::BorderTopRelief:
 	case Property::BorderRightRelief:
 	case Property::BorderBottomRelief:
 	case Property::BorderLeftRelief: {
-		const int side = static_cast<int>(property) - static_cast<int>(Property::BorderTopRelief);
-		if (rstyle(style).border_relief[side] != value) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
+		if (property == Property::BorderRelief && value == 0) {
+			const auto &relief = rstyle(style).border_relief;
+			if (!(relief[0] | relief[1] | relief[2] | relief[3])) return true;
+		}
+		for (int side = 0; side < 4; ++side) {
+			if (property != Property::BorderRelief && side != static_cast<int>(property) - static_cast<int>(Property::BorderTopRelief)) continue;
+			const bool wasNone = rstyle(style).border_relief[side] & kBorderStyleNone;
+			if (rstyle(style).border_relief[side] != value) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
+			// border-style: none leaves the side without a border but keeps its
+			// declared width, which comes back when the style does.
+			const bool isNone = value & kBorderStyleNone;
+			if (isNone && !wasNone) setComputedBorderWidth(style, side, computedBorderWidth(style, side), nullptr);
+			else if (wasNone && !isNone) setComputedBorderWidth(style, side, rstyle(style).border_none_width[side], nullptr);
+		}
 		return true;
 	}
-	case Property::BorderRelief:
-		if (value == 0 && !hasBorderRelief(style)) return true;
-		for (int side = 0; side < 4; ++side) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
-		return true;
 #endif
 #if GEA_CSS_SIDE_BORDERS
 	case Property::BorderTopWidth: setComputedBorderWidth(style, 0, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
@@ -9177,9 +9234,10 @@ void applyBorderShorthand(NodeHandle node, const std::string &value, StyleApplic
 	const auto parts = splitFunctionAwareWords(value);
 	const int width = resolveBorderWidth(compiled.lengths[0], node.id());
 	if (width < 0) return;
-	setLengthStyleValue(node, compiled.lengths[0], Property::BorderWidth, width, source);
+	// The shorthand resets border-style first, so a side that was none takes the width.
 	for (int side = 0; side < 4; ++side)
 		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), compiled.values[2], source);
+	setLengthStyleValue(node, compiled.lengths[0], Property::BorderWidth, width, source);
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
 		if (parseCssColor(part).valid) {
@@ -9906,10 +9964,16 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::ColumnCount:
 	case CssDeclarationId::ColumnWidth:
 	case CssDeclarationId::ColumnFill:
-	case CssDeclarationId::ColumnSpan: {
+	case CssDeclarationId::ColumnSpan:
+	case CssDeclarationId::BorderStyle:
+	case CssDeclarationId::BorderTopStyle:
+	case CssDeclarationId::BorderRightStyle:
+	case CssDeclarationId::BorderBottomStyle:
+	case CssDeclarationId::BorderLeftStyle: {
 		StaticStylePropertyValue writes[4];
 		int count = lineClampWrites(declaration, value, writes);
 		if (count < 0) count = multicolWrites(declaration, value, writes);
+		if (count < 0) count = borderStyleWrites(declaration, value, writes);
 		for (int i = 0; i < count; ++i) setStyleValue(node, writes[i].property, writes[i].value, source);
 		return true;
 	}
@@ -11135,11 +11199,11 @@ bool applyRuntimeBorderShorthandValue(NodeHandle node,
 	Node &target = state.nodes[nodeId];
 	const int snappedWidth = resolveBorderWidth(width, nodeId);
 	if (snappedWidth < 0) return true;
+	for (int side = 0; side < 4; ++side)
+		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), relief, source);
 	setUniformBorderWidth(node, snappedWidth, source);
 	if (source == StyleApplicationSource::Inline && width.unit == CssLengthUnit::Px)
 		ensureRareData(node.id()).inlineStyles.setCssPixels(Property::BorderWidth, width.value);
-	for (int side = 0; side < 4; ++side)
-		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), relief, source);
 	if (alpha >= 0) {
 		setStyleValue(node, Property::BorderColor, color, source);
 #if GEA_CSS_BORDER_ALPHA
@@ -11956,6 +12020,11 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "border-right-width") return removeInlineStyleProperties(id, {Property::BorderRightWidth});
 	if (property == "border-bottom-width") return removeInlineStyleProperties(id, {Property::BorderBottomWidth});
 	if (property == "border-left-width") return removeInlineStyleProperties(id, {Property::BorderLeftWidth});
+	if (property == "border-style") return removeInlineStyleProperties(id, {Property::BorderTopRelief, Property::BorderRightRelief, Property::BorderBottomRelief, Property::BorderLeftRelief});
+	if (property == "border-top-style") return removeInlineStyleProperties(id, {Property::BorderTopRelief});
+	if (property == "border-right-style") return removeInlineStyleProperties(id, {Property::BorderRightRelief});
+	if (property == "border-bottom-style") return removeInlineStyleProperties(id, {Property::BorderBottomRelief});
+	if (property == "border-left-style") return removeInlineStyleProperties(id, {Property::BorderLeftRelief});
 	if (property == "border-top-color") return removeInlineStyleProperties(id, {Property::BorderTopColor, Property::BorderTopAlpha, Property::BorderTopColorCurrent});
 	if (property == "border-right-color") return removeInlineStyleProperties(id, {Property::BorderRightColor, Property::BorderRightAlpha, Property::BorderRightColorCurrent});
 	if (property == "border-bottom-color") return removeInlineStyleProperties(id, {Property::BorderBottomColor, Property::BorderBottomAlpha, Property::BorderBottomColorCurrent});
@@ -14619,8 +14688,8 @@ bool buildCachedStyleApplyOp(const CssCompiledValue *compiled, CachedStyleApplyO
 			op.values[3] = compiled->aux != 0 ? compiled->values[1] : -1;
 			return true;
 		}
-		if (!addCachedUniformBorderWidth(op, width)) return false;
 		if (!addCachedStyleApplyProperty(op, Property::BorderRelief, compiled->values[2])) return false;
+		if (!addCachedUniformBorderWidth(op, width)) return false;
 		return compiled->aux == 0 ? addCachedStyleApplyProperty(op, Property::BorderColorCurrent, 1) : addCachedStyleApplyProperty(op, Property::BorderColor, compiled->values[0]);
 	}
 	case CssCompiledKind::BorderSideShorthand: {
