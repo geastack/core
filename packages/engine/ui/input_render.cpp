@@ -173,6 +173,8 @@ void InputRenderer::record(int id)
 			cmd->text.firstLineIndent = 0;
 			cmd->text.alignLast = -1;
 			cmd->text.lineLimit = 0;
+			cmd->text.blockEllipsis = 0;
+			cmd->text.ellipsisWidth = 0;
 		}
 	}
 

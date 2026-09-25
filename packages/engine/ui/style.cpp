@@ -404,6 +404,7 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    ar.margin_trim != br.margin_trim ||
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
+	    ar.block_ellipsis != br.block_ellipsis ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -633,6 +634,7 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    ar.margin_trim != br.margin_trim ||
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
+	    ar.block_ellipsis != br.block_ellipsis ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -6726,23 +6728,28 @@ ParsedCssColor backgroundBaseColor(const std::string &value)
 const CssCompiledBackground *compiledCssBackgroundForHandle(std::uint16_t handle);
 bool backgroundImageIsValid(int handle, int nodeId);
 
-// line-clamp (CSS Overflow 4) and its longhands as MaxLines, LineClampContinue
-// and BlockEllipsis writes. A custom ellipsis string counts as an ellipsis.
+// line-clamp (CSS Overflow 4) and its longhands as MaxLines, LineClampContinue,
+// BlockEllipsis and BlockEllipsisString writes. A custom ellipsis string is
+// interned as a CSS atom; an empty one paints nothing, like none.
 // Returns the write count, 0 for an invalid value, -1 for other declarations.
-int lineClampWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[3])
+int lineClampWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
 {
 	const bool shorthand = declaration == CssDeclarationId::LineClamp || declaration == CssDeclarationId::WebkitLineClamp;
 	if (!shorthand && declaration != CssDeclarationId::MaxLines && declaration != CssDeclarationId::Continue &&
 	    declaration != CssDeclarationId::BlockEllipsis) return -1;
-	std::string lower = toLowerAscii(trimCssValue(value));
+	const std::string trimmed = trimCssValue(value);
+	std::string lower = toLowerAscii(trimmed);
 	bool quoted = false;
+	std::string custom;
 	const auto quote = lower.find_first_of("\"'");
 	if (quote != std::string::npos) {
 		const auto close = lower.find(lower[quote], quote + 1);
 		if (close == std::string::npos) return 0;
+		custom = trimmed.substr(quote + 1, close - quote - 1);
 		lower.erase(quote, close - quote + 1);
 		quoted = true;
 	}
+	const int customAtom = custom.empty() ? 0 : internCssAtom(custom);
 	auto lineCount = [](const std::string &word, int &n) {
 		if (word.empty() || word.size() > 6 || word.find_first_not_of("0123456789") != std::string::npos) return false;
 		n = std::min(255, std::atoi(word.c_str()));
@@ -6763,8 +6770,9 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 	if (declaration == CssDeclarationId::BlockEllipsis) {
 		const bool keyword = !quoted && words.size() == 1 && (words[0] == "none" || words[0] == "auto");
 		if (!keyword && !(quoted && words.empty())) return 0;
-		out[0] = {Property::BlockEllipsis, quoted || words[0] == "auto"};
-		return 1;
+		out[0] = {Property::BlockEllipsis, quoted ? customAtom != 0 : words[0] == "auto"};
+		out[1] = {Property::BlockEllipsisString, customAtom};
+		return 2;
 	}
 	int lines = 0;
 	bool automatic = false, ellipsis = true;
@@ -6772,7 +6780,8 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 		out[0] = {Property::MaxLines, 0};
 		out[1] = {Property::LineClampContinue, 0};
 		out[2] = {Property::BlockEllipsis, 0};
-		return 3;
+		out[3] = {Property::BlockEllipsisString, 0};
+		return 4;
 	}
 	for (const auto &word : words) {
 		if (lineCount(word, lines)) continue;
@@ -6785,8 +6794,9 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 	// -webkit-box. Gea has no such display, so it never collapses here.
 	out[0] = {Property::MaxLines, lines};
 	out[1] = {Property::LineClampContinue, declaration == CssDeclarationId::LineClamp};
-	out[2] = {Property::BlockEllipsis, ellipsis};
-	return 3;
+	out[2] = {Property::BlockEllipsis, ellipsis && (!quoted || customAtom != 0)};
+	out[3] = {Property::BlockEllipsisString, customAtom};
+	return 4;
 }
 
 // Only whether columns are set matters: line-clamp skips multicol containers.
@@ -7303,7 +7313,7 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		return storeCompiledCssValue(compiled);
 	}
 
-	StaticStylePropertyValue clampWrites[3];
+	StaticStylePropertyValue clampWrites[4];
 	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = multicolWrites(declaration, value, clampWrites);
 	if (const int count = clampCount; count >= 0) {
@@ -7770,6 +7780,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::MarginTrim: rstyleMut(style).margin_trim = value; return true;
 #endif
 	case Property::MaxLines: rstyleMut(style).max_lines = static_cast<uint8_t>(value); return true;
+	case Property::BlockEllipsisString: rstyleMut(style).block_ellipsis = static_cast<uint16_t>(value); return true;
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
@@ -9616,7 +9627,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::Columns:
 	case CssDeclarationId::ColumnCount:
 	case CssDeclarationId::ColumnWidth: {
-		StaticStylePropertyValue writes[3];
+		StaticStylePropertyValue writes[4];
 		int count = lineClampWrites(declaration, value, writes);
 		if (count < 0) count = multicolWrites(declaration, value, writes);
 		for (int i = 0; i < count; ++i) setStyleValue(node, writes[i].property, writes[i].value, source);
@@ -11603,10 +11614,10 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "float") return removeInlineStyleProperties(id, {Property::Float});
 	if (property == "margin-trim") return removeInlineStyleProperties(id, {Property::MarginTrim});
 	if (property == "line-clamp" || property == "-webkit-line-clamp")
-		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::BlockEllipsis});
+		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::BlockEllipsis, Property::BlockEllipsisString});
 	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});
 	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue});
-	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis});
+	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis, Property::BlockEllipsisString});
 	if (property == "columns") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnWidthSet});
 	if (property == "column-count") return removeInlineStyleProperties(id, {Property::ColumnCountSet});
 	if (property == "column-width") return removeInlineStyleProperties(id, {Property::ColumnWidthSet});

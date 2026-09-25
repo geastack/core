@@ -206,6 +206,7 @@ enum class Property : int {
 	ColumnCountSet,
 	ColumnWidthSet,
 	VerticalAlign,
+	BlockEllipsisString,
 	Count
 };
 

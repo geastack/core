@@ -375,6 +375,7 @@ bool hasExplicitHeight(const Node &node)
 // inline wrappers and plain block descendants count; independent formatting
 // contexts are single units. Child coordinates are still parent-relative.
 int writingMode(const Node &node);
+bool emptyInlineBox(const Node &node);
 
 struct LineClampWalk {
 	Node *nodes;
@@ -383,6 +384,8 @@ struct LineClampWalk {
 	int lines = 0;
 	int lastLineTop = INT_MIN;
 	int keptBottom = 0;
+	// The text run whose line is the last one kept; -1 when that is an atomic box.
+	int lastRun = -1;
 	bool clamped = false;
 };
 
@@ -422,6 +425,12 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 		}
 		if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position) || child.style.float_side ||
 		    isLineBreak(child) || suppressAnonymousWhitespace(nodes, parent, id)) continue;
+		const bool inlineWrapper = LayoutEngine::isCssInlineLevelBox(child) && LayoutEngine::isInlineLevelNode(child);
+		// Phantom line content (collapsible spaces, empty inline boxes) is
+		// treated as not existing, so it neither counts as a line nor clamps.
+		const bool collapsible = child.style.white_space == 0 || child.style.white_space == 1 || child.style.white_space == 4;
+		if (child.type == NodeType::Text ? collapsible && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos
+		                                 : inlineWrapper && child.first_child < 0 && emptyInlineBox(child)) continue;
 		const int top = originY + child.layout.y;
 		if (child.type == NodeType::Text) {
 			const int advance = TextRenderer::measureHeight("X", child.style.font_id, child.style.font_size, 0, child.style.line_height);
@@ -441,13 +450,16 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 					walk.lastLineTop = lineTop;
 				}
 				walk.keptBottom = std::max(walk.keptBottom, lineTop + advance);
+				walk.lastRun = id;
 			}
 			continue;
 		}
-		const bool inlineWrapper = LayoutEngine::isCssInlineLevelBox(child) && LayoutEngine::isInlineLevelNode(child);
 		const bool plainBlock = child.style.display == kDisplayBlock && !overflowEstablishesContext(child.style) &&
 		    writingMode(child) == writingMode(nodes[parent]);
 		if (child.first_child >= 0 && (inlineWrapper || plainBlock)) {
+			// A block between the last line box and the clamp point takes the
+			// ellipsis away from that line; its own lines may take it instead.
+			if (!inlineWrapper) walk.lastRun = -1;
 			walkLineClamp(walk, id, top);
 			if (!walk.clamped && !inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, top + child.layout.height);
 			continue;
@@ -459,6 +471,7 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 			continue;
 		}
 		walk.keptBottom = std::max(walk.keptBottom, bottom);
+		walk.lastRun = -1;
 	}
 }
 
@@ -470,6 +483,9 @@ void applyLineClamp(int id)
 	LineClampWalk walk{nodes, rstyle(node.style).max_lines, node.layout.height - boxInset(node.style, 2)};
 	walk.keptBottom = boxInset(node.style, 0);
 	walkLineClamp(walk, id, 0);
+	// The block ellipsis ends the last line before the clamp point.
+	if (walk.clamped && (rstyle(node.style).line_clamp_flags & 2) && walk.lastRun >= 0)
+		nodes[walk.lastRun].layout.line_clamp_hidden |= 2;
 	if (!walk.clamped || hasExplicitHeight(node)) return;
 	const int height = clampBorderBoxSize(node.style, walk.keptBottom + boxInset(node.style, 2), false);
 	if (height < node.layout.height) node.layout.height = clampInt16(height);
@@ -2316,6 +2332,12 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "small") == 0 || std::strcmp(tag, "label") == 0 || std::strcmp(tag, "code") == 0 ||
 	       std::strcmp(tag, "u") == 0 || std::strcmp(tag, "sub") == 0 || std::strcmp(tag, "sup") == 0 ||
 	       std::strcmp(tag, "mark") == 0;
+}
+
+// An inline box with nothing to show: no insets and no visible box.
+bool emptyInlineBox(const Node &node)
+{
+	return !boxInsets(node.style, true) && !boxInsets(node.style, false) && FlexLayoutPass::paintsNoBox(node);
 }
 
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
