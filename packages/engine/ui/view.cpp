@@ -677,9 +677,9 @@ void appendFillCircleWithAlpha(int cx, int cy, int r, gea::framework::graphics::
 		appendAlphaCommand(parentAlpha, x, y, d, d);
 }
 
-void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha)
+void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha, uint16_t color, uint8_t alpha)
 {
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.computedStyle(), 0));
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, alpha);
 	if (effectiveAlpha != parentAlpha)
 		appendAlphaCommand(effectiveAlpha, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
 
@@ -705,18 +705,23 @@ void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha)
 				if (cmd->strokeRoundedRect.rx8[i] > std::min(node.layout.width, node.layout.height) * 4 ||
 				    cmd->strokeRoundedRect.ry8[i] > std::min(node.layout.width, node.layout.height) * 4)
 					cmd->strokeRoundedRect.cssRadii = 1;
-			cmd->strokeRoundedRect.color = borderPaintColor(node.computedStyle(), 0);
+			cmd->strokeRoundedRect.color = color;
 		} else {
 			cmd->type = DisplayCommandType::StrokeRect;
 			cmd->bx = node.layout.x; cmd->by = node.layout.y; cmd->bw = node.layout.width; cmd->bh = node.layout.height;
 			cmd->stroke.x = node.layout.x; cmd->stroke.y = node.layout.y;
 			cmd->stroke.w = node.layout.width; cmd->stroke.h = node.layout.height;
-			cmd->stroke.color = borderPaintColor(node.computedStyle(), 0);
+			cmd->stroke.color = color;
 		}
 	}
 
 	if (effectiveAlpha != parentAlpha)
 		appendAlphaCommand(parentAlpha, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
+}
+
+void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha)
+{
+	appendStrokeWithAlpha(node, parentAlpha, borderPaintColor(node.style, 0), borderPaintAlpha(node.style, 0));
 }
 
 void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, int *x1, int *y1)
@@ -1585,80 +1590,98 @@ void appendReliefBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 	}
 }
 
-void appendSideBordersWithAlpha(const Node &node, uint8_t parentAlpha)
+void appendBorderSideWithAlpha(const Node &node, int side, uint16_t color, uint8_t alpha, uint8_t parentAlpha, bool transformed)
 {
 	const int x = node.layout.x;
 	const int y = node.layout.y;
 	const int w = node.layout.width;
 	const int h = node.layout.height;
-	if (hasBorderRelief(node.computedStyle())) { appendReliefBordersWithAlpha(node, parentAlpha); return; }
-	const bool textClippedTransform = StyleValues::hasTextBackgroundClip(node.computedStyle()) &&
+	const int borderWidth = computedBorderWidth(node.style, side);
+	if (borderWidth <= 0) return;
+	int sx = x;
+	int sy = y;
+	int sw = w;
+	int sh = h;
+	if (side == 0) {
+		sh = std::min(borderWidth, h);
+	} else if (side == 1) {
+		sw = std::min(borderWidth, w);
+		sx = x + w - sw;
+	} else if (side == 2) {
+		sh = std::min(borderWidth, h);
+		sy = y + h - sh;
+	} else {
+		sw = std::min(borderWidth, w);
+	}
+	// Horizontal edges own the corners. Avoid compositing a translucent
+	// asymmetric border twice where two side rectangles would overlap.
+	if (side == 1 || side == 3) {
+		const int top = std::min<int>(computedBorderWidth(node.style, 0), h);
+		const int bottom = std::min<int>(computedBorderWidth(node.style, 2), h - top);
+		sy += top;
+		sh -= top + bottom;
+	}
+	if (sw <= 0 || sh <= 0) return;
+	if (transformed) {
+		int16_t xs[4], ys[4];
+		ViewGeometry::transformRectCorners(node, false, sx, sy, sw, sh, xs, ys);
+		int bx0, by0, bx1, by1;
+		boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
+		appendFillQuadWithAlpha(xs,
+		                        ys,
+		                        color,
+		                        alpha,
+		                        parentAlpha,
+		                        bx0,
+		                        by0,
+		                        bx1 - bx0 + 1,
+		                        by1 - by0 + 1,
+		                        sx,
+		                        sy,
+		                        sw,
+		                        sh,
+		                        true);
+	} else {
+		appendFillRectWithAlpha(sx,
+		                        sy,
+		                        sw,
+		                        sh,
+		                        color,
+		                        alpha,
+		                        parentAlpha,
+		                        sx,
+		                        sy,
+		                        sw,
+		                        sh);
+	}
+}
+
+void appendSideBordersWithAlpha(const Node &node, uint8_t parentAlpha)
+{
+	const int w = node.layout.width;
+	const int h = node.layout.height;
+	if (hasBorderRelief(node.style)) { appendReliefBordersWithAlpha(node, parentAlpha); return; }
+	const bool textClippedTransform = StyleValues::hasTextBackgroundClip(node.style) &&
 	    ViewGeometry::hasTransformChain(node, false) && !isFullyRoundedShape(node);
 	if (w <= 0 || h <= 0 || (!hasSideBorder(node.computedStyle()) && !borderColorsDiffer(node.computedStyle()) && !textClippedTransform)) return;
 
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
-	for (int side = 0; side < 4; ++side) {
-		const int borderWidth = computedBorderWidth(node.computedStyle(), side);
-		const auto color = borderPaintColor(node.computedStyle(), side);
-		const auto alpha = borderPaintAlpha(node.computedStyle(), side);
-		if (borderWidth <= 0) continue;
-		int sx = x;
-		int sy = y;
-		int sw = w;
-		int sh = h;
-		if (side == 0) {
-			sh = std::min(borderWidth, h);
-		} else if (side == 1) {
-			sw = std::min(borderWidth, w);
-			sx = x + w - sw;
-		} else if (side == 2) {
-			sh = std::min(borderWidth, h);
-			sy = y + h - sh;
-		} else {
-			sw = std::min(borderWidth, w);
-		}
-		// Horizontal edges own the corners. Avoid compositing a translucent
-		// asymmetric border twice where two side rectangles would overlap.
-		if (side == 1 || side == 3) {
-			const int top = std::min<int>(computedBorderWidth(node.computedStyle(), 0), h);
-			const int bottom = std::min<int>(computedBorderWidth(node.computedStyle(), 2), h - top);
-			sy += top;
-			sh -= top + bottom;
-		}
-		if (sw <= 0 || sh <= 0) continue;
-		if (transformed) {
-			int16_t xs[4], ys[4];
-			ViewGeometry::transformRectCorners(node, false, sx, sy, sw, sh, xs, ys);
-			int bx0, by0, bx1, by1;
-			boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
-			appendFillQuadWithAlpha(xs,
-			                        ys,
-			                        color,
-			                        alpha,
-			                        parentAlpha,
-			                        bx0,
-			                        by0,
-			                        bx1 - bx0 + 1,
-			                        by1 - by0 + 1,
-			                        sx,
-			                        sy,
-			                        sw,
-			                        sh,
-			                        true);
-		} else {
-			appendFillRectWithAlpha(sx,
-			                        sy,
-			                        sw,
-			                        sh,
-			                        color,
-			                        alpha,
-			                        parentAlpha,
-			                        sx,
-			                        sy,
-			                        sw,
-			                        sh);
-		}
+	for (int side = 0; side < 4; ++side)
+		appendBorderSideWithAlpha(node, side, borderPaintColor(node.style, side), borderPaintAlpha(node.style, side), parentAlpha, transformed);
+}
+
+// background-clip: border-area paints the background only where the border
+// strokes, whatever the border color. Trace the geometry the border painters
+// use: one stroke for a uniform width, side rectangles otherwise.
+void recordBorderAreaFill(const Node &node, uint8_t parentAlpha)
+{
+	const bool transformed = ViewGeometry::hasTransformChain(node, false);
+	if (node.style.border_width > 0 && !hasSideBorder(node.style) && !transformed) {
+		appendStrokeWithAlpha(node, parentAlpha, node.style.bg_color, node.style.bg_alpha);
+		return;
 	}
+	for (int side = 0; side < 4; ++side)
+		appendBorderSideWithAlpha(node, side, node.style.bg_color, node.style.bg_alpha, parentAlpha, transformed);
 }
 
 void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
@@ -2564,6 +2587,8 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 			TextBackgroundClipScope textClip(*n, clip);
 			if (clip == 1 || clip == 2) {
 				recordTransformedRoundedRectFill(*n, parentAlpha, clip);
+			} else if (clip == 4) {
+				recordBorderAreaFill(*n, parentAlpha);
 			} else if (ViewGeometry::hasTransformChain(*n, false)) {
 				int16_t xs[4], ys[4];
 				int bx0, by0, bx1, by1;
