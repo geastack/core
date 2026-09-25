@@ -439,13 +439,16 @@ void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 
 int baselineFallbackAlignment(const Node &parent, const Node &child, int alignment, int free, bool horizontal, bool staticPosition)
 {
-	// Baseline self-alignment follows the subject's writing mode. Resolving
-	// automatic insets uses the fallback edge without overflow safety; actual
-	// in-flow self-alignment uses the safe fallback instead (CSS Position 3.5.1).
+	// In-flow baseline self-alignment falls back to self-start/self-end in the
+	// subject's writing mode. An absolutely positioned box shares no baseline;
+	// browsers resolve its fallback to the containing box's start/end, even when
+	// the box's own direction or writing mode differs. Resolving automatic insets
+	// uses the fallback edge without overflow safety; actual in-flow
+	// self-alignment uses the safe fallback instead (CSS Position 3.5.1).
 	if (!staticPosition && free < 0)
 		return gridAxisReversed(parent, horizontal) ? 2 : 6;
 	const bool last = (alignment & 15) == kAlignLastBaseline;
-	return gridAxisReversed(child, horizontal) != last ? 2 : 6;
+	return gridAxisReversed(staticPosition ? parent : child, horizontal) != last ? 2 : 6;
 }
 
 // Self-relative edges use the subject's writing mode, even when it differs
