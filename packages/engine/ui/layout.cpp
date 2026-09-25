@@ -1723,7 +1723,7 @@ private:
 		if (isRow_) {
 			for (int i = 0; i < line.count; i++) {
 				Node &probe = nodes[children_[line.start + i]];
-				if (probe.style.margin_auto & 5) continue;
+				if ((probe.style.margin_auto & 5) || usesBaselineFallback(probe)) continue;
 				if (crossAlignFor(probe) == kAlignLastBaseline) {
 					const int baseline = childBaseline(probe, true);
 					lineMaxLastDescent = std::max(lineMaxLastDescent, probe.style.margin[2] + probe.layout.height - baseline);
@@ -1758,7 +1758,7 @@ private:
 				// Baselines are distances from physical top. Reversing the line
 				// order must not mirror each item's baseline inside that line.
 				const int alignment = crossAlignFor(childNode) & 15;
-				if (isRow_ && reverseCross && (alignment == 5 || alignment == kAlignLastBaseline))
+				if (isRow_ && reverseCross && (alignment == 5 || alignment == kAlignLastBaseline) && !usesBaselineFallback(childNode))
 					crossPosition = crossOffset + line.crossSize - (crossPosition - crossOffset) - crossSize;
 			}
 
@@ -1793,6 +1793,17 @@ private:
 		return inlineRow_ ? 5 : node_.style.align_items;
 	}
 
+	// Baseline alignment needs baselines that cross the cross axis. When a flex
+	// item's inline axis runs along the cross axis instead (a column, or a row
+	// of a vertical container), it uses the fallback: self-start/self-end in its
+	// own writing mode, which wrap-reverse does not flip.
+	bool usesBaselineFallback(const Node &childNode) const
+	{
+		const int keyword = crossAlignFor(childNode) & 15;
+		return node_.style.display == kDisplayFlex && !inlineRow_ && (keyword == 5 || keyword == kAlignLastBaseline) &&
+		       (writingMode(childNode) == 0) == !isRow_;
+	}
+
 	void positionCrossAxisChild(int child, Node &childNode, int lineCrossSize, int crossMarginBefore, int crossMarginAfter, int crossTotal, int *crossPosition, int lineMaxBaseline, int lineLastBaseline)
 	{
 #if GEA_CSS_FLEX_WRAP
@@ -1802,6 +1813,8 @@ private:
 #endif
 		const int alignment = crossAlignFor(childNode);
 		int align = physicalSelfAlignment(node_, childNode, alignment, lineCrossSize - crossTotal, !isRow_);
+		if (align < 0 && usesBaselineFallback(childNode))
+			align = baselineFallbackAlignment(node_, childNode, alignment, lineCrossSize - crossTotal, !isRow_, false);
 		if (align >= 0) {
 			const bool reversed = gridAxisReversed(node_, !isRow_) != (wrapReversed);
 			if (reversed) align = align == 2 ? 6 : 2;
