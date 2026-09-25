@@ -1110,7 +1110,7 @@ public:
 		            command.text.color, command.text.scale, command.text.align, command.text.containerWidth,
 			    command.text.fontId, command.text.textTransform, command.text.lineHeight,
 			    command.text.whiteSpace, command.text.textOverflow, command.text.maxHeight,
-			    command.text.firstLineIndent, command.text.alignLast, &sink, command.text.fontWeight, command.text.fontStretch);
+			    command.text.firstLineIndent, command.text.alignLast, command.text.lineLimit, &sink, command.text.fontWeight, command.text.fontStretch);
 	}
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
@@ -1164,7 +1164,7 @@ public:
 		}
 	}
 
-	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, int alignLast = -1, TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		if (!text || !text[0]) return;
 		std::string transformed;
@@ -1201,7 +1201,7 @@ public:
 					drawRasterizedSingleLine(text, x, y, maxWidth, color, singleLineAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink, fontWeight, fontStretch);
 				else
 					drawRasterizedWrapped(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
-					                      ellipsis ? maxHeight : 0, firstLineIndent, alignLast, hangSpaces, coverageSink, fontWeight, fontStretch);
+					                      ellipsis ? maxHeight : 0, firstLineIndent, alignLast, hangSpaces, lineLimit, coverageSink, fontWeight, fontStretch);
 				return;
 			}
 		}
@@ -1211,12 +1211,12 @@ public:
 		if (noWrap)
 			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, singleLineAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink, fontWeight, fontStretch);
 		else
-			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, alignLast, hangSpaces, coverageSink, fontWeight, fontStretch);
+			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, alignLast, hangSpaces, lineLimit, coverageSink, fontWeight, fontStretch);
 	}
 
 private:
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1297,7 +1297,7 @@ private:
 			int penY = y;
 			const char *lineStart = text;
 			for (int li = 0; li < entry.lineCount; li++) {
-				if (penY + lineBoxOffset > clipY1) break;
+				if (penY + lineBoxOffset > clipY1 || (lineLimit > 0 && li >= lineLimit)) break;
 				if (li == lineBudget - 1 && li < entry.lineCount - 1) {
 					// Last budgeted line with more text behind it: ellipsize the rest.
 						drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
@@ -1332,7 +1332,7 @@ private:
 		int penY = y;
 		int li = 0;
 		while (*lineStart) {
-			if (penY + lineBoxOffset > clipY1) break;
+			if (penY + lineBoxOffset > clipY1 || (lineLimit > 0 && li >= lineLimit)) break;
 			if (li == lineBudget - 1) {
 				// Budget reached: ellipsize whatever remains onto this final line.
 				drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
@@ -1458,7 +1458,7 @@ private:
 	}
 #endif
 
-	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		if (scale < 0.1f) scale = 1.0f;
 		int glyphWidth = static_cast<int>(kBitmapFontWidth * scale + 0.5f);
@@ -1472,7 +1472,7 @@ private:
 		int lineIndex = 0;
 
 		while (*lineStart) {
-			if (penY > clipY1) break;
+			if (penY > clipY1 || (lineLimit > 0 && lineIndex >= lineLimit)) break;
 			// See drawRasterizedWrapped: line 0 of an inline continuation starts at
 			// the inherited pen and has that much less room.
 			const int budget = lineIndex == 0 ? maxWidth - firstLineIndent : maxWidth;
@@ -1998,9 +1998,9 @@ int TextRenderer::reflowToBoxWidth(int id)
 	return measured.width;
 }
 
-void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent, int fontWeight, int fontStretch, int alignLast)
+void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent, int fontWeight, int fontStretch, int alignLast, int lineLimit)
 {
-	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent, alignLast, nullptr, fontWeight, fontStretch);
+	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent, alignLast, lineLimit, nullptr, fontWeight, fontStretch);
 }
 
 void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
@@ -2403,6 +2403,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.textOverflow = n->computedStyle().text_overflow;
 	cmd->text.firstLineIndent = static_cast<int16_t>(inlineIndent);
 	cmd->text.alignLast = alignLast;
+	cmd->text.lineLimit = n->layout.line_clamp_lines;
 	{
 		const int contentH = h - boxInset(n->computedStyle(), 0) - boxInset(n->computedStyle(), 2);
 		cmd->text.maxHeight = static_cast<int16_t>(contentH > 0 ? (contentH > 32767 ? 32767 : contentH) : 0);

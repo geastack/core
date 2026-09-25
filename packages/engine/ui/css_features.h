@@ -247,6 +247,15 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// CSS Overflow 4 line clamping (line-clamp, max-lines, continue, block-ellipsis)
+// and CSS Multi-column (column-count, column-width, column-fill, column-span).
+#ifndef GEA_CSS_LINE_CLAMP
+#define GEA_CSS_LINE_CLAMP 1
+#endif
+#ifndef GEA_CSS_MULTICOL
+#define GEA_CSS_MULTICOL 1
+#endif
+
 #ifndef GEA_CSS_LINE_HEIGHT_EXPRESSIONS
 #define GEA_CSS_LINE_HEIGHT_EXPRESSIONS 1
 #endif

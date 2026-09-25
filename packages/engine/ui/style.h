@@ -224,8 +224,20 @@ enum class Property : int {
 	SvgStrokeLinejoin,
 	SvgFillRule,
 	TextAlignLast,
+	MaxLines,
+	LineClampContinue,
+	BlockEllipsis,
+	ColumnCountSet,
+	ColumnWidthSet,
 	Count
 };
+
+// Property -> bit in RareStyle::line_clamp_flags.
+inline int lineClampFlagBit(Property property)
+{
+	return property == Property::LineClampContinue ? 1 : property == Property::BlockEllipsis ? 2 :
+	       property == Property::ColumnCountSet ? 4 : 8;
+}
 
 enum class StyleDeclaration : std::uint8_t {
 	Unknown,
@@ -368,7 +380,15 @@ enum class StyleDeclaration : std::uint8_t {
 	SvgStrokeLinecap,
 	SvgStrokeLinejoin,
 	SvgFillRule,
-	TextAlignLast
+	TextAlignLast,
+	LineClamp,
+	WebkitLineClamp,
+	MaxLines,
+	Continue,
+	BlockEllipsis,
+	Columns,
+	ColumnCount,
+	ColumnWidth
 };
 
 class Style {
