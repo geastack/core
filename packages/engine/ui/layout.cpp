@@ -900,14 +900,15 @@ public:
 
 			const int baseline = continuing ? continuedBaseline : lineTop + lineAscent;
 			lineTop = baseline - lineAscent;
-			for (int id : lineStaticChildren) {
-				auto &position = ensureRareData(id).inlineStaticPosition;
-				position.y = clampInt16(lineTop);
-				position.valid = true;
-			}
 			int lineCross = lineAscent + lineDescent;
 			if (lineCross < 0) lineCross = 0;
 			const int actualLineCross = lineCross;
+			for (int id : lineStaticChildren) {
+				auto &position = ensureRareData(id).inlineStaticPosition;
+				position.y = clampInt16(lineTop);
+				position.lineHeight = clampInt16(actualLineCross);
+				position.valid = true;
+			}
 			if (i == 0) firstLineHeight = lineCross;
 			// The one case the flex path's expandCrossSizes is observable here: a
 			// lone line box in a block with a definite height fills it, so
@@ -977,6 +978,7 @@ public:
 					for (int id : trailingStaticChildren) {
 						auto &position = ensureRareData(id).inlineStaticPosition;
 						position.y = clampInt16(continuedBaseline - inheritedAscent);
+						position.lineHeight = 0;
 						position.valid = true;
 					}
 				}
@@ -996,6 +998,7 @@ public:
 				for (int id : trailingStaticChildren) {
 					auto &position = ensureRareData(id).inlineStaticPosition;
 					position.y = clampInt16(lineTop);
+					position.lineHeight = 0;
 					position.valid = true;
 				}
 			}
@@ -1013,6 +1016,7 @@ public:
 			for (int id : emptyStaticChildren) {
 				auto &position = ensureRareData(id).inlineStaticPosition;
 				position.y = clampInt16(contentTop);
+				position.lineHeight = 0;
 				position.valid = true;
 			}
 		}
@@ -3741,8 +3745,20 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 			}
 			if (cursor >= 0) continuationOrigin = boxInset(treeNodes[cursor].style, 3) - inlineOffset;
 		}
-		return (horizontal ? rare->inlineStaticPosition.x + continuationOrigin + childNode.style.margin[3]
-		                   : rare->inlineStaticPosition.y + childNode.style.margin[0]);
+		if (horizontal) return rare->inlineStaticPosition.x + continuationOrigin + childNode.style.margin[3];
+		// The static-position rectangle spans the line box's block extent, so an
+		// explicit align-self aligns within it (CSS Position 3, 4.1).
+		int y = rare->inlineStaticPosition.y + childNode.style.margin[0];
+		const int align = childNode.style.align_self;
+		if (align >= 0 && writingMode(parent) == 0) {
+			const int free = rare->inlineStaticPosition.lineHeight - childNode.layout.height -
+			                 childNode.style.margin[0] - childNode.style.margin[2];
+			const int self = physicalSelfAlignment(parent, childNode, align, free, false);
+			const int used = self >= 0 ? self : usedAlignment(align, free);
+			if (used == 1) y += free / 2;
+			else if (used == 2) y += free;
+		}
+		return y;
 	}
 	if (parent.style.display == kDisplayBlock && !parent.style.flex_direction_explicit &&
 	    childNode.layout.static_block_axis == (horizontal ? 2 : 1)) {

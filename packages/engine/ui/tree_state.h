@@ -96,6 +96,9 @@ struct FirstLineFragment {
 struct InlineStaticPosition {
 	std::int16_t x = 0;
 	std::int16_t y = 0;
+	// Block extent of the line box that holds the static position; 0 when the
+	// box is anchored to a line that has not been laid out yet.
+	std::int16_t lineHeight = 0;
 	bool continuationLine = false;
 	bool valid = false;
 };
