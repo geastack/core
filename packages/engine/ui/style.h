@@ -384,6 +384,21 @@ enum class StyleDeclaration : std::uint8_t {
 	BorderRightStyle,
 	BorderBottomStyle,
 	BorderLeftStyle,
+	// Logical two-sided shorthands (see logicalPairFor in style.cpp).
+	MarginInline,
+	MarginBlock,
+	PaddingInline,
+	PaddingBlock,
+	InsetInline,
+	InsetBlock,
+	BorderInline,
+	BorderBlock,
+	BorderInlineWidth,
+	BorderBlockWidth,
+	BorderInlineColor,
+	BorderBlockColor,
+	BorderInlineStyle,
+	BorderBlockStyle,
 	VerticalAlign
 };
 
