@@ -376,6 +376,11 @@ void NodeLifecycle::init(Node *n, NodeType type)
 	n->layout.width = 0;
 	n->layout.height = 0;
 	n->layout.inline_indent = 0;
+#if GEA_CSS_LINE_CLAMP
+	n->layout.line_clamp_hidden = 0;
+	n->layout.line_clamp_owner = 0;
+	n->layout.line_clamp_lines = 0;
+#endif
 #if !GEA_EMBEDDED_SHARED_STYLES
 	n->layout.memo_avail_w = n->layout.memo_avail_h = 0;
 	n->layout.memo_pass = 0;

@@ -6855,7 +6855,7 @@ int gLastScrollUiFrame = -1000;
 																		c.text.maxWidth, c.text.color, c.text.scale,
 																		c.text.align, c.text.containerWidth, c.text.fontId, c.text.textTransform, c.text.lineHeight,
 																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent,
-																			c.text.alignLast);
+																			c.text.alignLast, c.text.lineLimit);
 					break;
 				case DisplayCommandType::BlitImage:
 #if GEA_PIXEL_STORAGE_PACKED
@@ -7141,7 +7141,7 @@ int gLastScrollUiFrame = -1000;
 				                               !n->text.empty() && n->computedStyle().text_alpha == 255 &&
 				                               n->layout.height >= std::max(16, static_cast<int>(n->computedStyle().font_size)) &&
 				                               n->layout.height >= n->computedStyle().line_height;
-				if (n->computedStyle().display == 1 || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
+				if (n->style.display == 1 || n->layout.line_clamp_hidden || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
 					return;
@@ -12949,10 +12949,10 @@ int gLastScrollUiFrame = -1000;
 		// an empty range, which `old_len == 0 && tmp_len > 0` below (correctly) refuses
 		// to splice — and the refusal cost the whole frame its retained display list.
 		const bool outsideRecordClip = !isDocumentCanvasRoot(*n) && nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
-		if (!outsideRecordClip && n->computedStyle().visibility == 0 && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
-				n->computedStyle().display != 1 &&
-				n->computedStyle().opacity != 0 &&
-				!(n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible) &&
+		if (!outsideRecordClip && n->style.visibility == 0 && !n->layout.line_clamp_hidden && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
+				n->style.display != 1 &&
+				n->style.opacity != 0 &&
+				!(n->style.blink_interval_ms > 0 && !n->style.blink_visible) &&
 				!isNativeTextInputView(*n))
 		{
 			ViewRenderer::recordBox(*n);

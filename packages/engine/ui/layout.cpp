@@ -380,6 +380,116 @@ bool hasExplicitHeight(const Node &node)
 	       !layoutSizeExpressionUsesPercentage(static_cast<int>(&node - Tree::instance().nodes()), node.computedStyle().height_expression);
 }
 
+// Line clamping (CSS Overflow 4). A block container with continue: collapse
+// hides everything after its clamp point, which follows its max-lines'th line
+// or, without max-lines, the last content that fits its used height. Lines of
+// inline wrappers and plain block descendants count; independent formatting
+// contexts are single units. Child coordinates are still parent-relative.
+int writingMode(const Node &node);
+
+struct LineClampWalk {
+	Node *nodes;
+	int maxLines;
+	int limit;
+	int lines = 0;
+	int lastLineTop = INT_MIN;
+	int keptBottom = 0;
+	bool clamped = false;
+};
+
+#if GEA_CSS_LINE_CLAMP
+void hideAfterLineClamp(Node *nodes, int id)
+{
+	nodes[id].layout.line_clamp_hidden = 1;
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) hideAfterLineClamp(nodes, c);
+}
+#endif
+
+// line-clamp applies to block containers, never to inline boxes, flex or
+// grid containers, or multicol containers. Folds to false without the family.
+bool clampsLines(const Node &node)
+{
+	const int flags = rstyle(node.computedStyle()).line_clamp_flags;
+	return GEA_CSS_LINE_CLAMP && (flags & 1) && !(flags & 12) && node.type == NodeType::View && node.computedStyle().display == kDisplayBlock &&
+	       !(LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node));
+}
+
+#if GEA_CSS_LINE_CLAMP
+// A nested clamp container keeps the state inside it for its own layout.
+void clearLineClamp(Node *nodes, int id)
+{
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) {
+		nodes[c].layout.line_clamp_hidden = 0;
+		nodes[c].layout.line_clamp_lines = 0;
+		if (!clampsLines(nodes[c])) clearLineClamp(nodes, c);
+	}
+}
+
+void walkLineClamp(LineClampWalk &walk, int parent, int originY)
+{
+	Node *nodes = walk.nodes;
+	for (int id = nodes[parent].first_child; id >= 0; id = nodes[id].next_sibling) {
+		Node &child = nodes[id];
+		if (walk.clamped) {
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || child.computedStyle().float_side ||
+		    isLineBreak(child) || suppressAnonymousWhitespace(nodes, parent, id)) continue;
+		const int top = originY + child.layout.y;
+		if (child.type == NodeType::Text) {
+			const int advance = TextRenderer::measureHeight("X", child.computedStyle().font_id, child.computedStyle().font_size, 0, child.computedStyle().line_height);
+			const int inner = child.layout.height - boxInsets(child.computedStyle(), false);
+			const int count = advance > 0 ? std::max(1, (inner + advance - 1) / advance) : 1;
+			for (int line = 0; line < count; ++line) {
+				const int lineTop = top + boxInset(child.computedStyle(), 0) + line * advance;
+				const bool newLine = lineTop > walk.lastLineTop;
+				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : lineTop + advance > walk.limit) {
+					walk.clamped = true;
+					if (line == 0) hideAfterLineClamp(nodes, id);
+					else child.layout.line_clamp_lines = static_cast<int16_t>(line);
+					break;
+				}
+				if (newLine) {
+					++walk.lines;
+					walk.lastLineTop = lineTop;
+				}
+				walk.keptBottom = std::max(walk.keptBottom, lineTop + advance);
+			}
+			continue;
+		}
+		const bool inlineWrapper = LayoutEngine::isCssInlineLevelBox(child) && LayoutEngine::isInlineLevelNode(child);
+		const bool plainBlock = child.style.display == kDisplayBlock && !overflowEstablishesContext(child.style) &&
+		    writingMode(child) == writingMode(nodes[parent]);
+		if (child.first_child >= 0 && (inlineWrapper || plainBlock)) {
+			walkLineClamp(walk, id, top);
+			if (!walk.clamped && !inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, top + child.layout.height);
+			continue;
+		}
+		const int bottom = top + child.layout.height;
+		if (walk.maxLines ? walk.lines >= walk.maxLines : bottom > walk.limit) {
+			walk.clamped = true;
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		walk.keptBottom = std::max(walk.keptBottom, bottom);
+	}
+}
+
+void applyLineClamp(int id)
+{
+	Node *nodes = Tree::instance().nodes();
+	Node &node = nodes[id];
+	clearLineClamp(nodes, id);
+	LineClampWalk walk{nodes, rstyle(node.computedStyle()).max_lines, node.layout.height - boxInset(node.computedStyle(), 2)};
+	walk.keptBottom = boxInset(node.computedStyle(), 0);
+	walkLineClamp(walk, id, 0);
+	if (!walk.clamped || hasExplicitHeight(node)) return;
+	const int height = clampBorderBoxSize(node.computedStyle(), walk.keptBottom + boxInset(node.computedStyle(), 2), false);
+	if (height < node.layout.height) node.layout.height = clampInt16(height);
+}
+#endif
+
 int resolvedStyleWidth(const Node &node, int basis)
 {
 	if (const auto *scope = flexBasisScope(node, true)) return scope->value == kUnset ? basis : scope->value;
@@ -4401,6 +4511,16 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
 		LayoutNodePass(*this, id, node.layout.width, node.layout.height).repositionChildren();
+#if GEA_CSS_LINE_CLAMP
+	if (clampsLines(node)) {
+		applyLineClamp(id);
+		node.layout.line_clamp_owner = 1;
+	} else if (node.layout.line_clamp_owner) {
+		// The container stopped clamping: lift the state its last clamp left.
+		clearLineClamp(Tree::instance().nodes(), id);
+		node.layout.line_clamp_owner = 0;
+	}
+#endif
 	if (node.parent < 0) {
 		// The initial containing block places the root; there is no parent
 		// layout pass to position its margin box or apply float alignment.
@@ -4431,6 +4551,15 @@ void LayoutEngine::repositionChildren(int id)
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeLayoutRepositionCalls++);
 	Node *node = &Tree::instance().nodes()[id];
 	LayoutNodePass(*this, id, node->layout.width, node->layout.height).repositionChildren();
+#if GEA_CSS_LINE_CLAMP
+	if (clampsLines(*node)) {
+		applyLineClamp(id);
+		node->layout.line_clamp_owner = 1;
+	} else if (node->layout.line_clamp_owner) {
+		clearLineClamp(Tree::instance().nodes(), id);
+		node->layout.line_clamp_owner = 0;
+	}
+#endif
 }
 
 bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)

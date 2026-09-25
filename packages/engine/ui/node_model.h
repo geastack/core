@@ -478,6 +478,12 @@ struct RareStyle {
 	static constexpr uint8_t bg_grid_line_x = 0;
 	static constexpr uint8_t bg_grid_line_y = 0;
 #endif
+	// CSS Overflow 4 line clamping: max-lines (0 = none, capped at 255) and
+	// flags: 1 = continue: collapse, 2 = block-ellipsis other than none, and
+	// 4 / 8 = column-count / column-width set (a multicol container never
+	// clamps). Both sit in trailing padding, so RareStyle keeps its size.
+	uint8_t max_lines = 0;
+	uint8_t line_clamp_flags = 0;
 	};
 
 // Individual translation is applied outside the transform list. Its translation
@@ -493,7 +499,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {
@@ -1393,9 +1399,22 @@ struct LayoutBox {
 	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t static_block_start = 0;
 	#endif
+	// line-clamp: 1 when the box lies after an ancestor's clamp point, which
+	// hides it. Like line_clamp_lines below it sits in padding.
+	uint8_t line_clamp_hidden = 0;
+	// 1 on a container whose last layout applied a line clamp, so a layout that
+	// no longer clamps clears the state left on its descendants. Sits in padding.
+	uint8_t line_clamp_owner = 0;
 
 	int16_t previous_x, previous_y;
 	int16_t previous_width, previous_height;
+#if GEA_CSS_LINE_CLAMP
+	// line-clamp: a text run its container's clamp point cuts paints only
+	// this many lines. 0 paints them all.
+	int16_t line_clamp_lines = 0;
+#else
+	static constexpr int16_t line_clamp_lines = 0;
+#endif
 
 	// Scroll geometry must be 32-bit: a <virtual-list> scrolls over a virtual
 	// content height of itemCount * rowHeight (e.g. 5000 * 259 ≈ 1.29M px),
