@@ -160,7 +160,7 @@ void InputRenderer::record(int id)
 			cmd->text.maxWidth = contentW;
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
-			cmd->text.align = n.style.text_align;
+			cmd->text.align = static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
 			cmd->text.textTransform = n.style.text_transform;
 			cmd->text.lineHeight = n.style.line_height;
 			cmd->text.containerWidth = contentW;

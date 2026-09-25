@@ -733,7 +733,7 @@ bool recordProjectedRasterText(const Node &node, const char *text, uint8_t /*par
 	const int fontLineHeight = font.lineHeight();
 	const int lineAdvance = node.style.line_height > 0 ? node.style.line_height : fontLineHeight;
 	const int lineBoxOffset = node.style.line_height > 0 ? (lineAdvance - fontLineHeight) / 2 : 0;
-	const int srcX = tx + alignedOffset(node.style.text_align, tw, lineWidth);
+	const int srcX = tx + alignedOffset(LayoutEngine::physicalTextAlign(node), tw, lineWidth);
 	const int srcY = ty + lineBoxOffset;
 	const int srcW = lineWidth;
 	const int srcH = fontLineHeight;
@@ -1734,7 +1734,7 @@ void Tree::setText(int node, const char *text)
 	const int gid_previousX1 = gid_hadPartial ? target.render.text_dirty.x1 : 0;
 	const bool gid_canPartial = (!target.render.dirty || gid_hadPartial) &&
 			!target.render.bg_recolor_pending && gid_singleLine && target.style.white_space == 1 &&
-			target.style.text_align == 0 && gid_prefix < gid_newLen;
+			LayoutEngine::physicalTextAlign(target) == 0 && gid_prefix < gid_newLen;
 	// Text and recolor shortcuts share their payload. Other pending paint
 	// changes require a full node repaint, while consecutive text runs union
 	// their extents so none of the earlier changes is forgotten.
@@ -2094,7 +2094,7 @@ static uint16_t blockEllipsisCommand(const Node &run, int textX, int &width)
 static int8_t textAlignLastCommand(const Node &node)
 {
 	const int last = node.style.text_align_last - 1;
-	if (last < 0 || last == node.style.text_align) return -1;
+	if (last < 0 || last == LayoutEngine::physicalTextAlign(node)) return -1;
 	const bool endsParagraph = LayoutEngine::endsFormattingLine(static_cast<int>(&node - Tree::instance().nodes()));
 	return static_cast<int8_t>(last | (endsParagraph ? 4 : 0));
 }
@@ -2176,6 +2176,10 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 
 
 #endif
+	// Physical alignment. A line the inline layout already aligned as a whole
+	// draws start-aligned inside this run's box.
+	const bool lineAligned = (n->render.inline_baseline & 2) != 0;
+	const int textAlign = lineAligned ? 0 : LayoutEngine::physicalTextAlign(*n);
 	int x = n->layout.x;
 	int y = n->layout.y;
 	int w = n->layout.width;
@@ -2268,7 +2272,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 			int iy1 = -1;
 			if (rasterizedTextInkBounds(measureText,
 			                            drawW,
-			                            n->style.text_align,
+			                            textAlign,
 			                            containerW,
 			                            n->style.font_id,
 			                            commandFontSize,
@@ -2345,7 +2349,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				// RenderState::inline_baseline.
 				if (singleLine && !n->render.inline_baseline) {
 					drawY += rasterizedSingleLineInkCenterOffsetY(measureText,
-					                                              n->style.text_align,
+					                                              textAlign,
 					                                              containerW,
 					                                              n->style.font_id,
 					                                              commandFontSize,
@@ -2353,7 +2357,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				}
 			}
 #endif
-			const int xOffset = alignedOffset(n->style.text_align, containerW, paintWidth);
+			const int xOffset = alignedOffset(textAlign, containerW, paintWidth);
 			int paintX0 = drawX + xOffset;
 			int paintY0 = drawY;
 			int paintX1 = paintX0 + paintWidth - 1;
@@ -2366,7 +2370,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				int iy1 = -1;
 				if (rasterizedTextInkBounds(measureText,
 				                            noSoftWrap ? 32767 : drawW,
-				                            n->style.text_align,
+				                            textAlign,
 				                            containerW,
 				                            n->style.font_id,
 				                            commandFontSize,
@@ -2408,7 +2412,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		int inkOff = 0;
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		const int genFonts = 1;
-		inkOff = rasterizedSingleLineInkCenterOffsetY(measureText, n->style.text_align, containerW,
+		inkOff = rasterizedSingleLineInkCenterOffsetY(measureText, textAlign, containerW,
 		                                             n->style.font_id, dbgFontSize, commandLineHeight);
 #else
 		const int genFonts = 0;
@@ -2427,7 +2431,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	}
 
 
-	const int8_t alignLast = transformed ? -1 : textAlignLastCommand(*n);
+	const int8_t alignLast = transformed || lineAligned ? -1 : textAlignLastCommand(*n);
 	// The bounds above assume text-align for every line; realigned lines may
 	// sit anywhere across the content box.
 	if (alignLast >= 0) {
@@ -2461,7 +2465,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.maxWidth = drawW;
 	cmd->text.color = n->style.text_color;
 	cmd->text.scale = textScale;
-	cmd->text.align = n->style.text_align;
+	cmd->text.align = static_cast<int8_t>(textAlign);
 	cmd->text.textTransform = n->style.text_transform;
 	cmd->text.lineHeight = commandLineHeight;
 	cmd->text.containerWidth = containerW;

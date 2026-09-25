@@ -1088,8 +1088,19 @@ public:
 			    padHeight_ > lineCross)
 				lineCross = padHeight_;
 
+			// text-align moves a line of single-line items as a whole. A text run
+			// that owns its line, or wraps across lines, is aligned by the drawer.
+			const int contentEnd = j > i && isLineBreak(nodes[children_[j - 1]]) ? j - 1 : j;
+			const bool soleRun = !lineIsContinuation && contentEnd - i == 1 && nodes[children_[i]].type == NodeType::Text;
+			const int align = !lineIsContinuation && wrapIdx < 0 && !soleRun && contentEnd > i ? LayoutEngine::physicalTextAlign(node_) : 0;
+			int lineShift = 0;
+			if (align) {
+				const int used = pen - hangingSpace(nodes[children_[contentEnd - 1]]);
+				lineShift = std::max(0, align == 1 ? (contentW - used) / 2 : contentW - used);
+				for (int id : lineStaticChildren) ensureRareData(id).inlineStaticPosition.x += lineShift;
+			}
 			placeLineItems(nodes, i, j, contentLeft, contentW, lineTop, lineCross, baseline, penStart,
-			               !lineIsContinuation);
+			               !lineIsContinuation, lineShift, align != 0);
 #if GEA_CSS_FIRST_LINE
 			if (i == 0 && captureFirstLine) {
 				int firstFormattedLineHeight = actualLineCross;
@@ -1119,7 +1130,7 @@ public:
 				for (const auto &candidate : firstLineCandidates) {
 					if (candidate.node < 0 || candidate.node >= Tree::instance().nodeCount()) continue;
 					auto &fragment = ensureRareData(candidate.node).firstLineFragment;
-					fragment.x = clampInt16(candidate.x);
+					fragment.x = clampInt16(candidate.x + lineShift);
 					fragment.y = clampInt16(lineTop);
 					// Spaces between inline runs remain part of the background;
 					// collapsible spaces at the end of the line do not.
@@ -1369,8 +1380,18 @@ public:
 		return descent < 0 ? 0 : descent;
 	}
 
+	// The collapsible space that ends a line item hangs past the line's end.
+	static int hangingSpace(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return 0;
+		const Node &text = Tree::instance().nodes()[run];
+		if (text.text.empty() || !collapsibleSpace(text.text.back()) || !collapsesSpaces(text)) return 0;
+		return TextRenderer::measureWidth(" ", text.style.font_id, text.style.font_size);
+	}
+
 	void placeLineItems(Node *nodes, int from, int to, int contentLeft, int contentW, int lineTop,
-	                    int lineCross, int baseline, int penStart, bool ownsLineStart)
+	                    int lineCross, int baseline, int penStart, bool ownsLineStart, int lineShift = 0, bool lineAligned = false)
 	{
 		const int contentEnd = to > from && isLineBreak(nodes[children_[to - 1]]) ? to - 1 : to;
 		const bool soleRun =
@@ -1393,7 +1414,7 @@ public:
 				cn.layout.x = clampInt16(contentLeft + marginL);
 			} else {
 				lead = collapsedLead(nodes, k, pen == 0 && ownsLineStart);
-				cn.layout.x = clampInt16(contentLeft + pen + gap + marginL - lead);
+				cn.layout.x = clampInt16(contentLeft + lineShift + pen + gap + marginL - lead);
 				pen -= lead;
 			}
 			pen += gap + marginL + cn.layout.width + marginR;
@@ -1423,12 +1444,13 @@ public:
 				}
 			}
 			cn.layout.y = clampInt16(y);
-			cn.render.inline_baseline = 1;
+			const uint8_t placed = lineAligned ? 3 : 1;
+			cn.render.inline_baseline = placed;
 			// An inline wrapper (<span>text</span>) contributes its CHILD's glyphs to
 			// this line box, so the flag has to reach the node that actually draws.
 			if (cn.type == NodeType::View) {
 				for (int c = cn.first_child; c >= 0; c = nodes[c].next_sibling)
-					if (nodes[c].type == NodeType::Text) nodes[c].render.inline_baseline = 1;
+					if (nodes[c].type == NodeType::Text) nodes[c].render.inline_baseline = placed;
 			}
 		}
 	}
@@ -4395,6 +4417,17 @@ bool LayoutEngine::multicolContainer(const Node &node)
 bool LayoutEngine::rightToLeftDirection(const Node &node)
 {
 	return rightToLeft(node);
+}
+
+int LayoutEngine::physicalTextAlign(const Node &node)
+{
+	switch (node.style.text_align) {
+	case 1: return 1;
+	case 2: return 2;
+	case 3: return 0;
+	case 4: return rightToLeft(node) ? 0 : 2;
+	default: return rightToLeft(node) ? 2 : 0;
+	}
 }
 
 bool LayoutEngine::endsFormattingLine(int id)
