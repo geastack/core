@@ -247,6 +247,20 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// position: sticky (CSS Position 3). Off, sticky parses as static, the
+// absolute-coordinate pass tracks no scrollport, and the root scroll-only
+// refresh never stands down for sticky boxes.
+#ifndef GEA_CSS_STICKY
+#define GEA_CSS_STICKY 1
+#endif
+
+// 32-bit declared and laid-out widths and heights, for boxes past the int16
+// range that a scale transform brings onto the screen. Off, those fields are
+// int16 as before and Node is 12 bytes smaller on 32-bit targets.
+#ifndef GEA_CSS_LARGE_BOXES
+#define GEA_CSS_LARGE_BOXES 1
+#endif
+
 // CSS Overflow 4 line clamping (line-clamp, max-lines, continue, block-ellipsis)
 // and CSS Multi-column (column-count, column-width, column-fill, column-span).
 #ifndef GEA_CSS_LINE_CLAMP
