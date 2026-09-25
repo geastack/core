@@ -620,6 +620,8 @@ int clampBorderSize(LayoutEngine &engine, const Node &node, int size, bool horiz
 	return clampLayoutSize(node, size, horizontal);
 }
 
+static bool isInlineLevelTag(const char *tag);
+
 class FlexLayoutPass {
 public:
 	FlexLayoutPass(LayoutEngine &engine, Node &node, int *children, int childCount, bool isRow, int mainAvail, int padWidth, int padHeight, FlexLine *lines, bool inlineRow = false, bool assignedSize = false)
@@ -930,7 +932,7 @@ public:
 					if (m.lineCount > 0 && haveLineMetrics) {
 						// Its first WORD does not fit what is left: the run starts the
 						// next line box rather than overflowing it or being cut open.
-						if (pen > 0 && m.firstLineWidth > firstAvail) break;
+						if (pen > 0 && m.firstLineWidth > firstAvail && !collapsibleSpaceOnly(subject)) break;
 						const int boxH = m.lineCount * m.lineAdvance + padV;
 						const bool wraps = m.lineCount > 1;
 						const int boxW = wraps ? rest + padH : m.firstLineWidth + padH;
@@ -978,8 +980,15 @@ public:
 					cn.layout.inline_indent = 0;
 				}
 
-				const int itemMain = cn.layout.width + marginL + marginR;
-				if (pen > 0 && pen + gap + itemMain > contentW) break;
+				const int lead = collapsedLead(nodes, j, pen == 0 && !lineIsContinuation);
+				const int itemMain = cn.layout.width + marginL + marginR - lead;
+				// An item starts the next line only where the line may break, and only
+				// when it does not fit together with what no break opportunity
+				// separates from it: nowrap text and words split across items stay
+				// together. Collapsible spaces hang instead.
+				if (pen > 0 && !collapsibleSpaceOnly(cn) &&
+				    (j == 0 || trailingSoftWrap(nodes[children_[j - 1]]) || leadingSoftWrap(cn)) &&
+				    pen + gap + (isFragmentableRun(subject) ? itemMain : gluedWidth(nodes, j, false)) > contentW) break;
 				if (isFragmentableRun(subject) && captureFirstLine && i == 0) {
 					const int padH = boxInset(subject.style, 1) + boxInset(subject.style, 3);
 					const int rest = contentW - marginL - marginR - padH;
@@ -1248,6 +1257,88 @@ public:
 		return run;
 	}
 
+	// The text node at an inline item's start or end, found through inline
+	// boxes, or -1 for an atomic inline box.
+	static int edgeTextRun(const Node &item, bool last)
+	{
+		const Node *nodes = Tree::instance().nodes();
+		const Node *n = &item;
+		while (n->type == NodeType::View) {
+			if (n->style.display_explicit || isLineBreak(*n) || !isInlineLevelTag(tagFromId(n->tag_id))) return -1;
+			int c = last ? n->last_child : n->first_child;
+			while (c >= 0 && (isDisplayNone(nodes[c].style) || isOutOfFlowPosition(nodes[c].style.position) || nodes[c].style.float_side))
+				c = last ? nodes[c].prev_sibling : nodes[c].next_sibling;
+			if (c < 0) return -1;
+			n = &nodes[c];
+		}
+		return static_cast<int>(n - nodes);
+	}
+
+	static bool wrapsLines(const Node &text) { return text.style.white_space == 0 || text.style.white_space >= 3; }
+	static bool collapsesSpaces(const Node &text) { return text.style.white_space == 0 || text.style.white_space == 1 || text.style.white_space == 4; }
+	static bool collapsibleSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+
+	// Collapsible spaces hang at the end of a line; they never start another.
+	static bool collapsibleSpaceOnly(const Node &item)
+	{
+		return item.type == NodeType::Text && (item.style.white_space == 0 || item.style.white_space == 1) &&
+		       item.text.find_first_not_of(" \t\r\n\f") == std::string::npos;
+	}
+
+	// Soft wrap opportunities at an item's edges. Text only offers one at a
+	// space its white-space lets wrap; atomic inline boxes always do.
+	static bool leadingSoftWrap(const Node &item)
+	{
+		const int run = edgeTextRun(item, false);
+		if (run < 0) return true;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.front()) && wrapsLines(text);
+	}
+
+	static bool trailingSoftWrap(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return true;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.back()) && wrapsLines(text);
+	}
+
+	// A collapsible space that opens an atomic text item is removed at the
+	// start of a line, and collapses into one that ends the text before it.
+	// The item keeps its box and draws over that space; this is how far it
+	// moves back.
+	int collapsedLead(const Node *nodes, int k, bool lineStart) const
+	{
+		const Node &item = nodes[children_[k]];
+		if (item.type != NodeType::Text || isFragmentableRun(item) || item.text.empty() ||
+		    !collapsibleSpace(item.text.front()) || !collapsesSpaces(item)) return 0;
+		if (!lineStart) {
+			const int before = k > 0 ? edgeTextRun(nodes[children_[k - 1]], true) : -1;
+			if (before < 0) return 0;
+			const Node &previous = nodes[before];
+			if (previous.text.empty() || !collapsibleSpace(previous.text.back()) || !collapsesSpaces(previous)) return 0;
+		}
+		return TextRenderer::measureWidth(" ", item.style.font_id, item.style.font_size);
+	}
+
+	// Width of children_[j] and of the items after it that no soft wrap
+	// opportunity separates from it; a text run that follows adds its first word.
+	int gluedWidth(const Node *nodes, int j, bool lineStart) const
+	{
+		int width = 0;
+		for (int k = j; k < childCount_; ++k) {
+			const Node &item = nodes[children_[k]];
+			if (k > j && (isLineBreak(item) || trailingSoftWrap(nodes[children_[k - 1]]) || leadingSoftWrap(item))) break;
+			const int inner = isFragmentableRun(item) ? -1 : transparentInlineRun(item);
+			if (k > j && (isFragmentableRun(item) || inner >= 0)) {
+				width += item.style.margin[3] + TextRenderer::firstUnbreakableWidth(inner >= 0 ? nodes[inner] : item);
+				break;
+			}
+			width += item.layout.width + item.style.margin[1] + item.style.margin[3] - collapsedLead(nodes, k, lineStart && k == j);
+		}
+		return width;
+	}
+
 	// Distance from ONE of a run's line baselines to the bottom of that line box,
 	// including the run's own bottom padding/margin (which only the last line
 	// actually carries — the others are flush, so this is the taller, safe value).
@@ -1274,19 +1365,23 @@ public:
 			const int marginL = cn.style.margin[3];
 			const int marginR = cn.style.margin[1];
 			const int gap = pen > 0 ? mainGap_ : 0;
+			int lead = 0;
 
 			if (cn.layout.inline_indent > 0) {
 				// A wrapped continuation keeps a full-width box at the block's left
 				// edge; its indent is what carries the pen it started from.
 				cn.layout.x = clampInt16(contentLeft + marginL);
 			} else {
-				cn.layout.x = clampInt16(contentLeft + pen + gap + marginL);
+				lead = collapsedLead(nodes, k, pen == 0 && ownsLineStart);
+				cn.layout.x = clampInt16(contentLeft + pen + gap + marginL - lead);
+				pen -= lead;
 			}
 			pen += gap + marginL + cn.layout.width + marginR;
 
 			if (soleRun && cn.type == NodeType::Text && !hasExplicitWidth(cn)) {
 				// text-align needs a box as wide as the line box to align inside.
-				const int full = contentW - marginL - marginR;
+				// A removed leading space sits before that box's content edge.
+				const int full = contentW - marginL - marginR + lead;
 				if (full > cn.layout.width) cn.layout.width = clampInt16(full);
 			}
 
@@ -2147,7 +2242,8 @@ bool splitInlineWrapper(const Node *nodes, int id)
 		const Node &child = nodes[c];
 		if (isDisplayNone(child.style)) continue;
 		if (isOutOfFlowPosition(child.style.position)) return false;
-		if (child.style.float_side) continue;
+		// A float inside an inline belongs to the enclosing block's float context.
+		if (child.style.float_side) { containsBlock = true; continue; }
 		if (child.type == NodeType::View && (child.style.display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
@@ -2379,7 +2475,46 @@ private:
 			}
 		};
 		collect(collect, id_);
+		deferUnbreakableFloats(children, count);
 		return count;
+	}
+
+	// True when a line may end just before children[k]: at a block or line
+	// start, or after a soft wrap opportunity. Whitespace-only nowrap text
+	// collapses into its neighbours, so the search continues through it.
+	bool softWrapBefore(const int *children, int k) const
+	{
+		for (int prev = k - 1; prev >= 0; --prev) {
+			const Node &item = nodes_[children[prev]];
+			if (item.style.float_side) continue;
+			if (blockBox(item) || isLineBreak(item) || FlexLayoutPass::trailingSoftWrap(item)) return true;
+			const int run = FlexLayoutPass::edgeTextRun(item, true);
+			if (nodes_[run].text.find_first_not_of(" \t\r\n\f") != std::string::npos) return false;
+		}
+		return true;
+	}
+
+	// Floats end inline runs in this layout, so a float anchored where the line
+	// cannot break (inside a word or nowrap text) would split its line. CSS
+	// places such a float after the line holding its anchor instead: move it,
+	// with any floats beside it, to the next soft wrap opportunity.
+	void deferUnbreakableFloats(int *children, int count) const
+	{
+		for (int k = 0; k < count; ++k) {
+			if (!nodes_[children[k]].style.float_side) continue;
+			int group = k + 1;
+			while (group < count && nodes_[children[group]].style.float_side) ++group;
+			int target = group;
+			if (!softWrapBefore(children, k)) {
+				while (target < count) {
+					const Node &item = nodes_[children[target]];
+					if (item.style.float_side || blockBox(item) || isLineBreak(item) || FlexLayoutPass::leadingSoftWrap(item)) break;
+					if (FlexLayoutPass::trailingSoftWrap(nodes_[children[target++]])) break;
+				}
+			}
+			if (target > group) std::rotate(children + k, children + group, children + target);
+			k = target - 1;
+		}
 	}
 
 	struct FloatBox { int left, top, right, bottom, side; };
