@@ -16852,19 +16852,21 @@ BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style,
 	if (const auto *v = entry(r.bg_attachment_list)) out.attachment = v->a;
 	if (const auto *v = entry(r.bg_origin_list)) out.origin = v->a;
 	if (const auto *v = entry(r.bg_repeat_list)) { out.repeatX = v->a; out.repeatY = v->b; }
-	const Node &node = treeState().nodes[nodeId];
+	const auto &state = treeState();
+	// Detached boxes (nodeIndex() == -1) have no scroll or edge state to read.
+	const Node *node = nodeId >= 0 && nodeId < state.nodeCount ? &state.nodes[nodeId] : nullptr;
 	if (out.attachment == 1) {
-		x = y = 0; width = treeState().mountedWidth; height = treeState().mountedHeight;
-	} else {
+		x = y = 0; width = state.mountedWidth; height = state.mountedHeight;
+	} else if (node) {
 		if (out.attachment == 2) {
-			width = std::max<int>(width, node.layout.scroll_content_width);
-			height = std::max<int>(height, node.layout.scroll_content_height);
-			x -= node.layout.scroll_x; y -= node.layout.scroll_y;
+			width = std::max<int>(width, node->layout.scroll_content_width);
+			height = std::max<int>(height, node->layout.scroll_content_height);
+			x -= node->layout.scroll_x; y -= node->layout.scroll_y;
 		}
 		if (out.origin != 0) {
 			int inset[4];
-			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node.style, i) +
-			    (out.origin == 2 ? std::max<int>(0, node.style.padding[i]) : 0);
+			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->style, i) +
+			    (out.origin == 2 ? std::max<int>(0, node->style.padding[i]) : 0);
 			x += inset[3]; y += inset[0]; width -= inset[1]+inset[3]; height -= inset[0]+inset[2];
 		}
 	}
