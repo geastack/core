@@ -1670,6 +1670,14 @@ void recordBorderAreaFill(const Node &node, uint8_t parentAlpha)
 		appendBorderSideWithAlpha(node, side, node.style.bg_color, node.style.bg_alpha, parentAlpha, transformed);
 }
 
+// A transformed linear-gradient face paints a uniform border as its edge frame.
+bool gradientEdgeCarriesBorder(const Node &node)
+{
+	return !StyleValues::hasTextBackgroundClip(node.style) && node.style.border_width > 0 && !hasBorderRelief(node.style) &&
+	       !hasSideBorder(node.style) && !borderColorsDiffer(node.style) && borderPaintAlpha(node.style, 0) > 0 &&
+	       !isFullyRoundedShape(node);
+}
+
 void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 {
 	const int x = node.layout.x;
@@ -1727,8 +1735,7 @@ void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 	// span rasterizer paints the first/last edgeWidth px of every span, tracing
 	// the quad outline). Emitting projected stroke quads instead would disarm
 	// the transform-reproject fast path every frame.
-	if (!StyleValues::hasTextBackgroundClip(node.style) && node.style.border_width > 0 && !hasBorderRelief(node.style) && !hasSideBorder(node.style) && !borderColorsDiffer(node.style) && borderPaintAlpha(node.style, 0) > 0 &&
-	    !isFullyRoundedShape(node)) {
+	if (gradientEdgeCarriesBorder(node)) {
 		g.edgeColor = borderPaintColor(node.style, 0);
 		g.edgeAlpha = borderPaintAlpha(node.style, 0);
 		const int ew = node.style.border_width < 1 ? 1 : node.style.border_width;
@@ -1812,6 +1819,7 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 		begin->type = DisplayCommandType::PushClip;
 		begin->bx = begin->clip.x = x; begin->by = begin->clip.y = y;
 		begin->bw = begin->clip.w = w; begin->bh = begin->clip.h = h; begin->clip.nodeId = -1;
+		begin->clip.shaped = 0;
 		struct TileAxis { double start, step; int count; };
 		auto axis = [](int position, int size, int mode, int area, int areaSize, int clipStart, int clipSize) -> TileAxis {
 			if (mode == 1) return {static_cast<double>(position), static_cast<double>(size), 1};
@@ -1940,6 +1948,55 @@ void recordTransformedRoundedRectFill(const Node &node, uint8_t parentAlpha, int
 		r.blRx8 = rx8[3]; r.blRy8 = ry8[3];
 		r.color = node.style.bg_color;
 		r.backfaceHidden = node.style.backface_hidden ? 1 : 0;
+		r.ring[0] = r.ring[1] = r.ring[2] = r.ring[3] = 0;
+	}
+
+	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
+}
+
+// A uniform border on a transformed box: one shaded ring between the border
+// box and the padding box, each rounded as CSS rounds it.
+void recordTransformedBorderRing(const Node &node, uint8_t parentAlpha)
+{
+	const int x = node.layout.x;
+	const int y = node.layout.y;
+	const int w = node.layout.width;
+	const int h = node.layout.height;
+	if (w <= 0 || h <= 0) return;
+
+	int16_t xs[4], ys[4];
+	ViewGeometry::transformRectCorners(node, false, x, y, w, h, xs, ys);
+	int bx0, by0, bx1, by1;
+	boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.style, 0));
+	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
+	int16_t rx8[4]{};
+	int16_t ry8[4]{};
+	resolvedBorderRadii8(node, rx8, ry8);
+	DisplayCommand *cmd = DisplayList::instance().append();
+	if (cmd) {
+		cmd->type = DisplayCommandType::FillTransformedRoundedRect;
+		cmd->bx = bx0;
+		cmd->by = by0;
+		cmd->bw = bx1 - bx0 + 1;
+		cmd->bh = by1 - by0 + 1;
+		auto &r = cmd->transformedRoundedRect;
+		r.x0 = xs[0]; r.y0 = ys[0];
+		r.x1 = xs[1]; r.y1 = ys[1];
+		r.x2 = xs[2]; r.y2 = ys[2];
+		r.x3 = xs[3]; r.y3 = ys[3];
+		r.lx = static_cast<int16_t>(x);
+		r.ly = static_cast<int16_t>(y);
+		r.lw = static_cast<int16_t>(w);
+		r.lh = static_cast<int16_t>(h);
+		r.tlRx8 = rx8[0]; r.tlRy8 = ry8[0];
+		r.trRx8 = rx8[1]; r.trRy8 = ry8[1];
+		r.brRx8 = rx8[2]; r.brRy8 = ry8[2];
+		r.blRx8 = rx8[3]; r.blRy8 = ry8[3];
+		r.color = borderPaintColor(node.style, 0);
+		r.backfaceHidden = node.style.backface_hidden ? 1 : 0;
+		for (int i = 0; i < 4; ++i)
+			r.ring[i] = static_cast<uint8_t>(std::clamp<int>(computedBorderWidth(node.style, i), 1, 255));
 	}
 
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
@@ -2688,23 +2745,80 @@ bool GEA_VIEW_HOT_SRAM_SECTION("view_renderer_any_transform_active") ViewRendere
 	return ViewGeometry::anyTransformPresent();
 }
 
+bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
+{
+	int x, y, w, h;
+	overflowClipBounds(node, x, y, w, h);
+	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
+	const bool transformed = ViewGeometry::hasTransformChain(node, false);
+	// The padding edge is rounded with the outer radii less the border widths.
+	const auto &s = node.style;
+	const int border[4] = {boxInset(s, 0) - s.padding[0], boxInset(s, 1) - s.padding[1],
+	                       boxInset(s, 2) - s.padding[2], boxInset(s, 3) - s.padding[3]};
+	int16_t rx8[4]{};
+	int16_t ry8[4]{};
+	if (hasAnyRadius(node)) resolvedBorderRadii8(node, rx8, ry8);
+	bool rounded = false;
+	for (int i = 0; i < 4; ++i) {
+		out.rx8[i] = static_cast<int16_t>(std::max(0, rx8[i] - 8 * border[i == 0 || i == 3 ? 3 : 1]));
+		out.ry8[i] = static_cast<int16_t>(std::max(0, ry8[i] - 8 * border[i < 2 ? 0 : 2]));
+		rounded |= out.rx8[i] > 0 && out.ry8[i] > 0;
+	}
+	// A clip open on one axis stays a rectangle; a transformed one clips nothing.
+	if (!overflowX(s) || !overflowY(s) || (!transformed && !rounded)) return !transformed;
+	out.lx = static_cast<int16_t>(x);
+	out.ly = static_cast<int16_t>(y);
+	out.lw = static_cast<int16_t>(w);
+	out.lh = static_cast<int16_t>(h);
+	if (transformed) {
+		ViewGeometry::transformRectCorners(node, false, x, y, w, h, out.qx, out.qy);
+		// A perspective projection is not a parallelogram; keep it unclipped.
+		if (std::abs(out.qx[0] + out.qx[2] - out.qx[1] - out.qx[3]) > 1 ||
+		    std::abs(out.qy[0] + out.qy[2] - out.qy[1] - out.qy[3]) > 1) return false;
+		int bx0, by0, bx1, by1;
+		boundsFromCorners(out.qx, out.qy, &bx0, &by0, &bx1, &by1);
+		out.x = bx0;
+		out.y = by0;
+		out.w = bx1 - bx0 + 1;
+		out.h = by1 - by0 + 1;
+	} else {
+		const int16_t right = static_cast<int16_t>(x + w), bottom = static_cast<int16_t>(y + h);
+		out.qx[0] = out.qx[3] = static_cast<int16_t>(x);
+		out.qx[1] = out.qx[2] = right;
+		out.qy[0] = out.qy[1] = static_cast<int16_t>(y);
+		out.qy[2] = out.qy[3] = bottom;
+	}
+	out.shaped = true;
+	return true;
+}
+
 bool ViewRenderer::recordClipBegin(const Node &node)
 {
 	const Node *n = &node;
-	if (ViewGeometry::hasTransformChain(*n, false)) return 0;
 	if (!isViewLikeNodeType(n->type) || n->style.overflow == 0) return 0;
 	if (n->first_child < 0) return 0;
 
-	int x, y, w, h;
-	overflowClipBounds(node, x, y, w, h);
+	OverflowClipShape shape;
+	if (!overflowClipShape(node, shape)) return 0;
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (cmd) {
 		cmd->type = DisplayCommandType::PushClip;
-		cmd->bx = cmd->clip.x = x;
-		cmd->by = cmd->clip.y = y;
-		cmd->bw = cmd->clip.w = w;
-		cmd->bh = cmd->clip.h = h;
+		cmd->bx = cmd->clip.x = static_cast<int16_t>(shape.x);
+		cmd->by = cmd->clip.y = static_cast<int16_t>(shape.y);
+		cmd->bw = cmd->clip.w = static_cast<int16_t>(shape.w);
+		cmd->bh = cmd->clip.h = static_cast<int16_t>(shape.h);
 		cmd->clip.nodeId = static_cast<int16_t>(&node - Tree::instance().nodes());
+		cmd->clip.shaped = shape.shaped ? 1 : 0;
+		for (int i = 0; i < 4; ++i) {
+			cmd->clip.qx[i] = shape.qx[i];
+			cmd->clip.qy[i] = shape.qy[i];
+			cmd->clip.rx8[i] = shape.rx8[i];
+			cmd->clip.ry8[i] = shape.ry8[i];
+		}
+		cmd->clip.lx = shape.lx;
+		cmd->clip.ly = shape.ly;
+		cmd->clip.lw = shape.lw;
+		cmd->clip.lh = shape.lh;
 	}
 	return 1;
 }
@@ -2791,6 +2905,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 #if GEA_CSS_BOX_SHADOW
 	recordOuterBoxShadow(*n, parentAlpha);
 #endif
+	bool borderOnGradientEdge = false;
 
 	if (n->style.has_bg) {
 		// The color is the bottom layer; image longhands never replace it.
@@ -2828,6 +2943,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 				if (n->style.bg_fill == 1) {
 					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->style, rstyle(n->style).bg_gradient_layer));
 					recordLinearGradientBackground(*n, parentAlpha);
+					borderOnGradientEdge = ViewGeometry::hasTransformChain(*n, false) && gradientEdgeCarriesBorder(*n);
 				}
 				{
 					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->style, rstyle(n->style).bg_radial_gradient_layer));
@@ -2849,6 +2965,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 	if (n->style.border_width > 0 && !hasBorderRelief(n->style) && !hasSideBorder(n->style) && !borderColorsDiffer(n->style) && !borderIsSameOpaqueSolidBackground(*n, parentAlpha)) {
 		if (ViewGeometry::hasTransformChain(*n, false)) {
 			if (isFullyRoundedShape(*n)) recordTransformedEllipseStroke(*n, parentAlpha);
+			else if (!borderOnGradientEdge) recordTransformedBorderRing(*n, parentAlpha);
 		} else {
 			appendStrokeWithAlpha(*n, parentAlpha);
 		}

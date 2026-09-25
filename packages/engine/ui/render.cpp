@@ -1508,6 +1508,33 @@ int gLastScrollUiFrame = -1000;
 
 		using TransformedRoundedRectCommand = decltype(DisplayCommand{}.transformedRoundedRect);
 
+		bool transformedRoundedRectIsRing(const TransformedRoundedRectCommand &r)
+		{
+			return (r.ring[0] | r.ring[1] | r.ring[2] | r.ring[3]) != 0;
+		}
+
+		// The unpainted inside of a border ring: the padding box, whose radii
+		// are the outer radii less the adjoining border widths (CSS Backgrounds 5.2).
+		TransformedRoundedRectCommand transformedRoundedRectHole(const TransformedRoundedRectCommand &r)
+		{
+			TransformedRoundedRectCommand hole = r;
+			hole.ring[0] = hole.ring[1] = hole.ring[2] = hole.ring[3] = 0;
+			hole.lx = static_cast<int16_t>(r.lx + r.ring[3]);
+			hole.ly = static_cast<int16_t>(r.ly + r.ring[0]);
+			hole.lw = static_cast<int16_t>(std::max(0, r.lw - r.ring[1] - r.ring[3]));
+			hole.lh = static_cast<int16_t>(std::max(0, r.lh - r.ring[0] - r.ring[2]));
+			hole.tlRx8 = static_cast<int16_t>(std::max(0, r.tlRx8 - 8 * r.ring[3]));
+			hole.tlRy8 = static_cast<int16_t>(std::max(0, r.tlRy8 - 8 * r.ring[0]));
+			hole.trRx8 = static_cast<int16_t>(std::max(0, r.trRx8 - 8 * r.ring[1]));
+			hole.trRy8 = static_cast<int16_t>(std::max(0, r.trRy8 - 8 * r.ring[0]));
+			hole.brRx8 = static_cast<int16_t>(std::max(0, r.brRx8 - 8 * r.ring[1]));
+			hole.brRy8 = static_cast<int16_t>(std::max(0, r.brRy8 - 8 * r.ring[2]));
+			hole.blRx8 = static_cast<int16_t>(std::max(0, r.blRx8 - 8 * r.ring[3]));
+			hole.blRy8 = static_cast<int16_t>(std::max(0, r.blRy8 - 8 * r.ring[2]));
+			return hole;
+		}
+
+
 		struct RoundedRectScreenSpan
 		{
 			int x;
@@ -1650,7 +1677,7 @@ int gLastScrollUiFrame = -1000;
 		{
 			const auto &r = command.transformedRoundedRect;
 			RoundedRectScreenSpan span{};
-			if (!transformedRoundedRectToScreenSpan(r, &span))
+			if (transformedRoundedRectIsRing(r) || !transformedRoundedRectToScreenSpan(r, &span))
 				return false;
 			if (!roundedRectScreenSpanFitsCanvas(span))
 				return false;
@@ -1851,7 +1878,7 @@ int gLastScrollUiFrame = -1000;
 				pixel = gea::framework::graphics::pixel::blendNative(color, pixel, effectiveAlpha);
 		}
 
-		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		bool roundedRectOuterContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
 		{
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
@@ -1880,6 +1907,13 @@ int gLastScrollUiFrame = -1000;
 			if (blRx > 0.0f && blRy > 0.0f && sx < left + blRx && sy >= bottom - blRy)
 				return roundedCornerContainsFast(left + blRx, bottom - blRy, blRx, blRy, sx, sy);
 			return true;
+		}
+
+		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		{
+			if (!roundedRectOuterContainsFast(r, sx, sy))
+				return false;
+			return !transformedRoundedRectIsRing(r) || !roundedRectOuterContainsFast(transformedRoundedRectHole(r), sx, sy);
 		}
 
 		int roundedRectCoverageFast(const TransformedRoundedRectCommand &r,
@@ -1916,6 +1950,8 @@ int gLastScrollUiFrame = -1000;
 																					float marginX,
 																					float marginY)
 		{
+			if (transformedRoundedRectIsRing(r))
+				return false;
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
 			const float right = left + static_cast<float>(r.lw);
@@ -1958,6 +1994,8 @@ int gLastScrollUiFrame = -1000;
 		int roundedRectCoverageHomography(const TransformedRoundedRectCommand &r, const double *homography, int x, int y, int samples)
 		{
 			const float kernelWidth = transformedRoundedRectAntialiasKernelWidth(samples, r);
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 			int coverage = 0;
 			for (int iy = 0; iy < samples; ++iy)
 			{
@@ -1982,12 +2020,196 @@ int gLastScrollUiFrame = -1000;
 																	r.blRx8,
 																	r.blRy8,
 																	sx,
-																	sy))
+																	sy) &&
+					    (!ring || !roundedRectOuterContainsFast(hole, static_cast<float>(sx), static_cast<float>(sy))))
 						++coverage;
 				}
 			}
 			return coverage;
 		}
+
+
+		// Rounded and transformed overflow clips. Display clips are rectangles, so
+		// replay saves the canvas pixels a shaped clip's bounds may expose, lets
+		// the clipped content paint, then puts back every pixel outside the shape
+		// (in part where antialiasing covers it in part).
+		class ShapedClips
+		{
+		public:
+			static std::size_t depth() { return entries().size(); }
+
+			static void begin(const DisplayCommand &clip)
+			{
+				const auto &c = clip.clip;
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = c.qx[0]; shape.y0 = c.qy[0];
+				shape.x1 = c.qx[1]; shape.y1 = c.qy[1];
+				shape.x2 = c.qx[2]; shape.y2 = c.qy[2];
+				shape.x3 = c.qx[3]; shape.y3 = c.qy[3];
+				shape.lx = c.lx; shape.ly = c.ly; shape.lw = c.lw; shape.lh = c.lh;
+				shape.tlRx8 = c.rx8[0]; shape.tlRy8 = c.ry8[0];
+				shape.trRx8 = c.rx8[1]; shape.trRy8 = c.ry8[1];
+				shape.brRx8 = c.rx8[2]; shape.brRy8 = c.ry8[2];
+				shape.blRx8 = c.rx8[3]; shape.blRy8 = c.ry8[3];
+				begin(shape);
+			}
+
+			static void begin(const OverflowClipShape &clip)
+			{
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = clip.qx[0]; shape.y0 = clip.qy[0];
+				shape.x1 = clip.qx[1]; shape.y1 = clip.qy[1];
+				shape.x2 = clip.qx[2]; shape.y2 = clip.qy[2];
+				shape.x3 = clip.qx[3]; shape.y3 = clip.qy[3];
+				shape.lx = clip.lx; shape.ly = clip.ly; shape.lw = clip.lw; shape.lh = clip.lh;
+				shape.tlRx8 = clip.rx8[0]; shape.tlRy8 = clip.ry8[0];
+				shape.trRx8 = clip.rx8[1]; shape.trRy8 = clip.ry8[1];
+				shape.brRx8 = clip.rx8[2]; shape.brRy8 = clip.ry8[2];
+				shape.blRx8 = clip.rx8[3]; shape.blRy8 = clip.ry8[3];
+				begin(shape);
+			}
+
+			static void endTo(std::size_t mark)
+			{
+				while (entries().size() > mark)
+					end();
+			}
+
+			static void end()
+			{
+				const Entry entry = entries().back();
+				entries().pop_back();
+				restore(entry);
+				saved().resize(entry.offset);
+			}
+
+		private:
+			struct Box
+			{
+				int x0, y0, x1, y1;
+			};
+			struct Entry
+			{
+				TransformedRoundedRectCommand shape;
+				float inv00, inv01, inv10, inv11;
+				Box boxes[4];
+				int boxCount;
+				std::size_t offset;
+			};
+
+			static std::vector<Entry> &entries()
+			{
+				static std::vector<Entry> value;
+				return value;
+			}
+
+			static std::vector<gea::framework::graphics::pixel::native_t> &saved()
+			{
+				static std::vector<gea::framework::graphics::pixel::native_t> value;
+				return value;
+			}
+
+			static void begin(const TransformedRoundedRectCommand &shape)
+			{
+				Entry entry{};
+				entry.shape = shape;
+				entry.offset = saved().size();
+				auto *canvas = gea::platform::display::Display::canvas();
+				const float a = shape.lw ? static_cast<float>(shape.x1 - shape.x0) / shape.lw : 0.0f;
+				const float b = shape.lh ? static_cast<float>(shape.x3 - shape.x0) / shape.lh : 0.0f;
+				const float c = shape.lw ? static_cast<float>(shape.y1 - shape.y0) / shape.lw : 0.0f;
+				const float d = shape.lh ? static_cast<float>(shape.y3 - shape.y0) / shape.lh : 0.0f;
+				const float det = a * d - b * c;
+				if (canvas && canvas->pixels() && std::fabs(det) >= 1e-6f)
+				{
+					entry.inv00 = d / det;
+					entry.inv01 = -b / det;
+					entry.inv10 = -c / det;
+					entry.inv11 = a / det;
+					Box candidates[4];
+					int count = 0;
+					if (transformedRoundedRectLooksAxisAligned(shape) && shape.x1 - shape.x0 == shape.lw && shape.y3 - shape.y0 == shape.lh)
+					{
+						// Only the corner boxes can lie outside an untransformed rounded rect.
+						const auto extent = [](int radius8) { return (std::max(0, radius8) + 7) / 8; };
+						const int left = shape.lx, top = shape.ly, right = shape.lx + shape.lw - 1, bottom = shape.ly + shape.lh - 1;
+						const int tlW = extent(shape.tlRx8), tlH = extent(shape.tlRy8), trW = extent(shape.trRx8), trH = extent(shape.trRy8);
+						const int brW = extent(shape.brRx8), brH = extent(shape.brRy8), blW = extent(shape.blRx8), blH = extent(shape.blRy8);
+						if (tlW && tlH) candidates[count++] = {left, top, left + tlW - 1, top + tlH - 1};
+						if (trW && trH) candidates[count++] = {right - trW + 1, top, right, top + trH - 1};
+						if (brW && brH) candidates[count++] = {right - brW + 1, bottom - brH + 1, right, bottom};
+						if (blW && blH) candidates[count++] = {left, bottom - blH + 1, left + blW - 1, bottom};
+					}
+					else
+					{
+						int x0, y0, x1, y1;
+						const int16_t xs[4] = {shape.x0, shape.x1, shape.x2, shape.x3};
+						const int16_t ys[4] = {shape.y0, shape.y1, shape.y2, shape.y3};
+						x0 = std::min({xs[0], xs[1], xs[2], xs[3]}); x1 = std::max({xs[0], xs[1], xs[2], xs[3]});
+						y0 = std::min({ys[0], ys[1], ys[2], ys[3]}); y1 = std::max({ys[0], ys[1], ys[2], ys[3]});
+						candidates[count++] = {x0, y0, x1, y1};
+					}
+					int clipX0 = 0, clipY0 = 0, clipX1 = -1, clipY1 = -1;
+					gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+					clipX0 = std::max(clipX0, 0);
+					clipY0 = std::max(clipY0, 0);
+					clipX1 = std::min(clipX1, canvas->width() - 1);
+					clipY1 = std::min(clipY1, canvas->height() - 1);
+					const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+					for (int i = 0; i < count; ++i)
+					{
+						Box box{std::max(candidates[i].x0, clipX0), std::max(candidates[i].y0, clipY0),
+						        std::min(candidates[i].x1, clipX1), std::min(candidates[i].y1, clipY1)};
+						if (box.x0 > box.x1 || box.y0 > box.y1)
+							continue;
+						for (int y = box.y0; y <= box.y1; ++y)
+						{
+							const auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+							saved().insert(saved().end(), row + box.x0, row + box.x1 + 1);
+						}
+						entry.boxes[entry.boxCount++] = box;
+					}
+				}
+				entries().push_back(entry);
+			}
+
+			static void restore(const Entry &entry)
+			{
+				auto *canvas = gea::platform::display::Display::canvas();
+				if (canvas && canvas->pixels() && entry.boxCount > 0)
+				{
+					const auto &r = entry.shape;
+					const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+					const int samples = gea::framework::graphics::Canvas::antialiasSamples();
+					const int sampleCount = samples >= 2 ? samples * samples : 1;
+					std::size_t index = entry.offset;
+					for (int i = 0; i < entry.boxCount; ++i)
+					{
+						const Box &box = entry.boxes[i];
+						for (int y = box.y0; y <= box.y1; ++y)
+						{
+							auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+							const float py = static_cast<float>(y) + 0.5f - static_cast<float>(r.y0);
+							for (int x = box.x0; x <= box.x1; ++x, ++index)
+							{
+								const float px = static_cast<float>(x) + 0.5f - static_cast<float>(r.x0);
+								const float localX = static_cast<float>(r.lx) + entry.inv00 * px + entry.inv01 * py;
+								const float localY = static_cast<float>(r.ly) + entry.inv10 * px + entry.inv11 * py;
+								const int coverage = samples >= 2
+								    ? roundedRectCoverageFast(r, localX, localY, entry.inv00, entry.inv10, entry.inv01, entry.inv11, samples)
+								    : (roundedRectContainsFast(r, localX, localY) ? 1 : 0);
+								if (coverage >= sampleCount)
+									continue;
+								const auto outside = saved()[index];
+								row[x] = coverage <= 0 ? outside
+								    : gea::framework::graphics::pixel::blendNative(row[x], outside, combinedCoverageAlpha(255, coverage, sampleCount));
+							}
+						}
+						canvas->markDirty(box.x0, box.y0, box.x1, box.y1);
+					}
+				}
+			}
+		};
 
 		bool nodeFilterShapeContains(const Node &node, double sx, double sy)
 		{
@@ -4485,6 +4707,8 @@ int gLastScrollUiFrame = -1000;
 			};
 			static const int quadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
 			const int aaSpanPad = useCoverageAntialias ? 1 : 0;
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 
 			for (int y = drawY0; y <= drawY1; ++y)
 			{
@@ -4536,7 +4760,9 @@ int gLastScrollUiFrame = -1000;
 				float localY = static_cast<float>(r.ly) + inv10 * (static_cast<float>(rowDrawX0) + 0.5f - static_cast<float>(r.x0)) + inv11 * py;
 				for (int x = rowDrawX0; x <= rowDrawX1; ++x)
 				{
-					const int coverage = useCoverageAntialias
+					const int coverage = ring && roundedRectSolidCoreContainsFast(hole, localX, localY, sampleMarginX, sampleMarginY)
+																	 ? 0
+																	 : useCoverageAntialias
 																	 ? (roundedRectSolidCoreContainsFast(r, localX, localY, sampleMarginX, sampleMarginY)
 																					? sampleCount
 																					: roundedRectCoverageFast(r, localX, localY, inv00, inv10, inv01, inv11, aaSamples))
@@ -4702,7 +4928,9 @@ int gLastScrollUiFrame = -1000;
 																					 r.blRx8,
 																					 r.blRy8,
 																					 sx,
-																					 sy)
+																					 sy) &&
+													         (!transformedRoundedRectIsRing(r) ||
+													          !roundedRectOuterContainsFast(transformedRoundedRectHole(r), static_cast<float>(sx), static_cast<float>(sy)))
 													 ? 1
 													 : 0;
 					}
@@ -4769,9 +4997,11 @@ int gLastScrollUiFrame = -1000;
 
 			static void clampToNode(const Node &node, int *cx0, int *cy0, int *cx1, int *cy1)
 			{
-				int nx0, ny0, w, h;
-				overflowClipBounds(node, nx0, ny0, w, h);
-				int nx1 = nx0 + w - 1, ny1 = ny0 + h - 1;
+				OverflowClipShape shape;
+				if (!ViewRenderer::overflowClipShape(node, shape))
+					return;
+				const int nx0 = shape.x, ny0 = shape.y;
+				int nx1 = nx0 + shape.w - 1, ny1 = ny0 + shape.h - 1;
 				if (*cx0 < nx0)
 					*cx0 = nx0;
 				if (*cy0 < ny0)
@@ -4952,10 +5182,20 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::PushClip: {
 					const int id = c->clip.nodeId;
 					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
-					if (!owner || overflowX(owner->style)) c->clip.x += dx;
-					else c->bx -= dx;
-					if (!owner || overflowY(owner->style)) c->clip.y += dy;
-					else c->by -= dy;
+					const int clipDx = !owner || overflowX(owner->style) ? dx : 0;
+					const int clipDy = !owner || overflowY(owner->style) ? dy : 0;
+					c->clip.x += clipDx;
+					c->bx -= dx - clipDx;
+					c->clip.y += clipDy;
+					c->by -= dy - clipDy;
+					if (c->clip.shaped) {
+						for (int i = 0; i < 4; ++i) {
+							c->clip.qx[i] += clipDx;
+							c->clip.qy[i] += clipDy;
+						}
+						c->clip.lx += clipDx;
+						c->clip.ly += clipDy;
+					}
 					break;
 				}
 				case DisplayCommandType::FillRect:
@@ -7485,7 +7725,8 @@ int gLastScrollUiFrame = -1000;
 				return false;
 			}
 
-			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount)
+			// Mirrors ViewRenderer::recordClipBegin; `shape` receives the clip.
+			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount, OverflowClipShape *shape = nullptr)
 			{
 				if (node_id < 0 || node_id >= nodeCount)
 					return false;
@@ -7494,7 +7735,8 @@ int gLastScrollUiFrame = -1000;
 					return false;
 				if (node.first_child < 0)
 					return false;
-				return !nodeHasTransformChain(node_id, nodes, nodeCount);
+				OverflowClipShape local;
+				return ViewRenderer::overflowClipShape(node, shape ? *shape : local);
 			}
 
 			static std::uint8_t GEA_RENDER_HOT_SRAM effectiveAlphaForNode(int node_id, Node *nodes, int nodeCount)
@@ -7534,12 +7776,12 @@ int gLastScrollUiFrame = -1000;
 				for (int i = count - 1; i > 0; i--)
 				{
 					const int id = chain[i];
-					if (!nodeRecordsOverflowClip(id, nodes, nodeCount))
+					OverflowClipShape shape;
+					if (!nodeRecordsOverflowClip(id, nodes, nodeCount, &shape))
 						continue;
-					const Node &clip = nodes[id];
-					int x, y, w, h;
-					overflowClipBounds(clip, x, y, w, h);
-					gea::platform::display::Display::pushClip(x, y, w, h);
+					gea::platform::display::Display::pushClip(shape.x, shape.y, shape.w, shape.h);
+					if (shape.shaped)
+						ShapedClips::begin(shape);
 					pushed++;
 				}
 				return pushed;
@@ -8067,6 +8309,7 @@ int gLastScrollUiFrame = -1000;
 				if (start < 0 || end <= start || end > state.commandCount)
 					return;
 
+				const std::size_t shapedMark = ShapedClips::depth();
 				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
 				if (pushedClips < 0)
 					return;
@@ -8080,6 +8323,7 @@ int gLastScrollUiFrame = -1000;
 				replayCommandRange(start, end, x0, y0, x1, y1, roundedRects);
 				if (stateChanged)
 					roundedRects.flush();
+				ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged)
@@ -8405,10 +8649,11 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
+						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
 								clip.layout.x + clip.layout.width - 1 < x1 ||
 								clip.layout.y + clip.layout.height - 1 < y1)
 						{
@@ -8490,10 +8735,11 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
+						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
 								clip.layout.x + clip.layout.width - 1 < x1 ||
 								clip.layout.y + clip.layout.height - 1 < y1)
 						{
@@ -8707,6 +8953,7 @@ int gLastScrollUiFrame = -1000;
 				if (!commandRangeOverlapsAnyRegion(start, end, regions, count))
 					return;
 
+				const std::size_t shapedMark = ShapedClips::depth();
 				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
 				if (pushedClips < 0)
 					return;
@@ -8748,6 +8995,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (stateChanged || alphaTouched)
 					roundedRects.flush();
+				ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged || alphaTouched)
@@ -8921,6 +9169,12 @@ int gLastScrollUiFrame = -1000;
 
 			static void GEA_RENDER_HOT_SRAM replay()
 			{
+				// A stream without its PopClip still restores what its shaped clips saved.
+				struct ShapedClipGuard
+				{
+					std::size_t mark = ShapedClips::depth();
+					~ShapedClipGuard() { ShapedClips::endTo(mark); }
+				} shapedClipGuard;
 				int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
 				int clip_dirty = 1;
 				int clip_stack_depth = 0;
@@ -9041,8 +9295,10 @@ int gLastScrollUiFrame = -1000;
 							ny1 = cy1;
 
 						int changed = nx0 != cx0 || ny0 != cy0 || nx1 != cx1 || ny1 != cy1;
+						// Bit 0: a Display clip was pushed; bit 1: a shaped clip began.
+						const bool shaped = c->clip.shaped && state.ensureReplayClipCapacity(clip_stack_depth + 1);
 						if (state.ensureReplayClipCapacity(clip_stack_depth + 1))
-							state.replayClipPushed[clip_stack_depth++] = (uint8_t)changed;
+							state.replayClipPushed[clip_stack_depth++] = static_cast<uint8_t>(changed | (shaped ? 2 : 0));
 						if (changed)
 						{
 							gea::platform::display::Display::pushClip(c->clip.x, c->clip.y, c->clip.w, c->clip.h);
@@ -9051,16 +9307,23 @@ int gLastScrollUiFrame = -1000;
 							cx1 = nx1;
 							cy1 = ny1;
 						}
+						if (shaped)
+							ShapedClips::begin(*c);
 						continue;
 					}
 					case DisplayCommandType::PopClip:
+					{
 						roundedRects.flush();
-						if (clip_stack_depth <= 0 || state.replayClipPushed[--clip_stack_depth])
+						const uint8_t pushed = clip_stack_depth > 0 ? state.replayClipPushed[--clip_stack_depth] : 1;
+						if (pushed & 2)
+							ShapedClips::end();
+						if (pushed & 1)
 						{
 							gea::platform::display::Display::popClip();
 							clip_dirty = 1;
 						}
 						continue;
+					}
 					case DisplayCommandType::SetAlpha:
 						roundedRects.flush();
 						gea::platform::display::Display::setAlpha(c->alpha.alpha);

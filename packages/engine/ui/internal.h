@@ -94,6 +94,14 @@ void rootScrollImageHoldTick();
 				// range. Keep the owner so retained subtree translations can move the
 				// scope with the node (and undo the scroll viewport's own movement).
 				int16_t nodeId;
+				// A rounded or transformed overflow clip: the padding box lx/ly/lw/lh,
+				// with its CSS inner radii, mapped to the screen quad qx/qy. The rect
+				// above is its bounds; replay restores what the clipped content paints
+				// outside the shape. 0 for a plain rect clip.
+				uint8_t shaped;
+				int16_t qx[4], qy[4];
+				int16_t lx, ly, lw, lh;
+				int16_t rx8[4], ry8[4];
 			} clip;
 			struct
 			{
@@ -269,6 +277,10 @@ void rootScrollImageHoldTick();
 				int16_t blRx8, blRy8;
 				gea::framework::graphics::pixel::native_t color;
 				uint8_t backfaceHidden;
+				// Border widths (top, right, bottom, left) when this paints a border
+				// ring: the padding box, with its CSS inner radii, stays unpainted.
+				// All zero for a fill.
+				uint8_t ring[4];
 			} transformedRoundedRect;
 			struct
 			{
@@ -485,9 +497,22 @@ void rootScrollImageHoldTick();
 		static std::vector<int> collectChildren(int node, bool groupRoot = true, bool includePositioned = true);
 	};
 
+	// The overflow clip of a node: screen bounds, and for a rounded or
+	// transformed clip the shape PushClip carries (see DisplayCommand::clip).
+	struct OverflowClipShape
+	{
+		int x, y, w, h;
+		bool shaped;
+		int16_t qx[4], qy[4];
+		int16_t lx, ly, lw, lh;
+		int16_t rx8[4], ry8[4];
+	};
+
 	class ViewRenderer
 	{
 	public:
+		// False when the clip cannot be recorded: a perspective-projected box.
+		static bool overflowClipShape(const Node &node, OverflowClipShape &out);
 		static bool recordClipBegin(const Node &node);
 		static void recordClipEnd(const Node &node);
 		static void recordBox(const Node &node, uint8_t parentAlpha = 255);
