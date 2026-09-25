@@ -6419,7 +6419,8 @@ int gLastScrollUiFrame = -1000;
 					TextRenderer::drawWrapped(c.text.text, c.text.x, c.text.y,
 																		c.text.maxWidth, c.text.color, c.text.scale,
 																		c.text.align, c.text.containerWidth, c.text.fontId, c.text.textTransform, c.text.lineHeight,
-																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent);
+																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent,
+																			c.text.alignLast);
 					break;
 				case DisplayCommandType::BlitImage:
 #if GEA_PIXEL_STORAGE_PACKED

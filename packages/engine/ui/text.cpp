@@ -1076,7 +1076,7 @@ public:
 		            command.text.color, command.text.scale, command.text.align, command.text.containerWidth,
 			    command.text.fontId, command.text.textTransform, command.text.lineHeight,
 			    command.text.whiteSpace, command.text.textOverflow, command.text.maxHeight,
-			    command.text.firstLineIndent, &sink);
+			    command.text.firstLineIndent, command.text.alignLast, &sink);
 	}
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
@@ -1126,7 +1126,7 @@ public:
 		}
 	}
 
-	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, TextCoverageSink *coverageSink = nullptr)
+	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, int alignLast = -1, TextCoverageSink *coverageSink = nullptr)
 	{
 		if (!text || !text[0]) return;
 		std::string transformed;
@@ -1151,16 +1151,19 @@ public:
 
 		const bool noWrap = whiteSpace == 1;
 		const bool ellipsis = textOverflow == 1;
+		// A nowrap run is one line, so only a paragraph end can realign it.
+		const int singleLineAlign = alignLast >= 0 && (alignLast & 4) ? alignLast & 3 : textAlign;
+		const bool hangSpaces = whiteSpace == 0 || whiteSpace == 4;
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		if (fontId >= 0) {
 			const int fontSize = static_cast<int>(scale * kBitmapFontHeight + 0.5f);
 			if (gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize).valid()) {
 				if (noWrap)
-					drawRasterizedSingleLine(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
+					drawRasterizedSingleLine(text, x, y, maxWidth, color, singleLineAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 				else
 					drawRasterizedWrapped(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
-					                      ellipsis ? maxHeight : 0, firstLineIndent, coverageSink);
+					                      ellipsis ? maxHeight : 0, firstLineIndent, alignLast, hangSpaces, coverageSink);
 				return;
 			}
 		}
@@ -1168,14 +1171,14 @@ public:
 		(void)fontId;
 #endif
 		if (noWrap)
-			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
+			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, singleLineAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 		else
-			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, coverageSink);
+			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, alignLast, hangSpaces, coverageSink);
 	}
 
 private:
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
+	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, const TextCoverageSink *coverageSink = nullptr)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1187,12 +1190,16 @@ private:
 			return budget < 1 ? 1 : budget;
 		};
 		const auto lineOriginX_ = [&](int li) { return li == 0 ? x + firstLineIndent : x; };
+		// The trimmed leading space still sits in line 0's width; aligning must skip it.
+		const auto trimmedIndent_ = [&](int li) { return li == 0 && firstLineIndent < 0 ? -firstLineIndent : 0; };
 		gea::framework::graphics::RasterizedFont font = gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize);
 		if (!font.valid()) return;
 
 		const int glyphHeight = font.lineHeight();
 		const int lineAdvance = lineHeight > 0 ? lineHeight : glyphHeight;
 		const int lineBoxOffset = lineHeight > 0 ? (lineAdvance - glyphHeight) / 2 : 0;
+		gea::framework::graphics::Glyph spaceGlyph{};
+		const int spaceAdvance = font.glyph(' ', &spaceGlyph) ? spaceGlyph.advance : font.sizePx() / 2;
 		// Multi-line clamp (text-overflow: ellipsis on WRAPPED text): the content
 		// box caps how many lines draw; the last budgeted line renders through
 		// the single-line ellipsis routine when more text would follow it.
@@ -1261,7 +1268,9 @@ private:
 				const int lineBoxY = penY + lineBoxOffset;
 				if (lineBoxY + glyphHeight - 1 >= clipY0) {
 					const int lineWidth = entry.lineWidths[li];
-					const int lineX = lineOriginX_(li) + alignedOffset(textAlign, containerWidth, lineWidth);
+					const int align = lineAlignment(textAlign, alignLast, lineStart, entry.consumedBytes[li], li == entry.lineCount - 1);
+					const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, chars, spaceAdvance) : 0;
+					const int lineX = lineOriginX_(li) + alignedOffset(align, containerWidth, lineWidth - hanging - trimmedIndent_(li));
 					if (lineX <= clipX1 && lineX + lineWidth - 1 >= clipX0) {
 						char lineBuffer[kWrappedLineBufferBytes + 1];
 						const int copyLen = chars < kWrappedLineBufferBytes ? chars : kWrappedLineBufferBytes;
@@ -1300,7 +1309,9 @@ private:
 
 			const int lineBoxY = penY + lineBoxOffset;
 			if (lineBoxY + glyphHeight - 1 >= clipY0) {
-				const int lineX = lineOriginX_(lineIndex) + alignedOffset(textAlign, containerWidth, line.width);
+				const int align = lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]);
+				const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, line.renderBytes, spaceAdvance) : 0;
+				const int lineX = lineOriginX_(lineIndex) + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent_(lineIndex));
 				if (lineX <= clipX1 && lineX + line.width - 1 >= clipX0) {
 					char lineBuffer[kWrappedLineBufferBytes + 1];
 					const int copyLen = line.renderBytes < kWrappedLineBufferBytes ? line.renderBytes : kWrappedLineBufferBytes;
@@ -1392,7 +1403,7 @@ private:
 	}
 #endif
 
-	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
+	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, const TextCoverageSink *coverageSink = nullptr)
 	{
 		if (scale < 0.1f) scale = 1.0f;
 		int glyphWidth = static_cast<int>(kBitmapFontWidth * scale + 0.5f);
@@ -1411,11 +1422,14 @@ private:
 			// the inherited pen and has that much less room.
 			const int budget = lineIndex == 0 ? maxWidth - firstLineIndent : maxWidth;
 			const int lineOriginX = lineIndex == 0 ? x + firstLineIndent : x;
+			const int trimmedIndent = lineIndex == 0 && firstLineIndent < 0 ? -firstLineIndent : 0;
 			const WrappedLine line = nextWrappedLine(lineStart, budget < 1 ? 1 : budget, [&](int) { return glyphWidth; });
 			lineIndex++;
 
 			if (penY + glyphHeight - 1 >= clipY0) {
-				int penX = lineOriginX + alignedOffset(textAlign, containerWidth, line.width);
+				const int align = lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]);
+				const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, line.renderBytes, glyphWidth) : 0;
+				int penX = lineOriginX + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent);
 				if (penX <= clipX1 && penX + line.width - 1 >= clipX0) {
 					const char *glyph = lineStart;
 					const char *renderEnd = lineStart + line.renderBytes;
@@ -1506,6 +1520,23 @@ private:
 		if (textAlign == 1) offset = (containerWidth - lineWidth) / 2;
 		else if (textAlign == 2) offset = containerWidth - lineWidth;
 		return offset < 0 ? 0 : offset;
+	}
+
+	// text-align-last aligns every line a forced break ends and, when the run
+	// closes its paragraph, the run's final line (see DrawText::alignLast).
+	static int lineAlignment(int textAlign, int alignLast, const char *lineStart, int consumedBytes, bool finalLine)
+	{
+		if (alignLast < 0) return textAlign;
+		const bool forcedBreak = consumedBytes > 0 && lineStart[consumedBytes - 1] == '\n';
+		return forcedBreak || (finalLine && (alignLast & 4)) ? alignLast & 3 : textAlign;
+	}
+
+	// Collapsible spaces that end a line hang, so alignment must not count them.
+	static int hangingSpaceWidth(const char *line, int bytes, int spaceAdvance)
+	{
+		int width = 0;
+		for (; bytes > 0 && line[bytes - 1] == ' '; --bytes) width += spaceAdvance;
+		return width;
 	}
 };
 
@@ -1888,9 +1919,9 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 	return true;
 }
 
-void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent)
+void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent, int alignLast)
 {
-	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent);
+	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent, alignLast);
 }
 
 void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
@@ -1917,6 +1948,15 @@ int TextRenderer::measureHeight(const char *text, int fontId, int fontSize, int 
 	const char *measureText = textWithTransform(text, textTransform, transformed);
 	const TextMeasure measured = TextMetrics::measure(measureText, 32767, fontId, fontSize, lineHeight);
 	return measured.height;
+}
+
+// DrawText::alignLast for a run: -1 unless text-align-last moves some line.
+static int8_t textAlignLastCommand(const Node &node)
+{
+	const int last = node.style.text_align_last - 1;
+	if (last < 0 || last == node.style.text_align) return -1;
+	const bool endsParagraph = LayoutEngine::endsFormattingLine(static_cast<int>(&node - Tree::instance().nodes()));
+	return static_cast<int8_t>(last | (endsParagraph ? 4 : 0));
 }
 
 void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlpha)
@@ -2247,6 +2287,15 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	}
 
 
+	const int8_t alignLast = transformed ? -1 : textAlignLastCommand(*n);
+	// The bounds above assume text-align for every line; realigned lines may
+	// sit anywhere across the content box.
+	if (alignLast >= 0) {
+		const int right = std::max(bx + bw, drawX + containerW + 2);
+		bx = std::min(bx, drawX - 2);
+		bw = right - bx;
+	}
+
 	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, n->style.text_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
 
@@ -2270,6 +2319,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.whiteSpace = n->style.white_space;
 	cmd->text.textOverflow = n->style.text_overflow;
 	cmd->text.firstLineIndent = static_cast<int16_t>(inlineIndent);
+	cmd->text.alignLast = alignLast;
 	{
 		const int contentH = h - boxInset(n->style, 0) - boxInset(n->style, 2);
 		cmd->text.maxHeight = static_cast<int16_t>(contentH > 0 ? (contentH > 32767 ? 32767 : contentH) : 0);

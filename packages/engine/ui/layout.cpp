@@ -3888,6 +3888,29 @@ bool LayoutEngine::isInlineLevelNode(const Node &n)
 	return isInlineLevelTag(tagFromId(n.tag_id));
 }
 
+// Mirror of startsFormattingLine: walk forward through siblings and inline
+// ancestors to the next content that shares or closes this line box.
+bool LayoutEngine::endsFormattingLine(int id)
+{
+	const Node *nodes = Tree::instance().nodes();
+	while (isCssInlineLevelBox(nodes[id]) && isInlineLevelNode(nodes[id])) {
+		for (int sibling = nodes[id].next_sibling; sibling >= 0; sibling = nodes[sibling].next_sibling) {
+			const Node &next = nodes[sibling];
+			if (isDisplayNone(next.style) || isOutOfFlowPosition(next.style.position) || next.style.float_side)
+				continue;
+			if (isAnonymousTextNode(next) &&
+			    (next.style.white_space == 0 || next.style.white_space == 1 || next.style.white_space == 4) &&
+			    next.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+			const int edge = formattingEdgeNode(nodes, sibling, false);
+			if (edge < 0) continue;
+			return isLineBreak(nodes[edge]) || !isInlineLevelNode(nodes[edge]);
+		}
+		id = nodes[id].parent;
+		if (id < 0) return true;
+	}
+	return true;
+}
+
 bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
 {
 	if (n.style.display == kDisplayNone || n.style.display_explicit) return false;

@@ -581,6 +581,7 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.font_weight != b.font_weight ||
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
+	    a.text_align_last != b.text_align_last ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -696,6 +697,7 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.font_weight != b.font_weight ||
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
+	    a.text_align_last != b.text_align_last ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -1186,6 +1188,7 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "font-weight") == 0) return CssDeclarationId::FontWeight;
 	if (std::strcmp(property, "line-height") == 0) return CssDeclarationId::LineHeight;
 	if (std::strcmp(property, "text-align") == 0) return CssDeclarationId::TextAlign;
+	if (std::strcmp(property, "text-align-last") == 0) return CssDeclarationId::TextAlignLast;
 	if (std::strcmp(property, "text-decoration") == 0 || std::strcmp(property, "text-decoration-line") == 0) return CssDeclarationId::TextDecoration;
 	if (std::strcmp(property, "text-transform") == 0) return CssDeclarationId::TextTransform;
 	if (std::strcmp(property, "white-space") == 0) return CssDeclarationId::WhiteSpace;
@@ -4745,6 +4748,15 @@ int textAlignValue(const std::string &value)
 	return 0;
 }
 
+// Unlike text-align, `auto` must stay distinct from start: 0 = auto, otherwise
+// the text_align value plus one. Justification is unsupported and starts.
+int textAlignLastValue(const std::string &value)
+{
+	if (value == "left" || value == "start" || value == "justify") return 1;
+	if (value == "center" || value == "right" || value == "end") return textAlignValue(value) + 1;
+	return 0;
+}
+
 // CSS `text-decoration` — only the values relevant to embedded UI are
 // modeled: `none` (default), `underline`, and `line-through`. The
 // renderer paints a 1-pixel horizontal line at a y-offset chosen per
@@ -6908,6 +6920,9 @@ bool compileKeywordValue(CssDeclarationId declaration, const std::string &value,
 	case CssDeclarationId::TextAlign:
 		compiled.values[0] = textAlignValue(value);
 		return true;
+	case CssDeclarationId::TextAlignLast:
+		compiled.values[0] = textAlignLastValue(value);
+		return true;
 	case CssDeclarationId::TextDecoration:
 		compiled.values[0] = textDecorationValue(value);
 		return true;
@@ -8002,6 +8017,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 		style.line_height = resolveLineHeightMultiplier(static_cast<int>(&target - treeState().nodes), value); return true;
 	case Property::TextAlign: style.text_align = value; return true;
+	case Property::TextAlignLast: style.text_align_last = value; return true;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration: style.text_decoration = value; return true;
 #endif
@@ -8984,7 +9000,7 @@ bool propertyAffectsDescendantStyle(Property property)
 	       property == Property::FontSize ||
 	       property == Property::FontWeight ||
 	       property == Property::LineHeight || property == Property::LineHeightExpression || property == Property::LineHeightMultiplier ||
-	       property == Property::TextAlign ||
+	       property == Property::TextAlign || property == Property::TextAlignLast ||
 	       property == Property::TextTransform ||
 	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::BorderWidth ||
 	       (property >= Property::BorderTopWidth && property <= Property::BorderLeftWidth);
@@ -9010,6 +9026,7 @@ void applyInheritedStyleDefaults(int node)
 	if (parentStyle.line_height_multiplier >= 0)
 		style.line_height_multiplier = parentStyle.line_height_multiplier;
 	style.text_align = parentStyle.text_align;
+	style.text_align_last = parentStyle.text_align_last;
 #if GEA_CSS_TEXT_TRANSFORM
 	style.text_transform = parentStyle.text_transform;
 #endif
@@ -9704,6 +9721,9 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		return true;
 	case CssDeclarationId::TextAlign:
 		setStyleValue(node, Property::TextAlign, textAlignValue(value), source);
+		return true;
+	case CssDeclarationId::TextAlignLast:
+		setStyleValue(node, Property::TextAlignLast, textAlignLastValue(value), source);
 		return true;
 	case CssDeclarationId::TextDecoration:
 		setStyleValue(node, Property::TextDecoration, textDecorationValue(value), source);
@@ -10769,6 +10789,7 @@ bool applyCompiledCssValueWithSource(NodeHandle node, const CssCompiledValue &co
 		case CssDeclarationId::AlignSelf: setStyleValue(node, Property::AlignSelf, compiled.values[0], source); return true;
 		case CssDeclarationId::Position: setStyleValue(node, Property::Position, compiled.values[0], source); return true;
 		case CssDeclarationId::TextAlign: setStyleValue(node, Property::TextAlign, compiled.values[0], source); return true;
+		case CssDeclarationId::TextAlignLast: setStyleValue(node, Property::TextAlignLast, compiled.values[0], source); return true;
 		case CssDeclarationId::TextDecoration: setStyleValue(node, Property::TextDecoration, compiled.values[0], source); return true;
 		case CssDeclarationId::TextTransform: setStyleValue(node, Property::TextTransform, compiled.values[0], source); return true;
 		case CssDeclarationId::WhiteSpace: setStyleValue(node, Property::WhiteSpace, compiled.values[0], source); return true;
@@ -11308,6 +11329,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "font-weight") return removeInlineStyleProperties(id, {Property::FontWeight});
 	if (property == "line-height") return removeInlineStyleProperties(id, {Property::LineHeight, Property::LineHeightExpression, Property::LineHeightMultiplier});
 	if (property == "text-align") return removeInlineStyleProperties(id, {Property::TextAlign});
+	if (property == "text-align-last") return removeInlineStyleProperties(id, {Property::TextAlignLast});
 	if (property == "text-decoration" || property == "text-decoration-line")
 		return removeInlineStyleProperties(id, {Property::TextDecoration});
 	if (property == "text-transform") return removeInlineStyleProperties(id, {Property::TextTransform});
@@ -13528,6 +13550,7 @@ bool addCachedKeywordDeclaration(CachedStyleApplyOp &op, CssDeclarationId declar
 	case CssDeclarationId::AlignSelf: return addCachedStyleApplyProperty(op, Property::AlignSelf, value);
 	case CssDeclarationId::Position: return addCachedStyleApplyProperty(op, Property::Position, value);
 	case CssDeclarationId::TextAlign: return addCachedStyleApplyProperty(op, Property::TextAlign, value);
+	case CssDeclarationId::TextAlignLast: return addCachedStyleApplyProperty(op, Property::TextAlignLast, value);
 	case CssDeclarationId::TextDecoration: return addCachedStyleApplyProperty(op, Property::TextDecoration, value);
 	case CssDeclarationId::TextTransform: return addCachedStyleApplyProperty(op, Property::TextTransform, value);
 	case CssDeclarationId::WhiteSpace: return addCachedStyleApplyProperty(op, Property::WhiteSpace, value);
@@ -14439,6 +14462,7 @@ bool addCompiledValueWrites(const CssCompiledValue &compiled, PropertyWriteMask 
 		case CssDeclarationId::AlignSelf: addPropertyWrite(mask, Property::AlignSelf); return true;
 		case CssDeclarationId::Position: addPropertyWrite(mask, Property::Position); return true;
 		case CssDeclarationId::TextAlign: addPropertyWrite(mask, Property::TextAlign); return true;
+		case CssDeclarationId::TextAlignLast: addPropertyWrite(mask, Property::TextAlignLast); return true;
 		case CssDeclarationId::TextDecoration: addPropertyWrite(mask, Property::TextDecoration); return true;
 		case CssDeclarationId::TextTransform: addPropertyWrite(mask, Property::TextTransform); return true;
 		case CssDeclarationId::WhiteSpace: addPropertyWrite(mask, Property::WhiteSpace); return true;
@@ -15586,6 +15610,7 @@ struct ParentStyleSnapshot {
 	decltype(ComputedStyle::line_height) line_height;
 	std::int32_t line_height_multiplier;
 	std::uint8_t text_align;
+	std::uint8_t text_align_last;
 #if GEA_CSS_TEXT_TRANSFORM
 	std::uint8_t text_transform;
 #else
@@ -15617,6 +15642,7 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 	out.line_height = s.line_height;
 	out.line_height_multiplier = s.line_height_multiplier;
 	out.text_align = s.text_align;
+	out.text_align_last = s.text_align_last;
 #if GEA_CSS_TEXT_TRANSFORM
 	out.text_transform = s.text_transform;
 #endif
@@ -15637,7 +15663,7 @@ bool parentStylesDiffer(const ParentStyleSnapshot &a, const ParentStyleSnapshot 
 {
 	return a.text_color != b.text_color || a.text_alpha != b.text_alpha || a.font_id != b.font_id || a.font_size != b.font_size ||
 	       a.font_weight != b.font_weight || a.line_height != b.line_height || a.line_height_multiplier != b.line_height_multiplier ||
-	       a.text_align != b.text_align || a.text_transform != b.text_transform ||
+	       a.text_align != b.text_align || a.text_align_last != b.text_align_last || a.text_transform != b.text_transform ||
 	       a.white_space != b.white_space || a.visibility != b.visibility || a.border_widths != b.border_widths;
 }
 
