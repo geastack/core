@@ -6504,17 +6504,24 @@ int gLastScrollUiFrame = -1000;
 				int x0, y0, x1, y1;
 			};
 
+			// `opaque`: no opacity between the owner and this node. Opaque glyphs
+			// paint over the background they clip with the very same coverage, so
+			// that background never shows; leaving them out of the mask also keeps
+			// it out of their antialiased edges, as the text alone would paint them.
 			static void collectTextInk(int id, int owner, int x0, int y0, int x1, int y1,
-			                           std::vector<TextInkCommand> &ink)
+			                           std::vector<TextInkCommand> &ink, bool opaque = true)
 			{
 				auto &tree = Tree::instance();
 				if (id < 0 || id >= tree.nodeCount()) return;
 				const auto &node = tree.nodes()[id];
 				if (node.style.display == 1 || (id != owner && isOutOfFlowPosition(node.style.position))) return;
+				opaque = opaque && node.style.opacity == 255;
 				if (state.hasNodeScratchFor(id) && node.style.visibility == 0) {
+					const bool hidesBackground = opaque && node.type == NodeType::Text && node.style.text_alpha == 255;
 					const int begin = state.nodeDrawStart[id], end = state.nodeDrawEnd[id];
 					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
 						const auto &c = state.commands[ci];
+						if (hidesBackground && c.type == DisplayCommandType::DrawText) continue;
 						if (c.type == DisplayCommandType::DrawText || c.type == DisplayCommandType::DrawProjectedText || c.textDecorationInk)
 							ink.push_back({&c, x0, y0, x1, y1});
 					}
@@ -6532,7 +6539,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (x0 > x1 || y0 > y1) return;
 				for (int child = node.first_child; child >= 0; child = tree.nodes()[child].next_sibling)
-					collectTextInk(child, owner, x0, y0, x1, y1, ink);
+					collectTextInk(child, owner, x0, y0, x1, y1, ink, opaque);
 			}
 
 			static void replayTextClipped(const DisplayCommand &command)
