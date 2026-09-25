@@ -7753,7 +7753,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::Position: if (value == kPositionFixed) treeState().fixedPositionUsed = true; style.position = value; return true;
 	case Property::Top:
 #if GEA_CSS_POSITION_TOP
-		GEA_CSS_POSITION_PX_0(style) = value;
+		GEA_CSS_POSITION_PX_0(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_TOP_PERCENT
 		GEA_CSS_POSITION_PERCENT_0(style) = kUnset;
 #endif
@@ -7763,7 +7763,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Right:
 #if GEA_CSS_POSITION_RIGHT
-		GEA_CSS_POSITION_PX_1(style) = value;
+		GEA_CSS_POSITION_PX_1(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_RIGHT_PERCENT
 		GEA_CSS_POSITION_PERCENT_1(style) = kUnset;
 #endif
@@ -7773,7 +7773,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Bottom:
 #if GEA_CSS_POSITION_BOTTOM
-		GEA_CSS_POSITION_PX_2(style) = value;
+		GEA_CSS_POSITION_PX_2(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_BOTTOM_PERCENT
 		GEA_CSS_POSITION_PERCENT_2(style) = kUnset;
 #endif
@@ -7783,7 +7783,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Left:
 #if GEA_CSS_POSITION_LEFT
-		GEA_CSS_POSITION_PX_3(style) = value;
+		GEA_CSS_POSITION_PX_3(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_LEFT_PERCENT
 		GEA_CSS_POSITION_PERCENT_3(style) = kUnset;
 #endif
