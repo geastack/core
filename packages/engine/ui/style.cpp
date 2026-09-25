@@ -4886,10 +4886,14 @@ int positionValue(const std::string &value)
 	return 0;
 }
 
+// 0 start, 1 center, 2 right, 3 left, 4 end; justify is unsupported and starts.
+// LayoutEngine::physicalTextAlign resolves start and end by direction.
 int textAlignValue(const std::string &value)
 {
 	if (value == "center") return 1;
-	if (value == "right" || value == "end") return 2;
+	if (value == "right") return 2;
+	if (value == "left") return 3;
+	if (value == "end") return 4;
 	return 0;
 }
 
@@ -4901,12 +4905,13 @@ int verticalAlignValue(const std::string &value)
 	return value == "initial" || value == "unset" ? 0 : -1;
 }
 
-// Unlike text-align, `auto` must stay distinct from start: 0 = auto, otherwise
-// the text_align value plus one. Justification is unsupported and starts.
+// 0 = auto, else the physical alignment plus one: 1 left, 2 center, 3 right.
+// start and end map as in ltr. Justification is unsupported and starts.
 int textAlignLastValue(const std::string &value)
 {
 	if (value == "left" || value == "start" || value == "justify") return 1;
-	if (value == "center" || value == "right" || value == "end") return textAlignValue(value) + 1;
+	if (value == "center") return 2;
+	if (value == "right" || value == "end") return 3;
 	return 0;
 }
 

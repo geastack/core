@@ -510,6 +510,8 @@ void rootScrollImageHoldTick();
 		static bool multicolContainer(const Node &node);
 		// Resolved direction: true for rtl.
 		static bool rightToLeftDirection(const Node &node);
+		// text-align as 0 left, 1 center, 2 right: start and end follow direction.
+		static int physicalTextAlign(const Node &node);
 	};
 
 	// Shared order for recording, retained transform replay, and hit testing.

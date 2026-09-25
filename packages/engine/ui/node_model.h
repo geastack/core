@@ -840,7 +840,8 @@ struct ComputedStyle {
 #elif !GEA_CSS_U8_LINE_HEIGHT
 	int16_t line_height;
 #endif
-
+	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
+	int8_t overflow;
 #if GEA_CSS_OVERFLOW_AXES
 	int8_t overflow_x;
 	int8_t overflow_y;
@@ -1561,7 +1562,9 @@ struct RenderState {
 	// the line advance: ink centring shifts by however far that particular string's
 	// glyphs reach, so runs of different words — or different fonts — on one line
 	// end up at different heights. A run that owns its line keeps the centring.
-	uint8_t inline_baseline : 1;
+	// Bit 1: the line layout already applied text-align to this box's line, so
+	// the run draws start-aligned in its own box.
+	uint8_t inline_baseline;
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {
