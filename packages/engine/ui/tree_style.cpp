@@ -86,6 +86,11 @@ bool isLayoutProperty(Property prop)
 	case Property::Float:
 #endif
 	case Property::MarginTrim:
+	case Property::MaxLines:
+	case Property::LineClampContinue:
+	case Property::BlockEllipsis:
+	case Property::ColumnCountSet:
+	case Property::ColumnWidthSet:
 #if GEA_CSS_FLOATS
 	case Property::Clear:
 #endif
@@ -335,6 +340,16 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: if ((GEA_CSS_MARGIN_TRIM ? rstyle(n->style).margin_trim : 0) != value) { rstyleMut(n->style).margin_trim = value; changed = 1; } break;
 #endif
+	case Property::MaxLines: if (rstyle(n->style).max_lines != value) { rstyleMut(n->style).max_lines = value; changed = 1; } break;
+	case Property::LineClampContinue:
+	case Property::BlockEllipsis:
+	case Property::ColumnCountSet:
+	case Property::ColumnWidthSet: {
+		const int bit = lineClampFlagBit(prop);
+		const int next = value ? rstyle(n->style).line_clamp_flags | bit : rstyle(n->style).line_clamp_flags & ~bit;
+		if (rstyle(n->style).line_clamp_flags != next) { rstyleMut(n->style).line_clamp_flags = next; changed = 1; }
+		break;
+	}
 #if GEA_CSS_FLOATS
 	case Property::Clear: if (n->style.clear_side != value) { n->style.clear_side = value; changed = 1; } break;
 #endif
