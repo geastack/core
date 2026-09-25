@@ -92,6 +92,19 @@ bool isLayoutProperty(Property prop)
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
 	case Property::ColumnWidthSet:
+	case Property::VerticalAlign:
+#if GEA_CSS_TEXT_ALIGN
+	// Line shifts and inline static positions follow physicalTextAlign.
+	case Property::TextAlign:
+#endif
+#if GEA_CSS_BORDER_RELIEF
+	// border-style: none / hidden zeroes the side's used width.
+	case Property::BorderRelief:
+	case Property::BorderTopRelief:
+	case Property::BorderRightRelief:
+	case Property::BorderBottomRelief:
+	case Property::BorderLeftRelief:
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Clear:
 #endif
@@ -994,6 +1007,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::TextAlign:       if (style.text_align != value) { style.text_align = value; changed = 1; } break;
 #endif
 	case Property::TextAlignLast:   if (style.text_align_last != value) { style.text_align_last = value; changed = 1; } break;
+	case Property::VerticalAlign:   if (style.vertical_align != value) { style.vertical_align = value; changed = 1; } break;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration:  if (style.text_decoration != value) { style.text_decoration = value; changed = 1; } break;
 #endif
