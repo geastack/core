@@ -617,8 +617,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::Position:         if (value == kPositionFixed) state.fixedPositionUsed = true; if (style.position != value) { style.position = value; changed = 1; } break;
 	case Property::Top:
 #if GEA_CSS_POSITION_TOP
-		if (GEA_CSS_POSITION_PX_0(style) != value || GEA_CSS_POSITION_PERCENT_0(style) != kUnset) {
-			GEA_CSS_POSITION_PX_0(style) = value;
+		if (GEA_CSS_POSITION_PX_0(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_0(n->style) != kUnset) {
+			GEA_CSS_POSITION_PX_0(n->style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_TOP_PERCENT
 			GEA_CSS_POSITION_PERCENT_0(style) = kUnset;
 #endif
@@ -628,8 +628,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Right:
 #if GEA_CSS_POSITION_RIGHT
-		if (GEA_CSS_POSITION_PX_1(style) != value || GEA_CSS_POSITION_PERCENT_1(style) != kUnset) {
-			GEA_CSS_POSITION_PX_1(style) = value;
+		if (GEA_CSS_POSITION_PX_1(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_1(n->style) != kUnset) {
+			GEA_CSS_POSITION_PX_1(n->style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_RIGHT_PERCENT
 			GEA_CSS_POSITION_PERCENT_1(style) = kUnset;
 #endif
@@ -639,8 +639,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Bottom:
 #if GEA_CSS_POSITION_BOTTOM
-		if (GEA_CSS_POSITION_PX_2(style) != value || GEA_CSS_POSITION_PERCENT_2(style) != kUnset) {
-			GEA_CSS_POSITION_PX_2(style) = value;
+		if (GEA_CSS_POSITION_PX_2(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_2(n->style) != kUnset) {
+			GEA_CSS_POSITION_PX_2(n->style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_BOTTOM_PERCENT
 			GEA_CSS_POSITION_PERCENT_2(style) = kUnset;
 #endif
@@ -650,8 +650,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Left:
 #if GEA_CSS_POSITION_LEFT
-		if (GEA_CSS_POSITION_PX_3(style) != value || GEA_CSS_POSITION_PERCENT_3(style) != kUnset) {
-			GEA_CSS_POSITION_PX_3(style) = value;
+		if (GEA_CSS_POSITION_PX_3(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_3(n->style) != kUnset) {
+			GEA_CSS_POSITION_PX_3(n->style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_LEFT_PERCENT
 			GEA_CSS_POSITION_PERCENT_3(style) = kUnset;
 #endif

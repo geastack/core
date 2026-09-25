@@ -34,6 +34,12 @@ using style_color_t = gea::framework::graphics::pixel::native_t;
 #endif
 inline constexpr int kMaxNodes = GEA_EMBEDDED_MAX_NODES;
 inline constexpr int kUnset = -32768;
+// Position offsets are int16 with kUnset meaning auto. Saturate every other
+// length so a huge inset stays far away instead of wrapping or reading as auto.
+inline int16_t storedPositionOffset(int value)
+{
+	return static_cast<int16_t>(value == kUnset ? kUnset : std::clamp(value, -32767, 32767));
+}
 // Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
 inline constexpr int kZIndexAuto = INT32_MIN;
 // Dimension expression slots use nonnegative values for pooled expressions,
