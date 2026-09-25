@@ -321,6 +321,10 @@ struct TreeState {
 	static constexpr bool transformPresent = false;
 	static constexpr bool transformScanValid = true;
 #endif
+	// A position: sticky box was placed by the last absolute-coordinate pass.
+	// Its offset depends on the scroll position, so scroll-only fast paths that
+	// shift content without that pass must stand down.
+	bool stickyPresent = false;
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —

@@ -4753,6 +4753,7 @@ int positionValue(const std::string &value)
 	if (value == "absolute") return 1;
 	if (value == "fixed") return kPositionFixed;
 	if (value == "relative") return 2;
+	if (value == "sticky" || value == "-webkit-sticky") return kPositionSticky;
 	return 0;
 }
 

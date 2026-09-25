@@ -439,6 +439,8 @@ const POSITION_KEYWORDS = new Map<string, number>([
   ['static', 0],
   ['absolute', 1],
   ['relative', 2],
+  ['sticky', 4],
+  ['-webkit-sticky', 4],
 ])
 
 const TEXT_ALIGN_KEYWORDS = new Map<string, number>([
