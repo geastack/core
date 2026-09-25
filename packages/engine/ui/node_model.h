@@ -152,6 +152,9 @@ struct RareStyle {
 #else
 	static constexpr uint8_t margin_trim = 0;
 #endif
+	// CSS atom of a custom block-ellipsis string; 0 = the default ellipsis.
+	// Only used when line_clamp_flags has block-ellipsis set. Sits in padding.
+	uint16_t block_ellipsis = 0;
 	// IEEE float bits travel through the existing integer style-value transport.
 	// Negative ratios mean `auto <ratio>` (prefer a replaced element's natural ratio).
 #if GEA_CSS_ASPECT_RATIO
@@ -1272,8 +1275,10 @@ struct LayoutBox {
 	// relative to its static-position parent. Capture before relative offsets
 	// and absolute-coordinate conversion; retained refresh reuses this anchor.
 	int16_t static_block_start = 0;
-	// line-clamp: 1 when the box lies after an ancestor's clamp point, which
-	// hides it. Like line_clamp_lines below it sits in padding.
+	// line-clamp: bit 0 when the box lies after an ancestor's clamp point, which
+	// hides it; bit 1 on the text run whose last painted line ends before the
+	// clamp point and carries the block ellipsis. Like line_clamp_lines below
+	// it sits in padding.
 	uint8_t line_clamp_hidden = 0;
 
 	int16_t previous_x, previous_y;
