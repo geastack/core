@@ -1750,6 +1750,25 @@ bool TextRenderer::canFragmentInlineRuns(const Node &node)
 	return cached != 0;
 }
 
+TextRenderer::InlineFontMetrics TextRenderer::inlineFontMetrics(const ComputedStyle &style)
+{
+	const int fontSize = style.font_size > 0 ? style.font_size : 16;
+	const auto font = gea::framework::graphics::FontRegistry::rasterizedFamily(style.font_id, fontSize);
+	InlineFontMetrics metrics{fontSize * 4 / 5, fontSize - fontSize * 4 / 5, fontSize / 2, fontSize, 0, 0};
+	int glyphHeight = fontSize;
+	if (font.valid()) {
+		glyphHeight = font.lineHeight();
+		metrics.ascent = font.ascender();
+		metrics.descent = glyphHeight - metrics.ascent;
+		gea::framework::graphics::Glyph x{};
+		if (font.glyph('x', &x) && x.bearingY > 0) metrics.xHeight = x.bearingY;
+	}
+	const int lineAdvance = style.line_height > 0 ? style.line_height : glyphHeight;
+	metrics.strutAscent = (lineAdvance - glyphHeight) / 2 + metrics.ascent;
+	metrics.strutDescent = lineAdvance - metrics.strutAscent;
+	return metrics;
+}
+
 int TextRenderer::baselineOffset(const Node &node, bool last)
 {
 	const int fontSize = node.style.font_size > 0 ? node.style.font_size : 16;

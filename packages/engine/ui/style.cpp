@@ -584,6 +584,7 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
 	    a.text_align_last != b.text_align_last ||
+	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -702,6 +703,7 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
 	    a.text_align_last != b.text_align_last ||
+	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -1201,6 +1203,7 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "line-height") == 0) return CssDeclarationId::LineHeight;
 	if (std::strcmp(property, "text-align") == 0) return CssDeclarationId::TextAlign;
 	if (std::strcmp(property, "text-align-last") == 0) return CssDeclarationId::TextAlignLast;
+	if (std::strcmp(property, "vertical-align") == 0) return CssDeclarationId::VerticalAlign;
 	if (std::strcmp(property, "text-decoration") == 0 || std::strcmp(property, "text-decoration-line") == 0) return CssDeclarationId::TextDecoration;
 	if (std::strcmp(property, "text-transform") == 0) return CssDeclarationId::TextTransform;
 	if (std::strcmp(property, "white-space") == 0) return CssDeclarationId::WhiteSpace;
@@ -4760,6 +4763,14 @@ int textAlignValue(const std::string &value)
 	return 0;
 }
 
+// Keywords only; a length or percentage shift keeps the previous value.
+int verticalAlignValue(const std::string &value)
+{
+	static const char *const keywords[] = {"baseline", "top", "bottom", "middle", "text-top", "text-bottom", "sub", "super"};
+	for (int i = 0; i < 8; ++i) if (value == keywords[i]) return i;
+	return value == "initial" || value == "unset" ? 0 : -1;
+}
+
 // Unlike text-align, `auto` must stay distinct from start: 0 = auto, otherwise
 // the text_align value plus one. Justification is unsupported and starts.
 int textAlignLastValue(const std::string &value)
@@ -7014,6 +7025,9 @@ bool compileKeywordValue(CssDeclarationId declaration, const std::string &value,
 	case CssDeclarationId::TextAlignLast:
 		compiled.values[0] = textAlignLastValue(value);
 		return true;
+	case CssDeclarationId::VerticalAlign:
+		compiled.values[0] = verticalAlignValue(value);
+		return compiled.values[0] >= 0;
 	case CssDeclarationId::TextDecoration:
 		compiled.values[0] = textDecorationValue(value);
 		return true;
@@ -8128,6 +8142,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		style.line_height = resolveLineHeightMultiplier(static_cast<int>(&target - treeState().nodes), value); return true;
 	case Property::TextAlign: style.text_align = value; return true;
 	case Property::TextAlignLast: style.text_align_last = value; return true;
+	case Property::VerticalAlign: style.vertical_align = value; return true;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration: style.text_decoration = value; return true;
 #endif
@@ -9849,6 +9864,9 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::TextAlignLast:
 		setStyleValue(node, Property::TextAlignLast, textAlignLastValue(value), source);
 		return true;
+	case CssDeclarationId::VerticalAlign:
+		if (const int align = verticalAlignValue(value); align >= 0) setStyleValue(node, Property::VerticalAlign, align, source);
+		return true;
 	case CssDeclarationId::TextDecoration:
 		setStyleValue(node, Property::TextDecoration, textDecorationValue(value), source);
 		return true;
@@ -10914,6 +10932,7 @@ bool applyCompiledCssValueWithSource(NodeHandle node, const CssCompiledValue &co
 		case CssDeclarationId::Position: setStyleValue(node, Property::Position, compiled.values[0], source); return true;
 		case CssDeclarationId::TextAlign: setStyleValue(node, Property::TextAlign, compiled.values[0], source); return true;
 		case CssDeclarationId::TextAlignLast: setStyleValue(node, Property::TextAlignLast, compiled.values[0], source); return true;
+		case CssDeclarationId::VerticalAlign: setStyleValue(node, Property::VerticalAlign, compiled.values[0], source); return true;
 		case CssDeclarationId::TextDecoration: setStyleValue(node, Property::TextDecoration, compiled.values[0], source); return true;
 		case CssDeclarationId::TextTransform: setStyleValue(node, Property::TextTransform, compiled.values[0], source); return true;
 		case CssDeclarationId::WhiteSpace: setStyleValue(node, Property::WhiteSpace, compiled.values[0], source); return true;
@@ -11462,6 +11481,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "line-height") return removeInlineStyleProperties(id, {Property::LineHeight, Property::LineHeightExpression, Property::LineHeightMultiplier});
 	if (property == "text-align") return removeInlineStyleProperties(id, {Property::TextAlign});
 	if (property == "text-align-last") return removeInlineStyleProperties(id, {Property::TextAlignLast});
+	if (property == "vertical-align") return removeInlineStyleProperties(id, {Property::VerticalAlign});
 	if (property == "text-decoration" || property == "text-decoration-line")
 		return removeInlineStyleProperties(id, {Property::TextDecoration});
 	if (property == "text-transform") return removeInlineStyleProperties(id, {Property::TextTransform});
@@ -13683,6 +13703,7 @@ bool addCachedKeywordDeclaration(CachedStyleApplyOp &op, CssDeclarationId declar
 	case CssDeclarationId::Position: return addCachedStyleApplyProperty(op, Property::Position, value);
 	case CssDeclarationId::TextAlign: return addCachedStyleApplyProperty(op, Property::TextAlign, value);
 	case CssDeclarationId::TextAlignLast: return addCachedStyleApplyProperty(op, Property::TextAlignLast, value);
+	case CssDeclarationId::VerticalAlign: return addCachedStyleApplyProperty(op, Property::VerticalAlign, value);
 	case CssDeclarationId::TextDecoration: return addCachedStyleApplyProperty(op, Property::TextDecoration, value);
 	case CssDeclarationId::TextTransform: return addCachedStyleApplyProperty(op, Property::TextTransform, value);
 	case CssDeclarationId::WhiteSpace: return addCachedStyleApplyProperty(op, Property::WhiteSpace, value);
@@ -14595,6 +14616,7 @@ bool addCompiledValueWrites(const CssCompiledValue &compiled, PropertyWriteMask 
 		case CssDeclarationId::Position: addPropertyWrite(mask, Property::Position); return true;
 		case CssDeclarationId::TextAlign: addPropertyWrite(mask, Property::TextAlign); return true;
 		case CssDeclarationId::TextAlignLast: addPropertyWrite(mask, Property::TextAlignLast); return true;
+		case CssDeclarationId::VerticalAlign: addPropertyWrite(mask, Property::VerticalAlign); return true;
 		case CssDeclarationId::TextDecoration: addPropertyWrite(mask, Property::TextDecoration); return true;
 		case CssDeclarationId::TextTransform: addPropertyWrite(mask, Property::TextTransform); return true;
 		case CssDeclarationId::WhiteSpace: addPropertyWrite(mask, Property::WhiteSpace); return true;

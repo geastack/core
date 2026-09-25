@@ -148,6 +148,7 @@ constexpr ComputedStyle makeDefaultStyle()
 	style.line_height_multiplier = -1;
 	style.text_align = 0;
 	style.text_align_last = 0;
+	style.vertical_align = 0;
 #if GEA_CSS_TEXT_DECORATION
 	style.text_decoration = 0;
 #endif
