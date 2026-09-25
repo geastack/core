@@ -939,7 +939,9 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 			if (!extraDirtyNodes[e].overlay) changedExtras++;
 		const bool translateEligible = GEA_EMBEDDED_ROOT_SCROLL_TRANSLATE != 0 &&
 		                               n->type != NodeType::VirtualList &&
-		                               slotCount == 0;
+		                               slotCount == 0 &&
+		                               !stickyRepaintAll &&
+		                               !list.hasColumnCopies();
 		const int coverageDelta = scrollNow - coverageScroll;
 		const bool coverageValid = translateEligible &&
 		                           coverageRoot == root &&
