@@ -978,6 +978,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #if GEA_CSS_TEXT_ALIGN
 	case Property::TextAlign:       if (style.text_align != value) { style.text_align = value; changed = 1; } break;
 #endif
+	case Property::TextAlignLast:   if (style.text_align_last != value) { style.text_align_last = value; changed = 1; } break;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration:  if (style.text_decoration != value) { style.text_decoration = value; changed = 1; } break;
 #endif

@@ -65,6 +65,7 @@ export function styleKeywordPropertyValuesForPropertyName(propertyName: string, 
   }
   if (propertyName === 'position') return keywordValue('Position', POSITION_KEYWORDS, value)
   if (propertyName === 'text-align') return keywordValue('TextAlign', TEXT_ALIGN_KEYWORDS, value)
+  if (propertyName === 'text-align-last') return keywordValue('TextAlignLast', TEXT_ALIGN_LAST_KEYWORDS, value)
   if (propertyName === 'white-space') return keywordValue('WhiteSpace', WHITE_SPACE_KEYWORDS, value)
   if (propertyName === 'text-overflow') return keywordValue('TextOverflow', TEXT_OVERFLOW_KEYWORDS, value)
   if (propertyName === 'backface-visibility') return keywordValue('Backface', BACKFACE_KEYWORDS, value)
@@ -251,6 +252,7 @@ const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['font-weight', 'FontWeight'],
   ['line-height', 'LineHeight'],
   ['text-align', 'TextAlign'],
+  ['text-align-last', 'TextAlignLast'],
   ['text-decoration', 'TextDecoration'],
   ['text-decoration-line', 'TextDecoration'],
   ['text-transform', 'TextTransform'],
@@ -369,6 +371,7 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
   ['place-items', ['AlignItems', 'JustifyItems']],
   ['position', ['Position']],
   ['text-align', ['TextAlign']],
+  ['text-align-last', ['TextAlignLast']],
   ['white-space', ['WhiteSpace']],
   ['text-overflow', ['TextOverflow']],
   ['backface-visibility', ['Backface']],
@@ -436,6 +439,17 @@ const TEXT_ALIGN_KEYWORDS = new Map<string, number>([
   ['center', 1],
   ['right', 2],
   ['end', 2],
+])
+
+// The engine keeps auto distinct from start: text-align plus one, 0 = auto.
+const TEXT_ALIGN_LAST_KEYWORDS = new Map<string, number>([
+  ['auto', 0],
+  ['left', 1],
+  ['start', 1],
+  ['justify', 1],
+  ['center', 2],
+  ['right', 3],
+  ['end', 3],
 ])
 
 const WHITE_SPACE_KEYWORDS = new Map<string, number>([

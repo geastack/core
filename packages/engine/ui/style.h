@@ -212,6 +212,7 @@ enum class Property : int {
 	BorderBottomRelief,
 	BorderLeftRelief,
 	BorderRelief,
+	TextAlignLast,
 	Count
 };
 
@@ -346,7 +347,8 @@ enum class StyleDeclaration : std::uint8_t {
 	BackgroundOrigin,
 	MarginTrim,
 	Transition,
-	AnimationPlayState
+	AnimationPlayState,
+	TextAlignLast
 };
 
 class Style {
