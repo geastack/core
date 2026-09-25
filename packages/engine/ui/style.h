@@ -207,6 +207,11 @@ enum class Property : int {
 	ColumnWidthSet,
 	VerticalAlign,
 	BlockEllipsisString,
+	ColumnCount,
+	ColumnWidth,
+	ColumnFillAuto,
+	LineClampDiscard,
+	ColumnSpanAll,
 	Count
 };
 
@@ -214,7 +219,8 @@ enum class Property : int {
 inline int lineClampFlagBit(Property property)
 {
 	return property == Property::LineClampContinue ? 1 : property == Property::BlockEllipsis ? 2 :
-	       property == Property::ColumnCountSet ? 4 : 8;
+	       property == Property::ColumnCountSet ? 4 : property == Property::ColumnWidthSet ? 8 :
+	       property == Property::ColumnFillAuto ? 16 : property == Property::LineClampDiscard ? 32 : 64;
 }
 
 enum class StyleDeclaration : std::uint8_t {
@@ -356,6 +362,8 @@ enum class StyleDeclaration : std::uint8_t {
 	Columns,
 	ColumnCount,
 	ColumnWidth,
+	ColumnFill,
+	ColumnSpan,
 	VerticalAlign
 };
 

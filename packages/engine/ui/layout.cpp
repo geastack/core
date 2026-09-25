@@ -617,8 +617,12 @@ bool flexRowDirection(const ComputedStyle &style)
 	return !style.flex_direction_explicit || (style.flex_direction & 1);
 }
 
+bool isMulticolContainer(const Node &node);
+
 int resolvedGap(const Node &node, bool rowGap, int width, int height)
 {
+	// A multicol container's column-gap separates its column boxes, not its content.
+	if (isMulticolContainer(node)) return 0;
 	const int length = rowGap ? node.style.row_gap : node.style.column_gap;
 	const int percent = rowGap ? node.style.row_gap_percent : node.style.column_gap_percent;
 	const bool vertical = writingMode(node) != 0;
@@ -2243,6 +2247,29 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "mark") == 0;
 }
 
+// A block container with a column count or width (CSS Multi-column 2).
+// Spanning elements (column-span: all) split the columns into sets, which
+// this layout does not do: such a container keeps a single column.
+bool isMulticolContainer(const Node &node)
+{
+	const RareStyle &rs = rstyle(node.style);
+	if ((rs.column_count <= 0 && rs.column_width <= 0) || node.type != NodeType::View || node.style.display != kDisplayBlock ||
+	    (LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node))) return false;
+	const Node *nodes = Tree::instance().nodes();
+	for (int c = node.first_child; c >= 0; c = nodes[c].next_sibling)
+		if (rstyle(nodes[c].style).line_clamp_flags & 64) return false;
+	return true;
+}
+
+// column-gap: normal is 1em in a multicol container.
+int multicolGap(const Node &node, int available)
+{
+	const auto &s = node.style;
+	if (s.column_gap_percent != kUnset) return std::max(0, resolvePercentSize(available, s.column_gap_percent));
+	if (s.column_gap != kUnset) return std::max(0, static_cast<int>(s.column_gap));
+	return s.gap > 0 ? s.gap : s.font_size;
+}
+
 // An inline box with nothing to show: no insets and no visible box.
 bool emptyInlineBox(const Node &node)
 {
@@ -2336,6 +2363,14 @@ public:
 			return;
 		}
 
+		if (NodeRareData *rare = rareDataFor(id_)) rare->multicol.valid = false;
+		const ColumnGeometry columns = columnGeometry();
+		if (columns.count > 0) layoutColumns(columns);
+		else layoutContent();
+	}
+
+	void layoutContent()
+	{
 		const int padWidth = paddedWidth();
 		const int padHeight = paddedHeight();
 		const bool inlineRow = resolveInlineFormattingRow();
@@ -2402,6 +2437,9 @@ public:
 #if GEA_CSS_FIRST_LINE
 		if (NodeRareData *rare = rareDataFor(id_)) rare->firstLineBackground.lineValid = false;
 #endif
+		// A multicol container's content keeps the column width it was laid out in.
+		const ColumnGeometry columns = columnGeometry();
+		ColumnWidthScope columnWidth(node_, columns.count > 0 ? columns.width + boxInsets(node_.style, true) : -1);
 
 		const int padWidth = paddedWidth();
 		const int padHeight = paddedHeight();
@@ -2446,6 +2484,110 @@ public:
 		}
 		positionAbsoluteChildren();
 		applyRelativeOffsets();
+	}
+
+	struct ColumnGeometry {
+		int count = 0, width = 0, gap = 0;
+	};
+
+	// CSS Multi-column 3.4: the used column count and width of a multicol
+	// container. count 0: not a multicol container.
+	ColumnGeometry columnGeometry() const
+	{
+		ColumnGeometry g;
+		if (!isMulticolContainer(node_)) return g;
+		const RareStyle &rs = rstyle(node_.style);
+		const int available = paddedWidth();
+		g.gap = multicolGap(node_, available);
+		int count = rs.column_count;
+		if (rs.column_width > 0) {
+			const int fit = std::max(1, (available + g.gap) / (rs.column_width + g.gap));
+			count = count > 0 ? std::min(count, fit) : fit;
+		}
+		g.count = std::max(1, count);
+		g.width = std::max(1, (available - (g.count - 1) * g.gap) / g.count);
+		return g;
+	}
+
+	// Lays content out in a narrower border box, restoring the width after.
+	struct ColumnWidthScope {
+		Node &node;
+		int16_t width;
+		ColumnWidthScope(Node &n, int columnWidth) : node(n), width(n.layout.width)
+		{
+			if (columnWidth >= 0) n.layout.width = clampInt16(columnWidth);
+		}
+		~ColumnWidthScope() { node.layout.width = width; }
+	};
+
+	// A multicol container lays its content out as one column (the flow
+	// thread) of the column width; painting slices it into column boxes (see
+	// RenderRecorder). Column height follows a definite height under
+	// column-fill: auto, else balances the flow without cutting a line box.
+	void layoutColumns(const ColumnGeometry &g)
+	{
+		const int insetsX = boxInsets(node_.style, true);
+		const int insetsY = boxInsets(node_.style, false);
+		const bool definite = hasExplicitHeight(node_);
+		const int given = paddedHeight();
+		int flow = 0;
+		{
+			ColumnWidthScope columnWidth(node_, g.width + insetsX);
+			layoutContent();
+			if (node_.first_child >= 0) updateScrollContentSize();
+			flow = node_.first_child >= 0 ? std::max(0, node_.layout.scroll_content_height - insetsY) : 0;
+		}
+		const int flags = rstyle(node_.style).line_clamp_flags;
+		int height = definite && (flags & 16) ? given : balancedColumnHeight(flow, g.count);
+		if (definite) height = std::min(height, given);
+		height = std::max(1, height);
+		if (!definite) node_.layout.height = clampInt16(clampLayoutSize(node_, height + insetsY, false));
+		// Overflow columns follow the last column box; continue: discard drops them.
+		int used = std::max(1, (flow + height - 1) / height);
+		if (flags & 32) used = std::min(used, g.count);
+		ensureRareData(id_).multicol = MulticolLayout{clampInt16(g.width), clampInt16(g.gap), clampInt16(height), clampInt16(used), true, (flags & 32) != 0};
+		node_.layout.scroll_content_width = clampInt16(std::max<int>(node_.layout.width, insetsX + used * (g.width + g.gap) - g.gap));
+		node_.layout.scroll_content_height = node_.layout.height;
+	}
+
+	// The shortest column height that fits the flow into `count` columns with
+	// no column boundary cutting a line box or a replaced element.
+	int balancedColumnHeight(int flow, int count) const
+	{
+		if (count <= 1 || flow <= 0) return flow;
+		std::vector<std::pair<int, int>> units;
+		collectMonolithicUnits(id_, -boxInset(node_.style, 0), units);
+		for (int height = (flow + count - 1) / count; height < flow; ++height) {
+			bool fits = true;
+			for (const auto &unit : units) {
+				const int column = unit.first / height;
+				if (column < count - 1 && unit.second > (column + 1) * height) { fits = false; break; }
+			}
+			if (fits) return height;
+		}
+		return flow;
+	}
+
+	void collectMonolithicUnits(int parent, int originY, std::vector<std::pair<int, int>> &units) const
+	{
+		for (int id = nodes_[parent].first_child; id >= 0; id = nodes_[id].next_sibling) {
+			const Node &child = nodes_[id];
+			if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position)) continue;
+			const int top = originY + child.layout.y;
+			if (child.type == NodeType::Text) {
+				const int advance = TextRenderer::measureHeight("X", child.style.font_id, child.style.font_size, 0, child.style.line_height);
+				const int inner = child.layout.height - boxInsets(child.style, false);
+				const int lines = advance > 0 ? std::max(1, (inner + advance - 1) / advance) : 1;
+				for (int line = 0; line < lines; ++line) {
+					const int lineTop = top + boxInset(child.style, 0) + line * advance;
+					units.emplace_back(lineTop, std::min(lineTop + advance, top + child.layout.height));
+				}
+			} else if (child.type == NodeType::Image) {
+				units.emplace_back(top, top + child.layout.height);
+			} else {
+				collectMonolithicUnits(id, top, units);
+			}
+		}
 	}
 
 	bool containsChildMargins() const
@@ -2574,7 +2716,7 @@ private:
 	bool establishesBlockContext(const Node &n) const
 	{
 		return n.parent < 0 || isOutOfFlowPosition(n.style.position) || n.style.float_side ||
-		    n.style.display != kDisplayBlock || overflowEstablishesContext(n.style) ||
+		    n.style.display != kDisplayBlock || overflowEstablishesContext(n.style) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].style) ||
 		                      writingMode(n) != writingMode(nodes_[n.parent])));
 	}
@@ -4245,6 +4387,16 @@ bool LayoutEngine::isInlineLevelNode(const Node &n)
 
 // Mirror of startsFormattingLine: walk forward through siblings and inline
 // ancestors to the next content that shares or closes this line box.
+bool LayoutEngine::multicolContainer(const Node &node)
+{
+	return isMulticolContainer(node);
+}
+
+bool LayoutEngine::rightToLeftDirection(const Node &node)
+{
+	return rightToLeft(node);
+}
+
 bool LayoutEngine::endsFormattingLine(int id)
 {
 	const Node *nodes = Tree::instance().nodes();
@@ -4617,10 +4769,10 @@ void applyStickyOffset(Node &node, const Node &block, const int port[4])
 // A scroll container's padding box, in resolved coordinates.
 void scrollportOf(const Node &node, int port[4])
 {
-	port[0] = node.layout.x + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[3]);
-	port[1] = node.layout.y + std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[0]);
-	port[2] = node.layout.x + node.layout.width - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[1]);
-	port[3] = node.layout.y + node.layout.height - std::max<int>(node.style.border_width, rstyle(node.style).border_side_width[2]);
+	port[0] = node.layout.x + computedBorderWidth(node.style, 3);
+	port[1] = node.layout.y + computedBorderWidth(node.style, 0);
+	port[2] = node.layout.x + node.layout.width - computedBorderWidth(node.style, 1);
+	port[3] = node.layout.y + node.layout.height - computedBorderWidth(node.style, 2);
 }
 
 }  // namespace

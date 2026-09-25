@@ -92,6 +92,11 @@ bool isLayoutProperty(Property prop)
 	case Property::ColumnCountSet:
 	case Property::ColumnWidthSet:
 	case Property::BlockEllipsisString:
+	case Property::ColumnCount:
+	case Property::ColumnWidth:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll:
 	case Property::VerticalAlign:
 #if GEA_CSS_FLOATS
 	case Property::Clear:
@@ -344,10 +349,15 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #endif
 	case Property::MaxLines: if (rstyle(n->style).max_lines != value) { rstyleMut(n->style).max_lines = value; changed = 1; } break;
 	case Property::BlockEllipsisString: if (rstyle(n->style).block_ellipsis != value) { rstyleMut(n->style).block_ellipsis = value; changed = 1; } break;
+	case Property::ColumnCount: if (rstyle(n->style).column_count != value) { rstyleMut(n->style).column_count = value; changed = 1; } break;
+	case Property::ColumnWidth: if (rstyle(n->style).column_width != value) { rstyleMut(n->style).column_width = value; changed = 1; } break;
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
-	case Property::ColumnWidthSet: {
+	case Property::ColumnWidthSet:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(prop);
 		const int next = value ? rstyle(n->style).line_clamp_flags | bit : rstyle(n->style).line_clamp_flags & ~bit;
 		if (rstyle(n->style).line_clamp_flags != next) { rstyleMut(n->style).line_clamp_flags = next; changed = 1; }
