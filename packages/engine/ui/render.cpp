@@ -2172,6 +2172,31 @@ int gLastScrollUiFrame = -1000;
 		}
 
 
+		// Multicol column copies: commands [begin, end) repeat those `offset`
+		// indices earlier, translated into a later column box. Text-clipped
+		// backgrounds in a copy take their glyph mask from the same copy.
+		struct ColumnCopy
+		{
+			int begin, end, offset;
+		};
+
+		std::vector<ColumnCopy> &columnCopies()
+		{
+			static std::vector<ColumnCopy> value;
+			return value;
+		}
+
+		int columnCopyOffset(const DisplayCommand &command)
+		{
+			if (!state.commands || &command < state.commands || &command >= state.commands + state.commandCount)
+				return 0;
+			const int index = static_cast<int>(&command - state.commands);
+			for (const auto &copy : columnCopies())
+				if (index >= copy.begin && index < copy.end)
+					return copy.offset;
+			return 0;
+		}
+
 		// Rounded and transformed overflow clips. Display clips are rectangles, so
 		// replay saves the canvas pixels a shaped clip's bounds may expose, lets
 		// the clipped content paint, then puts back every pixel outside the shape
@@ -6818,7 +6843,7 @@ int gLastScrollUiFrame = -1000;
 			// that background never shows; leaving them out of the mask also keeps
 			// it out of their antialiased edges, as the text alone would paint them.
 			static void collectTextInk(int id, int owner, int x0, int y0, int x1, int y1,
-			                           std::vector<TextInkCommand> &ink, bool opaque = true)
+			                           std::vector<TextInkCommand> &ink, bool opaque = true, int copyOffset = 0)
 			{
 				auto &tree = Tree::instance();
 				if (id < 0 || id >= tree.nodeCount()) return;
@@ -6827,7 +6852,7 @@ int gLastScrollUiFrame = -1000;
 				opaque = opaque && node.style.opacity == 255;
 				if (state.hasNodeScratchFor(id) && node.style.visibility == 0) {
 					const bool hidesBackground = opaque && node.type == NodeType::Text && node.style.text_alpha == 255;
-					const int begin = state.nodeDrawStart[id], end = state.nodeDrawEnd[id];
+					const int begin = state.nodeDrawStart[id] + copyOffset, end = state.nodeDrawEnd[id] + copyOffset;
 					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
 						const auto &c = state.commands[ci];
 						if (hidesBackground && c.type == DisplayCommandType::DrawText) continue;
@@ -6838,7 +6863,7 @@ int gLastScrollUiFrame = -1000;
 				// Match the overflow clip recorded for descendants of this node.
 				// Positioned in-flow and stacking-context descendants still contribute;
 				// their opacity does not change the shape of the mask.
-				const int clipIndex = state.hasNodeScratchFor(id) ? state.nodeDrawEnd[id] : -1;
+				const int clipIndex = state.hasNodeScratchFor(id) ? state.nodeDrawEnd[id] + copyOffset : -1;
 				if (clipIndex >= 0 && clipIndex < state.commandCount) {
 					const auto &clip = state.commands[clipIndex];
 					if (clip.type == DisplayCommandType::PushClip && clip.clip.nodeId == id) {
@@ -6848,7 +6873,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (x0 > x1 || y0 > y1) return;
 				for (int child = node.first_child; child >= 0; child = tree.nodes()[child].next_sibling)
-					collectTextInk(child, owner, x0, y0, x1, y1, ink, opaque);
+					collectTextInk(child, owner, x0, y0, x1, y1, ink, opaque, copyOffset);
 			}
 
 			static void replayTextClipped(const DisplayCommand &command)
@@ -6865,7 +6890,7 @@ int gLastScrollUiFrame = -1000;
 				y1 = std::min({y1, canvas->height()-1, command.by+command.bh-1});
 				if (x0 > x1 || y0 > y1) return;
 				std::vector<TextInkCommand> ink;
-				collectTextInk(command.textClipOwner, command.textClipOwner, x0, y0, x1, y1, ink);
+				collectTextInk(command.textClipOwner, command.textClipOwner, x0, y0, x1, y1, ink, true, columnCopyOffset(command));
 				if (ink.empty()) return;
 				DisplayCommand paint = command;
 				paint.textClipOwner = -1;
@@ -7251,6 +7276,68 @@ int gLastScrollUiFrame = -1000;
 				~SuspendedRecordClips() { restore(clips); }
 			};
 
+			// Column k of a multicol container shows its flow thread's band
+			// [k * height, (k + 1) * height). The first column stays open above and
+			// the last below, so ink overflowing the fragmentation edges still shows.
+			static bool appendColumnClip(DisplayList &list, const Node &n, const MulticolLayout &columns, int k)
+			{
+				DisplayCommand *cmd = list.append();
+				if (!cmd)
+					return false;
+				const int top = n.layout.y + boxInset(n.style, 0);
+				const int y0 = k == 0 ? -16384 : top;
+				const int y1 = k == columns.used - 1 && !columns.discard ? 16383 : top + columns.height;
+				cmd->type = DisplayCommandType::PushClip;
+				cmd->bx = cmd->clip.x = -16384;
+				cmd->bw = cmd->clip.w = 32767;
+				cmd->by = cmd->clip.y = static_cast<int16_t>(y0);
+				cmd->bh = cmd->clip.h = static_cast<int16_t>(y1 - y0);
+				cmd->clip.nodeId = -1;
+				cmd->clip.shaped = 0;
+				return true;
+			}
+
+			static void appendColumnPop(DisplayList &list)
+			{
+				DisplayCommand *cmd = list.append();
+				if (!cmd)
+					return;
+				cmd->type = DisplayCommandType::PopClip;
+				cmd->bx = cmd->by = 0;
+				cmd->bw = cmd->bh = 0;
+				cmd->clip.nodeId = -1;
+			}
+
+			// Paints the flow thread recorded at [begin, end) into every further
+			// column box: a copy translated k columns along the inline direction and
+			// k column heights up. In rtl the columns progress from the right edge.
+			static void replicateColumns(DisplayList &list, const Node &n, const MulticolLayout &columns, int begin, int end)
+			{
+				const bool rtl = LayoutEngine::rightToLeftDirection(n);
+				const int contentWidth = n.layout.width - boxInset(n.style, 1) - boxInset(n.style, 3);
+				const int step = rtl ? -(columns.width + columns.gap) : columns.width + columns.gap;
+				const int start = rtl ? contentWidth - columns.width : 0;
+				if (start != 0)
+					for (int ci = begin; ci < end; ++ci)
+						DisplayCommandTranslator::translate(&state.commands[ci], start, 0);
+				appendColumnPop(list);
+				for (int k = 1; k < columns.used; ++k) {
+					if (!appendColumnClip(list, n, columns, k))
+						return;
+					const int copyBegin = state.commandCount;
+					for (int ci = begin; ci < end; ++ci) {
+						const DisplayCommand copy = state.commands[ci];
+						DisplayCommand *cmd = list.append();
+						if (!cmd)
+							break;
+						*cmd = copy;
+						DisplayCommandTranslator::translate(cmd, k * step, -k * columns.height);
+					}
+					columnCopies().push_back({copyBegin, state.commandCount, copyBegin - begin});
+					appendColumnPop(list);
+				}
+			}
+
 			static void recordNode(int id, uint8_t parent_alpha, int cx0, int cy0, int cx1, int cy1, const Node *mask_node, bool insideDirty = false, const RecordClipFrame *clips = nullptr, bool groupRoot = true, bool includePositioned = true)
 			{
 				if (!state.hasNodeScratchFor(id))
@@ -7426,6 +7513,21 @@ int gLastScrollUiFrame = -1000;
 				else if (pushed_clip)
 					ClipMath::clampToNode(*n, &child_cx0, &child_cy0, &child_cx1, &child_cy1);
 
+				// A multicol flow thread is recorded once, clipped to the first column,
+				// then copied into the others. Its content reaches past the container's
+				// box before it is translated, so it is never culled there.
+				MulticolLayout columns{};
+				if (const NodeRareData *rare = rareDataFor(id); rare && rare->multicol.valid && !state.appendOverride &&
+				    (rare->multicol.used > 1 || LayoutEngine::rightToLeftDirection(*n)))
+					columns = rare->multicol;
+				int columnFlowBegin = -1;
+				if (columns.valid) {
+					child_cy0 = -32768;
+					child_cy1 = 32767;
+					child_cx1 = 32767;
+					if (appendColumnClip(list, *n, columns, 0)) columnFlowBegin = state.commandCount;
+				}
+
 				const RecordClipFrame ownClip{*n, clips};
 				for (int child : children) {
 					// A positioned descendant can paint in this context while its
@@ -7454,6 +7556,8 @@ int gLastScrollUiFrame = -1000;
 					recordNode(child, cur_alpha, x0, y0, x1, y1, active_mask, dirty, childClips, PaintOrder::isGroup(child), PaintOrder::isContext(child));
 					for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame) ViewRenderer::recordClipEnd(frame->node);
 				}
+				if (columnFlowBegin >= 0)
+					replicateColumns(list, *n, columns, columnFlowBegin, state.commandCount);
 
 				state.recordDepth--;
 
@@ -9726,10 +9830,12 @@ int gLastScrollUiFrame = -1000;
 	{
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
-		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.computedStyle().position) &&
-		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
-		return n.parent < 0 || n.computedStyle().position == kPositionFixed || ChildZSorter::effectGroup(n) ||
-		    (!n.computedStyle().z_index_auto && (n.computedStyle().position != 0 || item));
+		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.style.position) &&
+		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		// A multicol container paints its whole flow thread, positioned content
+		// included, so every column box can repeat it.
+		return n.parent < 0 || n.style.position == kPositionFixed || ChildZSorter::effectGroup(n) ||
+		    (!n.style.z_index_auto && (n.style.position != 0 || item)) || LayoutEngine::multicolContainer(n);
 	}
 
 	bool PaintOrder::isGroup(int id)
@@ -9905,6 +10011,7 @@ int gLastScrollUiFrame = -1000;
 		state.textClippedBackgrounds = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
+		columnCopies().clear();
 		if (!state.ensureNodeScratchCapacity(tree.nodeCount()))
 			return;
 		for (int i = 0; i < tree.nodeCount(); i++)
@@ -10521,6 +10628,9 @@ int gLastScrollUiFrame = -1000;
 			if ((GEA_CSS_FILTERS ? rstyle(nodes[i].computedStyle()).filter_blur_radius : 0) > 0)
 				return false;
 			if (nodes[i].computedStyle().overflow == 2)
+				return false;
+			// Multicol content paints as copies no node range describes.
+			if (LayoutEngine::multicolContainer(nodes[i]))
 				return false;
 		}
 		(void)width;

@@ -405,6 +405,8 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
 	    ar.block_ellipsis != br.block_ellipsis ||
+	    ar.column_count != br.column_count ||
+	    ar.column_width != br.column_width ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -635,6 +637,8 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
 	    ar.block_ellipsis != br.block_ellipsis ||
+	    ar.column_count != br.column_count ||
+	    ar.column_width != br.column_width ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -1181,6 +1185,8 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "columns") == 0) return CssDeclarationId::Columns;
 	if (std::strcmp(property, "column-count") == 0) return CssDeclarationId::ColumnCount;
 	if (std::strcmp(property, "column-width") == 0) return CssDeclarationId::ColumnWidth;
+	if (std::strcmp(property, "column-fill") == 0) return CssDeclarationId::ColumnFill;
+	if (std::strcmp(property, "column-span") == 0) return CssDeclarationId::ColumnSpan;
 	if (std::strcmp(property, "clear") == 0) return CssDeclarationId::Clear;
 	if (std::strcmp(property, "direction") == 0) return CssDeclarationId::Direction;
 	if (std::strcmp(property, "writing-mode") == 0) return CssDeclarationId::WritingMode;
@@ -6765,7 +6771,8 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 	if (declaration == CssDeclarationId::Continue) {
 		if (quoted || words.size() != 1 || (words[0] != "auto" && words[0] != "collapse" && words[0] != "discard")) return 0;
 		out[0] = {Property::LineClampContinue, words[0] != "auto"};
-		return 1;
+		out[1] = {Property::LineClampDiscard, words[0] == "discard"};
+		return 2;
 	}
 	if (declaration == CssDeclarationId::BlockEllipsis) {
 		const bool keyword = !quoted && words.size() == 1 && (words[0] == "none" || words[0] == "auto");
@@ -6800,22 +6807,47 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 }
 
 // Only whether columns are set matters: line-clamp skips multicol containers.
-int multicolWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[2])
+// columns / column-count / column-width / column-fill as ColumnCount(Set) and
+// ColumnWidth(Set) writes plus the column-fill flag. A column width other than
+// px is not resolved here and leaves the width auto.
+int multicolWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
 {
+	const auto words = splitWords(toLowerAscii(trimCssValue(value)));
+	if (declaration == CssDeclarationId::ColumnSpan) {
+		if (words.size() != 1 || (words[0] != "none" && words[0] != "all")) return 0;
+		out[0] = {Property::ColumnSpanAll, words[0] == "all"};
+		return 1;
+	}
+	if (declaration == CssDeclarationId::ColumnFill) {
+		if (words.size() != 1 || (words[0] != "auto" && words[0] != "balance" && words[0] != "balance-all")) return 0;
+		out[0] = {Property::ColumnFillAuto, words[0] == "auto"};
+		return 1;
+	}
 	const bool shorthand = declaration == CssDeclarationId::Columns;
 	if (!shorthand && declaration != CssDeclarationId::ColumnCount && declaration != CssDeclarationId::ColumnWidth) return -1;
-	const auto words = splitWords(toLowerAscii(trimCssValue(value)));
 	if (words.empty() || words.size() > (shorthand ? 2u : 1u)) return 0;
 	bool count = false, width = false;
+	int countValue = 0, widthValue = -1;
 	for (const auto &word : words) {
 		if (word == "auto") continue;
-		if (word.find_first_not_of("0123456789") == std::string::npos && word != "0" && declaration != CssDeclarationId::ColumnWidth) count = true;
-		else if (CssLengthSpec length; declaration != CssDeclarationId::ColumnCount && parseCompiledLengthSpec(word, length)) width = true;
-		else return 0;
+		if (word.find_first_not_of("0123456789") == std::string::npos && word != "0" && declaration != CssDeclarationId::ColumnWidth) {
+			count = true;
+			countValue = std::min(255, std::atoi(word.c_str()));
+		} else if (CssLengthSpec length; declaration != CssDeclarationId::ColumnCount && parseCompiledLengthSpec(word, length)) {
+			width = true;
+			if (length.unit == CssLengthUnit::Px || length.unit == CssLengthUnit::Raw)
+				widthValue = std::max(1, std::min(32767, length.unit == CssLengthUnit::Px ? cssPixelLength(length.value) : rawNumber(length.value)));
+		} else return 0;
 	}
 	int n = 0;
-	if (declaration != CssDeclarationId::ColumnWidth) out[n++] = {Property::ColumnCountSet, count};
-	if (declaration != CssDeclarationId::ColumnCount) out[n++] = {Property::ColumnWidthSet, width};
+	if (declaration != CssDeclarationId::ColumnWidth) {
+		out[n++] = {Property::ColumnCountSet, count};
+		out[n++] = {Property::ColumnCount, countValue};
+	}
+	if (declaration != CssDeclarationId::ColumnCount) {
+		out[n++] = {Property::ColumnWidthSet, width};
+		out[n++] = {Property::ColumnWidth, widthValue};
+	}
 	return n;
 }
 
@@ -7781,10 +7813,15 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::MaxLines: rstyleMut(style).max_lines = static_cast<uint8_t>(value); return true;
 	case Property::BlockEllipsisString: rstyleMut(style).block_ellipsis = static_cast<uint16_t>(value); return true;
+	case Property::ColumnCount: rstyleMut(style).column_count = static_cast<uint8_t>(value); return true;
+	case Property::ColumnWidth: rstyleMut(style).column_width = static_cast<int16_t>(value); return true;
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
-	case Property::ColumnWidthSet: {
+	case Property::ColumnWidthSet:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(property);
 		auto &flags = rstyleMut(style).line_clamp_flags;
 		flags = static_cast<uint8_t>(value ? flags | bit : flags & ~bit);
@@ -9626,7 +9663,9 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::BlockEllipsis:
 	case CssDeclarationId::Columns:
 	case CssDeclarationId::ColumnCount:
-	case CssDeclarationId::ColumnWidth: {
+	case CssDeclarationId::ColumnWidth:
+	case CssDeclarationId::ColumnFill:
+	case CssDeclarationId::ColumnSpan: {
 		StaticStylePropertyValue writes[4];
 		int count = lineClampWrites(declaration, value, writes);
 		if (count < 0) count = multicolWrites(declaration, value, writes);
@@ -11616,11 +11655,13 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "line-clamp" || property == "-webkit-line-clamp")
 		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::BlockEllipsis, Property::BlockEllipsisString});
 	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});
-	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue});
+	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue, Property::LineClampDiscard});
 	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis, Property::BlockEllipsisString});
-	if (property == "columns") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnWidthSet});
-	if (property == "column-count") return removeInlineStyleProperties(id, {Property::ColumnCountSet});
-	if (property == "column-width") return removeInlineStyleProperties(id, {Property::ColumnWidthSet});
+	if (property == "columns") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnWidthSet, Property::ColumnCount, Property::ColumnWidth});
+	if (property == "column-count") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnCount});
+	if (property == "column-width") return removeInlineStyleProperties(id, {Property::ColumnWidthSet, Property::ColumnWidth});
+	if (property == "column-fill") return removeInlineStyleProperties(id, {Property::ColumnFillAuto});
+	if (property == "column-span") return removeInlineStyleProperties(id, {Property::ColumnSpanAll});
 	if (property == "clear") return removeInlineStyleProperties(id, {Property::Clear});
 	if (property == "direction") return removeInlineStyleProperties(id, {Property::Direction});
 	if (property == "writing-mode") return removeInlineStyleProperties(id, {Property::WritingMode});

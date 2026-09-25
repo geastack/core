@@ -153,6 +153,8 @@ struct RareStyle {
 #else
 	static constexpr uint8_t margin_trim = 0;
 #endif
+	// Multi-column: column-count (0 = auto). Sits in padding.
+	uint8_t column_count = 0;
 	// CSS atom of a custom block-ellipsis string; 0 = the default ellipsis.
 	// Only used when line_clamp_flags has block-ellipsis set. Sits in padding.
 	uint16_t block_ellipsis = 0;
@@ -380,6 +382,8 @@ struct RareStyle {
 	//     center/extent 500/1000) ---
 #if GEA_CSS_BACKGROUND_LAYERS
 	uint16_t bg_image_layer_count = 1; // Includes none layers.
+	// Multi-column: column-width in px, -1 = auto. Sits in padding.
+	int16_t column_width = -1;
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #else
@@ -469,9 +473,10 @@ struct RareStyle {
 	static constexpr uint8_t bg_grid_line_y = 0;
 #endif
 	// CSS Overflow 4 line clamping: max-lines (0 = none, capped at 255) and
-	// flags: 1 = continue: collapse, 2 = block-ellipsis other than none, and
-	// 4 / 8 = column-count / column-width set (a multicol container never
-	// clamps). Both sit in trailing padding, so RareStyle keeps its size.
+	// flags: 1 = continue: collapse or discard, 2 = block-ellipsis other than
+	// none, 4 / 8 = column-count / column-width set (a multicol container never
+	// clamps), 16 = column-fill: auto, 32 = continue: discard, 64 = column-span:
+	// all. Both sit in trailing padding, so RareStyle keeps its size.
 	uint8_t max_lines = 0;
 	uint8_t line_clamp_flags = 0;
 	};

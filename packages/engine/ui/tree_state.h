@@ -120,6 +120,19 @@ struct InlineStaticPosition {
 	bool valid = false;
 };
 
+// Column boxes of a multicol container (CSS Multi-column). Layout places the
+// content as one column `width` wide; painting slices it into column boxes
+// `height` tall and `gap` apart, `used` of them, first to last. `discard`
+// (continue: discard) drops what overflows the last column box.
+struct MulticolLayout {
+	std::int16_t width = 0;
+	std::int16_t gap = 0;
+	std::int16_t height = 0;
+	std::int16_t used = 0;
+	bool valid = false;
+	bool discard = false;
+};
+
 struct NodeCustomProperty {
 	CssAtomId nameId = kInvalidCssAtom;
 	CssAtomId valueAtom = kInvalidCssAtom;
@@ -245,6 +258,7 @@ struct NodeRareData {
 	inline static constexpr FirstLineBackground firstLineBackground{};
 	inline static constexpr FirstLineFragment firstLineFragment{};
 #endif
+	MulticolLayout multicol;
 
 	void clear()
 	{
@@ -267,6 +281,7 @@ struct NodeRareData {
 	firstLineFragment = FirstLineFragment{};
 #endif
 	inlineStaticPosition = InlineStaticPosition{};
+	multicol = MulticolLayout{};
 	}
 };
 
