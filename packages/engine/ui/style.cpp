@@ -17165,9 +17165,19 @@ int StyleValues::backgroundClip(const ComputedStyle &style, int layer)
 {
 	const auto handle = rstyle(style).bg_clip;
 	const auto &lists = backgroundClipLists();
-	if (!handle || handle > lists.size()) return 0;
-	const auto &list = lists[handle - 1];
-	return list[std::max(0, layer) % list.size()];
+	int clip = 0;
+	if (handle && handle <= lists.size()) {
+		const auto &list = lists[handle - 1];
+		clip = list[std::max(0, layer) % list.size()];
+	}
+	// A local background scrolls with a scroll container's contents, so its
+	// painting area is the scrollport: border-box clipping acts as padding-box.
+	if (clip != 0 || !overflowEstablishesContext(style)) return clip;
+	const int attachments = rstyle(style).bg_attachment_list;
+	const auto &placements = backgroundPlacementLists();
+	if (attachments < 0 || attachments >= static_cast<int>(placements.size()) || placements[attachments].empty()) return clip;
+	const auto &list = placements[attachments];
+	return list[std::max(0, layer) % list.size()].a == 2 ? 1 : clip;
 }
 
 BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
