@@ -92,6 +92,7 @@ bool isLayoutProperty(Property prop)
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
 	case Property::ColumnWidthSet:
+	case Property::BlockEllipsisString:
 	case Property::VerticalAlign:
 #if GEA_CSS_TEXT_ALIGN
 	// Line shifts and inline static positions follow physicalTextAlign.
@@ -362,6 +363,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::MarginTrim: if ((GEA_CSS_MARGIN_TRIM ? rstyle(style).margin_trim : 0) != value) { rstyleMut(style).margin_trim = value; changed = 1; } break;
 #endif
 	case Property::MaxLines: if (rstyle(n->style).max_lines != value) { rstyleMut(n->style).max_lines = value; changed = 1; } break;
+	case Property::BlockEllipsisString: if (rstyle(n->style).block_ellipsis != value) { rstyleMut(n->style).block_ellipsis = value; changed = 1; } break;
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
