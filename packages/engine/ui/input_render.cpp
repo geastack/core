@@ -251,7 +251,7 @@ void InputRenderer::record(int id)
 			cmd->text.maxWidth = scrolled ? textW + 1 : contentW;
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
-			cmd->text.align = scrolled ? 0 : style.text_align;
+			cmd->text.align = scrolled ? 0 : static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
 			cmd->text.textTransform = style.text_transform;
 			cmd->text.lineHeight = style.line_height;
 			cmd->text.containerWidth = scrolled ? textW + 1 : contentW;

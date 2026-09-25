@@ -443,12 +443,13 @@ const POSITION_KEYWORDS = new Map<string, number>([
   ['-webkit-sticky', 4],
 ])
 
+// 0 start, 1 center, 2 right, 3 left, 4 end (see textAlignValue in style.cpp).
 const TEXT_ALIGN_KEYWORDS = new Map<string, number>([
-  ['left', 0],
   ['start', 0],
   ['center', 1],
   ['right', 2],
-  ['end', 2],
+  ['left', 3],
+  ['end', 4],
 ])
 
 const VERTICAL_ALIGN_KEYWORDS = new Map<string, number>([
