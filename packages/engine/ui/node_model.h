@@ -1223,6 +1223,17 @@ inline bool hasSideBorder(const ComputedStyle &style)
 #endif
 }
 
+// How far an outer box-shadow can paint outside the border box.
+inline int boxShadowExtent(const ComputedStyle &style)
+{
+	const RareStyle &r = rstyle(style);
+	if (r.box_shadow_inset || r.box_shadow_alpha == 0) return 0;
+	const int ox = r.box_shadow_offset_x < 0 ? -r.box_shadow_offset_x : r.box_shadow_offset_x;
+	const int oy = r.box_shadow_offset_y < 0 ? -r.box_shadow_offset_y : r.box_shadow_offset_y;
+	const int reach = r.box_shadow_spread + (r.box_shadow_blur_radius > 0 ? r.box_shadow_blur_radius : 0) + (ox > oy ? ox : oy);
+	return reach > 0 ? reach : 0;
+}
+
 inline bool hasAnyBorder(const ComputedStyle &style)
 {
 	return style.border_width > 0 || hasSideBorder(style);
@@ -1415,6 +1426,9 @@ struct RenderState {
 		style_color_t bg_recolor_from;
 		struct { int16_t x0, x1; } text_dirty;
 	};
+	// boxShadowExtent at the last snapshot, so a moved or restyled shadow
+	// invalidates the pixels it used to cover. Sits in trailing padding.
+	int16_t previous_box_shadow_extent;
 };
 
 inline bool hadIndividualLinearTransform(const RenderState &s)
