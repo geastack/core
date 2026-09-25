@@ -1079,10 +1079,96 @@ enum class CssRuleProperty : std::uint8_t {
 
 using CssDeclarationId = StyleDeclaration;
 
+// CSS Logical Properties 4, resolved for horizontal-tb ltr: the inline axis is
+// horizontal and starts on the left. Other writing modes and rtl still map this
+// way. A logical longhand classifies as its physical property.
+const char *physicalLogicalLonghand(const char *property)
+{
+	static const std::pair<const char *, const char *> longhands[] = {
+		{"inline-size", "width"},
+		{"block-size", "height"},
+		{"min-inline-size", "min-width"},
+		{"min-block-size", "min-height"},
+		{"max-inline-size", "max-width"},
+		{"max-block-size", "max-height"},
+		{"margin-inline-start", "margin-left"},
+		{"margin-inline-end", "margin-right"},
+		{"margin-block-start", "margin-top"},
+		{"margin-block-end", "margin-bottom"},
+		{"padding-inline-start", "padding-left"},
+		{"padding-inline-end", "padding-right"},
+		{"padding-block-start", "padding-top"},
+		{"padding-block-end", "padding-bottom"},
+		{"inset-inline-start", "left"},
+		{"inset-inline-end", "right"},
+		{"inset-block-start", "top"},
+		{"inset-block-end", "bottom"},
+		{"border-inline-start", "border-left"},
+		{"border-inline-end", "border-right"},
+		{"border-block-start", "border-top"},
+		{"border-block-end", "border-bottom"},
+		{"border-inline-start-width", "border-left-width"},
+		{"border-inline-start-color", "border-left-color"},
+		{"border-inline-start-style", "border-left-style"},
+		{"border-inline-end-width", "border-right-width"},
+		{"border-inline-end-color", "border-right-color"},
+		{"border-inline-end-style", "border-right-style"},
+		{"border-block-start-width", "border-top-width"},
+		{"border-block-start-color", "border-top-color"},
+		{"border-block-start-style", "border-top-style"},
+		{"border-block-end-width", "border-bottom-width"},
+		{"border-block-end-color", "border-bottom-color"},
+		{"border-block-end-style", "border-bottom-style"},
+		{"border-start-start-radius", "border-top-left-radius"},
+		{"border-start-end-radius", "border-top-right-radius"},
+		{"border-end-start-radius", "border-bottom-left-radius"},
+		{"border-end-end-radius", "border-bottom-right-radius"}
+	};
+	for (const auto &entry : longhands)
+		if (std::strcmp(property, entry.first) == 0) return entry.second;
+	return nullptr;
+}
+
+// A logical shorthand for two physical sides: `split` values give the second
+// side its own value (one value sets both); otherwise both take the value.
+struct LogicalPair {
+	const char *name;
+	StyleDeclaration declaration;
+	StyleDeclaration first, second;
+	bool split;
+};
+
+const LogicalPair *logicalPairFor(const char *property, StyleDeclaration declaration = StyleDeclaration::Unknown)
+{
+	static const LogicalPair pairs[] = {
+		{"margin-inline", StyleDeclaration::MarginInline, StyleDeclaration::MarginLeft, StyleDeclaration::MarginRight, true},
+		{"margin-block", StyleDeclaration::MarginBlock, StyleDeclaration::MarginTop, StyleDeclaration::MarginBottom, true},
+		{"padding-inline", StyleDeclaration::PaddingInline, StyleDeclaration::PaddingLeft, StyleDeclaration::PaddingRight, true},
+		{"padding-block", StyleDeclaration::PaddingBlock, StyleDeclaration::PaddingTop, StyleDeclaration::PaddingBottom, true},
+		{"inset-inline", StyleDeclaration::InsetInline, StyleDeclaration::Left, StyleDeclaration::Right, true},
+		{"inset-block", StyleDeclaration::InsetBlock, StyleDeclaration::Top, StyleDeclaration::Bottom, true},
+		{"border-inline", StyleDeclaration::BorderInline, StyleDeclaration::BorderLeft, StyleDeclaration::BorderRight, false},
+		{"border-block", StyleDeclaration::BorderBlock, StyleDeclaration::BorderTop, StyleDeclaration::BorderBottom, false},
+		{"border-inline-width", StyleDeclaration::BorderInlineWidth, StyleDeclaration::BorderLeftWidth, StyleDeclaration::BorderRightWidth, true},
+		{"border-block-width", StyleDeclaration::BorderBlockWidth, StyleDeclaration::BorderTopWidth, StyleDeclaration::BorderBottomWidth, true},
+		{"border-inline-color", StyleDeclaration::BorderInlineColor, StyleDeclaration::BorderLeftColor, StyleDeclaration::BorderRightColor, true},
+		{"border-block-color", StyleDeclaration::BorderBlockColor, StyleDeclaration::BorderTopColor, StyleDeclaration::BorderBottomColor, true},
+		{"border-inline-style", StyleDeclaration::BorderInlineStyle, StyleDeclaration::BorderLeftStyle, StyleDeclaration::BorderRightStyle, true},
+		{"border-block-style", StyleDeclaration::BorderBlockStyle, StyleDeclaration::BorderTopStyle, StyleDeclaration::BorderBottomStyle, true}
+	};
+	for (const auto &pair : pairs)
+		if (property ? std::strcmp(property, pair.name) == 0 : pair.declaration == declaration) return &pair;
+	return nullptr;
+}
+
 CssDeclarationId classifyDeclaration(const char *property)
 {
 	if (!property || !*property) return CssDeclarationId::Unknown;
 	if (property[0] == '-' && property[1] == '-') return CssDeclarationId::Custom;
+	if (std::strstr(property, "inline") || std::strstr(property, "block") || std::strstr(property, "start") || std::strstr(property, "end")) {
+		if (const char *physical = physicalLogicalLonghand(property)) return classifyDeclaration(physical);
+		if (const LogicalPair *pair = logicalPairFor(property)) return pair->declaration;
+	}
 	if (std::strcmp(property, "color-scheme") == 0 ||
 		    std::strcmp(property, "isolation") == 0 ||
 	    std::strcmp(property, "letter-spacing") == 0 ||
@@ -9789,6 +9875,29 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (compileFlexBasisValue(value, compiled)) setFlexBasisValue(node, compiled.aux != 0, compiled.lengths[0], source);
 		return true;
 	}
+	case CssDeclarationId::MarginInline:
+	case CssDeclarationId::MarginBlock:
+	case CssDeclarationId::PaddingInline:
+	case CssDeclarationId::PaddingBlock:
+	case CssDeclarationId::InsetInline:
+	case CssDeclarationId::InsetBlock:
+	case CssDeclarationId::BorderInline:
+	case CssDeclarationId::BorderBlock:
+	case CssDeclarationId::BorderInlineWidth:
+	case CssDeclarationId::BorderBlockWidth:
+	case CssDeclarationId::BorderInlineColor:
+	case CssDeclarationId::BorderBlockColor:
+	case CssDeclarationId::BorderInlineStyle:
+	case CssDeclarationId::BorderBlockStyle:
+	{
+		const LogicalPair *pair = logicalPairFor(nullptr, declaration);
+		if (!pair) return true;
+		const auto parts = pair->split ? splitFunctionAwareWords(value) : std::vector<std::string>{value};
+		if (parts.empty() || parts.size() > 2) return true;
+		applyKnownResolvedPropertyWithSource(node, pair->first, parts[0], source);
+		applyKnownResolvedPropertyWithSource(node, pair->second, parts.size() > 1 ? parts[1] : parts[0], source);
+		return true;
+	}
 	case CssDeclarationId::Padding:
 	case CssDeclarationId::PaddingTop:
 	case CssDeclarationId::PaddingRight:
@@ -11418,6 +11527,30 @@ bool removeInlineStyleProperties(int node, std::initializer_list<Property> prope
 bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 {
 	if (!node) return false;
+	if (const char *physical = physicalLogicalLonghand(property.c_str())) return removeInlineStyleProperty(node, physical);
+	if (const LogicalPair *pair = logicalPairFor(property.c_str())) {
+		const auto &names = [](StyleDeclaration side) {
+			static const std::pair<StyleDeclaration, const char *> table[] = {
+				{StyleDeclaration::MarginLeft, "margin-left"}, {StyleDeclaration::MarginRight, "margin-right"},
+				{StyleDeclaration::MarginTop, "margin-top"}, {StyleDeclaration::MarginBottom, "margin-bottom"},
+				{StyleDeclaration::PaddingLeft, "padding-left"}, {StyleDeclaration::PaddingRight, "padding-right"},
+				{StyleDeclaration::PaddingTop, "padding-top"}, {StyleDeclaration::PaddingBottom, "padding-bottom"},
+				{StyleDeclaration::Left, "left"}, {StyleDeclaration::Right, "right"}, {StyleDeclaration::Top, "top"}, {StyleDeclaration::Bottom, "bottom"},
+				{StyleDeclaration::BorderLeft, "border-left"}, {StyleDeclaration::BorderRight, "border-right"},
+				{StyleDeclaration::BorderTop, "border-top"}, {StyleDeclaration::BorderBottom, "border-bottom"},
+				{StyleDeclaration::BorderLeftWidth, "border-left-width"}, {StyleDeclaration::BorderRightWidth, "border-right-width"},
+				{StyleDeclaration::BorderTopWidth, "border-top-width"}, {StyleDeclaration::BorderBottomWidth, "border-bottom-width"},
+				{StyleDeclaration::BorderLeftColor, "border-left-color"}, {StyleDeclaration::BorderRightColor, "border-right-color"},
+				{StyleDeclaration::BorderTopColor, "border-top-color"}, {StyleDeclaration::BorderBottomColor, "border-bottom-color"},
+				{StyleDeclaration::BorderLeftStyle, "border-left-style"}, {StyleDeclaration::BorderRightStyle, "border-right-style"},
+				{StyleDeclaration::BorderTopStyle, "border-top-style"}, {StyleDeclaration::BorderBottomStyle, "border-bottom-style"},
+			};
+			for (const auto &entry : table) if (entry.first == side) return entry.second;
+			return "";
+		};
+		const bool first = removeInlineStyleProperty(node, names(pair->first));
+		return removeInlineStyleProperty(node, names(pair->second)) || first;
+	}
 	if (property.rfind("--", 0) == 0) {
 		NodeRareData *rare = rareDataFor(node.id());
 		if (!rare) return false;
