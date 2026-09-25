@@ -393,7 +393,10 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::Clear: if (style.clear_side != value) { style.clear_side = value; changed = 1; } break;
 #endif
 #if GEA_CSS_WRITING_MODE
-	case Property::Direction: if (style.direction != value) { style.direction = value; changed = 1; } break;
+	case Property::Direction:
+		if (value == 1) treeState().rtlSeen = true;
+		if (style.direction != value) { style.direction = value; changed = 1; }
+		break;
 	case Property::WritingMode: if (style.writing_mode != value) { style.writing_mode = value; changed = 1; } break;
 #endif
 #if GEA_CSS_AXIS_GAP

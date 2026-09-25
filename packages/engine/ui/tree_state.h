@@ -406,6 +406,12 @@ struct TreeState {
 #else
 	static constexpr bool stickyPresent = false;
 #endif
+	// direction: rtl was set on some node at some point. direction inherits
+	// lazily (-1 walks to the nearest ancestor that sets it), so every
+	// start/end alignment question walks to the root; while this stays false
+	// the answer is ltr without the walk. Never cleared: it only guards a
+	// fast path.
+	bool rtlSeen = false;
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —

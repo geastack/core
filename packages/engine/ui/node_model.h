@@ -1630,7 +1630,9 @@ struct RenderState {
 	// the line advance: ink centring shifts by however far that particular string's
 	// glyphs reach, so runs of different words — or different fonts — on one line
 	// end up at different heights. A run that owns its line keeps the centring.
-	uint8_t inline_baseline : 1;
+	// Bit 1: the line layout already applied text-align to this box's line, so
+	// the run draws start-aligned in its own box.
+	uint8_t inline_baseline : 2;
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {
