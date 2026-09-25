@@ -463,6 +463,12 @@ struct RareStyle {
 	static constexpr uint8_t bg_grid_line_x = 0;
 	static constexpr uint8_t bg_grid_line_y = 0;
 #endif
+	// CSS Overflow 4 line clamping: max-lines (0 = none, capped at 255) and
+	// flags: 1 = continue: collapse, 2 = block-ellipsis other than none, and
+	// 4 / 8 = column-count / column-width set (a multicol container never
+	// clamps). Both sit in trailing padding, so RareStyle keeps its size.
+	uint8_t max_lines = 0;
+	uint8_t line_clamp_flags = 0;
 	};
 
 // Individual translation is applied outside the transform list. Its translation
@@ -1377,10 +1383,15 @@ struct LayoutBox {
 	// and absolute-coordinate conversion; retained refresh reuses this anchor.
 	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t static_block_start = 0;
-	#endif
+	// line-clamp: 1 when the box lies after an ancestor's clamp point, which
+	// hides it. Like line_clamp_lines below it sits in padding.
+	uint8_t line_clamp_hidden = 0;
 
 	int16_t previous_x, previous_y;
 	int16_t previous_width, previous_height;
+	// line-clamp: a text run its container's clamp point cuts paints only
+	// this many lines. 0 paints them all.
+	int16_t line_clamp_lines = 0;
 
 	// Scroll geometry must be 32-bit: a <virtual-list> scrolls over a virtual
 	// content height of itemCount * rowHeight (e.g. 5000 * 259 ≈ 1.29M px),

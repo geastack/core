@@ -172,6 +172,7 @@ void InputRenderer::record(int id)
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
 			cmd->text.alignLast = -1;
+			cmd->text.lineLimit = 0;
 		}
 	}
 

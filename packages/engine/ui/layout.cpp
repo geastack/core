@@ -369,6 +369,112 @@ bool hasExplicitHeight(const Node &node)
 	       !layoutSizeExpressionUsesPercentage(static_cast<int>(&node - Tree::instance().nodes()), node.computedStyle().height_expression);
 }
 
+// Line clamping (CSS Overflow 4). A block container with continue: collapse
+// hides everything after its clamp point, which follows its max-lines'th line
+// or, without max-lines, the last content that fits its used height. Lines of
+// inline wrappers and plain block descendants count; independent formatting
+// contexts are single units. Child coordinates are still parent-relative.
+int writingMode(const Node &node);
+
+struct LineClampWalk {
+	Node *nodes;
+	int maxLines;
+	int limit;
+	int lines = 0;
+	int lastLineTop = INT_MIN;
+	int keptBottom = 0;
+	bool clamped = false;
+};
+
+void hideAfterLineClamp(Node *nodes, int id)
+{
+	nodes[id].layout.line_clamp_hidden = 1;
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) hideAfterLineClamp(nodes, c);
+}
+
+// line-clamp applies to block containers, never to inline boxes, flex or
+// grid containers, or multicol containers.
+bool clampsLines(const Node &node)
+{
+	const int flags = rstyle(node.style).line_clamp_flags;
+	return (flags & 1) && !(flags & 12) && node.type == NodeType::View && node.style.display == kDisplayBlock &&
+	       !(LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node));
+}
+
+// A nested clamp container keeps the state inside it for its own layout.
+void clearLineClamp(Node *nodes, int id)
+{
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) {
+		nodes[c].layout.line_clamp_hidden = 0;
+		nodes[c].layout.line_clamp_lines = 0;
+		if (!clampsLines(nodes[c])) clearLineClamp(nodes, c);
+	}
+}
+
+void walkLineClamp(LineClampWalk &walk, int parent, int originY)
+{
+	Node *nodes = walk.nodes;
+	for (int id = nodes[parent].first_child; id >= 0; id = nodes[id].next_sibling) {
+		Node &child = nodes[id];
+		if (walk.clamped) {
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position) || child.style.float_side ||
+		    isLineBreak(child) || suppressAnonymousWhitespace(nodes, parent, id)) continue;
+		const int top = originY + child.layout.y;
+		if (child.type == NodeType::Text) {
+			const int advance = TextRenderer::measureHeight("X", child.style.font_id, child.style.font_size, 0, child.style.line_height);
+			const int inner = child.layout.height - boxInsets(child.style, false);
+			const int count = advance > 0 ? std::max(1, (inner + advance - 1) / advance) : 1;
+			for (int line = 0; line < count; ++line) {
+				const int lineTop = top + boxInset(child.style, 0) + line * advance;
+				const bool newLine = lineTop > walk.lastLineTop;
+				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : lineTop + advance > walk.limit) {
+					walk.clamped = true;
+					if (line == 0) hideAfterLineClamp(nodes, id);
+					else child.layout.line_clamp_lines = static_cast<int16_t>(line);
+					break;
+				}
+				if (newLine) {
+					++walk.lines;
+					walk.lastLineTop = lineTop;
+				}
+				walk.keptBottom = std::max(walk.keptBottom, lineTop + advance);
+			}
+			continue;
+		}
+		const bool inlineWrapper = LayoutEngine::isCssInlineLevelBox(child) && LayoutEngine::isInlineLevelNode(child);
+		const bool plainBlock = child.style.display == kDisplayBlock && !overflowEstablishesContext(child.style) &&
+		    writingMode(child) == writingMode(nodes[parent]);
+		if (child.first_child >= 0 && (inlineWrapper || plainBlock)) {
+			walkLineClamp(walk, id, top);
+			if (!walk.clamped && !inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, top + child.layout.height);
+			continue;
+		}
+		const int bottom = top + child.layout.height;
+		if (walk.maxLines ? walk.lines >= walk.maxLines : bottom > walk.limit) {
+			walk.clamped = true;
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		walk.keptBottom = std::max(walk.keptBottom, bottom);
+	}
+}
+
+void applyLineClamp(int id)
+{
+	Node *nodes = Tree::instance().nodes();
+	Node &node = nodes[id];
+	clearLineClamp(nodes, id);
+	LineClampWalk walk{nodes, rstyle(node.style).max_lines, node.layout.height - boxInset(node.style, 2)};
+	walk.keptBottom = boxInset(node.style, 0);
+	walkLineClamp(walk, id, 0);
+	if (!walk.clamped || hasExplicitHeight(node)) return;
+	const int height = clampBorderBoxSize(node.style, walk.keptBottom + boxInset(node.style, 2), false);
+	if (height < node.layout.height) node.layout.height = clampInt16(height);
+}
+
 int resolvedStyleWidth(const Node &node, int basis)
 {
 	if (const auto *scope = flexBasisScope(node, true)) return scope->value == kUnset ? basis : scope->value;
@@ -4288,6 +4394,7 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
 		LayoutNodePass(*this, id, node.layout.width, node.layout.height).repositionChildren();
+	if (clampsLines(node)) applyLineClamp(id);
 	if (node.parent < 0) {
 		// The initial containing block places the root; there is no parent
 		// layout pass to position its margin box or apply float alignment.
@@ -4318,6 +4425,7 @@ void LayoutEngine::repositionChildren(int id)
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeLayoutRepositionCalls++);
 	Node *node = &Tree::instance().nodes()[id];
 	LayoutNodePass(*this, id, node->layout.width, node->layout.height).repositionChildren();
+	if (clampsLines(*node)) applyLineClamp(id);
 }
 
 bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)

@@ -204,6 +204,8 @@ void rootScrollImageHoldTick();
 				// align lines a forced break ends, and bit 2 marks a run whose final
 				// line also ends its paragraph.
 				int8_t alignLast;
+				// line-clamp: paint at most this many lines (0 = all).
+				int16_t lineLimit;
 			} text;
 			struct
 			{
@@ -562,7 +564,7 @@ void rootScrollImageHoldTick();
 		                             int width, uint8_t *outCoverage);
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
-														int firstLineIndent = 0, int alignLast = -1);
+														int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);
