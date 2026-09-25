@@ -1530,6 +1530,33 @@ int gLastScrollUiFrame = -1000;
 
 		using TransformedRoundedRectCommand = decltype(DisplayCommand{}.transformedRoundedRect);
 
+		bool transformedRoundedRectIsRing(const TransformedRoundedRectCommand &r)
+		{
+			return (r.ring[0] | r.ring[1] | r.ring[2] | r.ring[3]) != 0;
+		}
+
+		// The unpainted inside of a border ring: the padding box, whose radii
+		// are the outer radii less the adjoining border widths (CSS Backgrounds 5.2).
+		TransformedRoundedRectCommand transformedRoundedRectHole(const TransformedRoundedRectCommand &r)
+		{
+			TransformedRoundedRectCommand hole = r;
+			hole.ring[0] = hole.ring[1] = hole.ring[2] = hole.ring[3] = 0;
+			hole.lx = static_cast<int16_t>(r.lx + r.ring[3]);
+			hole.ly = static_cast<int16_t>(r.ly + r.ring[0]);
+			hole.lw = static_cast<int16_t>(std::max(0, r.lw - r.ring[1] - r.ring[3]));
+			hole.lh = static_cast<int16_t>(std::max(0, r.lh - r.ring[0] - r.ring[2]));
+			hole.tlRx8 = static_cast<int16_t>(std::max(0, r.tlRx8 - 8 * r.ring[3]));
+			hole.tlRy8 = static_cast<int16_t>(std::max(0, r.tlRy8 - 8 * r.ring[0]));
+			hole.trRx8 = static_cast<int16_t>(std::max(0, r.trRx8 - 8 * r.ring[1]));
+			hole.trRy8 = static_cast<int16_t>(std::max(0, r.trRy8 - 8 * r.ring[0]));
+			hole.brRx8 = static_cast<int16_t>(std::max(0, r.brRx8 - 8 * r.ring[1]));
+			hole.brRy8 = static_cast<int16_t>(std::max(0, r.brRy8 - 8 * r.ring[2]));
+			hole.blRx8 = static_cast<int16_t>(std::max(0, r.blRx8 - 8 * r.ring[3]));
+			hole.blRy8 = static_cast<int16_t>(std::max(0, r.blRy8 - 8 * r.ring[2]));
+			return hole;
+		}
+
+
 		struct RoundedRectScreenSpan
 		{
 			int x;
@@ -1691,7 +1718,7 @@ int gLastScrollUiFrame = -1000;
 		{
 			const auto &r = command.transformedRoundedRect;
 			RoundedRectScreenSpan span{};
-			if (!transformedRoundedRectToScreenSpan(r, &span))
+			if (transformedRoundedRectIsRing(r) || !transformedRoundedRectToScreenSpan(r, &span))
 				return false;
 			if (!roundedRectScreenSpanFitsCanvas(span))
 				return false;
@@ -2006,7 +2033,7 @@ int gLastScrollUiFrame = -1000;
 				pixel = gea::framework::graphics::pixel::blendNative(color, pixel, effectiveAlpha);
 		}
 
-		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		bool roundedRectOuterContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
 		{
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
@@ -2035,6 +2062,13 @@ int gLastScrollUiFrame = -1000;
 			if (blRx > 0.0f && blRy > 0.0f && sx < left + blRx && sy >= bottom - blRy)
 				return roundedCornerContainsFast(left + blRx, bottom - blRy, blRx, blRy, sx, sy);
 			return true;
+		}
+
+		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		{
+			if (!roundedRectOuterContainsFast(r, sx, sy))
+				return false;
+			return !transformedRoundedRectIsRing(r) || !roundedRectOuterContainsFast(transformedRoundedRectHole(r), sx, sy);
 		}
 
 		int roundedRectCoverageFast(const TransformedRoundedRectCommand &r,
@@ -2071,6 +2105,8 @@ int gLastScrollUiFrame = -1000;
 																					float marginX,
 																					float marginY)
 		{
+			if (transformedRoundedRectIsRing(r))
+				return false;
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
 			const float right = left + static_cast<float>(r.lw);
@@ -2113,6 +2149,8 @@ int gLastScrollUiFrame = -1000;
 		int roundedRectCoverageHomography(const TransformedRoundedRectCommand &r, const double *homography, int x, int y, int samples)
 		{
 			const float kernelWidth = transformedRoundedRectAntialiasKernelWidth(samples, r);
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 			int coverage = 0;
 			for (int iy = 0; iy < samples; ++iy)
 			{
@@ -2137,12 +2175,573 @@ int gLastScrollUiFrame = -1000;
 																	r.blRx8,
 																	r.blRy8,
 																	sx,
-																	sy))
+																	sy) &&
+					    (!ring || !roundedRectOuterContainsFast(hole, static_cast<float>(sx), static_cast<float>(sy))))
 						++coverage;
 				}
 			}
 			return coverage;
 		}
+
+
+		// Rounded and transformed overflow clips. Display clips are rectangles, so
+		// replay saves the canvas pixels a shaped clip's bounds may expose, lets
+		// the clipped content paint, then puts back every pixel outside the shape
+		// (in part where antialiasing covers it in part).
+		//
+		// Three bounds keep this cheap. The saved area is cut to the dirty region,
+		// and in a stream replay to the bounds of what the clip's scope paints, so
+		// a strip or a row that misses a rounded corner saves nothing. Node-range replays
+		// run inside a pass that keeps a clip open across consecutive nodes under
+		// it, so N rows under one rounded clip save and restore its corners once,
+		// not N times. An untransformed corner restores through a cached coverage
+		// mask, sampled exactly as the per-pixel path samples, instead of sampling
+		// floats per pixel. A clip whose exposed area exceeds kMaxSavedPixels
+		// stays a plain rectangle.
+		class ShapedClips
+		{
+		public:
+			// Pixels one shaped clip may save; past this the clip stays rectangular
+			// and its content overpaints the corners, as every clip did before.
+			static constexpr int kMaxSavedPixels = 16384;
+
+			static std::size_t depth() { return entries().size(); }
+
+			// One dirty-region node walk. Entries opened inside it stay open for the
+			// next node under the same clip; whatever is still open ends with the
+			// pass, or earlier through finish().
+			struct PassScope
+			{
+				std::size_t previousBase;
+				bool previousActive;
+				PassScope() : previousBase(passBase()), previousActive(passActive())
+				{
+					passBase() = depth();
+					passActive() = true;
+				}
+				~PassScope() { finish(); }
+				PassScope(const PassScope &) = delete;
+				PassScope &operator=(const PassScope &) = delete;
+				void finish()
+				{
+					if (!passActive())
+						return;
+					endTo(passBase());
+					passBase() = previousBase;
+					passActive() = previousActive;
+				}
+			};
+			static bool inPass() { return passActive(); }
+			// Depth below which entries belong to an enclosing scope.
+			static std::size_t base() { return passActive() ? passBase() : depth(); }
+
+			// Stream replay: an entry for the PushClip at `open`, ended by its PopClip.
+			// A scope that paints nothing exposes nothing and opens none (false).
+			static bool begin(int open)
+			{
+				int ink[4];
+				const bool bounded = scopeInk(open, ink);
+				if (bounded && (ink[0] > ink[2] || ink[1] > ink[3])) return false;
+				begin(shapeOf(state.commands[open]), -1, bounded ? ink : nullptr);
+				return true;
+			}
+
+			// Node-range replay: the index-th shaped clip ancestor (outermost first)
+			// of the node about to paint, owned by node `owner`. An entry already
+			// open at that depth for the same owner stays, so siblings under one
+			// clip share its save and restore; anything else at or above that depth
+			// ends first, innermost first, before the node paints over it.
+			static void reconcile(std::size_t base, int index, int owner, const OverflowClipShape &shape, const int *region)
+			{
+				if (isOpen(base, index, owner)) return;
+				endTo(base + static_cast<std::size_t>(index));
+				begin(shapeOf(shape), owner, region);
+			}
+
+			// Whether the index-th entry above base is the one `owner` opened.
+			static bool isOpen(std::size_t base, int index, int owner)
+			{
+				const std::size_t at = base + static_cast<std::size_t>(index);
+				return at < entries().size() && entries()[at].owner == owner;
+			}
+
+			// Paints `colour` over what the shaped clip of the PushClip `clip` may
+			// expose inside `region` (x0 y0 x1 y1), one fill per box: a fill per
+			// masked row costs more in dirty-rect bookkeeping than the fully covered
+			// columns it would skip.
+			static void fillExposable(const DisplayCommand &clip, const int *region, gea::framework::graphics::pixel::native_t colour)
+			{
+				Box boxes[4];
+				int8_t corners[4];
+				const int count = exposableBoxes(shapeOf(clip), boxes, corners);
+				for (int i = 0; i < count; ++i)
+				{
+					const int x0 = std::max(boxes[i].x0, region[0]), y0 = std::max(boxes[i].y0, region[1]);
+					const int x1 = std::min(boxes[i].x1, region[2]), y1 = std::min(boxes[i].y1, region[3]);
+					if (x0 <= x1 && y0 <= y1) gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, colour);
+				}
+			}
+
+			// Ends the entries above a node's shaped ancestors.
+			static void settle(std::size_t base, int shapedCount) { endTo(base + static_cast<std::size_t>(shapedCount)); }
+
+			static void endTo(std::size_t mark)
+			{
+				while (entries().size() > mark)
+					end();
+			}
+
+			static void end()
+			{
+				const Entry entry = entries().back();
+				entries().pop_back();
+				restore(entry);
+				saved().resize(entry.offset);
+			}
+
+		private:
+			struct Box
+			{
+				int x0, y0, x1, y1;
+			};
+			// Coverage of one corner, sampled for the top-left orientation; the other
+			// corners mirror their pixel offsets into it.
+			struct CornerMask
+			{
+				int16_t rx8 = -1, ry8 = -1;
+				int8_t samples = 0;
+				int8_t kernelHalf = 0;
+				int w = 0, h = 0;
+				std::vector<uint8_t> coverage;
+				// Per row, columns [0, zeroEnd) have no coverage and [fullStart, w) full
+				// coverage; only the columns between need their coverage read.
+				std::vector<uint8_t> zeroEnd, fullStart;
+			};
+			struct Entry
+			{
+				TransformedRoundedRectCommand shape;
+				float inv00, inv01, inv10, inv11;
+				Box boxes[4];
+				// Corner of each box (0 tl, 1 tr, 2 br, 3 bl), or -1 for a bounds box.
+				int8_t corner[4];
+				bool maskable;
+				int boxCount;
+				std::size_t offset;
+				int owner;
+			};
+			static constexpr int kMaxCornerMaskExtent = 64;
+			static constexpr int kCornerMaskSlots = 4;
+
+			// Per-core banks: the 2-core band split replays both halves concurrently,
+			// and each half pushes and pops its own shaped clips.
+			static std::vector<Entry> &entries()
+			{
+				static std::vector<Entry> value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static std::vector<gea::framework::graphics::pixel::native_t> &saved()
+			{
+				static std::vector<gea::framework::graphics::pixel::native_t> value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static std::size_t &passBase()
+			{
+				static std::size_t value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static bool &passActive()
+			{
+				static bool value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static TransformedRoundedRectCommand shapeOf(const DisplayCommand &clip)
+			{
+				const auto &c = clip.clip;
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = c.qx[0]; shape.y0 = c.qy[0];
+				shape.x1 = c.qx[1]; shape.y1 = c.qy[1];
+				shape.x2 = c.qx[2]; shape.y2 = c.qy[2];
+				shape.x3 = c.qx[3]; shape.y3 = c.qy[3];
+				shape.lx = c.lx; shape.ly = c.ly; shape.lw = c.lw; shape.lh = c.lh;
+				shape.tlRx8 = c.rx8[0]; shape.tlRy8 = c.ry8[0];
+				shape.trRx8 = c.rx8[1]; shape.trRy8 = c.ry8[1];
+				shape.brRx8 = c.rx8[2]; shape.brRy8 = c.ry8[2];
+				shape.blRx8 = c.rx8[3]; shape.blRy8 = c.ry8[3];
+				return shape;
+			}
+
+			static TransformedRoundedRectCommand shapeOf(const OverflowClipShape &clip)
+			{
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = clip.qx[0]; shape.y0 = clip.qy[0];
+				shape.x1 = clip.qx[1]; shape.y1 = clip.qy[1];
+				shape.x2 = clip.qx[2]; shape.y2 = clip.qy[2];
+				shape.x3 = clip.qx[3]; shape.y3 = clip.qy[3];
+				shape.lx = clip.lx; shape.ly = clip.ly; shape.lw = clip.lw; shape.lh = clip.lh;
+				shape.tlRx8 = clip.rx8[0]; shape.tlRy8 = clip.ry8[0];
+				shape.trRx8 = clip.rx8[1]; shape.trRy8 = clip.ry8[1];
+				shape.brRx8 = clip.rx8[2]; shape.brRy8 = clip.ry8[2];
+				shape.blRx8 = clip.rx8[3]; shape.blRy8 = clip.ry8[3];
+				return shape;
+			}
+
+			// Union of the draw bounds between the PushClip at `open` and its PopClip.
+			// A pixel none of them paints keeps its colour, and restoring a pixel that
+			// kept its colour writes that colour back (a colour blended with itself is
+			// exact), so nothing outside the union needs saving. Paint order lifts a
+			// scroll container's rows into its stacking context, each row in its own
+			// scope of the container's clip, and most rows reach no corner. False when
+			// a draw carries no bounds: the clip then saves all it may expose.
+			static bool scopeInk(int open, int *out)
+			{
+				int x0 = 32767, y0 = 32767, x1 = -32768, y1 = -32768;
+				int depth = 0;
+				for (int i = open + 1; i < state.commandCount; ++i)
+				{
+					const DisplayCommand &c = state.commands[i];
+					if (c.type == DisplayCommandType::PushClip) ++depth;
+					else if (c.type == DisplayCommandType::PopClip) { if (depth-- == 0) break; }
+					else if (c.type != DisplayCommandType::SetAlpha)
+					{
+						if (c.bw <= 0 || c.bh <= 0) return false;
+						x0 = std::min(x0, static_cast<int>(c.bx));
+						y0 = std::min(y0, static_cast<int>(c.by));
+						x1 = std::max(x1, c.bx + c.bw - 1);
+						y1 = std::max(y1, c.by + c.bh - 1);
+					}
+				}
+				out[0] = x0;
+				out[1] = y0;
+				out[2] = x1;
+				out[3] = y1;
+				return true;
+			}
+
+			static int extent(int radius8) { return (std::max(0, radius8) + 7) / 8; }
+
+			// The screen boxes a shaped clip can expose, and the corner of each (0 tl,
+			// 1 tr, 2 br, 3 bl, or -1 for a bounds box).
+			static int exposableBoxes(const TransformedRoundedRectCommand &shape, Box *boxes, int8_t *corners)
+			{
+				int count = 0;
+				if (transformedRoundedRectLooksAxisAligned(shape) && shape.x1 - shape.x0 == shape.lw && shape.y3 - shape.y0 == shape.lh)
+				{
+					// Only the corner boxes can lie outside an untransformed rounded rect.
+					const int left = shape.lx, top = shape.ly, right = shape.lx + shape.lw - 1, bottom = shape.ly + shape.lh - 1;
+					const int tlW = extent(shape.tlRx8), tlH = extent(shape.tlRy8), trW = extent(shape.trRx8), trH = extent(shape.trRy8);
+					const int brW = extent(shape.brRx8), brH = extent(shape.brRy8), blW = extent(shape.blRx8), blH = extent(shape.blRy8);
+					if (tlW && tlH) { corners[count] = 0; boxes[count++] = {left, top, left + tlW - 1, top + tlH - 1}; }
+					if (trW && trH) { corners[count] = 1; boxes[count++] = {right - trW + 1, top, right, top + trH - 1}; }
+					if (brW && brH) { corners[count] = 2; boxes[count++] = {right - brW + 1, bottom - brH + 1, right, bottom}; }
+					if (blW && blH) { corners[count] = 3; boxes[count++] = {left, bottom - blH + 1, left + blW - 1, bottom}; }
+					return count;
+				}
+				const int16_t xs[4] = {shape.x0, shape.x1, shape.x2, shape.x3};
+				const int16_t ys[4] = {shape.y0, shape.y1, shape.y2, shape.y3};
+				corners[0] = -1;
+				boxes[0] = {std::min({xs[0], xs[1], xs[2], xs[3]}), std::min({ys[0], ys[1], ys[2], ys[3]}),
+				            std::max({xs[0], xs[1], xs[2], xs[3]}), std::max({ys[0], ys[1], ys[2], ys[3]})};
+				return 1;
+			}
+
+			// Row of a corner's mask: from the top edge for the top corners, from the
+			// bottom edge for the bottom ones.
+			static int maskRow(const TransformedRoundedRectCommand &r, int corner, int y)
+			{
+				return corner < 2 ? y - r.ly : r.ly + r.lh - 1 - y;
+			}
+
+			// Columns of a corner box row that a restore can change: all but those the
+			// mask covers fully (mask columns [fullStart, w), which run inward from the
+			// corner's outer edge). Empty when x0 > x1.
+			static void touchedColumns(const TransformedRoundedRectCommand &r, const Box &box, int corner, int fullStart, int &x0, int &x1)
+			{
+				const bool left = corner == 0 || corner == 3;
+				x0 = left ? box.x0 : std::max(box.x0, r.lx + r.lw - fullStart);
+				x1 = left ? std::min(box.x1, r.lx + fullStart - 1) : box.x1;
+			}
+
+			static int cornerRx8(const TransformedRoundedRectCommand &r, int corner)
+			{
+				return corner == 0 ? r.tlRx8 : corner == 1 ? r.trRx8 : corner == 2 ? r.brRx8 : r.blRx8;
+			}
+			static int cornerRy8(const TransformedRoundedRectCommand &r, int corner)
+			{
+				return corner == 0 ? r.tlRy8 : corner == 1 ? r.trRy8 : corner == 2 ? r.brRy8 : r.blRy8;
+			}
+
+			// The screen quad is the untransformed box itself, so a pixel's local
+			// coordinates are its screen coordinates and every sample offset is a
+			// multiple of a quarter pixel: the mask below then reproduces the
+			// per-pixel sampling bit for bit.
+			static bool exactlyAxisAligned(const TransformedRoundedRectCommand &r)
+			{
+				return r.x0 == r.x3 && r.x1 == r.x2 && r.y0 == r.y1 && r.y2 == r.y3 &&
+				       r.x1 - r.x0 == r.lw && r.y3 - r.y0 == r.lh;
+			}
+
+			// The corners restore through cached masks (see cornerMask).
+			static bool isMaskable(const TransformedRoundedRectCommand &r)
+			{
+				return exactlyAxisAligned(r) && !transformedRoundedRectIsRing(r) && !transformedRoundedRectIsPillLike(r) && cornersDisjoint(r);
+			}
+
+			// No corner box reaches another corner's region, so a corner's pixels
+			// see only their own arc, as the mask's canonical box does.
+			static bool cornersDisjoint(const TransformedRoundedRectCommand &r)
+			{
+				return extent(r.tlRx8) + extent(r.trRx8) <= r.lw && extent(r.blRx8) + extent(r.brRx8) <= r.lw &&
+				       extent(r.tlRy8) + extent(r.blRy8) <= r.lh && extent(r.trRy8) + extent(r.brRy8) <= r.lh;
+			}
+
+			// Coverage of the top-left corner of an untransformed rounded rect for the
+			// pixel at (mx, my) from the corner, sampled with the same offsets and the
+			// same containment test restore() uses, on a box large enough that no
+			// other corner reaches these pixels. Null when the corner is too large to
+			// cache; restore() then samples per pixel.
+			static const CornerMask *cornerMask(int rx8, int ry8, int samples, float kernelWidth)
+			{
+				static CornerMask banks[2][kCornerMaskSlots];
+				static int next[2];
+				const int core = gea_current_render_core() & 1;
+				const int kernelHalf = static_cast<int>(kernelWidth * 2.0f + 0.5f);
+				for (auto &m : banks[core])
+					if (m.rx8 == rx8 && m.ry8 == ry8 && m.samples == samples && m.kernelHalf == kernelHalf)
+						return &m;
+				const int w = extent(rx8), h = extent(ry8);
+				if (w <= 0 || h <= 0 || w > kMaxCornerMaskExtent || h > kMaxCornerMaskExtent)
+					return nullptr;
+				CornerMask &m = banks[core][next[core]];
+				next[core] = (next[core] + 1) % kCornerMaskSlots;
+				m.rx8 = static_cast<int16_t>(rx8);
+				m.ry8 = static_cast<int16_t>(ry8);
+				m.samples = static_cast<int8_t>(samples);
+				m.kernelHalf = static_cast<int8_t>(kernelHalf);
+				m.w = w;
+				m.h = h;
+				m.coverage.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
+				TransformedRoundedRectCommand canon{};
+				const int16_t side = static_cast<int16_t>(4 * kMaxCornerMaskExtent);
+				canon.x1 = canon.x2 = side;
+				canon.y2 = canon.y3 = side;
+				canon.lw = canon.lh = side;
+				canon.tlRx8 = static_cast<int16_t>(rx8);
+				canon.tlRy8 = static_cast<int16_t>(ry8);
+				for (int my = 0; my < h; ++my)
+				{
+					for (int mx = 0; mx < w; ++mx)
+					{
+						const float localX = static_cast<float>(mx) + 0.5f;
+						const float localY = static_cast<float>(my) + 0.5f;
+						int coverage = 0;
+						if (samples >= 2)
+						{
+							for (int iy = 0; iy < samples; ++iy)
+							{
+								const float oy = antialiasOffsetWithKernel(iy, samples, kernelWidth);
+								for (int ix = 0; ix < samples; ++ix)
+								{
+									const float ox = antialiasOffsetWithKernel(ix, samples, kernelWidth);
+									const float dx = ox - 0.5f;
+									const float dy = oy - 0.5f;
+									if (roundedRectContainsFast(canon, localX + 1.0f * dx + 0.0f * dy, localY + 0.0f * dx + 1.0f * dy))
+										++coverage;
+								}
+							}
+						}
+						else
+							coverage = roundedRectContainsFast(canon, localX, localY) ? 1 : 0;
+						m.coverage[static_cast<std::size_t>(my) * static_cast<std::size_t>(w) + static_cast<std::size_t>(mx)] = static_cast<uint8_t>(coverage);
+					}
+				}
+				const int full = samples >= 2 ? samples * samples : 1;
+				m.zeroEnd.assign(static_cast<std::size_t>(h), 0);
+				m.fullStart.assign(static_cast<std::size_t>(h), 0);
+				for (int my = 0; my < h; ++my)
+				{
+					const uint8_t *row = m.coverage.data() + static_cast<std::size_t>(my) * static_cast<std::size_t>(w);
+					int zeroEnd = 0, fullStart = w;
+					while (zeroEnd < w && row[zeroEnd] == 0) ++zeroEnd;
+					while (fullStart > zeroEnd && row[fullStart - 1] >= full) --fullStart;
+					m.zeroEnd[static_cast<std::size_t>(my)] = static_cast<uint8_t>(zeroEnd);
+					m.fullStart[static_cast<std::size_t>(my)] = static_cast<uint8_t>(fullStart);
+				}
+				return &m;
+			}
+
+			static void begin(const TransformedRoundedRectCommand &shape, int owner, const int *region)
+			{
+				Entry entry{};
+				entry.shape = shape;
+				entry.owner = owner;
+				auto &store = saved();
+				entry.offset = store.size();
+				auto *canvas = gea::platform::display::Display::canvas();
+				const auto *pixels = canvas ? canvas->pixels() : nullptr;
+				if (pixels)
+				{
+					Box candidates[4];
+					int8_t corners[4];
+					const int count = exposableBoxes(shape, candidates, corners);
+					int clipX0 = 0, clipY0 = 0, clipX1 = -1, clipY1 = -1;
+					gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+					clipX0 = std::max(clipX0, 0);
+					clipY0 = std::max(clipY0, 0);
+					clipX1 = std::min(clipX1, canvas->width() - 1);
+					clipY1 = std::min(clipY1, canvas->height() - 1);
+					if (region)
+					{
+						// Only pixels inside the region can change while the clip is open
+						// (the dirty rect a pass repaints, or the ink of a stream scope),
+						// so only they can be exposed.
+						clipX0 = std::max(clipX0, region[0]);
+						clipY0 = std::max(clipY0, region[1]);
+						clipX1 = std::min(clipX1, region[2]);
+						clipY1 = std::min(clipY1, region[3]);
+					}
+					Box boxes[4];
+					int8_t boxCorners[4] = {-1, -1, -1, -1};
+					int boxCount = 0;
+					std::size_t total = 0;
+					for (int i = 0; i < count; ++i)
+					{
+						Box box{std::max(candidates[i].x0, clipX0), std::max(candidates[i].y0, clipY0),
+						        std::min(candidates[i].x1, clipX1), std::min(candidates[i].y1, clipY1)};
+						if (box.x0 > box.x1 || box.y0 > box.y1)
+							continue;
+						total += static_cast<std::size_t>(box.x1 - box.x0 + 1) * static_cast<std::size_t>(box.y1 - box.y0 + 1);
+						boxCorners[boxCount] = corners[i];
+						boxes[boxCount++] = box;
+					}
+					// Past the budget the clip stays a rectangle rather than saving a
+					// screenful: a transformed clip's bounds box can be most of the panel.
+					// The inverse only serves restore(), so a clip that exposes nothing
+					// here (most row scopes under a scroll container) skips its divisions.
+					float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
+					if (boxCount > 0 && total <= static_cast<std::size_t>(kMaxSavedPixels))
+					{
+						a = shape.lw ? static_cast<float>(shape.x1 - shape.x0) / shape.lw : 0.0f;
+						b = shape.lh ? static_cast<float>(shape.x3 - shape.x0) / shape.lh : 0.0f;
+						c = shape.lw ? static_cast<float>(shape.y1 - shape.y0) / shape.lw : 0.0f;
+						d = shape.lh ? static_cast<float>(shape.y3 - shape.y0) / shape.lh : 0.0f;
+					}
+					const float det = a * d - b * c;
+					if (std::fabs(det) >= 1e-6f)
+					{
+						entry.inv00 = d / det;
+						entry.inv01 = -b / det;
+						entry.inv10 = -c / det;
+						entry.inv11 = a / det;
+						entry.maskable = isMaskable(shape);
+						const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+						const int samples = gea::framework::graphics::Canvas::antialiasSamples();
+						const float kernelWidth = entry.maskable ? transformedRoundedRectAntialiasKernelWidth(samples, shape) : 0.0f;
+						for (int i = 0; i < boxCount; ++i)
+						{
+							const Box &box = boxes[i];
+							const int corner = boxCorners[i];
+							// Only what restore() can change: a mask leaves its fully covered
+							// columns alone, so they need no copy.
+							const CornerMask *mask = entry.maskable && corner >= 0
+							    ? cornerMask(cornerRx8(shape, corner), cornerRy8(shape, corner), samples, kernelWidth)
+							    : nullptr;
+							for (int y = box.y0; y <= box.y1; ++y)
+							{
+								int x0 = box.x0, x1 = box.x1;
+								if (mask) touchedColumns(shape, box, corner, mask->fullStart[static_cast<std::size_t>(maskRow(shape, corner, y))], x0, x1);
+								if (x0 > x1) continue;
+								const auto *row = pixels + canvas->rowToPhysical(y) * stride;
+								store.insert(store.end(), row + x0, row + x1 + 1);
+							}
+							entry.corner[entry.boxCount] = boxCorners[i];
+							entry.boxes[entry.boxCount++] = box;
+						}
+					}
+				}
+				entries().push_back(entry);
+			}
+
+			// Puts back the part of a pixel outside the shape: all of it where no sample
+			// covers it, a blend where antialiasing covers some of it.
+			static void putOutside(gea::framework::graphics::pixel::native_t &pixel, gea::framework::graphics::pixel::native_t outside,
+			                       int coverage, int sampleCount)
+			{
+				if (coverage >= sampleCount) return;
+				pixel = coverage <= 0 ? outside
+				    : gea::framework::graphics::pixel::blendNative(pixel, outside, combinedCoverageAlpha(255, coverage, sampleCount));
+			}
+
+			static void restore(const Entry &entry)
+			{
+				auto *canvas = gea::platform::display::Display::canvas();
+				auto *pixels = canvas ? canvas->pixels() : nullptr;
+				if (pixels && entry.boxCount > 0)
+				{
+					const auto &r = entry.shape;
+					const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+					const int samples = gea::framework::graphics::Canvas::antialiasSamples();
+					const int sampleCount = samples >= 2 ? samples * samples : 1;
+					const float kernelWidth = transformedRoundedRectAntialiasKernelWidth(samples, r);
+					const int right = r.lx + r.lw - 1;
+					// saved() and pixels() are calls; once, not per pixel or row.
+					const auto *outsidePixels = saved().data();
+					std::size_t index = entry.offset;
+					for (int i = 0; i < entry.boxCount; ++i)
+					{
+						const Box &box = entry.boxes[i];
+						const int corner = entry.corner[i];
+						const CornerMask *mask = entry.maskable && corner >= 0
+						    ? cornerMask(cornerRx8(r, corner), cornerRy8(r, corner), samples, kernelWidth)
+						    : nullptr;
+						const int boxW = box.x1 - box.x0 + 1;
+						const bool leftCorner = corner == 0 || corner == 3;
+						for (int y = box.y0; y <= box.y1; ++y)
+						{
+							auto *row = pixels + canvas->rowToPhysical(y) * stride;
+							const auto *outside = outsidePixels + index;
+							if (mask)
+							{
+								// begin() saved this row's touched columns only. They run inward
+								// from the corner's outer edge: the uncovered run copies back
+								// whole and the partly covered run blends.
+								const int my = maskRow(r, corner, y);
+								const uint8_t *coverage = mask->coverage.data() + static_cast<std::size_t>(my) * static_cast<std::size_t>(mask->w);
+								const int zeroEnd = mask->zeroEnd[static_cast<std::size_t>(my)], fullStart = mask->fullStart[static_cast<std::size_t>(my)];
+								int x0, x1;
+								touchedColumns(r, box, corner, fullStart, x0, x1);
+								if (x0 > x1) continue;
+								index += static_cast<std::size_t>(x1 - x0 + 1);
+								const int clearX0 = leftCorner ? x0 : std::max(x0, right - zeroEnd + 1);
+								const int clearX1 = leftCorner ? std::min(x1, r.lx + zeroEnd - 1) : x1;
+								if (clearX0 <= clearX1)
+									std::memcpy(row + clearX0, outside + (clearX0 - x0), static_cast<std::size_t>(clearX1 - clearX0 + 1) * sizeof(*row));
+								const int edgeX0 = std::max(x0, leftCorner ? r.lx + zeroEnd : right - fullStart + 1);
+								const int edgeX1 = std::min(x1, leftCorner ? r.lx + fullStart - 1 : right - zeroEnd);
+								for (int x = edgeX0; x <= edgeX1; ++x) putOutside(row[x], outside[x - x0], coverage[leftCorner ? x - r.lx : right - x], sampleCount);
+								continue;
+							}
+							index += static_cast<std::size_t>(boxW);
+							const float py = static_cast<float>(y) + 0.5f - static_cast<float>(r.y0);
+							for (int x = box.x0; x <= box.x1; ++x)
+							{
+								const float px = static_cast<float>(x) + 0.5f - static_cast<float>(r.x0);
+								const float localX = static_cast<float>(r.lx) + entry.inv00 * px + entry.inv01 * py;
+								const float localY = static_cast<float>(r.ly) + entry.inv10 * px + entry.inv11 * py;
+								const int coverage = samples >= 2
+								    ? roundedRectCoverageFast(r, localX, localY, entry.inv00, entry.inv10, entry.inv01, entry.inv11, samples)
+								    : (roundedRectContainsFast(r, localX, localY) ? 1 : 0);
+								putOutside(row[x], outside[x - box.x0], coverage, sampleCount);
+							}
+						}
+						canvas->markDirty(box.x0, box.y0, box.x1, box.y1);
+					}
+				}
+			}
+		};
 
 		bool nodeFilterShapeContains(const Node &node, double sx, double sy)
 		{
@@ -4657,6 +5256,8 @@ int gLastScrollUiFrame = -1000;
 			};
 			static const int quadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
 			const int aaSpanPad = useCoverageAntialias ? 1 : 0;
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 
 			for (int y = drawY0; y <= drawY1; ++y)
 			{
@@ -4708,7 +5309,9 @@ int gLastScrollUiFrame = -1000;
 				float localY = static_cast<float>(r.ly) + inv10 * (static_cast<float>(rowDrawX0) + 0.5f - static_cast<float>(r.x0)) + inv11 * py;
 				for (int x = rowDrawX0; x <= rowDrawX1; ++x)
 				{
-					const int coverage = useCoverageAntialias
+					const int coverage = ring && roundedRectSolidCoreContainsFast(hole, localX, localY, sampleMarginX, sampleMarginY)
+																	 ? 0
+																	 : useCoverageAntialias
 																	 ? (roundedRectSolidCoreContainsFast(r, localX, localY, sampleMarginX, sampleMarginY)
 																					? sampleCount
 																					: roundedRectCoverageFast(r, localX, localY, inv00, inv10, inv01, inv11, aaSamples))
@@ -5105,7 +5708,9 @@ int gLastScrollUiFrame = -1000;
 																					 r.blRx8,
 																					 r.blRy8,
 																					 sx,
-																					 sy)
+																					 sy) &&
+													         (!transformedRoundedRectIsRing(r) ||
+													          !roundedRectOuterContainsFast(transformedRoundedRectHole(r), static_cast<float>(sx), static_cast<float>(sy)))
 													 ? 1
 													 : 0;
 					}
@@ -5172,9 +5777,11 @@ int gLastScrollUiFrame = -1000;
 
 			static void clampToNode(const Node &node, int *cx0, int *cy0, int *cx1, int *cy1)
 			{
-				int nx0, ny0, w, h;
-				overflowClipBounds(node, nx0, ny0, w, h);
-				int nx1 = nx0 + w - 1, ny1 = ny0 + h - 1;
+				OverflowClipShape shape;
+				if (!ViewRenderer::overflowClipShape(node, shape))
+					return;
+				const int nx0 = shape.x, ny0 = shape.y;
+				int nx1 = nx0 + shape.w - 1, ny1 = ny0 + shape.h - 1;
 				if (*cx0 < nx0)
 					*cx0 = nx0;
 				if (*cy0 < ny0)
@@ -5355,10 +5962,22 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::PushClip: {
 					const int id = c->clip.nodeId;
 					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
-					if (!owner || overflowX(owner->computedStyle())) c->clip.x += dx;
-					else c->bx -= dx;
-					if (!owner || overflowY(owner->computedStyle())) c->clip.y += dy;
-					else c->by -= dy;
+					const int clipDx = !owner || overflowX(owner->computedStyle()) ? dx : 0;
+					const int clipDy = !owner || overflowY(owner->computedStyle()) ? dy : 0;
+					c->clip.x += clipDx;
+					c->bx -= dx - clipDx;
+					c->clip.y += clipDy;
+					c->by -= dy - clipDy;
+#if GEA_CSS_SHAPED_CLIPS
+					if (c->clip.shaped) {
+						for (int i = 0; i < 4; ++i) {
+							c->clip.qx[i] += clipDx;
+							c->clip.qy[i] += clipDy;
+						}
+						c->clip.lx += clipDx;
+						c->clip.ly += clipDy;
+					}
+#endif
 					break;
 				}
 				case DisplayCommandType::FillRect:
@@ -7475,7 +8094,10 @@ int gLastScrollUiFrame = -1000;
 				}
 
 				RoundedRectScreenSpan span{};
-				if (!transformedRoundedRectToScreenSpan(r, &span) ||
+				// A border ring has a hole the span rasterizers do not know about;
+				// it stays on the ring-aware replay path.
+				if (transformedRoundedRectIsRing(r) ||
+						!transformedRoundedRectToScreenSpan(r, &span) ||
 						!roundedRectScreenSpanFitsCanvas(span))
 					return false;
 				if (roundedRectScreenSpanIsCircle(span))
@@ -7916,7 +8538,8 @@ int gLastScrollUiFrame = -1000;
 				return false;
 			}
 
-			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount)
+			// Mirrors ViewRenderer::recordClipBegin; `shape` receives the clip.
+			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount, OverflowClipShape *shape = nullptr)
 			{
 				if (node_id < 0 || node_id >= nodeCount)
 					return false;
@@ -7925,7 +8548,8 @@ int gLastScrollUiFrame = -1000;
 					return false;
 				if (node.first_child < 0)
 					return false;
-				return !nodeHasTransformChain(node_id, nodes, nodeCount);
+				OverflowClipShape local;
+				return ViewRenderer::overflowClipShape(node, shape ? *shape : local);
 			}
 
 			static std::uint8_t GEA_RENDER_HOT_SRAM effectiveAlphaForNode(int node_id, Node *nodes, int nodeCount)
@@ -7950,7 +8574,12 @@ int gLastScrollUiFrame = -1000;
 				return static_cast<std::uint8_t>(alpha);
 			}
 
-			static int GEA_RENDER_HOT_SRAM pushNodeReplayClips(int node_id, Node *nodes, int nodeCount)
+			// Pushes the Display clips of the node's clipping ancestors, outermost
+			// first, and lines the shaped ones up with ShapedClips (see reconcile:
+			// inside a pass, a clip the previous node already opened stays open).
+			// `region` is the dirty rect being replayed, x0 y0 x1 y1; a shaped clip
+			// saves only what lies inside it.
+			static int GEA_RENDER_HOT_SRAM pushNodeReplayClips(int node_id, Node *nodes, int nodeCount, const int *region)
 			{
 				int chain[kScratchDepth]{};
 				int count = 0;
@@ -7962,17 +8591,20 @@ int gLastScrollUiFrame = -1000;
 					if (LayoutEngine::isViewportFixed(nodes[cursor])) break;
 				}
 				int pushed = 0;
+				int shapedCount = 0;
+				const std::size_t shapedBase = ShapedClips::base();
 				for (int i = count - 1; i > 0; i--)
 				{
 					const int id = chain[i];
-					if (!nodeRecordsOverflowClip(id, nodes, nodeCount))
+					OverflowClipShape shape;
+					if (!nodeRecordsOverflowClip(id, nodes, nodeCount, &shape))
 						continue;
-					const Node &clip = nodes[id];
-					int x, y, w, h;
-					overflowClipBounds(clip, x, y, w, h);
-					gea::platform::display::Display::pushClip(x, y, w, h);
+					gea::platform::display::Display::pushClip(shape.x, shape.y, shape.w, shape.h);
+					if (shape.shaped)
+						ShapedClips::reconcile(shapedBase, shapedCount++, id, shape, region);
 					pushed++;
 				}
+				ShapedClips::settle(shapedBase, shapedCount);
 				return pushed;
 			}
 
@@ -8079,6 +8711,172 @@ int gLastScrollUiFrame = -1000;
 							 command.clip.y + command.clip.h >= height;
 			}
 
+			// What Tree::mount() leaves under every pixel the list does not paint (see
+			// restoreClearBaseInRegion).
+			static gea::framework::graphics::pixel::native_t clearBaseColour()
+			{
+				Tree &tree = Tree::instance();
+				const int root = tree.mountedRoot();
+				return root >= 0 && root < tree.nodeCount() && isDocumentCanvasRoot(tree.nodes()[root])
+				    ? gea::framework::graphics::pixel::nativeColor(255, 255, 255) : 0;
+			}
+
+#if GEA_CSS_SHAPED_CLIPS
+			// The list's shaped PushClips, one per distinct shape (each row of a scroll
+			// container repeats its container's). Clip commands change only with a full
+			// record, which bumps displayListSerial; a splice changes the command count.
+			// Both key the scan, so a frame pays it only after the list changed.
+			struct ListShapedClips
+			{
+				static constexpr int kMax = 4;
+				std::uint32_t serial = 0;
+				int commandCount = -1;
+				// Distinct clips found, or kMax + 1 when there are more than kMax.
+				int count = 0;
+				int first[kMax];
+			};
+
+			static bool sameClipShape(const DisplayCommand &a, const DisplayCommand &b)
+			{
+				for (int i = 0; i < 4; ++i)
+					if (a.clip.qx[i] != b.clip.qx[i] || a.clip.qy[i] != b.clip.qy[i] || a.clip.rx8[i] != b.clip.rx8[i] || a.clip.ry8[i] != b.clip.ry8[i])
+						return false;
+				return a.clip.lx == b.clip.lx && a.clip.ly == b.clip.ly && a.clip.lw == b.clip.lw && a.clip.lh == b.clip.lh;
+			}
+
+			static const ListShapedClips &listShapedClips()
+			{
+				static ListShapedClips value{};
+				if (value.serial != state.displayListSerial || value.commandCount != state.commandCount) scanShapedClips(value);
+				return value;
+			}
+
+			__attribute__((noinline)) static void scanShapedClips(ListShapedClips &value)
+			{
+				value.serial = state.displayListSerial;
+				value.commandCount = state.commandCount;
+				value.count = 0;
+				for (int ci = 0; ci < state.commandCount && value.count <= ListShapedClips::kMax; ++ci)
+				{
+					const DisplayCommand &c = state.commands[ci];
+					if (c.type != DisplayCommandType::PushClip || !c.clip.shaped) continue;
+					bool seen = false;
+					for (int i = 0; i < value.count && !seen; ++i) seen = sameClipShape(c, state.commands[value.first[i]]);
+					if (seen) continue;
+					if (value.count < ListShapedClips::kMax) value.first[value.count] = ci;
+					++value.count;
+				}
+			}
+
+			// The simple replays skip clip commands: every clip they accept covers the
+			// viewport. A shaped one still cuts its corners. When the list has one, the
+			// replay first puts the mount-time clear back where the clip may expose
+			// (the clip restores what lies under its corners, which must not carry the
+			// previous frame's blend), then lines each node's shaped clip ancestors up
+			// with ShapedClips before the node paints, as pushNodeReplayClips does: a
+			// clip stays open across the nodes under it and saves only inside the
+			// regions' bounds. The batch flushes before a clip opens or ends, so no
+			// rounded rect lands on the wrong side of a save or restore. A list without
+			// shaped clips pays one cached check per replay.
+			class SimpleShapedClips
+			{
+			public:
+				SimpleShapedClips(const DisplayReplayRegion *regions, int count, UniformRoundedRectBatch &batch) : batch(batch)
+				{
+					const ListShapedClips &clips = listShapedClips();
+					if (clips.count > 0 && count > 0) open(regions, count, clips);
+				}
+				~SimpleShapedClips() { finish(); }
+				SimpleShapedClips(const SimpleShapedClips &) = delete;
+				SimpleShapedClips &operator=(const SimpleShapedClips &) = delete;
+
+				// Inline, so a list without shaped clips pays one flag test per node.
+				void enter(int node_id, Node *nodes, int nodeCount)
+				{
+					if (active) line(node_id, nodes, nodeCount);
+				}
+
+				// Paints what is still batched under the open clips, then restores them.
+				void finish()
+				{
+					if (!active) return;
+					active = false;
+					batch.flush();
+					ShapedClips::endTo(mark);
+				}
+
+			private:
+				__attribute__((noinline)) void open(const DisplayReplayRegion *regions, int count, const ListShapedClips &clips)
+				{
+					active = true;
+					mark = ShapedClips::depth();
+					region[0] = region[1] = 32767;
+					region[2] = region[3] = -32768;
+					const auto base = clearBaseColour();
+					for (int ri = 0; ri < count; ++ri)
+					{
+						const DisplayReplayRegion &r = regions[ri];
+						if (r.x0 > r.x1 || r.y0 > r.y1) continue;
+						region[0] = std::min(region[0], r.x0);
+						region[1] = std::min(region[1], r.y0);
+						region[2] = std::max(region[2], r.x1);
+						region[3] = std::max(region[3], r.y1);
+						const int bounds[4] = {r.x0, r.y0, r.x1, r.y1};
+						if (clips.count > ListShapedClips::kMax)
+							gea::platform::display::Display::fillRect(r.x0, r.y0, r.x1 - r.x0 + 1, r.y1 - r.y0 + 1, base);
+						else
+							for (int i = 0; i < clips.count; ++i) ShapedClips::fillExposable(state.commands[clips.first[i]], bounds, base);
+					}
+				}
+
+				__attribute__((noinline)) void line(int node_id, Node *nodes, int nodeCount)
+				{
+					int owners[kScratchDepth];
+					int count = 0;
+					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
+					{
+						OverflowClipShape shape;
+						if (cursor != node_id && nodes[cursor].computedStyle().overflow != 0 &&
+						    nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape) && shape.shaped)
+						{
+							// Deeper than any page: the node paints unclipped, as every node did before.
+							if (count == kScratchDepth) { count = 0; break; }
+							owners[count++] = cursor;
+						}
+						if (LayoutEngine::isViewportFixed(nodes[cursor])) break;
+					}
+					// Outermost first, as ShapedClips indexes them.
+					for (int i = 0; i < count; ++i)
+					{
+						const int owner = owners[count - 1 - i];
+						if (ShapedClips::isOpen(mark, i, owner)) continue;
+						batch.flush();
+						OverflowClipShape shape;
+						nodeRecordsOverflowClip(owner, nodes, nodeCount, &shape);
+						ShapedClips::reconcile(mark, i, owner, shape, region);
+					}
+					if (ShapedClips::depth() > mark + static_cast<std::size_t>(count))
+					{
+						batch.flush();
+						ShapedClips::settle(mark, count);
+					}
+				}
+
+				UniformRoundedRectBatch &batch;
+				int region[4] = {0, 0, -1, -1};
+				bool active = false;
+				std::size_t mark = 0;
+			};
+#else
+			class SimpleShapedClips
+			{
+			public:
+				SimpleShapedClips(const DisplayReplayRegion *, int, UniformRoundedRectBatch &) {}
+				void enter(int, Node *, int) {}
+				void finish() {}
+			};
+#endif
+
 			static bool simpleTextAlphaNode(int id, Node *nodes, int count)
 			{
 				if (id < 0 || id >= count || !state.hasNodeScratchFor(id)) return false;
@@ -8163,6 +8961,9 @@ int gLastScrollUiFrame = -1000;
 							command.type == DisplayCommandType::BeginFilterBlur ||
 							command.type == DisplayCommandType::ApplyFilterBlur)
 						{ SRDBG("alpha/blur cmd type", (int)command.type); return false; }
+					// This path skips clip commands, so only a clip around the whole
+					// viewport may pass; a shaped one cuts its corners through
+					// SimpleShapedClips.
 					if (command.type == DisplayCommandType::PushClip &&
 							!clipCoversViewport(command, width, height))
 						{ SRDBG("non-viewport clip cmd", ci); return false; }
@@ -8176,6 +8977,7 @@ int gLastScrollUiFrame = -1000;
 				UniformRoundedRectBatch roundedRects;
 				Tree &tree = Tree::instance();
 				Node *nodes = tree.nodes();
+				SimpleShapedClips shapedClips(regions, count, roundedRects);
 				restoreRetainedBackgroundsInRegions(regions, count);
 				// Occlusion cull (see occlusionCullStartIndex): skip nodes fully covered
 				// by a later opaque full-bleed fill in EVERY region.
@@ -8207,10 +9009,12 @@ int gLastScrollUiFrame = -1000;
 					const int start = state.nodeDrawStart[node_id];
 					const int end = state.nodeDrawEnd[node_id];
 					if (node.computedStyle().opacity == 0) continue;
+					shapedClips.enter(node_id, nodes, tree.nodeCount());
 					SimpleTextAlphaScope alpha(node, roundedRects);
 					replaySimpleCommandRangeInRegions(start, end, regions, count, roundedRects);
 				}
 				roundedRects.flush();
+				shapedClips.finish();
 			}
 
 		static bool canReplaySimpleDirtyRegions(int width, int height)
@@ -8234,6 +9038,7 @@ int gLastScrollUiFrame = -1000;
 																							 int x1,
 																							 int y1,
 																							 UniformRoundedRectBatch &roundedRects,
+																							 SimpleShapedClips &shapedClips,
 																							 bool requireLayoutOverlap)
 		{
 			Tree &tree = Tree::instance();
@@ -8262,6 +9067,7 @@ int gLastScrollUiFrame = -1000;
 			if (start < 0 || end <= start || end > state.commandCount)
 				return;
 			if (node.computedStyle().opacity == 0) return;
+			shapedClips.enter(node_id, nodes, nodeCount);
 			SimpleTextAlphaScope alpha(node, roundedRects);
 			for (int ci = start; ci < end; ci++)
 			{
@@ -8294,6 +9100,8 @@ int gLastScrollUiFrame = -1000;
 				const int nodeCount = tree.nodeCount();
 				const int16_t *bboxes = state.drawNodeBBox;
 				refreshSimpleReplayNodeBBoxes(tree, nodes, nodeCount);
+				const DisplayReplayRegion region{x0, y0, x1, y1, -1};
+				SimpleShapedClips shapedClips(&region, 1, roundedRects);
 				// Occlusion cull (see occlusionCullStartIndex): start at the last opaque
 				// full-bleed fill covering this region — everything under it is invisible.
 				const int cullStart = occlusionCullStartIndex(x0, y0, x1, y1, nodes, nodeCount);
@@ -8320,6 +9128,7 @@ int gLastScrollUiFrame = -1000;
 					if (start < 0 || end <= start || end > state.commandCount)
 						continue;
 					if (node.computedStyle().opacity == 0) continue;
+					shapedClips.enter(node_id, nodes, nodeCount);
 					SimpleTextAlphaScope alpha(node, roundedRects);
 					for (int ci = start; ci < end; ci++)
 					{
@@ -8345,6 +9154,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				const std::int64_t __r1 = refreshPerfNowUs();
 				roundedRects.flush();
+				shapedClips.finish();
 				__rasterUs += refreshPerfNowUs() - __r1;
 				auto &perf = refreshPerfStatsMutable();
 				GEA_REFRESH_PERF(perf.treeReplaySplitRasterUs += __rasterUs);
@@ -8398,6 +9208,10 @@ int gLastScrollUiFrame = -1000;
 		static void replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1, bool allowSplit = true)
 		{
 			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySimpleRegionCalls++);
+#if GEA_CSS_SHAPED_CLIPS
+			// Fills the shaped-clip scan on this core before the bands read it.
+			listShapedClips();
+#endif
 			// Coarse 2-core band split, mirroring replayDirectDirtyRegion's: the
 			// per-origin simple replay is the path a single full-screen dirty rect
 			// takes every frame (e.g. the bouncing-balls field on a small panel),
@@ -8466,19 +9280,22 @@ int gLastScrollUiFrame = -1000;
 							replaySimpleClippedDirtyRegionFast(x0, y0, x1, y1);
 							return;
 						}
+						const DisplayReplayRegion region{x0, y0, x1, y1, origin};
+						SimpleShapedClips shapedClips(&region, 1, roundedRects);
 						const std::int64_t __bgStart = refreshPerfNowUs();
 						for (int i = chainLen - 1; i >= 0; --i)
-							replaySimpleNodeCommandsInRect(chain[i], x0, y0, x1, y1, roundedRects, false);
+							replaySimpleNodeCommandsInRect(chain[i], x0, y0, x1, y1, roundedRects, shapedClips, false);
 						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitBgUs += refreshPerfNowUs() - __bgStart);
 						const std::int64_t __dynStart = refreshPerfNowUs();
 						if (originOrder >= 0)
 						{
 							for (int oi = originOrder + 1; oi < state.drawNodeOrderCount; ++oi)
-								replaySimpleNodeCommandsInRect(state.drawNodeOrder[oi], x0, y0, x1, y1, roundedRects, true);
+								replaySimpleNodeCommandsInRect(state.drawNodeOrder[oi], x0, y0, x1, y1, roundedRects, shapedClips, true);
 						}
 						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitDynUs += refreshPerfNowUs() - __dynStart);
 						const std::int64_t __rasterStart = refreshPerfNowUs();
 						roundedRects.flush();
+						shapedClips.finish();
 						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitRasterUs += refreshPerfNowUs() - __rasterStart);
 						return;
 					}
@@ -8491,6 +9308,8 @@ int gLastScrollUiFrame = -1000;
 				Tree &tree = Tree::instance();
 				Node *nodes = tree.nodes();
 				const int nodeCount = tree.nodeCount();
+				const DisplayReplayRegion region{x0, y0, x1, y1, origin};
+				SimpleShapedClips shapedClips(&region, 1, roundedRects);
 				restoreRetainedBackgroundInRegion(x0, y0, x1, y1);
 				for (int oi = 0; oi < state.drawNodeOrderCount; oi++)
 				{
@@ -8516,6 +9335,7 @@ int gLastScrollUiFrame = -1000;
 					const int end = state.nodeDrawEnd[node_id];
 					if (start < 0 || end <= start || end > state.commandCount)
 						continue;
+					shapedClips.enter(node_id, nodes, nodeCount);
 					for (int ci = start; ci < end; ci++)
 					{
 						DisplayCommand *c = &state.commands[ci];
@@ -8538,6 +9358,7 @@ int gLastScrollUiFrame = -1000;
 					}
 				}
 				roundedRects.flush();
+				shapedClips.finish();
 			}
 
 			static void GEA_RENDER_HOT_SRAM replayNodeCommandRange(int node_id, int x0, int y0, int x1, int y1, UniformRoundedRectBatch &roundedRects)
@@ -8556,7 +9377,9 @@ int gLastScrollUiFrame = -1000;
 				if (start < 0 || end <= start || end > state.commandCount)
 					return;
 
-				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
+				const std::size_t shapedMark = ShapedClips::depth();
+				const int region[4] = {x0, y0, x1, y1};
+				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount, region);
 				if (pushedClips < 0)
 					return;
 				const std::uint8_t alpha = effectiveAlphaForNode(node_id, nodes, nodeCount);
@@ -8569,6 +9392,9 @@ int gLastScrollUiFrame = -1000;
 				replayCommandRange(start, end, x0, y0, x1, y1, roundedRects);
 				if (stateChanged)
 					roundedRects.flush();
+				// Inside a pass the shaped clips stay open for the next node under them.
+				if (!ShapedClips::inPass())
+					ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged)
@@ -8613,6 +9439,7 @@ int gLastScrollUiFrame = -1000;
 					return false;
 				Node *nodes = tree.nodes();
 				UniformRoundedRectBatch roundedRects;
+				ShapedClips::PassScope shapedClipPass;
 				gea::platform::display::Display::pushClip(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 				replayNodeCommandRange(origin, x0, y0, x1, y1, roundedRects);
 				for (int oi = originOrder + 1; oi < state.drawNodeOrderCount; ++oi)
@@ -8631,6 +9458,7 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					replayNodeCommandRange(node_id, x0, y0, x1, y1, roundedRects);
 				}
+				shapedClipPass.finish();
 				roundedRects.flush();
 				gea::platform::display::Display::popClip();
 				return true;
@@ -8663,6 +9491,7 @@ int gLastScrollUiFrame = -1000;
 				// doesn't overlap this single dirty region. Mirrors the per-command clip in
 				// the multi-region path (replayCommandInRegion).
 				UniformRoundedRectBatch roundedRects;
+				ShapedClips::PassScope shapedClipPass;
 				gea::platform::display::Display::pushClip(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 				// Static-backdrop cache: blit the baked backdrop (bg gradient + stage + the
 				// dithered floor) over the region, then replay only the dynamic subtree (the
@@ -8697,6 +9526,7 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					replayNodeCommandRange(node_id, x0, y0, x1, y1, roundedRects);
 				}
+				shapedClipPass.finish();
 				roundedRects.flush();
 				gea::platform::display::Display::popClip();
 				return true;
@@ -8732,6 +9562,7 @@ int gLastScrollUiFrame = -1000;
 				gea::platform::display::Display::resetClip();
 				gea::platform::display::Display::setAlpha(255);
 				UniformRoundedRectBatch roundedRects;
+				ShapedClips::PassScope shapedClipPass;
 				gea::platform::display::Display::pushClip(0, 0, width, height);
 				auto &treeSt = treeState();
 				for (int i = 0; i < tree.nodeCount() && i < kMaxNodes; i++)
@@ -8757,6 +9588,7 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < kMaxNodes)
 						treeSt.nodeInBackdrop[node_id] = 1;
 				}
+				shapedClipPass.finish();
 				roundedRects.flush();
 				gea::platform::display::Display::popClip();
 
@@ -8894,10 +9726,11 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
+						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
 								clip.layout.x + clip.layout.width - 1 < x1 ||
 								clip.layout.y + clip.layout.height - 1 < y1)
 						{
@@ -8925,10 +9758,7 @@ int gLastScrollUiFrame = -1000;
 				Tree &tree = Tree::instance();
 				if (regionHasOpaqueBase(x0, y0, x1, y1, tree.nodes(), tree.nodeCount()))
 					return;
-				const int root = tree.mountedRoot();
-				const auto base = root >= 0 && root < tree.nodeCount() && isDocumentCanvasRoot(tree.nodes()[root])
-				    ? gea::framework::graphics::pixel::nativeColor(255, 255, 255) : 0;
-				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, base);
+				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, clearBaseColour());
 			}
 
 			// Painter's-algorithm occlusion cull: the LAST node (in draw order) from
@@ -9006,10 +9836,12 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.y > y0 || clip.layout.y + clip.layout.height - 1 < y1)
+						// A rounded (shaped) clip never proves a rectangular cover.
+						if (shape.shaped || clip.layout.y > y0 || clip.layout.y + clip.layout.height - 1 < y1)
 						{
 							clipped = true;
 							break;
@@ -9064,6 +9896,7 @@ int gLastScrollUiFrame = -1000;
 				// command bboxes (e.g. a root background fill) from painting outside the
 				// region and erasing non-overlapping siblings.
 				UniformRoundedRectBatch roundedRects;
+				ShapedClips::PassScope shapedClipPass;
 				gea::platform::display::Display::pushClip(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
 				// Static-backdrop cache: this is the origin<0 path (e.g. a coalesced
 				// full-viewport sync rect, which loses its single ancestor chain). Blit the
@@ -9096,6 +9929,7 @@ int gLastScrollUiFrame = -1000;
 
 					replayNodeCommandRange(node_id, x0, y0, x1, y1, roundedRects);
 				}
+				shapedClipPass.finish();
 				roundedRects.flush();
 				gea::platform::display::Display::popClip();
 			}
@@ -9252,7 +10086,19 @@ int gLastScrollUiFrame = -1000;
 				if (!commandRangeOverlapsAnyRegion(start, end, regions, count))
 					return;
 
-				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
+				const std::size_t shapedMark = ShapedClips::depth();
+				// A shaped clip saves only inside the regions' bounds.
+				int region[4] = {regions[0].x0, regions[0].y0, regions[0].x1, regions[0].y1};
+				for (int ri = 1; ri < count; ri++)
+				{
+					if (regions[ri].x0 > regions[ri].x1 || regions[ri].y0 > regions[ri].y1)
+						continue;
+					region[0] = std::min(region[0], regions[ri].x0);
+					region[1] = std::min(region[1], regions[ri].y0);
+					region[2] = std::max(region[2], regions[ri].x1);
+					region[3] = std::max(region[3], regions[ri].y1);
+				}
+				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount, region);
 				if (pushedClips < 0)
 					return;
 				const std::uint8_t alpha = effectiveAlphaForNode(node_id, nodes, nodeCount);
@@ -9293,6 +10139,9 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (stateChanged || alphaTouched)
 					roundedRects.flush();
+				// Inside a pass the shaped clips stay open for the next node under them.
+				if (!ShapedClips::inPass())
+					ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged || alphaTouched)
@@ -9412,6 +10261,7 @@ int gLastScrollUiFrame = -1000;
 				Tree &tree = Tree::instance();
 				Node *nodes = tree.nodes();
 				UniformRoundedRectBatch roundedRects;
+				ShapedClips::PassScope shapedClipPass;
 				// Static-backdrop cache (multi-region path — the transformed cube produces
 				// several regions): blit the baked backdrop into each region, then replay only
 				// the dynamic subtree on top, same as the single-region path. Without this a
@@ -9461,11 +10311,18 @@ int gLastScrollUiFrame = -1000;
 
 					replayNodeCommandRangeInRegions(node_id, regions, count, roundedRects);
 				}
+				shapedClipPass.finish();
 				roundedRects.flush();
 			}
 
 			static void GEA_RENDER_HOT_SRAM replay()
 			{
+				// A stream without its PopClip still restores what its shaped clips saved.
+				struct ShapedClipGuard
+				{
+					std::size_t mark = ShapedClips::depth();
+					~ShapedClipGuard() { ShapedClips::endTo(mark); }
+				} shapedClipGuard;
 				int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
 				int clip_dirty = 1;
 				int clip_stack_depth = 0;
@@ -9586,8 +10443,6 @@ int gLastScrollUiFrame = -1000;
 							ny1 = cy1;
 
 						int changed = nx0 != cx0 || ny0 != cy0 || nx1 != cx1 || ny1 != cy1;
-						if (state.ensureReplayClipCapacity(clip_stack_depth + 1))
-							state.replayClipPushed[clip_stack_depth++] = (uint8_t)changed;
 						if (changed)
 						{
 							gea::platform::display::Display::pushClip(c->clip.x, c->clip.y, c->clip.w, c->clip.h);
@@ -9596,16 +10451,26 @@ int gLastScrollUiFrame = -1000;
 							cx1 = nx1;
 							cy1 = ny1;
 						}
+						// Bit 0: a Display clip was pushed; bit 1: a shaped clip began (after
+						// the push, whose clip bounds what it saves).
+						const bool shaped = c->clip.shaped && state.ensureReplayClipCapacity(clip_stack_depth + 1) && ShapedClips::begin(i);
+						if (state.ensureReplayClipCapacity(clip_stack_depth + 1))
+							state.replayClipPushed[clip_stack_depth++] = static_cast<uint8_t>(changed | (shaped ? 2 : 0));
 						continue;
 					}
 					case DisplayCommandType::PopClip:
+					{
 						roundedRects.flush();
-						if (clip_stack_depth <= 0 || state.replayClipPushed[--clip_stack_depth])
+						const uint8_t pushed = clip_stack_depth > 0 ? state.replayClipPushed[--clip_stack_depth] : 1;
+						if (pushed & 2)
+							ShapedClips::end();
+						if (pushed & 1)
 						{
 							gea::platform::display::Display::popClip();
 							clip_dirty = 1;
 						}
 						continue;
+					}
 					case DisplayCommandType::SetAlpha:
 						roundedRects.flush();
 						gea::platform::display::Display::setAlpha(c->alpha.alpha);
@@ -11035,6 +11900,7 @@ int gLastScrollUiFrame = -1000;
 				return false;
 
 			UniformRoundedRectBatch roundedRects;
+			ShapedClips::PassScope shapedClipPass;
 			for (int oi = orderIndex + 1; oi < state.drawNodeOrderCount; oi++)
 			{
 				const int paintNode = state.drawNodeOrder[oi];
@@ -11047,6 +11913,7 @@ int gLastScrollUiFrame = -1000;
 					continue;
 				DisplayCommandReplayer::replayNodeCommandRangeInRegions(paintNode, &region, 1, roundedRects);
 			}
+			shapedClipPass.finish();
 			roundedRects.flush();
 			return true;
 		}
