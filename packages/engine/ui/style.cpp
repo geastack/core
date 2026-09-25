@@ -6632,7 +6632,7 @@ int compileBackgroundClip(const std::string &value, bool shorthand = false)
 	for (const auto &layer : splitTopLevel(lower, ',')) {
 		if (!shorthand) {
 			const auto word = trimCssValue(layer);
-			const int clip = word == "text" ? 3 : backgroundBoxValue(word);
+			const int clip = word == "text" ? 3 : word == "border-area" ? 4 : backgroundBoxValue(word);
 			if (clip < 0) return -1;
 			clips.push_back(clip);
 		} else {
