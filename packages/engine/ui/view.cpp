@@ -339,6 +339,9 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->gradient.toAlpha = toAlpha;
 	cmd->gradient.hasMid = hasMid;
 	cmd->gradient.blend = blend;
+#if GEA_CSS_BORDER_IMAGE
+	cmd->gradient.boundsClip = 0;
+#endif
 	return cmd;
 }
 
@@ -2964,6 +2967,99 @@ int ViewRenderer::canvasBackgroundSource()
 	return root;
 }
 
+#if GEA_CSS_BORDER_IMAGE
+// An edge that would need more tiles than this stretches its part instead,
+// which bounds a box at 4 * 16 + 5 commands.
+constexpr int kBorderImageMaxTiles = 16;
+
+// border-image (CSS Backgrounds 3, section 6): the source, sized to the border
+// image area, is cut by the slices into nine parts drawn over the border image
+// widths. A gradient part is its gradient box scaled so the slice lands on the
+// tile; the command's bounds are the tile and the replay clips to them, so a
+// tile is one command. Single precision throughout: the board has no double
+// FPU. The caller checks border_image_source before calling.
+bool recordBorderImage(const Node &node)
+{
+	const auto *source = StyleValues::borderImageSource(node.computedStyle());
+	if (!source || ViewGeometry::hasTransformChain(node, false)) return false;
+	const auto slice = StyleValues::borderImageSides(node.computedStyle(), 0);
+	const auto widths = StyleValues::borderImageSides(node.computedStyle(), 1);
+	const auto outset = StyleValues::borderImageSides(node.computedStyle(), 2);
+	const int repeat = rstyle(node.computedStyle()).border_image_repeat;
+	float border[4], out[4];
+	for (int i = 0; i < 4; ++i) {
+		border[i] = static_cast<float>(computedBorderWidth(node.computedStyle(), i));
+		out[i] = outset.kind[i] == 1 ? outset.value[i] : outset.value[i] * border[i];
+	}
+	const float ax = static_cast<float>(node.layout.x) - out[3], ay = static_cast<float>(node.layout.y) - out[0];
+	const float aw = static_cast<float>(node.layout.width) + out[1] + out[3];
+	const float ah = static_cast<float>(node.layout.height) + out[0] + out[2];
+	if (aw <= 0.0f || ah <= 0.0f) return true;
+	// A gradient has no natural size: the image is the border image area, and
+	// auto widths fall back to the border widths.
+	float s[4], w[4];
+	for (int i = 0; i < 4; ++i) {
+		const float size = i % 2 ? aw : ah;
+		s[i] = std::min(size, slice.kind[i] == 2 ? slice.value[i] * size / 100.0f : slice.value[i]);
+		w[i] = widths.kind[i] == 0 ? widths.value[i] * border[i] : widths.kind[i] == 1 ? widths.value[i] :
+		    widths.kind[i] == 2 ? widths.value[i] * size / 100.0f : border[i];
+	}
+	const float fit = std::min({1.0f, w[1] + w[3] > aw ? aw / (w[1] + w[3]) : 1.0f, w[0] + w[2] > ah ? ah / (w[0] + w[2]) : 1.0f});
+	for (float &v : w) v *= fit;
+	const float dx[4] = {ax, ax + w[3], ax + aw - w[1], ax + aw}, dy[4] = {ay, ay + w[0], ay + ah - w[2], ay + ah};
+	const float sx[4] = {0.0f, s[3], aw - s[1], aw}, sy[4] = {0.0f, s[0], ah - s[2], ah};
+	// A part's scale along the tiled axis, from the edge it follows.
+	auto factor = [](float first, float firstSlice, float second, float secondSlice) {
+		if (firstSlice > 0.0f && first > 0.0f) return first / firstSlice;
+		return secondSlice > 0.0f && second > 0.0f ? second / secondSlice : 1.0f;
+	};
+	// Tile origins and size along one axis of a part.
+	struct Tiles { float start, size, step; int count; };
+	auto tile = [](int mode, float d0, float d1, float size) -> Tiles {
+		const float span = d1 - d0;
+		if (mode == 0 || size <= 0.0f || span > size * static_cast<float>(kBorderImageMaxTiles)) return {d0, span, span, 1};
+		if (mode == 2) {
+			const int n = std::max(1, static_cast<int>(std::lround(span / size)));
+			return {d0, span / static_cast<float>(n), span / static_cast<float>(n), n};
+		}
+		if (mode == 3) {
+			const int n = static_cast<int>(span / size);
+			const float gap = n ? (span - static_cast<float>(n) * size) / static_cast<float>(n + 1) : 0.0f;
+			return {d0 + gap, size, size + gap, n};
+		}
+		const float first = d0 + (span - size) * 0.5f - std::ceil((span - size) * 0.5f / size) * size;
+		return {first, size, size, static_cast<int>(std::ceil((d1 - first) / size))};
+	};
+	for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col) {
+		if (row == 1 && col == 1 && !slice.fill) continue;
+		const float dw = dx[col + 1] - dx[col], dh = dy[row + 1] - dy[row];
+		const float sw = sx[col + 1] - sx[col], sh = sy[row + 1] - sy[row];
+		if (dw <= 0.0f || dh <= 0.0f || sw <= 0.0f || sh <= 0.0f) continue;
+		const float kx = col != 1 ? dw / sw : row == 1 ? factor(w[0], s[0], w[2], s[2]) : dh / sh;
+		const float ky = row != 1 ? dh / sh : col == 1 ? factor(w[3], s[3], w[1], s[1]) : dw / sw;
+		const Tiles tx = col == 1 ? tile(repeat & 3, dx[1], dx[2], sw * kx) : Tiles{dx[col], dw, dw, 1};
+		const Tiles ty = row == 1 ? tile(repeat >> 2, dy[1], dy[2], sh * ky) : Tiles{dy[row], dh, dh, 1};
+		const float gx = tx.size / sw, gy = ty.size / sh;
+		const long vw = std::lround(aw * gx), vh = std::lround(ah * gy);
+		for (int j = 0; j < ty.count; ++j) for (int i = 0; i < tx.count; ++i) {
+			const float t0 = tx.start + static_cast<float>(i) * tx.step, u0 = ty.start + static_cast<float>(j) * ty.step;
+			const int cx0 = std::lround(std::max(t0, dx[col])), cx1 = std::lround(std::min(t0 + tx.size, dx[col + 1]));
+			const int cy0 = std::lround(std::max(u0, dy[row])), cy1 = std::lround(std::min(u0 + ty.size, dy[row + 1]));
+			if (cx1 <= cx0 || cy1 <= cy0) continue;
+			const long vx = std::lround(t0 - sx[col] * gx), vy = std::lround(u0 - sy[row] * gy);
+			if (std::max({std::labs(vx), std::labs(vy), vx + vw, vy + vh}) > 32000) continue;
+			auto *paint = appendLinearGradientRectRaw(node, vx, vy, vw, vh, source->from, source->mid, source->to,
+			    source->midStop, source->toStop, source->angle, source->fromAlpha, source->midAlpha, source->toAlpha, source->hasMid);
+			if (!paint) return true;
+			paint->gradient.tl = paint->gradient.tr = paint->gradient.br = paint->gradient.bl = 0;
+			paint->gradient.boundsClip = 1;
+			paint->bx = cx0; paint->by = cy0; paint->bw = cx1 - cx0; paint->bh = cy1 - cy0;
+		}
+	}
+	return true;
+}
+#endif
+
 void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordBox(const Node &node, uint8_t parentAlpha)
 {
 	const Node *n = &node;
@@ -3047,6 +3143,11 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 
 #if GEA_CSS_BOX_SHADOW
 	recordInsetBoxShadow(*n, parentAlpha);
+#endif
+#if GEA_CSS_BORDER_IMAGE
+	// A painted border image replaces the border styles. The handle check is
+	// one rare-style byte; a box without border-image pays nothing more.
+	if (rstyle(n->computedStyle()).border_image_source && recordBorderImage(*n)) return;
 #endif
 
 	if (n->computedStyle().border_width > 0 && !hasBorderRelief(n->computedStyle()) && !hasSideBorder(n->computedStyle()) && !borderColorsDiffer(n->computedStyle()) && !borderIsSameOpaqueSolidBackground(*n, parentAlpha)) {

@@ -6786,19 +6786,25 @@ int gLastScrollUiFrame = -1000;
 			// px*dx + py*dy, running from minProjection over span.
 			static void axis(const DisplayCommand &c, double *dxOut, double *dyOut, double *minProjectionOut, double *spanOut)
 			{
-				const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
-				double dx = std::sin(angleRadians);
-				double dy = -std::cos(angleRadians);
-				// Snap axis-aligned angles to exact unit vectors: sin(pi) is 1.2e-16,
-				// not 0, so a plain `to bottom` gradient would miss the constant-row
-				// fast path below (and drag ~1e-16 noise through the projection).
+				// Axis-aligned angles are exact unit vectors: sin(pi) is 1.2e-16, not 0,
+				// so a plain `to bottom` gradient would miss the constant-row fast path
+				// below (and drag ~1e-16 noise through the projection). They also skip
+				// the double trigonometry, which the board's FPU emulates in software,
+				// once per command (a border-image box replays ~24 tile commands).
+				double dx, dy;
 				switch (c.gradient.angle % 3600)
 				{
 				case 0: dx = 0.0; dy = -1.0; break;
 				case 900: dx = 1.0; dy = 0.0; break;
 				case 1800: dx = 0.0; dy = 1.0; break;
 				case 2700: dx = -1.0; dy = 0.0; break;
-				default: break;
+				default:
+				{
+					const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
+					dx = std::sin(angleRadians);
+					dy = -std::cos(angleRadians);
+					break;
+				}
 				}
 				const double gx0 = static_cast<double>(c.gradient.x);
 				const double gy0 = static_cast<double>(c.gradient.y);
@@ -6869,10 +6875,26 @@ int gLastScrollUiFrame = -1000;
 					gea::platform::display::Display::setAlpha(baseAlpha);
 			}
 
-			static void replay(const DisplayCommand &c)
+			// Out of line: inlined, this rasterizer's frame and register pressure
+			// land in DisplayCommandDrawer::replay and every command pays for them.
+			__attribute__((noinline)) static void replay(const DisplayCommand &c)
 			{
 				int cx0, cy0, cx1, cy1;
 				gea::platform::display::Display::clip(&cx0, &cy0, &cx1, &cy1);
+#if GEA_CSS_BORDER_IMAGE
+				if (c.gradient.boundsClip)
+				{
+					// A border-image tile: the gradient box is the whole scaled image and
+					// the bounds are the tile.
+					cx0 = std::max<int>(cx0, c.bx);
+					cy0 = std::max<int>(cy0, c.by);
+					cx1 = std::min<int>(cx1, c.bx + c.bw - 1);
+					cy1 = std::min<int>(cy1, c.by + c.bh - 1);
+				}
+				[[maybe_unused]] const bool tile = c.gradient.boundsClip;
+#else
+				[[maybe_unused]] constexpr bool tile = false;
+#endif
 				const int x0 = std::max<int>(c.gradient.x, cx0);
 				const int y0 = std::max<int>(c.gradient.y, cy0);
 				const int x1 = std::min<int>(c.gradient.x + c.gradient.w - 1, cx1);
@@ -6931,8 +6953,10 @@ int gLastScrollUiFrame = -1000;
 															c.gradient.tl == 0 && c.gradient.tr == 0 && c.gradient.br == 0 && c.gradient.bl == 0;
 				const bool bgLarge = static_cast<long long>(c.gradient.w) * c.gradient.h * 2 >=
 														 static_cast<long long>(scrW) * scrH;
+				// A border-image tile never takes a static cache slot: its scaled image can
+				// be screen-sized while the tile shows a sliver of it.
 				const bool bgCacheable = bgBuf && bgCanvas && bgCanvas->pixels() && bgOpaque && bgLarge &&
-																 scrW > 0 && scrH > 0 && bgCap >= scrW * scrH;
+																 scrW > 0 && scrH > 0 && bgCap >= scrW * scrH && !tile;
 				const std::uint16_t bgKeyNow[14] = {
 						static_cast<std::uint16_t>(c.gradient.fromColor), static_cast<std::uint16_t>(c.gradient.midColor), static_cast<std::uint16_t>(c.gradient.toColor), c.gradient.midStop,
 						c.gradient.toStop, static_cast<std::uint16_t>(c.gradient.angle), c.gradient.fromAlpha,
@@ -6971,7 +6995,8 @@ int gLastScrollUiFrame = -1000;
 				const bool hasTransparency = c.gradient.fromAlpha < 255 || c.gradient.toAlpha < 255 ||
 																		 (c.gradient.hasMid && c.gradient.midAlpha < 255);
 				const bool transCacheable = bgCanvas && bgCanvas->pixels() && scrW > 0 && scrH > 0 && hasTransparency &&
-																		static_cast<long long>(c.gradient.w) * c.gradient.h * 16 >= static_cast<long long>(scrW) * scrH;
+																		static_cast<long long>(c.gradient.w) * c.gradient.h * 16 >= static_cast<long long>(scrW) * scrH &&
+																		!tile;
 				const std::uint16_t transKey[14] = {
 						static_cast<std::uint16_t>(c.gradient.fromColor), static_cast<std::uint16_t>(c.gradient.midColor), static_cast<std::uint16_t>(c.gradient.toColor), c.gradient.midStop, c.gradient.toStop,
 						static_cast<std::uint16_t>(c.gradient.angle), c.gradient.fromAlpha, c.gradient.midAlpha, c.gradient.toAlpha,
@@ -7135,6 +7160,85 @@ int gLastScrollUiFrame = -1000;
 				static
 #endif
 				uint8_t rowAlpha[gea::platform::display::kWidth];
+				// One scanline: spanW pixels from chunkX into color/alpha. Returns
+				// whether every pixel is opaque.
+				auto rasterRow = [&](gea::framework::graphics::pixel::native_t *color, uint8_t *alpha, int chunkX, int spanW, int y)
+				{
+					// Work on copies: the uint8_t alpha stores may alias anything, so the
+					// captured references would be reloaded on every pixel.
+					const float step = stepX, start = fMinProjection, scale = invSpanPermille;
+					const auto table = lut;
+					const uint8_t *bayerRow = bayer4[y & 3];
+					float projection = (static_cast<float>(chunkX) + 0.5f) * step + (static_cast<float>(y) + 0.5f) * stepY;
+					bool rowOpaque = true;
+					if (step == 0.0f)
+					{
+						// Vertical gradient (the common `to bottom` case): the projection —
+						// hence the permille bucket, LUT entry, and alpha — is constant
+						// across the row; only the 4-periodic bayer COLUMN pattern varies.
+						// Compute the 4-pixel pattern once with exactly the per-pixel math
+						// (bit-identical) and fill the row at store speed instead of paying
+						// the DDA + clamp + LUT + dither chain per pixel.
+						const int permille = clampPermille(static_cast<int>((projection - start) * scale + 0.5f));
+						const DitherStop &e = table[permille];
+						gea::framework::graphics::pixel::native_t pattern[4];
+						for (int k = 0; k < 4; k++)
+						{
+#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
+							const int threshold = bayerRow[k] * 16 + 8;
+							const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
+							const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
+							const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
+							pattern[k] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
+#else
+							pattern[k] = e.color;
+#endif
+						}
+						for (int i = 0; i < spanW; i++)
+							color[i] = pattern[(chunkX + i) & 3];
+						std::memset(alpha, e.alpha, static_cast<std::size_t>(spanW));
+						return e.alpha == 255;
+					}
+					for (int i = 0; i < spanW; i++, projection += step)
+					{
+						const int permille = clampPermille(static_cast<int>((projection - start) * scale + 0.5f));
+						const DitherStop &e = table[permille];
+#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
+						const int threshold = bayerRow[(chunkX + i) & 3] * 16 + 8;
+						const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
+						const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
+						const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
+						color[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
+#else
+						color[i] = e.color; // full colour: no dither (8888 doesn't band)
+#endif
+						alpha[i] = e.alpha;
+						if (e.alpha != 255)
+							rowOpaque = false;
+					}
+					return rowOpaque;
+				};
+				// A small square-cornered opaque gradient, e.g. a border-image tile, is
+				// built as one block in the row buffer and blitted once, not once per
+				// row: every blit clips and scans the dirty-rect list, and a tile is a
+				// handful of pixels per row. A gradient with no vertical component
+				// repeats with the 4-row dither period, so rows past the fourth are
+				// copies. Same pixels as the row path below.
+				const int blockW = x1 - x0 + 1, blockH = y1 - y0 + 1;
+				const bool opaqueStops = c.gradient.fromAlpha == 255 && c.gradient.toAlpha == 255 &&
+				                         (!c.gradient.hasMid || c.gradient.midAlpha == 255);
+				if (opaqueStops && (c.gradient.tl | c.gradient.tr | c.gradient.br | c.gradient.bl) == 0 && blockH > 1 &&
+				    blockW * blockH <= gea::platform::display::kWidth)
+				{
+					for (int row = 0; row < blockH; row++)
+					{
+						gea::framework::graphics::pixel::native_t *color = rowColor + row * blockW;
+						if (stepY == 0.0f && row >= 4) std::memcpy(color, color - 4 * blockW, static_cast<std::size_t>(blockW) * sizeof *color);
+						else rasterRow(color, rowAlpha + row * blockW, x0, blockW, y0 + row);
+					}
+					gea::platform::display::Display::blitImage(rowColor, nullptr, blockW, blockH, x0, y0);
+				}
+				else
 				for (int y = y0; y <= y1; y++)
 				{
 					int rowX0 = x0;
@@ -7142,59 +7246,11 @@ int gLastScrollUiFrame = -1000;
 					roundedRowSpan(c, y, &rowX0, &rowX1);
 					if (rowX0 > rowX1)
 						continue;
-					const uint8_t *bayerRow = bayer4[y & 3];
 					// Keep the device-sized buffer, but cover wider simulator viewports in chunks.
 					for (int chunkX = rowX0; chunkX <= rowX1; chunkX += gea::platform::display::kWidth)
 					{
 						const int spanW = std::min(gea::platform::display::kWidth, rowX1 - chunkX + 1);
-						float projection = (static_cast<float>(chunkX) + 0.5f) * stepX + (static_cast<float>(y) + 0.5f) * stepY;
-						bool rowOpaque = true;
-						if (stepX == 0.0f)
-						{
-							// Vertical gradient (the common `to bottom` case): the projection —
-							// hence the permille bucket, LUT entry, and alpha — is constant
-							// across the row; only the 4-periodic bayer COLUMN pattern varies.
-							// Compute the 4-pixel pattern once with exactly the per-pixel math
-							// (bit-identical) and fill the row at store speed instead of paying
-							// the DDA + clamp + LUT + dither chain per pixel.
-							const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
-							const DitherStop &e = lut[permille];
-							gea::framework::graphics::pixel::native_t pattern[4];
-							for (int k = 0; k < 4; k++)
-							{
-#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
-								const int threshold = bayerRow[k] * 16 + 8;
-								const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
-								const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
-								const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
-								pattern[k] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
-#else
-								pattern[k] = e.color;
-#endif
-							}
-							for (int i = 0; i < spanW; i++)
-								rowColor[i] = pattern[(chunkX + i) & 3];
-							std::memset(rowAlpha, e.alpha, static_cast<std::size_t>(spanW));
-							rowOpaque = e.alpha == 255;
-						}
-						else
-						for (int i = 0; i < spanW; i++, projection += stepX)
-						{
-							const int permille = clampPermille(static_cast<int>((projection - fMinProjection) * invSpanPermille + 0.5f));
-							const DitherStop &e = lut[permille];
-#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
-							const int threshold = bayerRow[(chunkX + i) & 3] * 16 + 8;
-							const int r5 = e.qR + ((e.remR > threshold) ? 1 : 0);
-							const int g6 = e.qG + ((e.remG > threshold) ? 1 : 0);
-							const int b5 = e.qB + ((e.remB > threshold) ? 1 : 0);
-							rowColor[i] = gea::framework::graphics::pixel::packRgb565Components(r5, g6, b5);
-#else
-							rowColor[i] = e.color; // full colour: no dither (8888 doesn't band)
-#endif
-							rowAlpha[i] = e.alpha;
-							if (e.alpha != 255)
-								rowOpaque = false;
-						}
+						const bool rowOpaque = rasterRow(rowColor, rowAlpha, chunkX, spanW, y);
 						// alpha=nullptr -> blitImage's opaque memcpy (baseAlpha==255) or whole-row
 						// global blend (baseAlpha<255); the rowAlpha mask -> per-pixel combine
 						// with baseAlpha. Equivalent to the old fillRun(combineAlpha(baseAlpha,
@@ -7432,7 +7488,8 @@ int gLastScrollUiFrame = -1000;
 				    LinearGradientDrawer::interpolateAlpha(c.radialGradient.fromAlpha, c.radialGradient.toAlpha, lp));
 			}
 
-			static void replay(const DisplayCommand &c)
+			// Out of line for the same reason as LinearGradientDrawer::replay.
+			__attribute__((noinline)) static void replay(const DisplayCommand &c)
 			{
 				int cx0, cy0, cx1, cy1;
 				gea::platform::display::Display::clip(&cx0, &cy0, &cx1, &cy1);

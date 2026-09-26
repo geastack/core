@@ -419,12 +419,41 @@ struct RareStyle {
 #if GEA_CSS_BACKGROUND_BLEND
 	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
 #endif
+#if GEA_CSS_BORDER_IMAGE
+	// border-image-* (see StyleValues::borderImageSource/Sides/Repeat): interned
+	// handles, zero is the initial value.
+	uint8_t border_image_source = 0;
+	uint8_t border_image_slice = 0;
+	uint8_t border_image_width = 0;
+	uint8_t border_image_outset = 0;
+	uint8_t border_image_repeat = 0; // bits 0-1 horizontal, 2-3 vertical: stretch, repeat, round, space
+#endif
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #else
 	static constexpr uint16_t bg_image_layer_count = 1; // Includes none layers.
 	static constexpr int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	static constexpr int32_t bg_attachment_list = -1, bg_origin_list = -1;
+#if GEA_CSS_BACKGROUND_BLEND
+	uint8_t bg_blend = 0;
+#endif
+#if GEA_CSS_BORDER_IMAGE
+	uint8_t border_image_source = 0;
+	uint8_t border_image_slice = 0;
+	uint8_t border_image_width = 0;
+	uint8_t border_image_outset = 0;
+	uint8_t border_image_repeat = 0;
+#endif
+#endif
+#if !GEA_CSS_BACKGROUND_BLEND
+	static constexpr uint8_t bg_blend = 0;
+#endif
+#if !GEA_CSS_BORDER_IMAGE
+	static constexpr uint8_t border_image_source = 0;
+	static constexpr uint8_t border_image_slice = 0;
+	static constexpr uint8_t border_image_width = 0;
+	static constexpr uint8_t border_image_outset = 0;
+	static constexpr uint8_t border_image_repeat = 0;
 #endif
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
 	uint16_t bg_gradient_layer = 0, bg_overlay_gradient_layer = 0, bg_radial_gradient_layer = 0;
@@ -537,7 +566,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_BLEND || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_IMAGE || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {

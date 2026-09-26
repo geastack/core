@@ -161,6 +161,12 @@ void rootScrollImageHoldTick();
 				uint8_t hasMid;
 				// background-blend-mode of the layer; 0 is normal (see BlendMode).
 				uint8_t blend;
+#if GEA_CSS_BORDER_IMAGE
+				// 1: the replay also clips the fill to the command bounds. A
+				// border-image tile's gradient box is the whole scaled image; its
+				// bounds are the tile, so it needs no PushClip/PopClip pair.
+				uint8_t boundsClip;
+#endif
 			} gradient;
 			struct
 			{

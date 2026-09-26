@@ -10,8 +10,10 @@
 #include "layout_snapshot.h"
 #include "refresh_perf.h"
 #include "root_scroll_refresh.h"
+#include "style_values.h"
 #include "tree_state.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -382,11 +384,14 @@ namespace gea::embedded::ui
 		{
 			if (hasAnyBorder(node.computedStyle()))
 				return true;
-			if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0 || node.render.previous_filter_blur_radius > 0)
+			// One rare-style lookup serves the filter, shadow and border-image checks.
+			const auto &rare = rstyle(node.computedStyle());
+			if ((GEA_CSS_FILTERS ? rare.filter_blur_radius : 0) > 0 || node.render.previous_filter_blur_radius > 0)
 				return true;
 			if (node.computedStyle().mask_right_fade_width > 0)
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) > 0)
+			if ((GEA_CSS_BOX_SHADOW ? rare.box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 ||
+			    (GEA_CSS_BORDER_IMAGE ? rare.border_image_source : 0))
 				return true;
 			return node.computedStyle().has_bg && (styleHasRoundedRasterEdge(node.computedStyle()) || node.computedStyle().bg_alpha < 255);
 		}
@@ -408,7 +413,15 @@ namespace gea::embedded::ui
 		{
 			if (!dirtyRectNeedsRasterGuard(node))
 				return rect;
-			return expandDirtyRect(rect, 1);
+			// border-image-outset and an outer box-shadow paint outside the border box;
+			// the previous shadow extent covers pixels a moved or shrunk shadow left.
+			const int shadow = std::max(boxShadowExtent(node.computedStyle()), static_cast<int>(node.render.previous_box_shadow_extent));
+#if GEA_CSS_BORDER_IMAGE
+			const int outset = rstyle(node.computedStyle()).border_image_source ? StyleValues::borderImageOutsetExtent(node.computedStyle()) : 0;
+#else
+			const int outset = 0;
+#endif
+			return expandDirtyRect(rect, 1 + std::max(outset, shadow));
 		}
 
 		DirtyRegions::Rect dirtyRectWithRetainedMoveGuard(DirtyRegions::Rect rect)

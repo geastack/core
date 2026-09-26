@@ -255,6 +255,13 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// border-image with a linear-gradient() source (CSS Backgrounds 3, section 6).
+// Off, the properties are unknown, RareStyle carries no handles, and the
+// record and dirty-rect paths carry no border-image checks.
+#ifndef GEA_CSS_BORDER_IMAGE
+#define GEA_CSS_BORDER_IMAGE 1
+#endif
+
 // background-blend-mode on gradient layers (Compositing 1, section 10). Off,
 // the property is unknown, RareStyle carries no handle, and replay carries no
 // per-pixel blend path.

@@ -230,6 +230,11 @@ enum class Property : int {
 	TextEmphasisColorMode,
 	TextEmphasisColor,
 	BackgroundBlendMode,
+	BorderImageSource,
+	BorderImageSlice,
+	BorderImageWidth,
+	BorderImageOutset,
+	BorderImageRepeat,
 	Count
 };
 
@@ -394,6 +399,12 @@ enum class StyleDeclaration : std::uint8_t {
 	TextEmphasisColorDeclaration,
 	TextEmphasisPositionDeclaration,
 	BackgroundBlendMode,
+	BorderImage,
+	BorderImageSourceDeclaration,
+	BorderImageSliceDeclaration,
+	BorderImageWidthDeclaration,
+	BorderImageOutsetDeclaration,
+	BorderImageRepeatDeclaration,
 	// Logical two-sided shorthands (see logicalPairFor in style.cpp).
 	MarginInline,
 	MarginBlock,

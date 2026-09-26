@@ -2801,8 +2801,10 @@ public:
 		int used = std::max(1, (flow + height - 1) / height);
 		if (flags & 32) used = std::min(used, g.count);
 		ensureRareData(id_).multicol = MulticolLayout{clampInt16(g.width), clampInt16(g.gap), clampInt16(height), clampInt16(used), true, (flags & 32) != 0};
+#if GEA_CSS_SCROLLING
 		node_.layout.scroll_content_width = clampInt16(std::max<int>(node_.layout.width, insetsX + used * (g.width + g.gap) - g.gap));
 		node_.layout.scroll_content_height = node_.layout.height;
+#endif
 	}
 
 	// The shortest column height that fits the flow into `count` columns with
@@ -5248,16 +5250,33 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 #if GEA_CSS_STICKY
 namespace {
 
+// The position offset macros select a side at compile time.
+template <int side>
+int stickyInsetFor(const Node &node, int basis)
+{
+	int inset = GEA_CSS_POSITION_PX(node.computedStyle(), side) != kUnset ? GEA_CSS_POSITION_PX(node.computedStyle(), side) : 0;
+	if (GEA_CSS_POSITION_PERCENT(node.computedStyle(), side) != kUnset) inset += basis * GEA_CSS_POSITION_PERCENT(node.computedStyle(), side) / 1000;
+	return inset;
+}
+
 int stickyInset(const Node &node, int side, int basis)
 {
-	int inset = node.style.pos_offsets[side] != kUnset ? node.style.pos_offsets[side] : 0;
-	if (node.style.pos_offset_percent[side] != kUnset) inset += basis * node.style.pos_offset_percent[side] / 1000;
-	return inset;
+	switch (side) {
+	case 0: return stickyInsetFor<0>(node, basis);
+	case 1: return stickyInsetFor<1>(node, basis);
+	case 2: return stickyInsetFor<2>(node, basis);
+	default: return stickyInsetFor<3>(node, basis);
+	}
 }
 
 bool hasStickyInset(const Node &node, int side)
 {
-	return node.style.pos_offsets[side] != kUnset || node.style.pos_offset_percent[side] != kUnset;
+	switch (side) {
+	case 0: return hasPositionOffsetValue<0>(node);
+	case 1: return hasPositionOffsetValue<1>(node);
+	case 2: return hasPositionOffsetValue<2>(node);
+	default: return hasPositionOffsetValue<3>(node);
+	}
 }
 
 // position: sticky (CSS Position 3): shift the box, never out of its
