@@ -2967,6 +2967,34 @@ int ViewRenderer::canvasBackgroundSource()
 	return root;
 }
 
+// A split inline (splitDecoratedInline in layout.cpp) paints its fragments
+// instead of one box: each fragment's background colour and solid border,
+// open on its split sides.
+bool recordInlineParts(const Node &node, uint8_t parentAlpha)
+{
+	const NodeRareData *rare = rareDataFor(ViewGeometry::nodeIndex(node));
+	if (!rare || rare->inlineParts.empty() || ViewGeometry::hasTransformChain(node, false)) return false;
+	for (const auto &part : rare->inlineParts) {
+		const int x = node.layout.x + part.x, y = node.layout.y + part.y, w = part.width, h = part.height;
+		if (w <= 0 || h <= 0) continue;
+		if (node.computedStyle().has_bg && node.computedStyle().bg_alpha > 0)
+			appendFillRectWithAlpha(x, y, w, h, node.computedStyle().bg_color, node.computedStyle().bg_alpha, parentAlpha, x, y, w, h);
+		// Horizontal edges own the corners, as for an unsplit box.
+		const int top = part.sides & 1 ? std::min(computedBorderWidth(node.computedStyle(), 0), h) : 0;
+		const int bottom = part.sides & 4 ? std::min(computedBorderWidth(node.computedStyle(), 2), h - top) : 0;
+		for (int side = 0; side < 4; ++side) {
+			const int width = computedBorderWidth(node.computedStyle(), side);
+			if (!(part.sides & (1 << side)) || width <= 0 || borderPaintAlpha(node.computedStyle(), side) == 0) continue;
+			int sx = x, sy = y + top, sw = std::min(width, w), sh = h - top - bottom;
+			if (side == 0 || side == 2) { sx = x; sw = w; sy = side ? y + h - bottom : y; sh = side ? bottom : top; }
+			else if (side == 1) sx = x + w - sw;
+			if (sw > 0 && sh > 0)
+				appendFillRectWithAlpha(sx, sy, sw, sh, borderPaintColor(node.computedStyle(), side), borderPaintAlpha(node.computedStyle(), side), parentAlpha, sx, sy, sw, sh);
+		}
+	}
+	return true;
+}
+
 #if GEA_CSS_BORDER_IMAGE
 // An edge that would need more tiles than this stretches its part instead,
 // which bounds a box at 4 * 16 + 5 commands.
@@ -3085,6 +3113,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 		}
 	}
 	if (w <= 0 || h <= 0) return;
+	if (recordInlineParts(*n, parentAlpha)) return;
 #if GEA_CSS_BOX_SHADOW
 	if (rstyle(n->computedStyle()).box_shadow_alpha) recordOuterBoxShadow(*n, parentAlpha);
 #endif
