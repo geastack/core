@@ -40,6 +40,21 @@ inline int16_t storedPositionOffset(int value)
 {
 	return static_cast<int16_t>(value == kUnset ? kUnset : std::clamp(value, -32767, 32767));
 }
+// Width and height (declared and laid out) are 32-bit with GEA_CSS_LARGE_BOXES:
+// a box can be larger than int16 allows and still fit the screen under a scale
+// transform. The bound keeps every size exact in the float math of transform
+// projection. Without the family they stay int16, as every screen fits.
+#if GEA_CSS_LARGE_BOXES
+using layout_extent_t = int32_t;
+inline constexpr int kMaxLayoutExtent = 1 << 24;
+#else
+using layout_extent_t = int16_t;
+inline constexpr int kMaxLayoutExtent = 32767;
+#endif
+inline layout_extent_t clampLayoutExtent(int value)
+{
+	return static_cast<layout_extent_t>(std::clamp(value, -kMaxLayoutExtent, kMaxLayoutExtent));
+}
 // Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
 inline constexpr int kZIndexAuto = INT32_MIN;
 // Origins keep percentage permille values unchanged; absolute pixel lengths
@@ -730,7 +745,7 @@ struct ComputedStyle {
 #else
 	static constexpr int32_t height_expression = -1;
 #endif
-	int16_t width, height;
+	layout_extent_t width, height; // kUnset: auto; see kMaxLayoutExtent
 #if GEA_CSS_WIDTH_PERCENT
 	int16_t width_percent;
 #else
@@ -1518,7 +1533,7 @@ inline bool hasBorderRelief(const ComputedStyle &style)
 
 struct LayoutBox {
 	int16_t x, y;
-	int16_t width, height;
+	layout_extent_t width, height; // see kMaxLayoutExtent
 
 	// Inline formatting: x offset, inside this box's content area, at which the
 	// run's FIRST line starts. A text run that begins part-way along a line box
@@ -1549,7 +1564,6 @@ struct LayoutBox {
 #endif
 
 	int16_t previous_x, previous_y;
-	int16_t previous_width, previous_height;
 #if GEA_CSS_LINE_CLAMP
 	// line-clamp: a text run its container's clamp point cuts paints only
 	// this many lines. 0 paints them all.
@@ -1557,6 +1571,7 @@ struct LayoutBox {
 #else
 	static constexpr int16_t line_clamp_lines = 0;
 #endif
+	layout_extent_t previous_width, previous_height;
 
 	// Scroll geometry must be 32-bit: a <virtual-list> scrolls over a virtual
 	// content height of itemCount * rowHeight (e.g. 5000 * 259 ≈ 1.29M px),
