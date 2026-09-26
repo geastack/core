@@ -5466,6 +5466,121 @@ int gLastScrollUiFrame = -1000;
 			}
 		};
 
+		// background-blend-mode (Compositing 1, section 10): a gradient layer
+		// blends with what is painted under it. The backdrop should be only the
+		// element's lower layers; the canvas holds them over whatever is behind the
+		// element, which differs only where those layers are not opaque.
+		struct BlendDrawer
+		{
+			static float softLightD(float cb)
+			{
+				return cb <= 0.25f ? ((16.0f * cb - 12.0f) * cb + 4.0f) * cb : std::sqrt(cb);
+			}
+
+			static float channel(int mode, float cb, float cs)
+			{
+				switch (mode)
+				{
+				case 1: return cb * cs;
+				case 2: return cb + cs - cb * cs;
+				case 3: return channel(8, cs, cb);
+				case 4: return std::min(cb, cs);
+				case 5: return std::max(cb, cs);
+				case 6:
+					if (cb <= 0.0f) return 0.0f;
+					return cs >= 1.0f ? 1.0f : std::min(1.0f, cb / (1.0f - cs));
+				case 7:
+					if (cb >= 1.0f) return 1.0f;
+					return cs <= 0.0f ? 0.0f : 1.0f - std::min(1.0f, (1.0f - cb) / cs);
+				case 8: return cs <= 0.5f ? cb * 2.0f * cs : channel(2, cb, 2.0f * cs - 1.0f);
+				case 9:
+					if (cs <= 0.5f) return cb - (1.0f - 2.0f * cs) * cb * (1.0f - cb);
+					return cb + (2.0f * cs - 1.0f) * (softLightD(cb) - cb);
+				case 10: return std::fabs(cb - cs);
+				case 11: return cb + cs - 2.0f * cb * cs;
+				default: return cs;
+				}
+			}
+
+			static float lum(const float c[3]) { return 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]; }
+
+			static void setLum(float c[3], float l)
+			{
+				const float d = l - lum(c);
+				for (int i = 0; i < 3; ++i) c[i] += d;
+				l = lum(c);
+				const float n = std::min({c[0], c[1], c[2]}), x = std::max({c[0], c[1], c[2]});
+				for (int i = 0; i < 3; ++i) {
+					if (n < 0.0f) c[i] = l + (c[i] - l) * l / (l - n);
+					if (x > 1.0f) c[i] = l + (c[i] - l) * (1.0f - l) / (x - l);
+				}
+			}
+
+			static void setSat(float c[3], float s)
+			{
+				int lo = 0, hi = 0;
+				for (int i = 1; i < 3; ++i) {
+					if (c[i] < c[lo]) lo = i;
+					if (c[i] >= c[hi]) hi = i;
+				}
+				if (lo == hi) { c[0] = c[1] = c[2] = 0.0f; return; }
+				const int mid = 3 - lo - hi;
+				c[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+				c[hi] = s;
+				c[lo] = 0.0f;
+			}
+
+			static float sat(const float c[3]) { return std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]}); }
+
+			// `out` = B(cb, cs), channels in 0..1.
+			static void blend(int mode, const float cb[3], const float cs[3], float out[3])
+			{
+				if (mode < 12) {
+					for (int i = 0; i < 3; ++i) out[i] = channel(mode, cb[i], cs[i]);
+					return;
+				}
+				const float *hueSource = mode == 13 ? cb : cs;
+				for (int i = 0; i < 3; ++i) out[i] = mode == 15 ? cb[i] : hueSource[i];
+				if (mode == 12) setSat(out, sat(cb));
+				if (mode == 13) setSat(out, sat(cs));
+				setLum(out, mode == 15 ? lum(cs) : lum(cb));
+			}
+
+			// Blends the source colour the callback gives for each pixel of the
+			// clipped rows into the canvas. `color(x, y, rgb, &alpha)` returns false
+			// where the layer paints nothing.
+			template <typename Span, typename Color>
+			static void replay(int mode, int x0, int y0, int x1, int y1, Span span, Color color)
+			{
+				auto *canvas = gea::platform::display::Display::canvas();
+				if (!canvas) return;
+				x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+				x1 = std::min(x1, canvas->width() - 1); y1 = std::min(y1, canvas->height() - 1);
+				const int baseAlpha = gea::platform::display::Display::alpha();
+				for (int y = y0; y <= y1; ++y) {
+					int rowX0 = x0, rowX1 = x1;
+					span(y, &rowX0, &rowX1);
+					for (int x = rowX0; x <= rowX1; ++x) {
+						int rgb[3], alpha = 0;
+						if (!color(x, y, rgb, &alpha)) continue;
+						alpha = alpha * baseAlpha / 255;
+						if (alpha <= 0) continue;
+						int br, bg, bb, ba;
+						gea::framework::graphics::pixel::unpackNative8(canvas->readPixelNative(x, y), &br, &bg, &bb, &ba);
+						const float cb[3] = {br / 255.0f, bg / 255.0f, bb / 255.0f};
+						const float cs[3] = {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
+						float mixed[3];
+						blend(mode, cb, cs, mixed);
+						const float a = alpha / 255.0f;
+						int out[3];
+						for (int i = 0; i < 3; ++i)
+							out[i] = std::clamp(static_cast<int>((cb[i] + (mixed[i] - cb[i]) * a) * 255.0f + 0.5f), 0, 255);
+						canvas->writePixelNativeExact(x, y, gea::framework::graphics::pixel::packNative8(out[0], out[1], out[2]));
+					}
+				}
+			}
+		};
+
 		struct LinearGradientDrawer
 		{
 			static constexpr double kPi = 3.14159265358979323846;
@@ -5738,6 +5853,62 @@ int gLastScrollUiFrame = -1000;
 				*x1 = std::min(*x1, rowRight);
 			}
 
+			// The gradient line: the position of pixel centre (px, py) along it is
+			// px*dx + py*dy, running from minProjection over span.
+			static void axis(const DisplayCommand &c, double *dxOut, double *dyOut, double *minProjectionOut, double *spanOut)
+			{
+				const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
+				double dx = std::sin(angleRadians);
+				double dy = -std::cos(angleRadians);
+				// Snap axis-aligned angles to exact unit vectors: sin(pi) is 1.2e-16,
+				// not 0, so a plain `to bottom` gradient would miss the constant-row
+				// fast path below (and drag ~1e-16 noise through the projection).
+				switch (c.gradient.angle % 3600)
+				{
+				case 0: dx = 0.0; dy = -1.0; break;
+				case 900: dx = 1.0; dy = 0.0; break;
+				case 1800: dx = 0.0; dy = 1.0; break;
+				case 2700: dx = -1.0; dy = 0.0; break;
+				default: break;
+				}
+				const double gx0 = static_cast<double>(c.gradient.x);
+				const double gy0 = static_cast<double>(c.gradient.y);
+				const double gx1 = static_cast<double>(c.gradient.x + c.gradient.w);
+				const double gy1 = static_cast<double>(c.gradient.y + c.gradient.h);
+				const double p0 = gx0 * dx + gy0 * dy;
+				const double p1 = gx1 * dx + gy0 * dy;
+				const double p2 = gx1 * dx + gy1 * dy;
+				const double p3 = gx0 * dx + gy1 * dy;
+				const double minProjection = std::min(std::min(p0, p1), std::min(p2, p3));
+				const double maxProjection = std::max(std::max(p0, p1), std::max(p2, p3));
+				*dxOut = dx;
+				*dyOut = dy;
+				*minProjectionOut = minProjection;
+				*spanOut = maxProjection - minProjection;
+			}
+
+			static void replayBlended(const DisplayCommand &c, int x0, int y0, int x1, int y1)
+			{
+				double dx, dy, minProjection, projectionSpan;
+				axis(c, &dx, &dy, &minProjection, &projectionSpan);
+				const double invSpanPermille = projectionSpan > 0.001 ? 1000.0 / projectionSpan : 0.0;
+				int lastPermille = -1, lastRgb[3] = {}, lastAlpha = 0;
+				BlendDrawer::replay(c.gradient.blend, x0, y0, x1, y1,
+				    [&](int y, int *a, int *b) { roundedRowSpan(c, y, a, b); },
+				    [&](int x, int y, int rgb[3], int *alpha) {
+					    const double projection = (x + 0.5) * dx + (y + 0.5) * dy;
+					    const int permille = clampPermille(static_cast<int>((projection - minProjection) * invSpanPermille + 0.5));
+					    if (permille != lastPermille) {
+						    rgb888At(c, permille, &lastRgb[0], &lastRgb[1], &lastRgb[2]);
+						    lastAlpha = alphaAt(c, permille);
+						    lastPermille = permille;
+					    }
+					    for (int i = 0; i < 3; ++i) rgb[i] = lastRgb[i];
+					    *alpha = lastAlpha;
+					    return true;
+				    });
+			}
+
 			static void fillRun(int x, int y, int w, uint16_t color, uint8_t alpha, uint8_t baseAlpha)
 			{
 				const uint8_t effectiveAlpha = combineAlpha(baseAlpha, alpha);
@@ -5760,6 +5931,11 @@ int gLastScrollUiFrame = -1000;
 				const int y1 = std::min<int>(c.gradient.y + c.gradient.h - 1, cy1);
 				if (x1 < x0 || y1 < y0)
 					return;
+				if (c.gradient.blend)
+				{
+					replayBlended(c, x0, y0, x1, y1);
+					return;
+				}
 
 				// An opaque constant gradient, e.g. linear-gradient(green, green), is a
 				// solid fill: dithering it would speckle a colour a plain fill paints flat.
@@ -5859,31 +6035,8 @@ int gLastScrollUiFrame = -1000;
 
 #endif
 
-				const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
-				double dx = std::sin(angleRadians);
-				double dy = -std::cos(angleRadians);
-				// Snap axis-aligned angles to exact unit vectors: sin(pi) is 1.2e-16,
-				// not 0, so a plain `to bottom` gradient would miss the constant-row
-				// fast path below (and drag ~1e-16 noise through the projection).
-				switch (c.gradient.angle % 3600)
-				{
-				case 0: dx = 0.0; dy = -1.0; break;
-				case 900: dx = 1.0; dy = 0.0; break;
-				case 1800: dx = 0.0; dy = 1.0; break;
-				case 2700: dx = -1.0; dy = 0.0; break;
-				default: break;
-				}
-				const double gx0 = static_cast<double>(c.gradient.x);
-				const double gy0 = static_cast<double>(c.gradient.y);
-				const double gx1 = static_cast<double>(c.gradient.x + c.gradient.w);
-				const double gy1 = static_cast<double>(c.gradient.y + c.gradient.h);
-				const double p0 = gx0 * dx + gy0 * dy;
-				const double p1 = gx1 * dx + gy0 * dy;
-				const double p2 = gx1 * dx + gy1 * dy;
-				const double p3 = gx0 * dx + gy1 * dy;
-				const double minProjection = std::min(std::min(p0, p1), std::min(p2, p3));
-				const double maxProjection = std::max(std::max(p0, p1), std::max(p2, p3));
-				const double projectionSpan = maxProjection - minProjection;
+				double dx, dy, minProjection, projectionSpan;
+				axis(c, &dx, &dy, &minProjection, &projectionSpan);
 				if (projectionSpan <= 0.001)
 				{
 					const uint8_t baseAlpha = gea::platform::display::Display::alpha();
@@ -6350,6 +6503,21 @@ int gLastScrollUiFrame = -1000;
 																			 static_cast<float>(c.radialGradient.h) * static_cast<float>(c.radialGradient.ryPermille) / 1000.0f);
 				const float invRadiusX = 1.0f / radiusX;
 				const float invRadiusY = 1.0f / radiusY;
+				if (c.radialGradient.blend)
+				{
+					BlendDrawer::replay(c.radialGradient.blend, x0, y0, x1, y1,
+					    [&](int y, int *a, int *b) { roundedRowSpan(c, y, a, b); },
+					    [&](int x, int y, int rgb[3], int *alpha) {
+						    const float dxv = (static_cast<float>(x) + 0.5f - centerX) * invRadiusX;
+						    const float dyv = (static_cast<float>(y) + 0.5f - centerY) * invRadiusY;
+						    const int permille = std::min(1000, static_cast<int>(std::sqrt(dxv * dxv + dyv * dyv) * 1000.0f + 0.5f));
+						    LinearGradientDrawer::interpolatePremultipliedRgb888(c.radialGradient.fromColor, c.radialGradient.fromAlpha,
+						        c.radialGradient.toColor, c.radialGradient.toAlpha, localPermille(c, permille), &rgb[0], &rgb[1], &rgb[2]);
+						    *alpha = alphaAt(c, permille);
+						    return true;
+					    });
+					return;
+				}
 
 				// Static-gradient bitmap cache (shared StaticGradientCache). The shell's
 				// warm-glow radial is static — fixed colors + box, identical across themes
@@ -6567,6 +6735,39 @@ int gLastScrollUiFrame = -1000;
 					collectTextInk(child, owner, x0, y0, x1, y1, ink, opaque, copyOffset);
 			}
 
+			// The first command of the text-clipped background `command` belongs to:
+			// the element's layers are recorded together under one owner.
+			static int textClipGroupStart(const DisplayCommand &command, int *index)
+			{
+				*index = -1;
+				if (!state.commands || &command < state.commands || &command >= state.commands + state.commandCount) return -1;
+				*index = static_cast<int>(&command - state.commands);
+				int start = *index;
+				while (start > 0 && state.commands[start - 1].textClipOwner == command.textClipOwner) --start;
+				for (int i = start; i < *index; ++i) {
+					const auto type = state.commands[i].type;
+					if (type != DisplayCommandType::SetAlpha && type != DisplayCommandType::PushClip && type != DisplayCommandType::PopClip) return start;
+				}
+				return -1;
+			}
+
+			// Paints the group's layers in [start, end) unclipped by the text.
+			static void replayTextClipBackdrop(int start, int end)
+			{
+				using gea::platform::display::Display;
+				const uint8_t alpha = Display::alpha();
+				int pushed = 0;
+				for (int i = start; i < end; ++i) {
+					DisplayCommand c = state.commands[i];
+					c.textClipOwner = -1;
+					if (c.type == DisplayCommandType::PushClip) { Display::pushClip(c.clip.x, c.clip.y, c.clip.w, c.clip.h); ++pushed; }
+					else if (c.type != DisplayCommandType::PopClip) replay(c);
+					else if (pushed > 0) { Display::popClip(); --pushed; }
+				}
+				while (pushed-- > 0) Display::popClip();
+				Display::setAlpha(alpha);
+			}
+
 			static void replayTextClipped(const DisplayCommand &command)
 			{
 				using gea::platform::display::Display;
@@ -6585,10 +6786,12 @@ int gLastScrollUiFrame = -1000;
 				if (ink.empty()) return;
 				DisplayCommand paint = command;
 				paint.textClipOwner = -1;
+				int index = -1;
+				const int groupStart = textClipGroupStart(command, &index);
 				// Stack-local, bounded scratch remains safe if independent dirty rows
 				// are replayed on separate workers. No viewport-sized backing store.
 				constexpr int chunkSize = 128;
-				pixel::native_t before[chunkSize];
+				pixel::native_t before[chunkSize], painted[chunkSize], under[chunkSize];
 				uint8_t coverage[chunkSize];
 				for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; x += chunkSize) {
 					const int width = std::min(chunkSize, x1-x+1);
@@ -6610,9 +6813,35 @@ int gLastScrollUiFrame = -1000;
 					if (std::any_of(coverage, coverage+width, [](uint8_t a) { return a != 0; })) {
 						for (int i = 0; i < width; ++i) before[i] = canvas->readPixelNative(x+i, y);
 						replay(paint);
-						for (int i = 0; i < width; ++i) if (coverage[i] != 255)
-							canvas->writePixelNativeExact(x+i, y, coverage[i] == 0 ? before[i] :
-							    pixel::blendNative(canvas->readPixelNative(x+i, y), before[i], coverage[i]));
+						if (groupStart >= 0 && std::any_of(coverage, coverage+width, [](uint8_t a) { return a != 0 && a != 255; })) {
+							// CSS clips all of an element's layers to the text once. At a
+							// partly covered pixel the canvas already mixes the lower layers
+							// with what is behind them, so add this layer's change to their
+							// unclipped composite instead of blending over that mix.
+							for (int i = 0; i < width; ++i) {
+								painted[i] = canvas->readPixelNative(x+i, y);
+								canvas->writePixelNativeExact(x+i, y, before[i]);
+							}
+							replayTextClipBackdrop(groupStart, index);
+							for (int i = 0; i < width; ++i) under[i] = canvas->readPixelNative(x+i, y);
+							replay(paint);
+							for (int i = 0; i < width; ++i) {
+								if (coverage[i] == 255 || coverage[i] == 0) {
+									canvas->writePixelNativeExact(x+i, y, coverage[i] ? painted[i] : before[i]);
+									continue;
+								}
+								int b[4], u[4], p[4];
+								pixel::unpackNative8(before[i], &b[0], &b[1], &b[2], &b[3]);
+								pixel::unpackNative8(under[i], &u[0], &u[1], &u[2], &u[3]);
+								pixel::unpackNative8(canvas->readPixelNative(x+i, y), &p[0], &p[1], &p[2], &p[3]);
+								for (int k = 0; k < 3; ++k) b[k] = std::clamp(b[k] + ((p[k] - u[k]) * coverage[i] + (p[k] >= u[k] ? 127 : -127)) / 255, 0, 255);
+								canvas->writePixelNativeExact(x+i, y, pixel::packNative8(b[0], b[1], b[2]));
+							}
+						} else {
+							for (int i = 0; i < width; ++i) if (coverage[i] != 255)
+								canvas->writePixelNativeExact(x+i, y, coverage[i] == 0 ? before[i] :
+								    pixel::blendNative(canvas->readPixelNative(x+i, y), before[i], coverage[i]));
+						}
 					}
 					Display::popClip();
 				}

@@ -667,6 +667,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	}
 #if GEA_CSS_BACKGROUND_LAYERS
 	case Property::BackgroundClip: if (rstyle(n->style).bg_clip != value) { rstyleMut(n->style).bg_clip = value; changed = 1; } break;
+	case Property::BackgroundBlendMode: if (rstyle(n->style).bg_blend != value) { rstyleMut(n->style).bg_blend = value; changed = 1; } break;
 	case Property::BackgroundSizeList: if (rstyle(n->style).bg_size_list != value) { rstyleMut(n->style).bg_size_list = value; changed = 1; } break;
 	case Property::BackgroundPositionList: if (rstyle(n->style).bg_position_list != value) { rstyleMut(n->style).bg_position_list = value; changed = 1; } break;
 	case Property::BackgroundRepeatList: if (rstyle(n->style).bg_repeat_list != value) { rstyleMut(n->style).bg_repeat_list = value; changed = 1; } break;
