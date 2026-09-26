@@ -1945,13 +1945,19 @@ private:
 		int applied = 0;
 		int lastGrowChild = -1;
 
+		// Round the running share, not each item's: every item edge lands on the
+		// pixel nearest its exact position, as browsers snap fractional edges
+		// (3:1 of 70px is 53/17, not 52/18).
+		long long weight = 0;
 		for (int i = 0; i < line.count; i++) {
 			const int child = children_[line.start + i];
 			Node &childNode = nodes[child];
 			if (childNode.computedStyle().flex <= 0) continue;
 			lastGrowChild = child;
-			const int change = (delta * childNode.computedStyle().flex) / totalGrow;
-			applied += applyFlexMainSizeDelta(child, childNode, change);
+			const long long before = (2LL * delta * weight + totalGrow) / (2LL * totalGrow);
+			weight += childNode.style.flex;
+			const long long after = (2LL * delta * weight + totalGrow) / (2LL * totalGrow);
+			applied += applyFlexMainSizeDelta(child, childNode, static_cast<int>(after - before));
 		}
 
 		const int remainder = delta - applied;
@@ -2991,6 +2997,19 @@ private:
 		return margin;
 	}
 
+	// The exact border-box height of a box sized by a plain percentage of
+	// `basis`, or -1 when its integer height is already exact (lengths, auto,
+	// calc(), or min/max clamping).
+	double exactPercentHeight(const Node &child, int basis) const
+	{
+		const auto &s = child.style;
+		if (s.height_percent == kUnset || s.height != kUnset || s.height_expression >= 0 ||
+		    percentageHeightDependsOnIntrinsicSize(child) || flexBasisScope(child, false) || intrinsicSizeScope(child, false)) return -1;
+		const int insets = s.box_sizing == 0 ? boxInsets(s, false) : 0;
+		if (resolvePercentSize(basis, s.height_percent) + insets != child.layout.height) return -1;
+		return static_cast<double>(basis) * s.height_percent / 1000.0 + insets;
+	}
+
 	bool layoutBlockChildren(int *children, int count, int contentWidth, int contentHeight, bool autosize)
 	{
 		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit) return false;
@@ -3065,6 +3084,10 @@ private:
 		const bool mergeTop = collapsesWithChildren(id_, false);
 		const bool mergeBottom = collapsesWithChildren(id_, true);
 		int cursor = 0;
+		// The exact flow position minus cursor. Percentage heights are
+		// fractional; each such box ends on the pixel nearest its exact bottom
+		// edge, as browsers snap, so 75% and 25% of 70px are 53 and 17.
+		double drift = 0;
 		bool first = true;
 		CollapsedMargin pending;
 		for (int i = 0; i < count; ++i) {
@@ -3083,7 +3106,17 @@ private:
 			}
 			pending.add(childEdgeMargin(id_, id, false));
 			cursor += first && mergeTop ? 0 : pending.value();
-			(vertical ? child.layout.x : child.layout.y) = boxInset(node_.computedStyle(), blockMarginSide(false)) + cursor;
+			(vertical ? child.layout.x : child.layout.y) = boxInset(node_.style, blockMarginSide(false)) + cursor;
+			if (const double exact = vertical ? -1 : exactPercentHeight(child, contentHeight); exact >= 0) {
+				const double bottom = cursor + drift + exact;
+				const int height = static_cast<int>(std::floor(bottom + 0.5)) - cursor;
+				if (height >= 0 && height != child.layout.height) {
+					if (child.layout.scroll_content_height == child.layout.height) child.layout.scroll_content_height = clampInt16(height);
+					child.layout.height = clampInt16(height);
+					engine_.repositionChildren(id);
+				}
+				drift = bottom - cursor - child.layout.height;
+			}
 			cursor += vertical ? child.layout.width : child.layout.height;
 			pending = childEdgeMargin(id_, id, true);
 			first = false;
