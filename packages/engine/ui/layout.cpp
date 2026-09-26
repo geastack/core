@@ -386,7 +386,27 @@ struct LineClampWalk {
 	int keptBottom = 0;
 	// The text run whose line is the last one kept; -1 when that is an atomic box.
 	int lastRun = -1;
+	// Lines and boxes kept so far.
+	int kept = 0;
 	bool clamped = false;
+	// The blocks the walk is inside, innermost last. Clamping removes the rest
+	// of their content, so each still ends with its bottom border and padding,
+	// its min-height and its bottom margin.
+	struct OpenBlock { int top, inset, minHeight, margin; };
+	std::vector<OpenBlock> open;
+	// Where the container's content ends when clamped after content ending at
+	// `bottom` with bottom margin `margin`. Margins collapse outwards through
+	// blocks without bottom border, padding or min-height (CSS 2.2 8.3.1); the
+	// container is a BFC root, so the outermost margin stays inside it.
+	int endAfter(int bottom, int margin) const
+	{
+		for (auto it = open.rbegin(); it != open.rend(); ++it) {
+			if (it->inset > 0 || it->minHeight > 0) { bottom += margin; margin = 0; }
+			bottom = std::max(bottom + it->inset, it->top + it->minHeight);
+			margin = std::max(margin, it->margin);
+		}
+		return bottom + margin;
+	}
 };
 
 void hideAfterLineClamp(Node *nodes, int id)
@@ -432,6 +452,12 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 		if (child.type == NodeType::Text ? collapsible && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos
 		                                 : inlineWrapper && child.first_child < 0 && emptyInlineBox(child)) continue;
 		const int top = originY + child.layout.y;
+		// An empty block's margins collapse through it; with clearance the
+		// collapsed margin sits above its border edge (CSS 2.2 8.3.1).
+		auto bottomMargin = [&](bool empty) {
+			if (inlineWrapper) return 0;
+			return empty && child.layout.height == 0 ? std::max(0, child.style.margin[2] - child.style.margin[0]) : int(child.style.margin[2]);
+		};
 		if (child.type == NodeType::Text) {
 			const int advance = TextRenderer::measureHeight("X", child.style.font_id, child.style.font_size, 0, child.style.line_height);
 			const int inner = child.layout.height - boxInsets(child.style, false);
@@ -439,7 +465,8 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 			for (int line = 0; line < count; ++line) {
 				const int lineTop = top + boxInset(child.style, 0) + line * advance;
 				const bool newLine = lineTop > walk.lastLineTop;
-				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : lineTop + advance > walk.limit) {
+				const int end = walk.endAfter(lineTop + advance, 0);
+				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : end > walk.limit) {
 					walk.clamped = true;
 					if (line == 0) hideAfterLineClamp(nodes, id);
 					else child.layout.line_clamp_lines = static_cast<int16_t>(line);
@@ -449,29 +476,49 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 					++walk.lines;
 					walk.lastLineTop = lineTop;
 				}
-				walk.keptBottom = std::max(walk.keptBottom, lineTop + advance);
+				walk.keptBottom = std::max(walk.keptBottom, end);
 				walk.lastRun = id;
+				++walk.kept;
 			}
 			continue;
 		}
 		const bool plainBlock = child.style.display == kDisplayBlock && !overflowEstablishesContext(child.style) &&
+		    !isFlowRoot(child.style) && child.style.align_content == 0 && !clampsLines(child) &&
 		    writingMode(child) == writingMode(nodes[parent]);
 		if (child.first_child >= 0 && (inlineWrapper || plainBlock)) {
 			// A block between the last line box and the clamp point takes the
 			// ellipsis away from that line; its own lines may take it instead.
+			const int lastRun = walk.lastRun;
 			if (!inlineWrapper) walk.lastRun = -1;
+			const int kept = walk.kept;
+			if (!inlineWrapper) {
+				const int minHeight = child.style.min_height > 0 ? contentSizeToBorderSize(child.style, child.style.min_height, false) : 0;
+				walk.open.push_back({top, boxInset(child.style, 2), minHeight, child.style.margin[2]});
+			}
 			walkLineClamp(walk, id, top);
-			if (!walk.clamped && !inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, top + child.layout.height);
+			if (!inlineWrapper) walk.open.pop_back();
+			// A box whose first content already follows the clamp point is
+			// hidden whole, backgrounds and borders included. It is not between
+			// the last line and the clamp point, so that line keeps the ellipsis.
+			if (walk.clamped && walk.kept == kept) {
+				hideAfterLineClamp(nodes, id);
+				walk.lastRun = lastRun;
+			}
+			if (!walk.clamped) {
+				if (!inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, walk.endAfter(top + child.layout.height, bottomMargin(walk.kept == kept)));
+				++walk.kept;
+			}
 			continue;
 		}
-		const int bottom = top + child.layout.height;
-		if (walk.maxLines ? walk.lines >= walk.maxLines : bottom > walk.limit) {
+		const int end = walk.endAfter(top + child.layout.height, bottomMargin(child.first_child < 0));
+		if (walk.maxLines ? walk.lines >= walk.maxLines : end > walk.limit) {
 			walk.clamped = true;
 			hideAfterLineClamp(nodes, id);
 			continue;
 		}
-		walk.keptBottom = std::max(walk.keptBottom, bottom);
+		walk.keptBottom = std::max(walk.keptBottom, end);
 		walk.lastRun = -1;
+		++walk.kept;
 	}
 }
 
@@ -2873,11 +2920,11 @@ private:
 	}
 
 	// A non-normal align-content makes a block container a BFC root (CSS Align 3
-	// 5.1), just like display: flow-root.
+	// 5.1), just like display: flow-root and a line-clamp container.
 	bool establishesBlockContext(const Node &n) const
 	{
 		return n.parent < 0 || isOutOfFlowPosition(n.style.position) || n.style.float_side ||
-		    n.style.display != kDisplayBlock || isFlowRoot(n.style) || (blockBox(n) && n.style.align_content != 0) ||
+		    n.style.display != kDisplayBlock || isFlowRoot(n.style) || (blockBox(n) && n.style.align_content != 0) || clampsLines(n) ||
 		    overflowEstablishesContext(n.style) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].style) ||
 		                      writingMode(n) != writingMode(nodes_[n.parent])));
