@@ -100,6 +100,7 @@ inline constexpr int kDisplayKindMask = 15;
 inline constexpr int kDisplayFlagShift = 4;
 inline constexpr int8_t kDisplayExplicit = 1;
 inline constexpr int8_t kDisplayFlowRoot = 2; // display: flow-root
+inline constexpr int8_t kDisplayInline = 4; // inline-flex, inline-grid: an atomic inline-level box
 inline constexpr int kPositionFixed = 3;
 // position: sticky stays in flow; the absolute-coordinate pass shifts it.
 inline constexpr int kPositionSticky = 4;
@@ -583,7 +584,7 @@ struct ComputedStyle {
 	// inline-formatting heuristic distinguish an explicit `display:block` on an
 	// inline-level tag (e.g. <span style="display:block">, which is block-level
 	// and stacks) from a span's default inline behaviour. Mirrors
-	// flex_direction_explicit. Other bits: kDisplayFlowRoot.
+	// flex_direction_explicit. Other bits: kDisplayFlowRoot, kDisplayInline.
 #if GEA_CSS_DISPLAY_EXPLICIT
 	uint8_t display_explicit : 3;
 #else
@@ -1374,6 +1375,13 @@ inline bool isDisplayGrid(const ComputedStyle &style)
 inline bool isFlowRoot(const ComputedStyle &style)
 {
 	return style.display == kDisplayBlock && (style.display_explicit & kDisplayFlowRoot);
+}
+
+// inline-flex and inline-grid sit on a line like an image, sized to their
+// content. Floats and absolutely positioned boxes are blockified.
+inline bool isAtomicInline(const ComputedStyle &style)
+{
+	return (style.display_explicit & kDisplayInline) && !style.float_side && !isOutOfFlowPosition(style.position);
 }
 
 inline bool usesRowLayout(const ComputedStyle &style)
