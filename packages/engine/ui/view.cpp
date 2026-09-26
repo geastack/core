@@ -68,8 +68,20 @@ bool borderIsSameOpaqueSolidBackground(const Node &node, uint8_t parentAlpha)
 	       combineAlpha(parentAlpha, node.style.bg_alpha) == combineAlpha(parentAlpha, borderPaintAlpha(node.style, 0));
 }
 
+// Display commands carry int16 rects. A box past that range (see
+// kMaxLayoutExtent) records the part inside it; no screen reaches beyond.
+void saturateRect16(int &x, int &y, int &w, int &h)
+{
+	const int right = std::min(x + w, 32767), bottom = std::min(y + h, 32767);
+	x = std::max(x, -32768);
+	y = std::max(y, -32768);
+	w = std::clamp(right - x, 0, 32767);
+	h = std::clamp(bottom - y, 0, 32767);
+}
+
 void appendAlphaCommand(uint8_t alpha, int bx, int by, int bw, int bh)
 {
+	saturateRect16(bx, by, bw, bh);
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
 	cmd->type = DisplayCommandType::SetAlpha;
@@ -187,6 +199,8 @@ uint8_t gradientAlphaAt(const Node &node, int permille)
 
 void appendFillRectWithAlpha(int x, int y, int w, int h, uint16_t color, uint8_t alpha, uint8_t parentAlpha, int bx, int by, int bw, int bh)
 {
+	saturateRect16(x, y, w, h);
+	saturateRect16(bx, by, bw, bh);
 	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
 	DisplayCommand *cmd = DisplayList::instance().append();
@@ -202,6 +216,8 @@ void appendFillRectWithAlpha(int x, int y, int w, int h, uint16_t color, uint8_t
 
 void appendFillRectRaw(int x, int y, int w, int h, uint16_t color, int bx, int by, int bw, int bh)
 {
+	saturateRect16(x, y, w, h);
+	saturateRect16(bx, by, bw, bh);
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
 	cmd->type = DisplayCommandType::FillRect;
@@ -1983,6 +1999,17 @@ void recordTransformedBorderRing(const Node &node, uint8_t parentAlpha)
 	const int w = node.layout.width;
 	const int h = node.layout.height;
 	if (w <= 0 || h <= 0) return;
+	// The ring command carries its local box as int16 and each ring width as
+	// a byte. A box or border past that (a huge box under a tiny scale) paints
+	// its sides as transformed quads instead, with square corners.
+	int ring = 0;
+	for (int side = 0; side < 4; ++side)
+		ring = std::max<int>({ring, node.style.border_width, rstyle(node.style).border_side_width[side]});
+	if (w > 32767 || h > 32767 || ring > 255) {
+		for (int side = 0; side < 4; ++side)
+			appendBorderSideWithAlpha(node, side, borderPaintColor(node.style, side), borderPaintAlpha(node.style, side), parentAlpha, true);
+		return;
+	}
 
 	int16_t xs[4], ys[4];
 	ViewGeometry::transformRectCorners(node, false, x, y, w, h, xs, ys);
@@ -2769,8 +2796,15 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 {
 	int x, y, w, h;
 	overflowClipBounds(node, x, y, w, h);
-	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
+	// Clip commands carry int16 rects. Past that range the saturated rect
+	// clips exactly as much: no screen reaches beyond it. A transformed clip
+	// takes its rect from the projected corners instead.
+	if (!transformed) {
+		w = std::min({w, 32767 - x, 32767});
+		h = std::min({h, 32767 - y, 32767});
+	}
+	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
 	// The padding edge is rounded with the outer radii less the border widths.
 	const auto &s = node.style;
 	const int border[4] = {boxInset(s, 0) - s.padding[0], boxInset(s, 1) - s.padding[1],

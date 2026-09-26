@@ -466,7 +466,7 @@ void applyLineClamp(int id)
 		nodes[walk.lastRun].layout.line_clamp_hidden |= 2;
 	if (!walk.clamped || hasExplicitHeight(node)) return;
 	const int height = clampBorderBoxSize(node.style, walk.keptBottom + boxInset(node.style, 2), false);
-	if (height < node.layout.height) node.layout.height = clampInt16(height);
+	if (height < node.layout.height) node.layout.height = clampLayoutExtent(height);
 }
 
 int resolvedStyleWidth(const Node &node, int basis)
@@ -603,13 +603,13 @@ void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 		width = true;
 	}
 	const bool horizontal = !width && height;
-	int16_t &target = horizontal ? node.layout.width : node.layout.height;
+	int32_t &target = horizontal ? node.layout.width : node.layout.height;
 	const int fromRatio = ratioTransferredSize(node, horizontal ? node.layout.height : node.layout.width, horizontal);
 	// Non-scrollable boxes retain a content-based minimum on the automatic axis.
 	const bool contentMinimum = node.type != NodeType::Image && (horizontal ? node.style.min_width : node.style.min_height) == kUnset &&
 	                            !isScrollableOverflow(horizontal ? overflowX(node.style) : overflowY(node.style));
 	const int result = contentMinimum ? std::max<int>(target, fromRatio) : fromRatio;
-	target = clampInt16(clampLayoutSize(node, result, horizontal));
+	target = clampLayoutExtent(clampLayoutSize(node, result, horizontal));
 }
 
 int baselineFallbackAlignment(const Node &parent, const Node &child, int alignment, int free, bool horizontal, bool staticPosition)
@@ -810,8 +810,8 @@ public:
 				applyFlexBasis(child);
 				Node &item = Tree::instance().nodes()[child];
 				const int floor = automaticMinimumMainSize(item);
-				int16_t &main = isRow_ ? item.layout.width : item.layout.height;
-				if (main < floor) { main = clampInt16(floor); engine_.repositionChildren(child); }
+				int32_t &main = isRow_ ? item.layout.width : item.layout.height;
+				if (main < floor) { main = clampLayoutExtent(floor); engine_.repositionChildren(child); }
 			}
 		}
 	}
@@ -1097,8 +1097,8 @@ public:
 						// whitespace; that discarded space is not part of the fragment.
 						const int firstLineFragmentX = fragmentItemX + (wraps ? pen + gap : 0);
 						const int firstLineFragmentWidth = m.firstLineWidth + padH;
-						subject.layout.height = clampInt16(boxH);
-						subject.layout.width = clampInt16(boxW);
+						subject.layout.height = clampLayoutExtent(boxH);
+						subject.layout.width = clampLayoutExtent(boxW);
 						subject.layout.inline_indent = clampInt16(indent);
 						if (innerRun >= 0) {
 							// The wrapper is transparent: it takes the run's box exactly, and
@@ -1106,8 +1106,8 @@ public:
 							// through the wrapper still lands on the run's own baseline.
 							subject.layout.x = 0;
 							subject.layout.y = 0;
-							cn.layout.height = clampInt16(boxH);
-							cn.layout.width = clampInt16(boxW);
+							cn.layout.height = clampLayoutExtent(boxH);
+							cn.layout.width = clampLayoutExtent(boxW);
 							cn.layout.inline_indent = clampInt16(indent);
 						}
 						if (wraps) {
@@ -1346,16 +1346,16 @@ public:
 		const bool keepScrollWidth = !intrinsicWidthConstraint(node_) && scrollsOverflowX(node_.style) && node_.layout.width > 0;
 		if (!hasExplicitHeight(node_) && !keepScrollHeight) {
 			const int height = (flowHeight < 0 ? 0 : flowHeight) + boxInset(node_.style, 0) + boxInset(node_.style, 2);
-			node_.layout.height = clampInt16(clampLayoutSize(node_, height, false));
+			node_.layout.height = clampLayoutExtent(clampLayoutSize(node_, height, false));
 		}
 		if (!hasExplicitWidth(node_) && !keepScrollWidth) {
 			const int width = maxLineWidth + boxInset(node_.style, 1) + boxInset(node_.style, 3);
-			node_.layout.width = clampInt16(clampLayoutSize(node_, width, true));
+			node_.layout.width = clampLayoutExtent(clampLayoutSize(node_, width, true));
 			// A widened sole run spans the box's final content width instead, so
 			// its extent does not hold the box at the width it was offered.
 			const int content = node_.layout.width - boxInsets(node_.style, true);
 			for (const WidenedRun &run : widenedRuns_)
-				nodes[run.id].layout.width = clampInt16(std::max(run.natural, content + run.extra));
+				nodes[run.id].layout.width = clampLayoutExtent(std::max(run.natural, content + run.extra));
 		}
 		return extent;
 	}
@@ -1572,7 +1572,7 @@ public:
 				const int full = contentW - marginL - marginR + lead;
 				if (full > cn.layout.width) {
 					widenedRuns_.push_back({child, cn.layout.width, full - contentW});
-					cn.layout.width = clampInt16(full);
+					cn.layout.width = clampLayoutExtent(full);
 				}
 			}
 
@@ -1589,7 +1589,7 @@ public:
 				if (align == 1) y += (lineCross - crossTotal) / 2;
 				else if (align == 2) y += lineCross - crossTotal;
 				else if (align == 0 && !hasExplicitHeight(cn) && !isIntrinsicSizeExpression(cn.style.height_expression)) {
-					cn.layout.height = clampInt16(lineCross - crossBefore - crossAfter);
+					cn.layout.height = clampLayoutExtent(lineCross - crossBefore - crossAfter);
 					engine_.repositionChildren(child);
 				}
 			}
@@ -1711,8 +1711,8 @@ public:
 		// height affects following lines and reversed line order as well.
 		if (ratioCrossChanged) {
 			expandCrossSizes(lineCount, true);
-			int16_t &cross = isRow_ ? node_.layout.height : node_.layout.width;
-			cross = clampInt16(clampLayoutSize(node_, totalCrossSize(lineCount) + boxInsets(node_.style, !isRow_), !isRow_));
+			int32_t &cross = isRow_ ? node_.layout.height : node_.layout.width;
+			cross = clampLayoutExtent(clampLayoutSize(node_, totalCrossSize(lineCount) + boxInsets(node_.style, !isRow_), !isRow_));
 		}
 		int crossOffset = boxInset(node_.style, isRow_ ? 0 : 3);
 		const int crossBox = (isRow_ ? node_.layout.height : node_.layout.width) - boxInsets(node_.style, !isRow_);
@@ -2122,8 +2122,8 @@ private:
 		else childNode.layout.height = after;
 		if (preferredRatio(childNode) > 0 && !(isRow_ ? hasExplicitHeight(childNode) : hasExplicitWidth(childNode)) &&
 		    !definiteFlexCrossSize(node_, childNode, isRow_)) {
-			int16_t &cross = isRow_ ? childNode.layout.height : childNode.layout.width;
-			cross = clampInt16(clampLayoutSize(childNode, ratioTransferredSize(childNode, after, !isRow_), !isRow_));
+			int32_t &cross = isRow_ ? childNode.layout.height : childNode.layout.width;
+			cross = clampLayoutExtent(clampLayoutSize(childNode, ratioTransferredSize(childNode, after, !isRow_), !isRow_));
 		}
 		engine_.repositionChildren(child);
 		return delta > 0 ? after - before : before - after;
@@ -2659,7 +2659,7 @@ public:
 		if (isLineBreak(node_) && LayoutEngine::isInlineLevelNode(node_) &&
 		    (node_.parent < 0 || (nodes_[node_.parent].style.display != kDisplayFlex && !isDisplayGrid(nodes_[node_.parent].style)))) {
 			node_.layout.width = 0;
-			node_.layout.height = clampInt16(TextRenderer::measureHeight(" ", node_.style.font_id,
+			node_.layout.height = clampLayoutExtent(TextRenderer::measureHeight(" ", node_.style.font_id,
 			    node_.style.font_size, 0, node_.style.line_height));
 			return;
 		}
@@ -2838,7 +2838,7 @@ public:
 		int16_t width;
 		ColumnWidthScope(Node &n, int columnWidth) : node(n), width(n.layout.width)
 		{
-			if (columnWidth >= 0) n.layout.width = clampInt16(columnWidth);
+			if (columnWidth >= 0) n.layout.width = clampLayoutExtent(columnWidth);
 		}
 		~ColumnWidthScope() { node.layout.width = width; }
 	};
@@ -2864,7 +2864,7 @@ public:
 		int height = definite && (flags & 16) ? given : balancedColumnHeight(flow, g.count);
 		if (definite) height = std::min(height, given);
 		height = std::max(1, height);
-		if (!definite) node_.layout.height = clampInt16(clampLayoutSize(node_, height + insetsY, false));
+		if (!definite) node_.layout.height = clampLayoutExtent(clampLayoutSize(node_, height + insetsY, false));
 		// Overflow columns follow the last column box; continue: discard drops them.
 		int used = std::max(1, (flow + height - 1) / height);
 		if (flags & 32) used = std::min(used, g.count);
@@ -3213,7 +3213,7 @@ private:
 				    !(preferredRatio(child) > 0 && hasExplicitWidth(child))) {
 					const int height = clampLayoutSize(child, std::max(0, contentHeight - child.style.margin[0] - child.style.margin[2]), false);
 					if (child.layout.height != height) {
-						child.layout.height = clampInt16(height); engine_.repositionChildren(id);
+						child.layout.height = clampLayoutExtent(height); engine_.repositionChildren(id);
 					}
 				}
 				const int slack = contentHeight - child.layout.height - child.style.margin[0] - child.style.margin[2];
@@ -3247,7 +3247,7 @@ private:
 				if (!hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.style.width_expression) && writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child))) {
 					const int width = clampLayoutSize(child, std::max(0, contentWidth - child.style.margin[1] - child.style.margin[3]), true);
 					if (child.layout.width != width) {
-						child.layout.width = clampInt16(width);
+						child.layout.width = clampLayoutExtent(width);
 						engine_.repositionChildren(id);
 					}
 				}
@@ -3288,7 +3288,7 @@ private:
 #if GEA_CSS_SCROLLING
 					if (child.layout.scroll_content_height == child.layout.height) child.layout.scroll_content_height = clampInt16(height);
 #endif
-					child.layout.height = clampInt16(height);
+					child.layout.height = clampLayoutExtent(height);
 					engine_.repositionChildren(id);
 				}
 				drift = bottom - cursor - child.layout.height;
@@ -3517,7 +3517,7 @@ private:
 			if (automaticWidth) {
 				const int width = clampLayoutSize(child, std::max(0, area - child.style.margin[1] - child.style.margin[3]), true);
 				if (child.layout.width != width) {
-					child.layout.width = clampInt16(width);
+					child.layout.width = clampLayoutExtent(width);
 					engine_.repositionChildren(children[i]);
 				}
 			}
@@ -3578,7 +3578,7 @@ private:
 							const int width = clampLayoutSize(child, end - start, true);
 							if (child.layout.width != width) {
 								engine_.layoutNode(children[i], width + child.style.margin[1] + child.style.margin[3], contentHeight);
-								child.layout.width = clampInt16(width);
+								child.layout.width = clampLayoutExtent(width);
 								engine_.repositionChildren(children[i]);
 								outerW = width + child.style.margin[1] + child.style.margin[3];
 								outerH = child.layout.height + child.style.margin[0] + child.style.margin[2];
@@ -3669,7 +3669,7 @@ private:
 		if (clearedThrough || (!collapsesWithChildren(id_, true) && !(first && collapsesWithChildren(id_, false))))
 			flowY += pending.value();
 		if (measureWidth)
-			node_.layout.width = clampInt16(clampLayoutSize(node_, intrinsicWidth + boxInsets(node_.style, true), true));
+			node_.layout.width = clampLayoutExtent(clampLayoutSize(node_, intrinsicWidth + boxInsets(node_.style, true), true));
 		if (autosize && !hasExplicitHeight(node_)) {
 			// Float enclosure is finalized with all same-context descendants.
 			node_.layout.height = clampBorderSize(engine_, node_, flowY + boxInsets(node_.style, false), false);
@@ -4334,8 +4334,8 @@ private:
 					const int dx = rect[0] - x, dy = rect[1] - y;
 					wrapper.layout.x = clampInt16(wrapper.layout.x + dx);
 					wrapper.layout.y = clampInt16(wrapper.layout.y + dy);
-					wrapper.layout.width = clampInt16(rect[2]);
-					wrapper.layout.height = clampInt16(rect[3]);
+					wrapper.layout.width = clampLayoutExtent(rect[2]);
+					wrapper.layout.height = clampLayoutExtent(rect[3]);
 					for (int k = wrapper.first_child; k >= 0; k = nodes_[k].next_sibling) {
 						if (isOutOfFlowPosition(nodes_[k].style.position)) continue;
 						nodes_[k].layout.x = clampInt16(nodes_[k].layout.x - dx);
@@ -5390,8 +5390,8 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 		// A parent-owned box cannot be reproduced by laying only the child's
 		// subtree. Put those dimensions back and position its descendants inside
 		// the same box exactly as the omitted parent pass would.
-		a.layout.width = static_cast<std::int16_t>(prevW);
-		a.layout.height = static_cast<std::int16_t>(prevH);
+		a.layout.width = prevW;
+		a.layout.height = prevH;
 		repositionChildren(scope);
 	}
 	a.layout.x = prevX;

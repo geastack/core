@@ -40,6 +40,14 @@ inline int16_t storedPositionOffset(int value)
 {
 	return static_cast<int16_t>(value == kUnset ? kUnset : std::clamp(value, -32767, 32767));
 }
+// Width and height (declared and laid out) are 32-bit: a box can be larger than
+// int16 allows and still fit the screen under a scale transform. The bound
+// keeps every size exact in the float math of transform projection.
+inline constexpr int kMaxLayoutExtent = 1 << 24;
+inline int32_t clampLayoutExtent(int value)
+{
+	return std::clamp(value, -kMaxLayoutExtent, kMaxLayoutExtent);
+}
 // Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
 inline constexpr int kZIndexAuto = INT32_MIN;
 // Dimension expression slots use nonnegative values for pooled expressions,
@@ -608,7 +616,7 @@ struct ComputedStyle {
 #else
 	static constexpr int32_t height_expression = -1;
 #endif
-	int16_t width, height;
+	int32_t width, height; // kUnset: auto; see kMaxLayoutExtent
 	int16_t width_percent, height_percent;
 #if GEA_CSS_MIN_WIDTH
 	int16_t min_width;
@@ -1318,7 +1326,7 @@ inline bool hasBorderRelief(const ComputedStyle &style)
 
 struct LayoutBox {
 	int16_t x, y;
-	int16_t width, height;
+	int32_t width, height; // see kMaxLayoutExtent
 
 	// Inline formatting: x offset, inside this box's content area, at which the
 	// run's FIRST line starts. A text run that begins part-way along a line box
@@ -1339,10 +1347,10 @@ struct LayoutBox {
 	uint8_t line_clamp_hidden = 0;
 
 	int16_t previous_x, previous_y;
-	int16_t previous_width, previous_height;
 	// line-clamp: a text run its container's clamp point cuts paints only
 	// this many lines. 0 paints them all.
 	int16_t line_clamp_lines = 0;
+	int32_t previous_width, previous_height;
 
 	// Scroll geometry must be 32-bit: a <virtual-list> scrolls over a virtual
 	// content height of itemCount * rowHeight (e.g. 5000 * 259 ≈ 1.29M px),
