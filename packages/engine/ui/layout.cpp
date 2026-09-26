@@ -3403,6 +3403,16 @@ private:
 		return static_cast<double>(basis) * s.height_percent / 1000.0 + insets;
 	}
 
+	// Where a block-level box sits in the free inline space of its horizontal
+	// container: auto margins take it (CSS 2.2 10.3.3); otherwise it starts at
+	// the container's start edge.
+	int blockInlineOffset(const Node &child, int slack) const
+	{
+		const bool autoLeft = child.computedStyle().margin_auto & (1 << 3), autoRight = child.computedStyle().margin_auto & (1 << 1);
+		if (autoLeft || autoRight) return slack > 0 && autoLeft ? (autoRight ? slack / 2 : slack) : 0;
+		return rightToLeft(node_) ? slack : 0;
+	}
+
 	bool layoutBlockChildren(int *children, int count, int contentWidth, int contentHeight, bool autosize)
 	{
 		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit) return false;
@@ -3467,11 +3477,7 @@ private:
 					}
 				}
 				const int slack = contentWidth - child.layout.width - child.computedStyle().margin[1] - child.computedStyle().margin[3];
-				const bool autoLeft = child.computedStyle().margin_auto & (1 << 3);
-				const bool autoRight = child.computedStyle().margin_auto & (1 << 1);
-				int offset = slack > 0 && autoLeft ? (autoRight ? slack / 2 : slack) : 0;
-				if (!autoLeft && !autoRight && rightToLeft(node_)) offset = slack;
-				child.layout.x = boxInset(node_.computedStyle(), 3) + child.computedStyle().margin[3] + offset;
+				child.layout.x = boxInset(node_.computedStyle(), 3) + child.computedStyle().margin[3] + blockInlineOffset(child, slack);
 			}
 		}
 		const bool mergeTop = collapsesWithChildren(id_, false);
@@ -3765,7 +3771,7 @@ private:
 			// when that requires negative clearance above the top margin.
 			y = clearance ? clearBottom : std::max(y, clearBottom);
 			if (clearance && !context.hasClearance(children[i])) context.cleared.push_back(children[i]);
-			int left = 0, right = area, contextX = 0;
+			int left = 0, right = area, contextX = 0, contextFree = 0;
 			const bool independentBlock = block && establishesBlockContext(child);
 			if (child.computedStyle().float_side || child.computedStyle().display != kDisplayBlock || establishesBlockContext(child)) {
 				// An automatic-width BFC tries the widest opportunity at each y
@@ -3805,14 +3811,21 @@ private:
 							if (child.layout.height > extent) { extent = child.layout.height; continue; }
 						}
 						fits = child.layout.width <= end - start;
+						contextFree = end - start - child.layout.width;
 					}
 					if (fits || nextY == 32767) break;
 					y = nextY;
 					if (searchWidth) extent = 1;
 				}
 			}
-			// In right-to-left flow a block that does not fill the line hugs the right.
-			const int x = (child.style.float_side == 2 || (block && rtl && !independentBlock) ? right - outerW : independentBlock ? contextX : left) -
+			// A normal block ignores floats; auto margins center it, and in
+			// right-to-left flow one that does not fill the line hugs the right.
+			// A block formatting context beside floats centers with auto margins in
+			// the space between them.
+			const bool autoMargins = child.computedStyle().margin_auto & 10;
+			const int x = (block && !independentBlock ? left + blockInlineOffset(child, right - left - outerW) :
+			               child.computedStyle().float_side == 2 ? right - outerW :
+			               independentBlock ? contextX + (autoMargins ? blockInlineOffset(child, contextFree) : 0) : left) -
 			    (splitBlock ? outer[3] : 0);
 			intrinsicWidth = std::max(intrinsicWidth, child.computedStyle().float_side
 			    ? left + outerW + contentWidth - right : measuredOuterW);
