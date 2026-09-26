@@ -175,6 +175,8 @@ void InputRenderer::record(int id)
 			cmd->text.lineLimit = 0;
 			cmd->text.blockEllipsis = 0;
 			cmd->text.ellipsisWidth = 0;
+			cmd->text.emphasis = 0;
+			cmd->text.emphasisColor = 0;
 		}
 	}
 
