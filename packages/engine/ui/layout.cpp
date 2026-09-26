@@ -618,6 +618,7 @@ bool flexRowDirection(const ComputedStyle &style)
 }
 
 bool isMulticolContainer(const Node &node);
+bool establishesAbsoluteContainingBlock(const Node &node);
 
 int resolvedGap(const Node &node, bool rowGap, int width, int height)
 {
@@ -940,7 +941,8 @@ public:
 					// not of the line it can fill.
 					const int rest = contentW - marginL - marginR - padH;
 					const int firstAvail = rest - pen - gap;
-					const bool atLineStart = pen == 0 && (j > 0 || blockOpensItsFirstLine);
+					// A leading space also collapses into one that ends the item before it.
+					const bool atLineStart = pen == 0 ? j > 0 || blockOpensItsFirstLine : j > 0 && endsWithCollapsibleSpace(nodes[children_[j - 1]]);
 					const InlineFlowMeasure m =
 					    TextRenderer::measureInlineFlow(subject, firstAvail, rest, atLineStart);
 					// Without real line metrics childFirstBaseline reports the box's
@@ -1013,7 +1015,8 @@ public:
 					const int padH = boxInset(subject.style, 1) + boxInset(subject.style, 3);
 					const int rest = contentW - marginL - marginR - padH;
 					const InlineFlowMeasure m = TextRenderer::measureInlineFlow(
-					    subject, rest - pen - gap, rest, pen == 0 && (j > 0 || blockOpensItsFirstLine));
+					    subject, rest - pen - gap, rest,
+					    pen == 0 ? j > 0 || blockOpensItsFirstLine : j > 0 && endsWithCollapsibleSpace(nodes[children_[j - 1]]));
 					if (m.lineCount > 0 && m.firstLineWidth > 0) {
 							firstLineCandidates.push_back({innerRun >= 0 ? innerRun : child,
 								                              contentLeft + pen + gap + marginL,
@@ -1378,6 +1381,14 @@ public:
 		const int ascender = childBaseline(n) - boxInset(n.style, 0);
 		const int descent = lineAdvance - ascender + boxInset(n.style, 2) + n.style.margin[2];
 		return descent < 0 ? 0 : descent;
+	}
+
+	static bool endsWithCollapsibleSpace(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return false;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.back()) && collapsesSpaces(text);
 	}
 
 	// The collapsible space that ends a line item hangs past the line's end.
@@ -2312,9 +2323,13 @@ bool splitInlineWrapper(const Node *nodes, int id)
 	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
 		const Node &child = nodes[c];
 		if (isDisplayNone(child.style)) continue;
-		if (isOutOfFlowPosition(child.style.position)) return false;
+		// Out-of-flow children stay with the wrapper, whose fragments contain them
+		// (LayoutNodePass::positionFragmentedInlineChildren).
+		if (isOutOfFlowPosition(child.style.position)) continue;
 		// A float inside an inline belongs to the enclosing block's float context.
 		if (child.style.float_side) { containsBlock = true; continue; }
+		// A forced break splits the inline across line boxes.
+		if (isLineBreak(child)) { containsBlock = true; continue; }
 		if (child.type == NodeType::View && (child.style.display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
@@ -2424,6 +2439,7 @@ public:
 			encloseFloatDescendants();
 			updateScrollContentSize();
 			positionAbsoluteChildren();
+			positionFragmentedInlineChildren();
 			applyRelativeOffsets();
 			return;
 		}
@@ -2488,6 +2504,7 @@ public:
 		if (layoutFloatChildren(scratch.children(), childCount, padWidth, padHeight, false)) {
 			updateScrollContentSize();
 			positionAbsoluteChildren();
+			positionFragmentedInlineChildren();
 			applyRelativeOffsets();
 			return;
 		}
@@ -3811,6 +3828,110 @@ private:
 			stretchAbsoluteChild(child, childNode, childAvailWidth, childAvailHeight);
 			positionAbsoluteChild(childNode);
 		}
+	}
+
+	// A positioned inline split into fragments across this block's lines is
+	// the containing block of its out-of-flow children: the rect from its first
+	// fragment's inline-start and block-start edges to its last fragment's
+	// inline-end and block-end edges (CSS Position 3, 3.2). Its box, otherwise
+	// empty at its parent's origin, takes that rect, its in-flow content keeps
+	// its place, and its out-of-flow children are positioned against it.
+	void positionFragmentedInlineChildren()
+	{
+		if (!splitInlineChildren_) return;
+		auto visit = [&](auto &&self, int parent, int originX, int originY) -> void {
+			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+				if (!splitInlineWrapper(nodes_, c)) continue;
+				Node &wrapper = nodes_[c];
+				int x = originX + wrapper.layout.x, y = originY + wrapper.layout.y;
+				bool contains = false;
+				for (int k = wrapper.first_child; k >= 0 && !contains; k = nodes_[k].next_sibling)
+					contains = !isDisplayNone(nodes_[k].style) && isOutOfFlowPosition(nodes_[k].style.position);
+				int rect[4];
+				if (contains && establishesAbsoluteContainingBlock(wrapper) && fragmentRect(c, x, y, rect)) {
+					const int dx = rect[0] - x, dy = rect[1] - y;
+					wrapper.layout.x = clampInt16(wrapper.layout.x + dx);
+					wrapper.layout.y = clampInt16(wrapper.layout.y + dy);
+					wrapper.layout.width = clampInt16(rect[2]);
+					wrapper.layout.height = clampInt16(rect[3]);
+					for (int k = wrapper.first_child; k >= 0; k = nodes_[k].next_sibling) {
+						if (isOutOfFlowPosition(nodes_[k].style.position)) continue;
+						nodes_[k].layout.x = clampInt16(nodes_[k].layout.x - dx);
+						nodes_[k].layout.y = clampInt16(nodes_[k].layout.y - dy);
+					}
+					x = rect[0];
+					y = rect[1];
+					LayoutNodePass wrapperPass(engine_, c, rect[2], rect[3]);
+					wrapperPass.positionAbsoluteChildren();
+				}
+				self(self, c, x, y);
+			}
+		};
+		visit(visit, id_, 0, 0);
+	}
+
+	// The fragments of a split inline at (originX, originY): x, y, width and
+	// height from its first in-flow inline content to its last.
+	bool fragmentRect(int wrapper, int originX, int originY, int rect[4]) const
+	{
+		struct Leaf { int id, x, y; };
+		Leaf first{-1, 0, 0}, last{-1, 0, 0};
+		auto walk = [&](auto &&self, int parent, int ox, int oy) -> void {
+			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+				const Node &child = nodes_[c];
+				if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position) || child.style.float_side ||
+				    isLineBreak(child) || blockBox(child) || suppressAnonymousWhitespace(nodes_, parent, c)) continue;
+				if (child.type == NodeType::Text && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+				if (splitInlineWrapper(nodes_, c)) {
+					self(self, c, ox + child.layout.x, oy + child.layout.y);
+					continue;
+				}
+				if (first.id < 0) first = {c, ox + child.layout.x, oy + child.layout.y};
+				last = {c, ox + child.layout.x, oy + child.layout.y};
+			}
+		};
+		walk(walk, wrapper, originX, originY);
+		if (first.id < 0) return false;
+		const Node &a = nodes_[first.id], &b = nodes_[last.id];
+		int firstLeft, firstRight, firstLastLeft, firstLastRight, lastFirstLeft, lastFirstRight, lastLeft, lastRight;
+		inlineExtent(a, first.x, firstLeft, firstRight, firstLastLeft, firstLastRight);
+		inlineExtent(b, last.x, lastFirstLeft, lastFirstRight, lastLeft, lastRight);
+		int left = firstLeft, right = lastRight;
+		if (rightToLeft(nodes_[wrapper])) {
+			left = lastLeft;
+			right = firstRight;
+		}
+		rect[0] = left;
+		rect[1] = first.y;
+		rect[2] = std::max(0, right - left);
+		rect[3] = std::max(0, last.y + b.layout.height - first.y);
+		return true;
+	}
+
+	// The x ranges an inline item's first and last line actually cover. A text
+	// run's box can be wider than its glyphs (a lone run fills its line for
+	// text-align), so text is measured again from where its first line starts.
+	void inlineExtent(const Node &item, int x, int &firstStart, int &firstEnd, int &lastStart, int &lastEnd) const
+	{
+		firstStart = lastStart = x;
+		firstEnd = lastEnd = x + item.layout.width;
+		if (item.type != NodeType::Text) return;
+		const int contentLeft = boxInset(node_.style, 3);
+		const int lineStart = x + std::max<int>(0, item.layout.inline_indent);
+		const int contentWidth = paddedWidth();
+		const InlineFlowMeasure m = TextRenderer::measureInlineFlow(item, contentWidth - (lineStart - contentLeft), contentWidth, true);
+		if (m.lineCount <= 0) return;
+		const int hang = FlexLayoutPass::hangingSpace(item);
+		const int firstWidth = m.firstLineWidth - (m.lineCount == 1 ? hang : m.firstLineTrailingSpace);
+		const int lastWidth = m.lastLineWidth - hang;
+		// Unless the line layout placed it, the drawer aligns each line in the box.
+		const int align = (item.render.inline_baseline & 2) ? 0 : LayoutEngine::physicalTextAlign(item);
+		const int box = item.layout.width - boxInsets(item.style, true);
+		const auto offset = [&](int width) { return std::max(0, align == 1 ? (box - width) / 2 : align == 2 ? box - width : 0); };
+		firstStart = lineStart + offset(firstWidth);
+		firstEnd = firstStart + firstWidth;
+		lastStart = m.lineCount == 1 ? firstStart : x + offset(lastWidth);
+		lastEnd = lastStart + lastWidth;
 	}
 
 	void stretchAbsoluteChild(int child, Node &childNode, int childAvailWidth, int childAvailHeight)
