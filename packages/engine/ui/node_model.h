@@ -414,6 +414,11 @@ struct RareStyle {
 	//     center/extent 500/1000) ---
 #if GEA_CSS_BACKGROUND_LAYERS
 	uint16_t bg_image_layer_count = 1; // Includes none layers.
+	// bg_blend and the five border-image handles sit between the layer count
+	// and the int32 lists; without them RareStyle is four bytes smaller.
+#if GEA_CSS_BACKGROUND_BLEND
+	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
+#endif
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #else

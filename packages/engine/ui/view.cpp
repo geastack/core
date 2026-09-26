@@ -284,10 +284,34 @@ void appendFillQuadStrokeSegmentRaw(const int16_t *xs, const int16_t *ys, uint16
 
 void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, int *x1, int *y1);
 
+// background-blend-mode of `layer`. An element's layers blend as an isolated
+// group, so a layer with none of the element's paint under it (its color or a
+// lower layer) has a transparent backdrop and paints normally.
+uint8_t backgroundLayerBlend(const Node &node, int layer)
+{
+#if GEA_CSS_BACKGROUND_BLEND
+	// Every gradient record passes here, so the handle byte is checked before
+	// the call into style.cpp; a node without the property pays one load.
+	const auto &r = rstyle(node.computedStyle());
+	if (!r.bg_blend) return 0;
+	const int mode = StyleValues::backgroundBlendMode(node.computedStyle(), layer);
+	if (!mode) return 0;
+	const bool backdrop = (node.computedStyle().has_bg && node.computedStyle().bg_alpha > 0) ||
+	    (node.computedStyle().bg_fill == 1 && r.bg_gradient_layer > layer) ||
+	    (r.bg_overlay_gradient && r.bg_overlay_gradient_layer > layer) ||
+	    (r.bg_radial_gradient && r.bg_radial_gradient_layer > layer);
+	return backdrop ? static_cast<uint8_t>(mode) : 0;
+#else
+	(void)node;
+	(void)layer;
+	return 0;
+#endif
+}
+
 DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int w, int h,
                                  uint16_t fromColor, uint16_t midColor, uint16_t toColor,
                                  uint16_t midStop, uint16_t toStop, int16_t angle, uint8_t fromAlpha,
-                                 uint8_t midAlpha, uint8_t toAlpha, uint8_t hasMid)
+                                 uint8_t midAlpha, uint8_t toAlpha, uint8_t hasMid, uint8_t blend = 0)
 {
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return nullptr;
@@ -314,6 +338,7 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->gradient.midAlpha = midAlpha;
 	cmd->gradient.toAlpha = toAlpha;
 	cmd->gradient.hasMid = hasMid;
+	cmd->gradient.blend = blend;
 	return cmd;
 }
 
@@ -333,7 +358,8 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	                            rstyle(node.computedStyle()).bg_gradient_from_alpha,
 	                            rstyle(node.computedStyle()).bg_gradient_mid_alpha,
 	                            rstyle(node.computedStyle()).bg_gradient_to_alpha,
-	                            rstyle(node.computedStyle()).bg_gradient_has_mid);
+	                            rstyle(node.computedStyle()).bg_gradient_has_mid,
+	                            backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_gradient_layer));
 }
 
 DisplayCommand *appendRadialGradientRectRaw(const Node &node, int x, int y, int w, int h)
@@ -362,6 +388,7 @@ DisplayCommand *appendRadialGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->radialGradient.stopPermille = rstyle(node.computedStyle()).bg_radial_gradient_stop;
 	cmd->radialGradient.fromAlpha = rstyle(node.computedStyle()).bg_radial_gradient_from_alpha;
 	cmd->radialGradient.toAlpha = rstyle(node.computedStyle()).bg_radial_gradient_to_alpha;
+	cmd->radialGradient.blend = backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_radial_gradient_layer);
 	return cmd;
 }
 
@@ -1796,7 +1823,8 @@ void recordOverlayLinearGradientBackground(const Node &node)
 	                            rstyle(node.computedStyle()).bg_overlay_gradient_from_alpha,
 	                            rstyle(node.computedStyle()).bg_overlay_gradient_mid_alpha,
 	                            rstyle(node.computedStyle()).bg_overlay_gradient_to_alpha,
-	                            rstyle(node.computedStyle()).bg_overlay_gradient_has_mid);
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_has_mid,
+	                            backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_overlay_gradient_layer));
 }
 
 // Background positioning and painting areas are distinct. In particular, the
@@ -1855,7 +1883,8 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 			else paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height,
 			    r.bg_overlay_gradient_from_color,r.bg_overlay_gradient_mid_color,r.bg_overlay_gradient_to_color,
 			    r.bg_overlay_gradient_mid_stop,r.bg_overlay_gradient_to_stop,r.bg_overlay_gradient_angle,
-			    r.bg_overlay_gradient_from_alpha,r.bg_overlay_gradient_mid_alpha,r.bg_overlay_gradient_to_alpha,r.bg_overlay_gradient_has_mid);
+			    r.bg_overlay_gradient_from_alpha,r.bg_overlay_gradient_mid_alpha,r.bg_overlay_gradient_to_alpha,r.bg_overlay_gradient_has_mid,
+			    backgroundLayerBlend(source, layer));
 			// Radius belongs to the painting box, never to each repeated image.
 			if (paint) {
 				auto &cmd = *paint;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "css_features.h"
 #include "pixel.h"
 
 #include <cstdint>
@@ -22,6 +23,12 @@ public:
 	static bool applyBackgroundImage(ComputedStyle &style, int handle, int nodeId);
 	// 0: border-box, 1: padding-box, 2: content-box. Lists repeat by image layer.
 	static int backgroundClip(const ComputedStyle &style, int layer);
+#if GEA_CSS_BACKGROUND_BLEND
+	// 0 normal, then multiply, screen, overlay, darken, lighten, color-dodge,
+	// color-burn, hard-light, soft-light, difference, exclusion, hue,
+	// saturation, color, luminosity. Callers check rstyle(style).bg_blend first.
+	static int backgroundBlendMode(const ComputedStyle &style, int layer);
+#endif
 	static bool hasTextBackgroundClip(const ComputedStyle &style);
 	static BackgroundPlacement backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
 	                                              int x, int y, int width, int height);

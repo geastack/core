@@ -255,6 +255,13 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// background-blend-mode on gradient layers (Compositing 1, section 10). Off,
+// the property is unknown, RareStyle carries no handle, and replay carries no
+// per-pixel blend path.
+#ifndef GEA_CSS_BACKGROUND_BLEND
+#define GEA_CSS_BACKGROUND_BLEND 1
+#endif
+
 // text-emphasis marks (CSS Text Decoration 3, section 3). Off, the properties
 // are unknown, ComputedStyle carries no emphasis fields and the text drawer
 // paints no marks.
