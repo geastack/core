@@ -1093,6 +1093,7 @@ public:
 				rare.inlineStaticPosition.x = clampInt16(
 				    (rare.inlineStaticPosition.continuationLine ? 0 : contentLeft) + pen);
 				rare.inlineStaticPosition.afterContent = pen > 0 || continuationLine;
+				rare.inlineStaticPosition.anchorRight = false;
 				rare.inlineStaticPosition.flowNode = static_cast<std::int16_t>(parentId);
 			}
 		};
@@ -4274,6 +4275,7 @@ private:
 				auto &persistent = layoutState(id);
 				persistent.static_block_start = clampInt16(reversed ? node_.layout.width - edge : edge);
 				persistent.static_block_axis = vertical ? 2 : 1;
+				if (!vertical && LayoutEngine::isCssInlineLevelBox(child, true)) captureHypotheticalLine(id, edge);
 				return;
 			}
 			if (child.computedStyle().float_side || suppressAnonymousWhitespace(nodes_, child.parent, id)) return;
@@ -4287,6 +4289,32 @@ private:
 			pending = blockBox(child) ? childEdgeMargin(id_, id, true) : CollapsedMargin{};
 			first = false;
 		});
+	}
+
+	// An inline-level box that no line placed would open an empty line at edge:
+	// the floats before it shorten that line and text-align places the static
+	// position on it. In a right-to-left block the box's right edge meets it
+	// (CSS 2.2 10.3.7).
+	void captureHypotheticalLine(int id, int edge)
+	{
+		if (const NodeRareData *rare = rareDataFor(id); rare && rare->inlineStaticPosition.valid) return;
+		int left = boxInset(node_.computedStyle(), 3), right = node_.layout.width - boxInset(node_.computedStyle(), 1);
+		for (int f = node_.first_child; f >= 0 && f != id; f = nodes_[f].next_sibling) {
+			const Node &box = nodes_[f];
+			if (!box.computedStyle().float_side || isDisplayNone(box.computedStyle()) || isOutOfFlowPosition(box.computedStyle().position)) continue;
+			if (edge < box.layout.y - box.computedStyle().margin[0] || edge >= box.layout.y + box.layout.height + box.computedStyle().margin[2]) continue;
+			if (box.computedStyle().float_side == 1) left = std::max(left, box.layout.x + box.layout.width + box.computedStyle().margin[1]);
+			else right = std::min(right, box.layout.x - box.computedStyle().margin[3]);
+		}
+		right = std::max(left, right);
+		const int align = LayoutEngine::physicalTextAlign(node_);
+		auto &position = ensureRareData(id).inlineStaticPosition;
+		position = InlineStaticPosition{};
+		position.x = clampInt16(align == 1 ? left + (right - left) / 2 : align == 2 ? right : left);
+		position.y = clampInt16(edge);
+		position.flowNode = static_cast<std::int16_t>(id_);
+		position.anchorRight = rightToLeft(node_);
+		position.valid = true;
 	}
 
 	// CSS Align 3: center or end align-content on a block container moves its
@@ -4934,7 +4962,8 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 			// justify-self centers or ends the margin box on it.
 			const int justify = rstyle(childNode.computedStyle()).justify_self;
 			const int free = -(childNode.layout.width + childNode.computedStyle().margin[1] + childNode.computedStyle().margin[3]);
-			const int used = justify > 0 && writingMode(parent) == 0 ? usedGridAlignment(parent, childNode, justify, free, true, true) : 6;
+			const int used = justify > 0 && writingMode(parent) == 0 ? usedGridAlignment(parent, childNode, justify, free, true, true)
+			                 : position.anchorRight ? 2 : 6;
 			return x + childNode.computedStyle().margin[3] + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
 		}
 		// The static-position rectangle spans the line box's block extent, so an
