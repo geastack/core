@@ -9281,6 +9281,22 @@ void setIndividualTranslation(NodeHandle node, const TransformComponents &t, Sty
 	setStyleValue(node, Property::TranslateYPercent, t.translateYPercent, source);
 }
 
+// transform: inherit takes the parent's transform list as it computed.
+TransformComponents inheritedTransformComponents(int nodeId)
+{
+	TransformComponents t;
+	const int parent = Tree::instance().node(nodeId).parent;
+	if (parent < 0) return t;
+	const RareStyle &r = rstyle(Tree::instance().node(parent).style);
+	t.translateOuterAxes = r.transform_translate_outer_axes;
+	t.rotateX = r.transform_rotate_x; t.rotateY = r.transform_rotate_y; t.rotateZ = r.transform_rotate;
+	t.translateX = r.transform_translate_x; t.translateY = r.transform_translate_y; t.translateZ = r.transform_translate_z;
+	t.translateXPercent = r.transform_translate_x_percent; t.translateYPercent = r.transform_translate_y_percent;
+	t.scaleX = r.transform_scale_x; t.scaleY = r.transform_scale_y; t.scaleZ = r.transform_scale_z;
+	t.hasRotateZ = r.transform_present;
+	return t;
+}
+
 void setTransformComponents(NodeHandle node, const TransformComponents &t, StyleApplicationSource source)
 {
 	setStyleValue(node, Property::TransformTranslateOuterAxes, t.translateOuterAxes, source);
@@ -10711,7 +10727,8 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		return true;
 	}
 	case CssDeclarationId::Transform:
-		setTransformComponents(node, parseTransformComponents(value, nodeId), source);
+		setTransformComponents(node, toLowerAscii(trimCssValue(value)) == "inherit" ? inheritedTransformComponents(nodeId)
+		                                                                          : parseTransformComponents(value, nodeId), source);
 		return true;
 	case CssDeclarationId::Rotate: {
 		IndividualRotation rotation;
