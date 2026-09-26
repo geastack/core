@@ -3841,26 +3841,61 @@ int containmentValue(const std::string &value)
 std::vector<std::string> splitFunctionAwareWords(const std::string &value);
 int parseOriginPart(const std::string &part, int fallback);
 
-int parseCalcExpression(const std::string &expr, int nodeId, LengthAxis axis)
+// The operator a calc() sum or product splits at, following CSS precedence: the
+// last top-level + or - (sums are left-associative), else the last * or /.
+// A + or - is binary only after an operand, not as a number's sign or exponent.
+std::size_t calcOperatorSplit(const std::string &text)
 {
-	const std::string text = trimCssValue(expr);
-	for (char op : {'/', '*', '+', '-'}) {
+	for (const char *ops : {"+-", "*/"}) {
 		int depth = 0;
+		std::size_t split = std::string::npos;
 		for (std::size_t i = 0; i < text.size(); ++i) {
 			const char c = text[i];
 			if (c == '(') depth++;
 			else if (c == ')' && depth > 0) depth--;
-			else if (c == op && depth == 0 && i > 0) {
-				const int left = parseLengthForNode(text.substr(0, i), nodeId, axis);
-				const double right = std::strtod(text.substr(i + 1).c_str(), nullptr);
-				if (op == '/') return right == 0.0 ? 0 : roundToInt(static_cast<double>(left) / right);
-				if (op == '*') return roundToInt(static_cast<double>(left) * right);
-				const int rightLength = parseLengthForNode(text.substr(i + 1), nodeId, axis);
-				return op == '+' ? left + rightLength : left - rightLength;
+			else if (depth == 0 && i > 0 && std::strchr(ops, c)) {
+				std::size_t p = i;
+				while (p > 0 && text[p - 1] == ' ') --p;
+				if (p == 0) continue;
+				const char previous = text[p - 1];
+				if (ops[0] == '+' && (std::strchr("+-*/(", previous) ||
+				    (p == i && (previous == 'e' || previous == 'E') && p >= 2 && std::isdigit(static_cast<unsigned char>(text[p - 2]))))) continue;
+				split = i;
 			}
 		}
+		if (split != std::string::npos) return split;
 	}
-	return parseLengthForNode(text, nodeId, axis);
+	return std::string::npos;
+}
+
+bool calcNumber(const std::string &raw, double &out)
+{
+	const std::string text = trimCssValue(raw);
+	char *end = nullptr;
+	out = std::strtod(text.c_str(), &end);
+	return !text.empty() && end && *end == '\0';
+}
+
+int parseCalcExpression(const std::string &expr, int nodeId, LengthAxis axis)
+{
+	const std::string text = trimCssValue(expr);
+	const std::size_t split = calcOperatorSplit(text);
+	if (split == std::string::npos) {
+		if (text.size() > 1 && text.front() == '(' && text.back() == ')') return parseCalcExpression(text.substr(1, text.size() - 2), nodeId, axis);
+		return parseLengthForNode(text, nodeId, axis);
+	}
+	const char op = text[split];
+	const std::string left = text.substr(0, split), right = text.substr(split + 1);
+	if (op == '+' || op == '-') {
+		const int a = parseCalcExpression(left, nodeId, axis), b = parseCalcExpression(right, nodeId, axis);
+		return op == '+' ? a + b : a - b;
+	}
+	double scalar = 0.0;
+	if (op == '*' && calcNumber(left, scalar)) return roundToInt(static_cast<double>(parseCalcExpression(right, nodeId, axis)) * scalar);
+	scalar = std::strtod(right.c_str(), nullptr);
+	const int length = parseCalcExpression(left, nodeId, axis);
+	if (op == '/') return scalar == 0.0 ? 0 : roundToInt(static_cast<double>(length) / scalar);
+	return roundToInt(static_cast<double>(length) * scalar);
 }
 
 int parseLengthForNode(const std::string &rawValue, int nodeId, LengthAxis axis)
@@ -5671,37 +5706,29 @@ bool parseCompiledLengthSpec(const std::string &raw, CssLengthSpec &out, bool al
 bool parseCompiledCalcExpression(const std::string &expr, CssLengthSpec &out)
 {
 	const std::string text = trimCssValue(expr);
-	for (char op : {'/', '*', '+', '-'}) {
-		int depth = 0;
-		for (std::size_t i = 0; i < text.size(); ++i) {
-			const char c = text[i];
-			if (c == '(') depth++;
-			else if (c == ')' && depth > 0) depth--;
-			else if (c == op && depth == 0 && i > 0) {
-				CssLengthExpression expression;
-				if (!parseCompiledLengthSpec(text.substr(0, i), expression.a)) return false;
-				if (op == '/' || op == '*') {
-					const std::string right = trimCssValue(text.substr(i + 1));
-					char *end = nullptr;
-					const double scalar = std::strtod(right.c_str(), &end);
-					if (end == right.c_str()) return false;
-					while (*end == ' ') ++end;
-					if (*end != '\0') return false;
-					expression.scalar = static_cast<float>(scalar);
-					expression.kind = op == '/'
-					    ? CssLengthExpressionKind::Divide
-					    : CssLengthExpressionKind::Multiply;
-				} else {
-					if (!parseCompiledLengthSpec(text.substr(i + 1), expression.b)) return false;
-					expression.kind = op == '+'
-					    ? CssLengthExpressionKind::Add
-					    : CssLengthExpressionKind::Subtract;
-				}
-				return storeCompiledCssLengthExpressionSpec(expression, out);
-			}
-		}
+	const std::size_t split = calcOperatorSplit(text);
+	if (split == std::string::npos) {
+		if (text.size() > 1 && text.front() == '(' && text.back() == ')') return parseCompiledCalcExpression(text.substr(1, text.size() - 2), out);
+		return parseCompiledLengthSpec(text, out);
 	}
-	return parseCompiledLengthSpec(text, out);
+	const char op = text[split];
+	const std::string left = text.substr(0, split), right = text.substr(split + 1);
+	CssLengthExpression expression;
+	if (op == '+' || op == '-') {
+		if (!parseCompiledCalcExpression(left, expression.a) || !parseCompiledCalcExpression(right, expression.b)) return false;
+		expression.kind = op == '+' ? CssLengthExpressionKind::Add : CssLengthExpressionKind::Subtract;
+	} else {
+		// A product takes its number on either side; a quotient divides by one.
+		double scalar = 0.0;
+		if (op == '*' && calcNumber(left, scalar)) {
+			if (!parseCompiledCalcExpression(right, expression.a)) return false;
+		} else if (!calcNumber(right, scalar) || !parseCompiledCalcExpression(left, expression.a)) {
+			return false;
+		}
+		expression.scalar = static_cast<float>(scalar);
+		expression.kind = op == '/' ? CssLengthExpressionKind::Divide : CssLengthExpressionKind::Multiply;
+	}
+	return storeCompiledCssLengthExpressionSpec(expression, out);
 }
 
 bool compileLengthExpressionSpec(const std::string &raw, CssLengthSpec &out)
