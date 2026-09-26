@@ -939,6 +939,7 @@ public:
 	{
 		Node *nodes = Tree::instance().nodes();
 		const int parentId = static_cast<int>(&node_ - nodes);
+		widenedRuns_.clear();
 		int firstLineStyleOwner = -1;
 #if GEA_CSS_FIRST_LINE
 		for (int ancestor = parentId; ancestor >= 0; ancestor = nodes[ancestor].parent) {
@@ -1382,6 +1383,11 @@ public:
 		if (!hasExplicitWidth(node_) && !keepScrollWidth) {
 			const int width = maxLineWidth + boxInset(node_.computedStyle(), 1) + boxInset(node_.computedStyle(), 3);
 			node_.layout.width = clampInt16(clampLayoutSize(node_, width, true));
+			// A widened sole run spans the box's final content width instead, so
+			// its extent does not hold the box at the width it was offered.
+			const int content = node_.layout.width - boxInsets(node_.style, true);
+			for (const WidenedRun &run : widenedRuns_)
+				nodes[run.id].layout.width = clampInt16(std::max(run.natural, content + run.extra));
 		}
 		return extent;
 	}
@@ -1596,7 +1602,10 @@ public:
 				// text-align needs a box as wide as the line box to align inside.
 				// A removed leading space sits before that box's content edge.
 				const int full = contentW - marginL - marginR + lead;
-				if (full > cn.layout.width) cn.layout.width = clampInt16(full);
+				if (full > cn.layout.width) {
+					widenedRuns_.push_back({child, cn.layout.width, full - contentW});
+					cn.layout.width = clampInt16(full);
+				}
 			}
 
 			int y = baseline - childBaseline(cn);
@@ -1808,8 +1817,12 @@ public:
 			node_.layout.height = clampLayoutSize(node_, height, false);
 		}
 
-		if (!hasExplicitWidth(node_) && !keepScrollWidth) {
-			const int width = (isRow_ ? maxMainSize(lineCount) : totalCrossSize(lineCount)) + boxInset(node_.computedStyle(), 1) + boxInset(node_.computedStyle(), 3);
+		// A document's root element is block-level in the initial containing
+		// block, so its automatic width fills it whatever its display (CSS 2.2
+		// 10.3.3). A native root sizes to its content.
+		const bool fillsRoot = node_.parent < 0 && std::strcmp(tagFromId(node_.tag_id), "html") == 0;
+		if (!hasExplicitWidth(node_) && !keepScrollWidth && !fillsRoot) {
+			const int width = (isRow_ ? maxMainSize(lineCount) : totalCrossSize(lineCount)) + boxInset(node_.style, 1) + boxInset(node_.style, 3);
 			node_.layout.width = clampLayoutSize(node_, width, true);
 		}
 	}
@@ -2476,6 +2489,10 @@ private:
 	int padHeight_ = 0;
 	FlexLine *lines_ = nullptr;
 	std::vector<FlexLine> extraLines_;
+	// Sole runs placeLineItems widened to the offered line: the run, its own
+	// width, and its widened width less the line's.
+	struct WidenedRun { int id, natural, extra; };
+	std::vector<WidenedRun> widenedRuns_;
 	int mainGap_ = 0;
 	int crossGap_ = 0;
 };
