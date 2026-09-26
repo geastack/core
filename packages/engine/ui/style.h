@@ -225,6 +225,10 @@ enum class Property : int {
 	ColumnFillAuto,
 	LineClampDiscard,
 	ColumnSpanAll,
+	TextEmphasisStyle,
+	TextEmphasisPosition,
+	TextEmphasisColorMode,
+	TextEmphasisColor,
 	Count
 };
 
@@ -384,6 +388,10 @@ enum class StyleDeclaration : std::uint8_t {
 	BorderRightStyle,
 	BorderBottomStyle,
 	BorderLeftStyle,
+	TextEmphasis,
+	TextEmphasisStyleDeclaration,
+	TextEmphasisColorDeclaration,
+	TextEmphasisPositionDeclaration,
 	// Logical two-sided shorthands (see logicalPairFor in style.cpp).
 	MarginInline,
 	MarginBlock,

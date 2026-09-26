@@ -255,6 +255,13 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// text-emphasis marks (CSS Text Decoration 3, section 3). Off, the properties
+// are unknown, ComputedStyle carries no emphasis fields and the text drawer
+// paints no marks.
+#ifndef GEA_CSS_TEXT_EMPHASIS
+#define GEA_CSS_TEXT_EMPHASIS 1
+#endif
+
 // position: sticky (CSS Position 3). Off, sticky parses as static, the
 // absolute-coordinate pass tracks no scrollport, and the root scroll-only
 // refresh never stands down for sticky boxes.

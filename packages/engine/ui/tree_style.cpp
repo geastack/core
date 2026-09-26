@@ -1034,6 +1034,21 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::TextAlign:       if (style.text_align != value) { style.text_align = value; changed = 1; } break;
 #endif
 	case Property::TextAlignLast:   if (style.text_align_last != value) { style.text_align_last = value; changed = 1; } break;
+#if GEA_CSS_TEXT_EMPHASIS
+	case Property::TextEmphasisStyle:
+	case Property::TextEmphasisPosition:
+	case Property::TextEmphasisColorMode: {
+		const int mask = prop == Property::TextEmphasisStyle ? 0x0f : prop == Property::TextEmphasisPosition ? 0x10 : 0x60;
+		const int next = (style.text_emphasis & ~mask) | (value & mask);
+		if (style.text_emphasis != next) { style.text_emphasis = static_cast<uint8_t>(next); changed = 1; }
+		break;
+	}
+	case Property::TextEmphasisColor: {
+		const auto color = StyleValues::pixelFromStyleValue(value);
+		if (style.text_emphasis_color != color) { style.text_emphasis_color = color; changed = 1; }
+		break;
+	}
+#endif
 	case Property::VerticalAlign:   if (style.vertical_align != value) { style.vertical_align = value; changed = 1; } break;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration:  if (style.text_decoration != value) { style.text_decoration = value; changed = 1; } break;

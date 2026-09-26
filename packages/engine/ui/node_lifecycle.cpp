@@ -206,6 +206,10 @@ constexpr ComputedStyle makeDefaultStyle()
 	style.text_align = 0;
 #endif
 	style.text_align_last = 0;
+#if GEA_CSS_TEXT_EMPHASIS
+	style.text_emphasis = 0;
+	style.text_emphasis_color = 0;
+#endif
 	style.vertical_align = 0;
 #if GEA_CSS_TEXT_DECORATION
 	style.text_decoration = 0;
