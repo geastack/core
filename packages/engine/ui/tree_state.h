@@ -99,7 +99,11 @@ struct InlineStaticPosition {
 	// Block extent of the line box that holds the static position; 0 when the
 	// box is anchored to a line that has not been laid out yet.
 	std::int16_t lineHeight = 0;
+	// The node whose line layout recorded x and y; they are relative to it.
+	std::int16_t flowNode = -1;
 	bool continuationLine = false;
+	// Line content precedes the static position on its line.
+	bool afterContent = false;
 	bool valid = false;
 };
 
