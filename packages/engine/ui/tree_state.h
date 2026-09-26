@@ -104,6 +104,10 @@ struct InlineStaticPosition {
 	bool continuationLine = false;
 	// Line content precedes the static position on its line.
 	bool afterContent = false;
+	// The box's right margin edge meets x: an empty line in a right-to-left
+	// block. Laid-out lines keep their items in left-to-right order, so a box
+	// they placed starts at x.
+	bool anchorRight = false;
 	bool valid = false;
 };
 
