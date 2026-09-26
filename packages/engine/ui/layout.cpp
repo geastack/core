@@ -714,6 +714,41 @@ static bool inlineBoxView(const Node &n);
 bool blockLevelView(const Node &node);
 bool splitInlineWrapper(const Node *nodes, int id);
 
+// The physical side (0 top, 1 right, 2 bottom, 3 left) of a margin-trim flag
+// bit of a container: block-start, block-end, inline-start, inline-end.
+int marginTrimSide(const Node &container, int flag)
+{
+	const int mode = writingMode(container);
+	const bool inlineAxis = flag >= 2, end = flag & 1;
+	const bool reversed = inlineAxis ? rightToLeft(container) != (mode == 4) : mode == 2 || mode == 3;
+	const int start = inlineAxis == (mode == 0) ? 3 : 0;
+	return reversed != end ? (start + 2) % 4 : start;
+}
+
+// Margins zeroed by margin-trim for one layout pass, restored when it ends.
+struct TrimmedMargins {
+	struct Entry { int child, side; int16_t value; bool automatic; };
+	std::vector<Entry> entries;
+	void cut(int child, int side)
+	{
+		Node &item = Tree::instance().nodes()[child];
+		if (!item.style.margin[side] && !(item.style.margin_auto & (1 << side))) return;
+		entries.push_back({child, side, item.style.margin[side], static_cast<bool>(item.style.margin_auto & (1 << side))});
+		item.style.margin[side] = 0;
+		item.style.margin_auto &= static_cast<uint8_t>(~(1 << side));
+	}
+	void restore()
+	{
+		Node *nodes = Tree::instance().nodes();
+		for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+			nodes[it->child].style.margin[it->side] = it->value;
+			if (it->automatic) nodes[it->child].style.margin_auto |= static_cast<uint8_t>(1 << it->side);
+		}
+		entries.clear();
+	}
+	~TrimmedMargins() { restore(); }
+};
+
 class FlexLayoutPass {
 public:
 	FlexLayoutPass(LayoutEngine &engine, Node &node, int *children, int childCount, bool isRow, int mainAvail, int padWidth, int padHeight, FlexLine *lines, bool inlineRow = false, bool assignedSize = false)
@@ -779,6 +814,9 @@ public:
 	{
 		const int originalWidth = node_.layout.width, originalHeight = node_.layout.height;
 		int lineCount = buildLines();
+		// Trimmed margins stay zero until this pass ends.
+		TrimmedMargins trimmed;
+		trimEdgeMargins(lineCount, trimmed);
 		expandCrossSizes(lineCount, autosize);
 		if (autosize) autosizeParent(lineCount);
 		positionLines(lineCount);
@@ -2093,7 +2131,9 @@ private:
 		}
 	}
 
-	void positionLineChildren(const FlexLine &line, Node *nodes, int mainOffset, int crossOffset, int autoSpace = 0, int autoCount = 0, int distributedFree = 0)
+	// Physical sides (0 top, 1 right, 2 bottom, 3 left) the main axis starts at
+	// and the first line sits against.
+	void flexStartSides(bool &reverseMain, bool &reverseCross, int &mainBefore, int &crossBefore) const
 	{
 #if GEA_CSS_FLEX_WRAP
         const bool wrapReversed = (node_.style.flex_wrap & 3) == 2;
@@ -2105,11 +2145,56 @@ private:
 		const int mode = writingMode(node_);
 		const bool blockReversed = mode == 2 || mode == 3;
 		const bool inlineReversed = rightToLeft(node_) != (mode == 4);
-		const bool reverseMain = flex && ((node_.style.flex_direction_explicit && node_.style.flex_direction >= 2) != (logicalRow ? inlineReversed : blockReversed));
-		const bool reverseCross = flex && ((wrapReversed) != (logicalRow ? blockReversed : inlineReversed));
-		const int mainBefore = isRow_ ? (reverseMain ? 1 : 3) : (reverseMain ? 2 : 0);
+		reverseMain = flex && ((node_.style.flex_direction_explicit && node_.style.flex_direction >= 2) != (logicalRow ? inlineReversed : blockReversed));
+		reverseCross = flex && ((wrapReversed) != (logicalRow ? blockReversed : inlineReversed));
+		mainBefore = isRow_ ? (reverseMain ? 1 : 3) : (reverseMain ? 2 : 0);
+		crossBefore = isRow_ ? (reverseCross ? 2 : 0) : (reverseCross ? 1 : 3);
+	}
+
+	// CSS Box 4 margin-trim on a flex container: the margins of items against a
+	// trimmed edge of the container are zero. Along the main axis that is each
+	// line's first or last item, across it every item of the first or last line.
+	void trimEdgeMargins(int lineCount, TrimmedMargins &trimmed)
+	{
+		const int trim = rstyle(node_.style).margin_trim;
+		if (!trim || node_.style.display != kDisplayFlex || lineCount <= 0) return;
+		Node *nodes = Tree::instance().nodes();
+		bool reverseMain, reverseCross;
+		int mainBefore, crossBefore;
+		flexStartSides(reverseMain, reverseCross, mainBefore, crossBefore);
+		for (int flag = 0; flag < 4; ++flag) {
+			if (!(trim & (1 << flag))) continue;
+			const int side = marginTrimSide(node_, flag);
+			if (side == mainBefore || side == (mainBefore + 2) % 4) {
+				for (int l = 0; l < lineCount; ++l)
+					if (lines_[l].count) trimmed.cut(children_[side == mainBefore ? lines_[l].start : lines_[l].start + lines_[l].count - 1], side);
+			} else {
+				const FlexLine &line = lines_[side == crossBefore ? 0 : lineCount - 1];
+				for (int i = 0; i < line.count; ++i) trimmed.cut(children_[line.start + i], side);
+			}
+		}
+		if (trimmed.entries.empty()) return;
+		for (int l = 0; l < lineCount; ++l) {
+			FlexLine &line = lines_[l];
+			int mainSize = std::max(0, line.count - 1) * mainGap_, crossSize = 0;
+			for (int i = 0; i < line.count; ++i) {
+				const Node &item = nodes[children_[line.start + i]];
+				mainSize += isRow_ ? item.layout.width + item.style.margin[1] + item.style.margin[3]
+				                   : item.layout.height + item.style.margin[0] + item.style.margin[2];
+				crossSize = std::max(crossSize, isRow_ ? item.layout.height + item.style.margin[0] + item.style.margin[2]
+				                                       : item.layout.width + item.style.margin[1] + item.style.margin[3]);
+			}
+			line.mainSize = mainSize;
+			line.crossSize = std::max(line.strutSize, baselineCrossSize(line.start, line.count, crossSize));
+		}
+	}
+
+	void positionLineChildren(const FlexLine &line, Node *nodes, int mainOffset, int crossOffset, int autoSpace = 0, int autoCount = 0, int distributedFree = 0)
+	{
+		bool reverseMain, reverseCross;
+		int mainBefore, crossBefore;
+		flexStartSides(reverseMain, reverseCross, mainBefore, crossBefore);
 		const int mainAfter = (mainBefore + 2) % 4;
-		const int crossBefore = isRow_ ? (reverseCross ? 2 : 0) : (reverseCross ? 1 : 3);
 		const int crossAfter = (crossBefore + 2) % 4;
 		int autoUsed = 0;
 		auto autoMargin = [&](const Node &child, int side) {
@@ -3772,6 +3857,17 @@ private:
 			p.row.start = cursorRow;
 			occupy(p);
 			cursorColumn = p.column.end;
+		}
+		// CSS Box 4 margin-trim: an item in the first or last row or column has
+		// no margin against that edge of the grid, until this pass ends.
+		TrimmedMargins trimmed;
+		if (const int trim = rstyle(node_.style).margin_trim) {
+			for (int i = 0; i < childCount; ++i) {
+				const auto &p = placements[i];
+				const bool atEdge[4] = {p.row.start == 0, p.row.end == rowCount, p.column.start == 0, p.column.end == columnCount};
+				for (int flag = 0; flag < 4; ++flag)
+					if ((trim & (1 << flag)) && atEdge[flag]) trimmed.cut(children[i], marginTrimSide(node_, flag));
+			}
 		}
 
 		const int columnGap = resolvedGap(node_, false, padWidth, padHeight);
