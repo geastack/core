@@ -4779,6 +4779,7 @@ int displayValue(const std::string &value)
 	if (value == "none") return kDisplayNone;
 	if (value == "grid" || value == "inline-grid") return kDisplayGrid;
 	if (value == "flex" || value == "inline-flex") return kDisplayFlex;
+	if (value == "flow-root") return kDisplayBlock | (kDisplayFlowRoot << kDisplayFlagShift);
 	return kDisplayBlock;
 }
 
@@ -8197,8 +8198,8 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	ComputedStyle &style = target.style;
 	switch (property) {
 	case Property::Display:
-		style.display_explicit = 1;
-		style.display = value;
+		style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+		style.display = value & kDisplayKindMask;
 		return true;
 	case Property::FlexDirection:
 		style.flex_direction_explicit = 1;

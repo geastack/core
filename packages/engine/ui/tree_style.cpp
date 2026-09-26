@@ -318,8 +318,12 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		// Any application of the `display` property is explicit authoring — record
 		// it so the inline-formatting heuristic treats e.g. `display:block` on a
 		// <span> as block-level (stacks) rather than its default inline behaviour.
-		if (!n->style.display_explicit) { n->style.display_explicit = 1; changed = 1; }
-		if (n->style.display != value) { n->style.display = value; changed = 1; }
+		// Keyword bits above the box kind (flow-root) are recorded with it.
+		if (n->style.display_explicit != (kDisplayExplicit | (value >> kDisplayFlagShift))) {
+			n->style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+			changed = 1;
+		}
+		if (n->style.display != (value & kDisplayKindMask)) { n->style.display = value & kDisplayKindMask; changed = 1; }
 		break;
 	case Property::FlexDirection:
 		if (!n->style.flex_direction_explicit) {

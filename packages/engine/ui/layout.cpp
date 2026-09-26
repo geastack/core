@@ -2781,10 +2781,13 @@ private:
 		    !nodes_[child].style.float_side && !suppressAnonymousWhitespace(nodes_, parent, child);
 	}
 
+	// A non-normal align-content makes a block container a BFC root (CSS Align 3
+	// 5.1), just like display: flow-root.
 	bool establishesBlockContext(const Node &n) const
 	{
 		return n.parent < 0 || isOutOfFlowPosition(n.style.position) || n.style.float_side ||
-		    n.style.display != kDisplayBlock || overflowEstablishesContext(n.style) || isMulticolContainer(n) ||
+		    n.style.display != kDisplayBlock || isFlowRoot(n.style) || (blockBox(n) && n.style.align_content != 0) ||
+		    overflowEstablishesContext(n.style) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].style) ||
 		                      writingMode(n) != writingMode(nodes_[n.parent])));
 	}
@@ -3266,13 +3269,19 @@ private:
 			int left = 0, right = area, contextX = 0;
 			const bool independentBlock = block && establishesBlockContext(child);
 			if (child.style.float_side || child.style.display != kDisplayBlock || establishesBlockContext(child)) {
+				// An automatic-width BFC tries the widest opportunity at each y
+				// first and narrows only while its height meets more floats. Its
+				// width never grows back, so a height that depends on the width
+				// (aspect-ratio, wrapping) cannot make this search oscillate.
+				const bool searchWidth = independentBlock && automaticWidth;
+				int extent = searchWidth ? 1 : independentBlock ? int(child.layout.height) : outerH;
 				for (;;) {
 					left = 0; right = area;
 					int nextY = 32767;
 					bool hasLeft = false, hasRight = false;
 					for (const auto &global : floats) {
 						const FloatBox f{global.left - originX, global.top - originY, global.right - originX, global.bottom - originY, global.side};
-						if (y >= f.bottom || y + std::max(1, independentBlock ? int(child.layout.height) : outerH) <= f.top) continue;
+						if (y >= f.bottom || y + std::max(1, extent) <= f.top) continue;
 						if (f.side == 1) { left = std::max(left, f.right); hasLeft = true; }
 						else { right = std::min(right, f.left); hasRight = true; }
 						nextY = std::min(nextY, f.bottom);
@@ -3285,22 +3294,22 @@ private:
 						const int start = hasLeft ? std::max<int>(child.style.margin[3], left) : child.style.margin[3];
 						const int end = hasRight ? std::min<int>(area - child.style.margin[1], right) : area - child.style.margin[1];
 						contextX = start - child.style.margin[3];
-						if (automaticWidth) {
-							const int width = clampLayoutSize(child, std::max(0, end - start), true);
+						if (searchWidth && end >= start) {
+							const int width = clampLayoutSize(child, end - start, true);
 							if (child.layout.width != width) {
-								const int previousHeight = child.layout.height;
 								engine_.layoutNode(children[i], width + child.style.margin[1] + child.style.margin[3], contentHeight);
 								child.layout.width = clampInt16(width);
 								engine_.repositionChildren(children[i]);
 								outerW = width + child.style.margin[1] + child.style.margin[3];
 								outerH = child.layout.height + child.style.margin[0] + child.style.margin[2];
-								if (previousHeight != child.layout.height) continue;
 							}
+							if (child.layout.height > extent) { extent = child.layout.height; continue; }
 						}
 						fits = child.layout.width <= end - start;
 					}
 					if (fits || nextY == 32767) break;
 					y = nextY;
+					if (searchWidth) extent = 1;
 				}
 			}
 			// In right-to-left flow a block that does not fill the line hugs the right.
