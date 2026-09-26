@@ -2897,6 +2897,98 @@ int ViewRenderer::canvasBackgroundSource()
 	return root;
 }
 
+// border-image (CSS Backgrounds 3, section 6): the source, sized to the border
+// image area, is cut by the slices into nine parts drawn over the border image
+// widths. A gradient part is its gradient box scaled so the slice lands on the
+// tile, clipped to the tile.
+bool recordBorderImage(const Node &node)
+{
+	const auto *source = StyleValues::borderImageSource(node.style);
+	if (!source || ViewGeometry::hasTransformChain(node, false)) return false;
+	const auto slice = StyleValues::borderImageSides(node.style, 0);
+	const auto widths = StyleValues::borderImageSides(node.style, 1);
+	const auto outset = StyleValues::borderImageSides(node.style, 2);
+	const int repeat = rstyle(node.style).border_image_repeat;
+	double border[4], out[4];
+	for (int i = 0; i < 4; ++i) {
+		border[i] = computedBorderWidth(node.style, i);
+		out[i] = outset.kind[i] == 1 ? outset.value[i] : outset.value[i] * border[i];
+	}
+	const double ax = node.layout.x - out[3], ay = node.layout.y - out[0];
+	const double aw = node.layout.width + out[1] + out[3], ah = node.layout.height + out[0] + out[2];
+	if (aw <= 0 || ah <= 0) return true;
+	// A gradient has no natural size: the image is the border image area, and
+	// auto widths fall back to the border widths.
+	double s[4], w[4];
+	for (int i = 0; i < 4; ++i) {
+		const double size = i % 2 ? aw : ah;
+		s[i] = std::min(size, slice.kind[i] == 2 ? slice.value[i] * size / 100.0 : slice.value[i]);
+		w[i] = widths.kind[i] == 0 ? widths.value[i] * border[i] : widths.kind[i] == 1 ? widths.value[i] :
+		    widths.kind[i] == 2 ? widths.value[i] * size / 100.0 : border[i];
+	}
+	const double fit = std::min({1.0, w[1] + w[3] > aw ? aw / (w[1] + w[3]) : 1.0, w[0] + w[2] > ah ? ah / (w[0] + w[2]) : 1.0});
+	for (double &v : w) v *= fit;
+	const double dx[4] = {ax, ax + w[3], ax + aw - w[1], ax + aw}, dy[4] = {ay, ay + w[0], ay + ah - w[2], ay + ah};
+	const double sx[4] = {0, s[3], aw - s[1], aw}, sy[4] = {0, s[0], ah - s[2], ah};
+	// A part's scale along the tiled axis, from the edge it follows.
+	auto factor = [](double first, double firstSlice, double second, double secondSlice) {
+		if (firstSlice > 0 && first > 0) return first / firstSlice;
+		return secondSlice > 0 && second > 0 ? second / secondSlice : 1.0;
+	};
+	// Tile origins and size along one axis of a part.
+	struct Tiles { double start, size, step; int count; };
+	auto tile = [](int mode, double d0, double d1, double size) -> Tiles {
+		const double span = d1 - d0;
+		if (mode == 0 || size <= 0 || span / size > 64) return {d0, span, span, 1};
+		if (mode == 2) {
+			const int n = std::max(1, static_cast<int>(std::lround(span / size)));
+			return {d0, span / n, span / n, n};
+		}
+		if (mode == 3) {
+			const int n = static_cast<int>(span / size);
+			const double gap = n ? (span - n * size) / (n + 1) : 0;
+			return {d0 + gap, size, size + gap, n};
+		}
+		const double first = d0 + (span - size) / 2 - std::ceil((span - size) / 2 / size) * size;
+		return {first, size, size, static_cast<int>(std::ceil((d1 - first) / size))};
+	};
+	for (int row = 0; row < 3; ++row) for (int col = 0; col < 3; ++col) {
+		if (row == 1 && col == 1 && !slice.fill) continue;
+		const double dw = dx[col + 1] - dx[col], dh = dy[row + 1] - dy[row];
+		const double sw = sx[col + 1] - sx[col], sh = sy[row + 1] - sy[row];
+		if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) continue;
+		const double kx = col != 1 ? dw / sw : row == 1 ? factor(w[0], s[0], w[2], s[2]) : dh / sh;
+		const double ky = row != 1 ? dh / sh : col == 1 ? factor(w[3], s[3], w[1], s[1]) : dw / sw;
+		const Tiles tx = col == 1 ? tile(repeat & 3, dx[1], dx[2], sw * kx) : Tiles{dx[col], dw, dw, 1};
+		const Tiles ty = row == 1 ? tile(repeat >> 2, dy[1], dy[2], sh * ky) : Tiles{dy[row], dh, dh, 1};
+		for (int j = 0; j < ty.count; ++j) for (int i = 0; i < tx.count; ++i) {
+			const double t0 = tx.start + i * tx.step, u0 = ty.start + j * ty.step;
+			const int cx0 = std::lround(std::max(t0, dx[col])), cx1 = std::lround(std::min(t0 + tx.size, dx[col + 1]));
+			const int cy0 = std::lround(std::max(u0, dy[row])), cy1 = std::lround(std::min(u0 + ty.size, dy[row + 1]));
+			if (cx1 <= cx0 || cy1 <= cy0) continue;
+			const double gx = tx.size / sw, gy = ty.size / sh;
+			const long vx = std::lround(t0 - sx[col] * gx), vy = std::lround(u0 - sy[row] * gy);
+			const long vw = std::lround(aw * gx), vh = std::lround(ah * gy);
+			if (std::max({std::labs(vx), std::labs(vy), vx + vw, vy + vh}) > 32000) continue;
+			auto *begin = DisplayList::instance().append();
+			if (!begin) return true;
+			begin->type = DisplayCommandType::PushClip;
+			begin->bx = begin->clip.x = cx0; begin->by = begin->clip.y = cy0;
+			begin->bw = begin->clip.w = cx1 - cx0; begin->bh = begin->clip.h = cy1 - cy0;
+			begin->clip.nodeId = -1;
+			begin->clip.shaped = 0;
+			if (auto *paint = appendLinearGradientRectRaw(node, vx, vy, vw, vh, source->from, source->mid, source->to,
+			        source->midStop, source->toStop, source->angle, source->fromAlpha, source->midAlpha, source->toAlpha, source->hasMid)) {
+				paint->gradient.tl = paint->gradient.tr = paint->gradient.br = paint->gradient.bl = 0;
+				paint->bx = cx0; paint->by = cy0; paint->bw = cx1 - cx0; paint->bh = cy1 - cy0;
+			}
+			auto *end = DisplayList::instance().append();
+			if (end) { end->type = DisplayCommandType::PopClip; end->bx = cx0; end->by = cy0; end->bw = cx1 - cx0; end->bh = cy1 - cy0; end->clip.nodeId = -1; }
+		}
+	}
+	return true;
+}
+
 void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordBox(const Node &node, uint8_t parentAlpha)
 {
 	const Node *n = &node;
@@ -2981,6 +3073,8 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 #if GEA_CSS_BOX_SHADOW
 	recordInsetBoxShadow(*n, parentAlpha);
 #endif
+	// A painted border image replaces the border styles.
+	if (recordBorderImage(*n)) return;
 
 	if (n->style.border_width > 0 && !hasBorderRelief(n->style) && !hasSideBorder(n->style) && !borderColorsDiffer(n->style) && !borderIsSameOpaqueSolidBackground(*n, parentAlpha)) {
 		if (ViewGeometry::hasTransformChain(*n, false)) {

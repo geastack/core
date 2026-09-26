@@ -668,6 +668,11 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #if GEA_CSS_BACKGROUND_LAYERS
 	case Property::BackgroundClip: if (rstyle(n->style).bg_clip != value) { rstyleMut(n->style).bg_clip = value; changed = 1; } break;
 	case Property::BackgroundBlendMode: if (rstyle(n->style).bg_blend != value) { rstyleMut(n->style).bg_blend = value; changed = 1; } break;
+	case Property::BorderImageSource: if (rstyle(n->style).border_image_source != value) { rstyleMut(n->style).border_image_source = value; changed = 1; } break;
+	case Property::BorderImageSlice: if (rstyle(n->style).border_image_slice != value) { rstyleMut(n->style).border_image_slice = value; changed = 1; } break;
+	case Property::BorderImageWidth: if (rstyle(n->style).border_image_width != value) { rstyleMut(n->style).border_image_width = value; changed = 1; } break;
+	case Property::BorderImageOutset: if (rstyle(n->style).border_image_outset != value) { rstyleMut(n->style).border_image_outset = value; changed = 1; } break;
+	case Property::BorderImageRepeat: if (rstyle(n->style).border_image_repeat != value) { rstyleMut(n->style).border_image_repeat = value; changed = 1; } break;
 	case Property::BackgroundSizeList: if (rstyle(n->style).bg_size_list != value) { rstyleMut(n->style).bg_size_list = value; changed = 1; } break;
 	case Property::BackgroundPositionList: if (rstyle(n->style).bg_position_list != value) { rstyleMut(n->style).bg_position_list = value; changed = 1; } break;
 	case Property::BackgroundRepeatList: if (rstyle(n->style).bg_repeat_list != value) { rstyleMut(n->style).bg_repeat_list = value; changed = 1; } break;

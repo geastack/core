@@ -44,6 +44,11 @@ bool DisplayInvalidation::rebuildsNodeDisplayCommands(Property prop)
 	case Property::BackgroundAlpha:
 	case Property::BackgroundClip:
 	case Property::BackgroundBlendMode:
+	case Property::BorderImageSource:
+	case Property::BorderImageSlice:
+	case Property::BorderImageWidth:
+	case Property::BorderImageOutset:
+	case Property::BorderImageRepeat:
 	case Property::BackgroundImage:
 	case Property::Containment:
 	case Property::ActiveBackgroundColor:

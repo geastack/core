@@ -7,6 +7,7 @@
 #include "layout_snapshot.h"
 #include "refresh_perf.h"
 #include "root_scroll_refresh.h"
+#include "style_values.h"
 #include "tree_state.h"
 
 #include <cmath>
@@ -265,7 +266,7 @@ namespace gea::embedded::ui
 				return true;
 			if (node.style.mask_right_fade_width > 0)
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0)
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || rstyle(node.style).border_image_source)
 				return true;
 			return node.style.has_bg && (styleHasRoundedRasterEdge(node.style) || node.style.bg_alpha < 255);
 		}
@@ -287,7 +288,8 @@ namespace gea::embedded::ui
 		{
 			if (!dirtyRectNeedsRasterGuard(node))
 				return rect;
-			return expandDirtyRect(rect, 1);
+			// border-image-outset paints outside the border box.
+			return expandDirtyRect(rect, 1 + StyleValues::borderImageOutsetExtent(node.style));
 		}
 
 		DirtyRegions::Rect dirtyRectWithRetainedMoveGuard(DirtyRegions::Rect rect)
