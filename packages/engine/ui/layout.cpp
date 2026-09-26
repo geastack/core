@@ -555,8 +555,14 @@ int ratioTransferredSize(const Node &node, int crossBorderSize, bool horizontal)
 {
 	const double ratio = preferredRatio(node);
 	if (ratio <= 0) return 0;
-	const int crossEdges = node.style.box_sizing ? 0 : boxInsets(node.style, !horizontal);
-	const int mainEdges = node.style.box_sizing ? 0 : boxInsets(node.style, horizontal);
+	// `auto <ratio>` (stored negative) sizes the content box whatever box-sizing
+	// says (CSS Sizing 4, 5.1).
+	float stored = 0;
+	const int bits = rstyle(node.style).aspect_ratio;
+	std::memcpy(&stored, &bits, sizeof(stored));
+	const bool contentBox = !node.style.box_sizing || stored < 0;
+	const int crossEdges = contentBox ? boxInsets(node.style, !horizontal) : 0;
+	const int mainEdges = contentBox ? boxInsets(node.style, horizontal) : 0;
 	const double value = std::max(0, crossBorderSize - crossEdges) * (horizontal ? ratio : 1 / ratio) + mainEdges;
 	return static_cast<int>(std::min(32767.0, std::round(value)));
 }
@@ -2076,6 +2082,17 @@ private:
 		    ((isRow_ ? hasExplicitHeight(childNode) : hasExplicitWidth(childNode)) || definiteFlexCrossSize(node_, childNode, isRow_))) {
 			const int transferred = ratioTransferredSize(childNode, isRow_ ? childNode.layout.height : childNode.layout.width, isRow_);
 			extent = childNode.type == NodeType::Image ? std::min(extent, transferred) : std::max(extent, transferred);
+		}
+		// With a preferred aspect ratio the content size suggestion is clamped by
+		// the definite minimum and maximum cross sizes converted through it
+		// (CSS Flexbox 4.5).
+		if (preferredRatio(childNode) > 0) {
+			const int maxCross = isRow_ ? childNode.style.max_height : childNode.style.max_width;
+			const int minCross = isRow_ ? childNode.style.min_height : childNode.style.min_width;
+			if (maxCross != kUnset)
+				extent = std::min(extent, ratioTransferredSize(childNode, contentSizeToBorderSize(childNode.style, maxCross, !isRow_), isRow_));
+			if (minCross != kUnset && minCross > 0)
+				extent = std::max(extent, ratioTransferredSize(childNode, contentSizeToBorderSize(childNode.style, minCross, !isRow_), isRow_));
 		}
 		if (extent <= 0) return 0;
 		const int max = isRow_ ? childNode.style.max_width : childNode.style.max_height;
