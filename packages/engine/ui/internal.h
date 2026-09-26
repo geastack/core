@@ -154,6 +154,8 @@ void rootScrollImageHoldTick();
 				uint8_t toAlpha;
 				uint16_t toStop;
 				uint8_t hasMid;
+				// background-blend-mode of the layer; 0 is normal (see BlendMode).
+				uint8_t blend;
 			} gradient;
 			struct
 			{
@@ -166,6 +168,7 @@ void rootScrollImageHoldTick();
 				uint16_t stopPermille;
 				uint8_t fromAlpha;
 				uint8_t toAlpha;
+				uint8_t blend;
 			} radialGradient;
 			struct
 			{

@@ -504,6 +504,7 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.bg_fill != b.bg_fill ||
 	    ar.containment != br.containment ||
 	    ar.bg_clip != br.bg_clip ||
+	    ar.bg_blend != br.bg_blend ||
 	    ar.bg_size_list != br.bg_size_list ||
 	    ar.bg_position_list != br.bg_position_list ||
 	    ar.bg_repeat_list != br.bg_repeat_list ||
@@ -1289,6 +1290,7 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "contain") == 0) return CssDeclarationId::Contain;
 	if (std::strcmp(property, "background-color") == 0) return CssDeclarationId::BackgroundColor;
 	if (std::strcmp(property, "background-clip") == 0) return CssDeclarationId::BackgroundClip;
+	if (std::strcmp(property, "background-blend-mode") == 0) return CssDeclarationId::BackgroundBlendMode;
 	if (std::strcmp(property, "background-image") == 0) return CssDeclarationId::BackgroundImage;
 	if (std::strcmp(property, "background") == 0) return CssDeclarationId::Background;
 	if (std::strcmp(property, "background-size") == 0) return CssDeclarationId::BackgroundSize;
@@ -2391,10 +2393,17 @@ std::vector<std::vector<std::uint8_t>> &backgroundClipLists()
 	return lists;
 }
 
+std::vector<std::vector<std::uint8_t>> &backgroundBlendLists()
+{
+	static std::vector<std::vector<std::uint8_t>> lists;
+	return lists;
+}
+
 void clearCompiledCssBackgrounds()
 {
 	compiledCssBackgrounds().clear();
 	backgroundClipLists().clear();
+	backgroundBlendLists().clear();
 	backgroundPlacementLists().clear();
 }
 
@@ -6824,6 +6833,31 @@ int compileBackgroundClip(const std::string &value, bool shorthand = false)
 	return storeBackgroundClipList(clips);
 }
 
+// background-blend-mode as an interned per-layer list; the handle is one
+// byte, so an app gets 255 distinct non-normal lists.
+int compileBackgroundBlendMode(const std::string &value)
+{
+	static constexpr const char *kModes[] = {"normal", "multiply", "screen", "overlay", "darken", "lighten",
+	    "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation",
+	    "color", "luminosity"};
+	const auto lower = toLowerAscii(trimCssValue(value));
+	if (lower == "initial" || lower == "unset") return 0;
+	std::vector<std::uint8_t> modes;
+	for (const auto &layer : splitTopLevel(lower, ',')) {
+		const auto word = trimCssValue(layer);
+		const auto *mode = std::find_if(std::begin(kModes), std::end(kModes), [&](const char *name) { return word == name; });
+		if (mode == std::end(kModes)) return -1;
+		modes.push_back(static_cast<std::uint8_t>(mode - std::begin(kModes)));
+	}
+	if (modes.empty()) return -1;
+	if (std::all_of(modes.begin(), modes.end(), [](auto mode) { return mode == 0; })) return 0;
+	auto &lists = backgroundBlendLists();
+	for (std::size_t i = 0; i < lists.size(); ++i) if (lists[i] == modes) return static_cast<int>(i + 1);
+	if (lists.size() >= 255) return -1;
+	lists.push_back(modes);
+	return static_cast<int>(lists.size());
+}
+
 ParsedCssColor backgroundBaseColor(const std::string &value)
 {
 	ParsedCssColor color;
@@ -7538,6 +7572,14 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		compiled.values[1] = clip;
 		return storeCompiledCssValue(compiled);
 	}
+	if (declaration == CssDeclarationId::BackgroundBlendMode && !hasVar) {
+		const int blend = compileBackgroundBlendMode(value);
+		if (blend < 0) return kNoCompiledCssValue;
+		compiled.kind = CssCompiledKind::DirectProperty;
+		compiled.values[0] = static_cast<int>(Property::BackgroundBlendMode);
+		compiled.values[1] = blend;
+		return storeCompiledCssValue(compiled);
+	}
 
 	StaticStylePropertyValue clampWrites[4];
 	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
@@ -7961,6 +8003,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 #if GEA_CSS_BACKGROUND_LAYERS
 	case Property::BackgroundClip: rstyleMut(style).bg_clip = value; return true;
+	case Property::BackgroundBlendMode: rstyleMut(style).bg_blend = value; return true;
 	case Property::BackgroundSizeList: rstyleMut(style).bg_size_list = value; return true;
 	case Property::BackgroundPositionList: rstyleMut(style).bg_position_list = value; return true;
 	case Property::BackgroundRepeatList: rstyleMut(style).bg_repeat_list = value; return true;
@@ -9797,6 +9840,14 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).computedStyle()).bg_clip : 0)
 		    : compileBackgroundClip(value);
 		if (clip >= 0) setStyleValue(node, Property::BackgroundClip, clip, source);
+		return true;
+	}
+	case CssDeclarationId::BackgroundBlendMode: {
+		const int parent = Tree::instance().node(nodeId).parent;
+		const int blend = toLowerAscii(trimCssValue(value)) == "inherit"
+		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).style).bg_blend : 0)
+		    : compileBackgroundBlendMode(value);
+		if (blend >= 0) setStyleValue(node, Property::BackgroundBlendMode, blend, source);
 		return true;
 	}
 	case CssDeclarationId::Contain: {
@@ -11939,6 +11990,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "background")
 		return removeInlineStyleProperties(id, {Property::BackgroundColor, Property::BackgroundAlpha, Property::BackgroundImage, Property::BackgroundClip, Property::HasBackground, Property::BackgroundSizeList, Property::BackgroundPositionList, Property::BackgroundRepeatList, Property::BackgroundAttachmentList, Property::BackgroundOriginList});
 	if (property == "background-clip") return removeInlineStyleProperties(id, {Property::BackgroundClip});
+	if (property == "background-blend-mode") return removeInlineStyleProperties(id, {Property::BackgroundBlendMode});
 	if (property == "background-size") return removeInlineStyleProperties(id, {Property::BackgroundSizeList});
 	if (property == "background-position") return removeInlineStyleProperties(id, {Property::BackgroundPositionList});
 	if (property == "background-repeat") return removeInlineStyleProperties(id, {Property::BackgroundRepeatList});
@@ -17666,6 +17718,15 @@ bool StyleValues::hasTextBackgroundClip(const ComputedStyle &style)
 	if (!handle || handle > lists.size()) return false;
 	const auto &list = lists[handle - 1];
 	return std::find(list.begin(), list.end(), 3) != list.end();
+}
+
+int StyleValues::backgroundBlendMode(const ComputedStyle &style, int layer)
+{
+	const auto handle = rstyle(style).bg_blend;
+	const auto &lists = backgroundBlendLists();
+	if (!handle || handle > lists.size()) return 0;
+	const auto &list = lists[handle - 1];
+	return list[std::max(0, layer) % list.size()];
 }
 
 int StyleValues::backgroundClip(const ComputedStyle &style, int layer)

@@ -753,12 +753,13 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	}
 #if GEA_CSS_BACKGROUND_LAYERS
-	case Property::BackgroundClip: if (rstyle(style).bg_clip != value) { rstyleMut(style).bg_clip = value; changed = 1; } break;
-	case Property::BackgroundSizeList: if (rstyle(style).bg_size_list != value) { rstyleMut(style).bg_size_list = value; changed = 1; } break;
-	case Property::BackgroundPositionList: if (rstyle(style).bg_position_list != value) { rstyleMut(style).bg_position_list = value; changed = 1; } break;
-	case Property::BackgroundRepeatList: if (rstyle(style).bg_repeat_list != value) { rstyleMut(style).bg_repeat_list = value; changed = 1; } break;
-	case Property::BackgroundAttachmentList: if (rstyle(style).bg_attachment_list != value) { rstyleMut(style).bg_attachment_list = value; changed = 1; } break;
-	case Property::BackgroundOriginList: if (rstyle(style).bg_origin_list != value) { rstyleMut(style).bg_origin_list = value; changed = 1; } break;
+	case Property::BackgroundClip: if (rstyle(n->style).bg_clip != value) { rstyleMut(n->style).bg_clip = value; changed = 1; } break;
+	case Property::BackgroundBlendMode: if (rstyle(n->style).bg_blend != value) { rstyleMut(n->style).bg_blend = value; changed = 1; } break;
+	case Property::BackgroundSizeList: if (rstyle(n->style).bg_size_list != value) { rstyleMut(n->style).bg_size_list = value; changed = 1; } break;
+	case Property::BackgroundPositionList: if (rstyle(n->style).bg_position_list != value) { rstyleMut(n->style).bg_position_list = value; changed = 1; } break;
+	case Property::BackgroundRepeatList: if (rstyle(n->style).bg_repeat_list != value) { rstyleMut(n->style).bg_repeat_list = value; changed = 1; } break;
+	case Property::BackgroundAttachmentList: if (rstyle(n->style).bg_attachment_list != value) { rstyleMut(n->style).bg_attachment_list = value; changed = 1; } break;
+	case Property::BackgroundOriginList: if (rstyle(n->style).bg_origin_list != value) { rstyleMut(n->style).bg_origin_list = value; changed = 1; } break;
 
 #endif
 	case Property::BackgroundImage:

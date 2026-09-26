@@ -406,6 +406,7 @@ struct RareStyle {
 	uint8_t bg_gradient_has_mid = 0;
 	int16_t bg_gradient_angle = 1800;
 	uint8_t bg_overlay_gradient = 0;
+	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
 	style_color_t bg_overlay_gradient_from_color = 0;
 	style_color_t bg_overlay_gradient_mid_color = 0;
 	style_color_t bg_overlay_gradient_to_color = 0;
