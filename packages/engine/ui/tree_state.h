@@ -124,6 +124,13 @@ struct InlineStaticPosition {
 // content as one column `width` wide; painting slices it into column boxes
 // `height` tall and `gap` apart, `used` of them, first to last. `discard`
 // (continue: discard) drops what overflows the last column box.
+// One fragment of an inline box split by blocks: its border box relative to
+// the element's, and the sides it paints (bits 0-3: top, right, bottom, left).
+struct InlinePart {
+	std::int16_t x = 0, y = 0, width = 0, height = 0;
+	std::uint8_t sides = 0;
+};
+
 struct MulticolLayout {
 	std::int16_t width = 0;
 	std::int16_t gap = 0;
@@ -259,6 +266,7 @@ struct NodeRareData {
 	inline static constexpr FirstLineFragment firstLineFragment{};
 #endif
 	MulticolLayout multicol;
+	std::vector<InlinePart> inlineParts;
 
 	void clear()
 	{
@@ -282,6 +290,7 @@ struct NodeRareData {
 #endif
 	inlineStaticPosition = InlineStaticPosition{};
 	multicol = MulticolLayout{};
+	inlineParts.clear();
 	}
 };
 

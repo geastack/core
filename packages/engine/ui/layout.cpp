@@ -2427,6 +2427,24 @@ bool splitInlineWrapper(const Node *nodes, int id)
 	return containsBlock;
 }
 
+// An inline box with visible decorations split by an in-flow block (CSS 2.2
+// 9.2.1.1) keeps its box but lays its inline runs out as fragments: shrink-
+// wrapped like the unsplit span, open on the split sides. The blocks sit on
+// the parent's content edges. Only a span on its own line (Gea reads vertical
+// margins so) starts at those edges.
+bool splitDecoratedInline(const Node *nodes, int id)
+{
+	const Node &n = nodes[id];
+	if (!LayoutEngine::isCssInlineLevelBox(n) || LayoutEngine::isInlineLevelNode(n) || n.type != NodeType::View ||
+	    n.style.display != kDisplayBlock || emptyInlineBox(n) || overflowEstablishesContext(n.style)) return false;
+	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
+		const Node &child = nodes[c];
+		if (!isDisplayNone(child.style) && !isOutOfFlowPosition(child.style.position) && !child.style.float_side &&
+		    child.type == NodeType::View && (child.style.display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) return true;
+	}
+	return false;
+}
+
 int formattingEdgeNode(const Node *nodes, int id, bool last)
 {
 	if (!splitInlineWrapper(nodes, id)) return id;
@@ -2491,7 +2509,10 @@ public:
 			return;
 		}
 
-		if (NodeRareData *rare = rareDataFor(id_)) rare->multicol.valid = false;
+		if (NodeRareData *rare = rareDataFor(id_)) {
+			rare->multicol.valid = false;
+			rare->inlineParts.clear();
+		}
 		const ColumnGeometry columns = columnGeometry();
 		if (columns.count > 0) layoutColumns(columns);
 		else layoutContent();
@@ -3129,6 +3150,34 @@ private:
 		int intrinsicWidth = 0;
 		CollapsedMargin pending;
 		bool first = true, clearedThrough = false;
+		// A split decorated inline (splitDecoratedInline): the runs between its
+		// blocks become fragments, which reach past its content box on their
+		// open sides. outer[] is margin, border and padding per side.
+		const bool split = splitDecoratedInline(nodes_, id_);
+		const bool rtl = rightToLeft(node_);
+		int outer[4];
+		for (int s = 0; s < 4; ++s) outer[s] = split ? node_.style.margin[s] + boxInset(node_.style, s) : 0;
+		std::vector<InlinePart> parts;
+		int partTop = -1, partWidth = 0, trimLeft = 0, trimRight = 0;
+		auto blockFollows = [&](int from) {
+			for (int k = from; k < count; ++k)
+				if (blockBox(nodes_[children[k]]) && !nodes_[children[k]].style.float_side) return true;
+			return false;
+		};
+		auto closePart = [&]() {
+			const int left = rtl ? contentWidth + trimRight - partWidth - (trimLeft ? 0 : boxInset(node_.style, 3)) : -trimLeft - (trimLeft ? 0 : boxInset(node_.style, 3));
+			const int right = rtl ? contentWidth + trimRight + (trimRight ? 0 : boxInset(node_.style, 1)) : -trimLeft + partWidth + (trimRight ? 0 : boxInset(node_.style, 1));
+			const int top = partTop - boxInset(node_.style, 0), bottom = flowY + boxInset(node_.style, 2);
+			InlinePart part;
+			part.x = clampInt16(boxInset(node_.style, 3) + left);
+			part.y = clampInt16(boxInset(node_.style, 0) + top);
+			part.width = clampInt16(right - left);
+			part.height = clampInt16(bottom - top);
+			part.sides = static_cast<std::uint8_t>(5 | (trimRight ? 0 : 2) | (trimLeft ? 0 : 8));
+			parts.push_back(part);
+			partTop = -1;
+			partWidth = 0;
+		};
 		for (int i = 0; i < count; ++i) {
 			Node &child = nodes_[children[i]];
 			if (!blockBox(child) && !child.computedStyle().float_side) {
@@ -3139,6 +3188,15 @@ private:
 				       end < count && !blockBox(nodes_[children[end]]) && !nodes_[children[end]].computedStyle().float_side) ++end;
 				flowY += pending.value();
 				pending = {};
+				if (split && partTop < 0) {
+					const bool firstPart = parts.empty(), lastPart = !blockFollows(end);
+					if (!firstPart) flowY += outer[0];
+					partTop = flowY;
+					trimLeft = (rtl ? !lastPart : !firstPart) ? outer[3] : 0;
+					trimRight = (rtl ? !firstPart : !lastPart) ? outer[1] : 0;
+				}
+				const int runWidth = contentWidth + (split ? trimLeft + trimRight : 0);
+				const int runShift = split ? trimLeft : 0;
 				ScratchFrame inlineScratch;
 					if (inlineScratch.valid()) {
 						auto layoutRun = [&](int width) {
@@ -3150,7 +3208,7 @@ private:
 						NodeRareData *ownerRare = rareDataFor(id_);
 						const bool ownerLineWasValid = ownerRare && ownerRare->firstLineBackground.lineValid;
 #endif
-						auto extent = layoutRun(contentWidth);
+						auto extent = layoutRun(runWidth);
 					// If even the first unbreakable unit cannot fit beside a float,
 					// move this line down to the next float boundary and retry.
 					// Once the whole containing width is available, the word may overflow.
@@ -3165,20 +3223,20 @@ private:
 						minimum += item.computedStyle().margin[1] + item.computedStyle().margin[3];
 						if (item.type == NodeType::Text) minimum += boxInsets(item.computedStyle(), true);
 					}
-					int left = 0, right = contentWidth;
+					int left = 0, right = runWidth;
 					for (;;) {
-						left = 0; right = contentWidth;
+						left = 0; right = runWidth;
 						int nextBottom = INT_MAX;
 						for (const auto &f : floats) {
 							if (originY + flowY >= f.bottom || originY + flowY + extent.firstLineHeight <= f.top) continue;
-							if (f.side == 1) left = std::max(left, f.right - originX);
-							else right = std::min(right, f.left - originX);
+							if (f.side == 1) left = std::max(left, f.right - originX + runShift);
+							else right = std::min(right, f.left - originX + runShift);
 							nextBottom = std::min(nextBottom, f.bottom - originY);
 						}
-						if (minimum <= right-left || (left == 0 && right == contentWidth) || nextBottom == INT_MAX) break;
+						if (minimum <= right-left || (left == 0 && right == runWidth) || nextBottom == INT_MAX) break;
 						flowY = nextBottom;
 					}
-					if (right - left != contentWidth) extent = layoutRun(std::max(0, right - left));
+					if (right - left != runWidth) extent = layoutRun(std::max(0, right - left));
 #if GEA_CSS_FIRST_LINE
 					if (!ownerLineWasValid && ownerRare && ownerRare->firstLineBackground.lineValid)
 						ownerRare->firstLineBackground.lineY = clampInt16(ownerRare->firstLineBackground.lineY + flowY);
@@ -3190,7 +3248,7 @@ private:
 							if (NodeRareData *rare = rareDataFor(fragmentId)) {
 								auto &fragment = rare->firstLineFragment;
 								if (fragment.valid && fragment.contextNode == id_) {
-									fragment.x = clampInt16(fragment.x + left);
+									fragment.x = clampInt16(fragment.x + left - runShift);
 									fragment.y = clampInt16(fragment.y + flowY);
 								}
 							}
@@ -3198,11 +3256,17 @@ private:
 					}
 #endif
 					for (int j = i; j < end; ++j) {
-						nodes_[children[j]].layout.x += left;
+						nodes_[children[j]].layout.x += left - runShift;
 						nodes_[children[j]].layout.y += flowY;
 					}
 					flowY += extent.height;
 					intrinsicWidth = std::max(intrinsicWidth, left + extent.width);
+					if (split) {
+						// A one-line run's collapsible trailing space hangs past the fragment.
+						const int lastItem = children[isLineBreak(nodes_[children[end - 1]]) && end - 1 > i ? end - 2 : end - 1];
+						const int hang = extent.height == extent.firstLineHeight ? FlexLayoutPass::hangingSpace(nodes_[lastItem]) : 0;
+						partWidth = std::max(partWidth, left + extent.width - hang);
+					}
 					const Node &last = nodes_[children[end - 1]];
 					if (isLineBreak(last)) for (const auto &f : floats)
 						if (last.computedStyle().clear_side & f.side) flowY = std::max(flowY, f.bottom - originY);
@@ -3211,15 +3275,22 @@ private:
 				i = end - 1;
 				continue;
 			}
-			engine_.layoutNode(children[i], contentWidth, contentHeight, measureWidth);
-			const bool block = !child.computedStyle().float_side && blockBox(child);
-			const int measuredOuterW = child.layout.width + child.computedStyle().margin[3] + child.computedStyle().margin[1];
-			const bool automaticWidth = block && !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) &&
+			const bool splitBlock = split && !child.style.float_side && blockBox(child);
+			if (splitBlock && partTop >= 0) {
+				closePart();
+				flowY += outer[2];
+			}
+			// A block splitting an inline fills the parent's content box.
+			const int area = splitBlock ? contentWidth + outer[1] + outer[3] : contentWidth;
+			engine_.layoutNode(children[i], area, contentHeight, measureWidth);
+			const bool block = !child.style.float_side && blockBox(child);
+			const int measuredOuterW = child.layout.width + child.style.margin[3] + child.style.margin[1];
+			const bool automaticWidth = block && !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.style.width_expression) &&
 			    writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child));
 			// Ordinary blocks still fill their containing block beside floats;
 			// only their line boxes are shortened by float exclusions.
 			if (automaticWidth) {
-				const int width = clampLayoutSize(child, std::max(0, contentWidth - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
+				const int width = clampLayoutSize(child, std::max(0, area - child.style.margin[1] - child.style.margin[3]), true);
 				if (child.layout.width != width) {
 					child.layout.width = clampInt16(width);
 					engine_.repositionChildren(children[i]);
@@ -3250,11 +3321,11 @@ private:
 			// when that requires negative clearance above the top margin.
 			y = clearance ? clearBottom : std::max(y, clearBottom);
 			if (clearance && !context.hasClearance(children[i])) context.cleared.push_back(children[i]);
-			int left = 0, right = contentWidth, contextX = 0;
+			int left = 0, right = area, contextX = 0;
 			const bool independentBlock = block && establishesBlockContext(child);
 			if (child.computedStyle().float_side || child.computedStyle().display != kDisplayBlock || establishesBlockContext(child)) {
 				for (;;) {
-					left = 0; right = contentWidth;
+					left = 0; right = area;
 					int nextY = 32767;
 					bool hasLeft = false, hasRight = false;
 					for (const auto &global : floats) {
@@ -3269,9 +3340,9 @@ private:
 						// A BFC's border box cannot overlap float margin boxes.
 						// Automatic width uses the remaining interval. Even a
 						// zero-width float prevents a negative margin crossing it.
-						const int start = hasLeft ? std::max<int>(child.computedStyle().margin[3], left) : child.computedStyle().margin[3];
-						const int end = hasRight ? std::min<int>(contentWidth - child.computedStyle().margin[1], right) : contentWidth - child.computedStyle().margin[1];
-						contextX = start - child.computedStyle().margin[3];
+						const int start = hasLeft ? std::max<int>(child.style.margin[3], left) : child.style.margin[3];
+						const int end = hasRight ? std::min<int>(area - child.style.margin[1], right) : area - child.style.margin[1];
+						contextX = start - child.style.margin[3];
 						if (automaticWidth) {
 							const int width = clampLayoutSize(child, std::max(0, end - start), true);
 							if (child.layout.width != width) {
@@ -3290,13 +3361,15 @@ private:
 					y = nextY;
 				}
 			}
-			const int x = child.computedStyle().float_side == 2 ? right - outerW : independentBlock ? contextX : left;
-			intrinsicWidth = std::max(intrinsicWidth, child.computedStyle().float_side
+			// In right-to-left flow a block that does not fill the line hugs the right.
+			const int x = (child.style.float_side == 2 || (block && rtl && !independentBlock) ? right - outerW : independentBlock ? contextX : left) -
+			    (splitBlock ? outer[3] : 0);
+			intrinsicWidth = std::max(intrinsicWidth, child.style.float_side
 			    ? left + outerW + contentWidth - right : measuredOuterW);
 			child.layout.x = boxInset(node_.computedStyle(), 3) + x + child.computedStyle().margin[3];
 			child.layout.y = boxInset(node_.computedStyle(), 0) + y + (block ? 0 : child.computedStyle().margin[0]);
 			if (block && !establishesBlockContext(child) && child.first_child >= 0) {
-				LayoutNodePass nested(engine_, children[i], contentWidth, contentHeight);
+				LayoutNodePass nested(engine_, children[i], area, contentHeight);
 				if (!nested.resolveInlineFormattingRow()) {
 					ScratchFrame nestedScratch;
 					if (nestedScratch.valid()) {
@@ -3353,6 +3426,8 @@ private:
 				clearedThrough = false;
 			} else flowY = y + outerH;
 		}
+		if (partTop >= 0) closePart();
+		if (split) ensureRareData(id_).inlineParts = std::move(parts);
 		if (clearedThrough || (!collapsesWithChildren(id_, true) && !(first && collapsesWithChildren(id_, false))))
 			flowY += pending.value();
 		if (measureWidth)
