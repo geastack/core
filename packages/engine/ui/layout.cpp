@@ -4058,9 +4058,11 @@ private:
 		CollapsedMargin pending;
 		visitFormattingChildren(nodes_, id_, [&](int id) {
 			Node &child = nodes_[id];
-			if (isDisplayNone(child.computedStyle())) return;
-			if (isOutOfFlowPosition(child.computedStyle().position)) {
-				if (child.parent != id_ || !blockBox(child)) return;
+			if (isDisplayNone(child.style)) return;
+			if (isOutOfFlowPosition(child.style.position)) {
+				// An inline-level box that no line box placed (inlineStaticPosition)
+				// starts a hypothetical line here, where a block-level one would.
+				if (child.parent != id_) return;
 				const int edge = cursor + (first && collapsesWithChildren(id_, false) ? 0 : pending.value());
 				auto &persistent = layoutState(id);
 				persistent.static_block_start = clampInt16(reversed ? node_.layout.width - edge : edge);
@@ -4672,16 +4674,36 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 	if (parent.computedStyle().display == kDisplayBlock && !parent.computedStyle().flex_direction_explicit &&
 	    persistent.static_block_axis == (horizontal ? 2 : 1)) {
 		const bool reversed = horizontal && gridAxisReversed(parent, true);
-		return persistent.static_block_start + (reversed ? -childNode.layout.width - childNode.computedStyle().margin[1]
-		    : childNode.computedStyle().margin[horizontal ? 3 : 0]);
+		int offset = childNode.layout.static_block_start + (reversed ? -childNode.layout.width - childNode.style.margin[1]
+		    : childNode.style.margin[horizontal ? 3 : 0]);
+		// A block-level static-position rectangle has no block size, so an
+		// explicit align-self centers or ends the margin box on it (CSS Align 3).
+		const int align = childNode.style.align_self;
+		if (!horizontal && align >= 0 && writingMode(parent) == 0) {
+			const int free = -(childNode.layout.height + childNode.style.margin[0] + childNode.style.margin[2]);
+			const int used = usedGridAlignment(parent, childNode, align, free, false, true);
+			if (used == 1) offset += free / 2;
+			else if (used == 2) offset += free;
+		}
+		return offset;
 	}
 	// In block layout the hypothetical box starts at the parent's inline
 	// content edge. RTL anchors its inline-end margin edge, even when the absolute
 	// box is wider than its static-position parent. Its actual containing
 	// block can be an entirely different ancestor.
-	if (horizontal == (writingMode(parent) == 0) && parent.computedStyle().display == kDisplayBlock &&
-	    (!isInlineLevelNode(parent) || isOutOfFlowPosition(parent.computedStyle().position)) &&
-	    !parent.computedStyle().flex_direction_explicit) {
+	if (horizontal == (writingMode(parent) == 0) && parent.style.display == kDisplayBlock &&
+	    (!isInlineLevelNode(parent) || isOutOfFlowPosition(parent.style.position)) &&
+	    !parent.style.flex_direction_explicit) {
+		// An explicit justify-self aligns the margin box in the parent's content
+		// box, the static-position rectangle's inline extent. auto stays normal
+		// for an absolutely positioned box (CSS Align 3, 6.1).
+		const int justify = rstyle(childNode.style).justify_self;
+		if (horizontal && justify >= 0 && writingMode(parent) == 0) {
+			const int free = parent.layout.width - boxInsets(parent.style, true) - childNode.layout.width -
+			    childNode.style.margin[1] - childNode.style.margin[3];
+			const int used = usedGridAlignment(parent, childNode, justify, free, true, true);
+			return boxInset(parent.style, 3) + childNode.style.margin[3] + (used == 1 ? free / 2 : used == 2 ? free : 0);
+		}
 		return rightToLeft(parent)
 		    ? (horizontal ? parent.layout.width : parent.layout.height) - boxInset(parent.computedStyle(), horizontal ? 1 : 2) -
 		        (horizontal ? childNode.layout.width : childNode.layout.height) - childNode.computedStyle().margin[horizontal ? 1 : 2]
