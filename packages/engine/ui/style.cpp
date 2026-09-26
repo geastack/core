@@ -587,6 +587,8 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
 	    a.text_align_last != b.text_align_last ||
+	    a.text_emphasis != b.text_emphasis ||
+	    a.text_emphasis_color != b.text_emphasis_color ||
 	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
@@ -709,6 +711,8 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
 	    a.text_align_last != b.text_align_last ||
+	    a.text_emphasis != b.text_emphasis ||
+	    a.text_emphasis_color != b.text_emphasis_color ||
 	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
@@ -1302,6 +1306,10 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "line-height") == 0) return CssDeclarationId::LineHeight;
 	if (std::strcmp(property, "text-align") == 0) return CssDeclarationId::TextAlign;
 	if (std::strcmp(property, "text-align-last") == 0) return CssDeclarationId::TextAlignLast;
+	if (std::strcmp(property, "text-emphasis") == 0) return CssDeclarationId::TextEmphasis;
+	if (std::strcmp(property, "text-emphasis-style") == 0) return CssDeclarationId::TextEmphasisStyleDeclaration;
+	if (std::strcmp(property, "text-emphasis-color") == 0) return CssDeclarationId::TextEmphasisColorDeclaration;
+	if (std::strcmp(property, "text-emphasis-position") == 0) return CssDeclarationId::TextEmphasisPositionDeclaration;
 	if (std::strcmp(property, "vertical-align") == 0) return CssDeclarationId::VerticalAlign;
 	if (std::strcmp(property, "text-decoration") == 0 || std::strcmp(property, "text-decoration-line") == 0) return CssDeclarationId::TextDecoration;
 	if (std::strcmp(property, "text-transform") == 0) return CssDeclarationId::TextTransform;
@@ -6909,6 +6917,59 @@ int borderStyleWrites(CssDeclarationId declaration, const std::string &value, St
 	return 4;
 }
 
+// text-emphasis (CSS Text Decoration 3.3) and its longhands as writes to the
+// ComputedStyle::text_emphasis bits and colour. A string mark is unsupported.
+int textEmphasisWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+{
+	const bool shorthand = declaration == CssDeclarationId::TextEmphasis;
+	if (!shorthand && declaration != CssDeclarationId::TextEmphasisStyleDeclaration &&
+	    declaration != CssDeclarationId::TextEmphasisColorDeclaration && declaration != CssDeclarationId::TextEmphasisPositionDeclaration) return -1;
+	const auto words = splitFunctionAwareWords(trimCssValue(value));
+	if (words.empty()) return 0;
+	if (declaration == CssDeclarationId::TextEmphasisPositionDeclaration) {
+		int under = -1;
+		for (const auto &word : words) {
+			const auto lower = toLowerAscii(word);
+			if (lower == "over") under = 0;
+			else if (lower == "under") under = 0x10;
+			else if (lower != "right" && lower != "left") return 0;
+		}
+		if (under < 0) return 0;
+		out[0] = {Property::TextEmphasisPosition, under};
+		return 1;
+	}
+	int mark = -1, open = -1, colorMode = -1, color = 0;
+	for (const auto &word : words) {
+		const auto lower = toLowerAscii(word);
+		if (declaration != CssDeclarationId::TextEmphasisColorDeclaration) {
+			if (lower == "none") { mark = 0; continue; }
+			if (lower == "filled" || lower == "open") { open = lower == "open" ? 8 : 0; continue; }
+			if (lower == "dot" || lower == "circle" || lower == "double-circle" || lower == "triangle" || lower == "sesame") {
+				mark = lower == "dot" ? 1 : lower == "circle" ? 2 : lower == "double-circle" ? 3 : lower == "triangle" ? 4 : 5;
+				continue;
+			}
+		}
+		if (declaration == CssDeclarationId::TextEmphasisStyleDeclaration || colorMode >= 0) return 0;
+		if (lower == "currentcolor") { colorMode = 0; continue; }
+		const ParsedCssColor parsed = parseCssColor(word);
+		if (!parsed.valid) return 0;
+		colorMode = parsed.a == 0 ? 0x40 : 0x20;
+		color = static_cast<int>(cssColorStyleValue(parsed));
+	}
+	int count = 0;
+	if (declaration != CssDeclarationId::TextEmphasisColorDeclaration) {
+		if (mark < 0 && open < 0) return 0;
+		// filled / open alone mean a dot in horizontal text; a shape alone is filled.
+		out[count++] = {Property::TextEmphasisStyle, mark == 0 ? 0 : (mark < 0 ? 1 : mark) | (open < 0 ? 0 : open)};
+	}
+	if (declaration != CssDeclarationId::TextEmphasisStyleDeclaration) {
+		if (colorMode < 0) colorMode = 0;
+		out[count++] = {Property::TextEmphasisColorMode, colorMode};
+		if (colorMode == 0x20) out[count++] = {Property::TextEmphasisColor, color};
+	}
+	return count;
+}
+
 // Only whether columns are set matters: line-clamp skips multicol containers.
 // columns / column-count / column-width / column-fill as ColumnCount(Set) and
 // ColumnWidth(Set) writes plus the column-fill flag. A column width other than
@@ -7452,6 +7513,7 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = multicolWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = borderStyleWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = textEmphasisWrites(declaration, value, clampWrites);
 	if (const int count = clampCount; count >= 0) {
 		if (count == 0) return kNoCompiledCssValue;
 		compiled.kind = CssCompiledKind::DirectPropertyGroup;
@@ -8328,6 +8390,10 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		style.line_height = resolveLineHeightMultiplier(static_cast<int>(&target - treeState().nodes), value); return true;
 	case Property::TextAlign: style.text_align = value; return true;
 	case Property::TextAlignLast: style.text_align_last = value; return true;
+	case Property::TextEmphasisStyle: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x0f) | (value & 0x0f)); return true;
+	case Property::TextEmphasisPosition: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x10) | (value & 0x10)); return true;
+	case Property::TextEmphasisColorMode: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x60) | (value & 0x60)); return true;
+	case Property::TextEmphasisColor: style.text_emphasis_color = StyleValues::pixelFromStyleValue(value); return true;
 	case Property::VerticalAlign: style.vertical_align = value; return true;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration: style.text_decoration = value; return true;
@@ -9313,6 +9379,8 @@ bool propertyAffectsDescendantStyle(Property property)
 	       property == Property::FontWeight ||
 	       property == Property::LineHeight || property == Property::LineHeightExpression || property == Property::LineHeightMultiplier ||
 	       property == Property::TextAlign || property == Property::TextAlignLast ||
+	       property == Property::TextEmphasisStyle || property == Property::TextEmphasisPosition ||
+	       property == Property::TextEmphasisColorMode || property == Property::TextEmphasisColor ||
 	       property == Property::TextTransform ||
 	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::BorderWidth ||
 	       (property >= Property::BorderTopWidth && property <= Property::BorderLeftWidth);
@@ -9339,6 +9407,8 @@ void applyInheritedStyleDefaults(int node)
 		style.line_height_multiplier = parentStyle.line_height_multiplier;
 	style.text_align = parentStyle.text_align;
 	style.text_align_last = parentStyle.text_align_last;
+	style.text_emphasis = parentStyle.text_emphasis;
+	style.text_emphasis_color = parentStyle.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	style.text_transform = parentStyle.text_transform;
 #endif
@@ -9654,11 +9724,16 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::BorderTopStyle:
 	case CssDeclarationId::BorderRightStyle:
 	case CssDeclarationId::BorderBottomStyle:
-	case CssDeclarationId::BorderLeftStyle: {
+	case CssDeclarationId::BorderLeftStyle:
+	case CssDeclarationId::TextEmphasis:
+	case CssDeclarationId::TextEmphasisStyleDeclaration:
+	case CssDeclarationId::TextEmphasisColorDeclaration:
+	case CssDeclarationId::TextEmphasisPositionDeclaration: {
 		StaticStylePropertyValue writes[4];
 		int count = lineClampWrites(declaration, value, writes);
 		if (count < 0) count = multicolWrites(declaration, value, writes);
 		if (count < 0) count = borderStyleWrites(declaration, value, writes);
+		if (count < 0) count = textEmphasisWrites(declaration, value, writes);
 		for (int i = 0; i < count; ++i) setStyleValue(node, writes[i].property, writes[i].value, source);
 		return true;
 	}
@@ -11730,6 +11805,10 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "line-height") return removeInlineStyleProperties(id, {Property::LineHeight, Property::LineHeightExpression, Property::LineHeightMultiplier});
 	if (property == "text-align") return removeInlineStyleProperties(id, {Property::TextAlign});
 	if (property == "text-align-last") return removeInlineStyleProperties(id, {Property::TextAlignLast});
+	if (property == "text-emphasis") return removeInlineStyleProperties(id, {Property::TextEmphasisStyle, Property::TextEmphasisColorMode, Property::TextEmphasisColor});
+	if (property == "text-emphasis-style") return removeInlineStyleProperties(id, {Property::TextEmphasisStyle});
+	if (property == "text-emphasis-color") return removeInlineStyleProperties(id, {Property::TextEmphasisColorMode, Property::TextEmphasisColor});
+	if (property == "text-emphasis-position") return removeInlineStyleProperties(id, {Property::TextEmphasisPosition});
 	if (property == "vertical-align") return removeInlineStyleProperties(id, {Property::VerticalAlign});
 	if (property == "text-decoration" || property == "text-decoration-line")
 		return removeInlineStyleProperties(id, {Property::TextDecoration});
@@ -16014,6 +16093,8 @@ struct ParentStyleSnapshot {
 	std::int32_t line_height_multiplier;
 	std::uint8_t text_align;
 	std::uint8_t text_align_last;
+	std::uint8_t text_emphasis;
+	style_color_t text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	std::uint8_t text_transform;
 #else
@@ -16046,6 +16127,8 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 	out.line_height_multiplier = s.line_height_multiplier;
 	out.text_align = s.text_align;
 	out.text_align_last = s.text_align_last;
+	out.text_emphasis = s.text_emphasis;
+	out.text_emphasis_color = s.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	out.text_transform = s.text_transform;
 #endif
@@ -16067,6 +16150,7 @@ bool parentStylesDiffer(const ParentStyleSnapshot &a, const ParentStyleSnapshot 
 	return a.text_color != b.text_color || a.text_alpha != b.text_alpha || a.font_id != b.font_id || a.font_size != b.font_size ||
 	       a.font_weight != b.font_weight || a.line_height != b.line_height || a.line_height_multiplier != b.line_height_multiplier ||
 	       a.text_align != b.text_align || a.text_align_last != b.text_align_last || a.text_transform != b.text_transform ||
+	       a.text_emphasis != b.text_emphasis || a.text_emphasis_color != b.text_emphasis_color ||
 	       a.white_space != b.white_space || a.visibility != b.visibility || a.border_widths != b.border_widths;
 }
 

@@ -534,6 +534,9 @@ struct ComputedStyle {
 #if !GEA_CSS_U8_GAP
 	int16_t gap;
 #endif
+	// text-emphasis-color when text_emphasis says it is explicit. Inherited;
+	// sits in padding on 16-bit colour builds.
+	style_color_t text_emphasis_color;
 	int8_t box_sizing; // 0: content-box (CSS initial), 1: border-box
 #if GEA_CSS_FLOATS
 	int8_t float_side;
@@ -708,6 +711,10 @@ struct ComputedStyle {
 	int8_t position;
 #endif
 	style_color_t bg_color;
+	// text-emphasis (inherited): bits 0-2 mark 0 none, 1 dot, 2 circle,
+	// 3 double-circle, 4 triangle, 5 sesame; bit 3 open; bit 4 under; bits 5-6
+	// colour 0 currentColor, 1 text_emphasis_color, 2 transparent. In padding.
+	uint8_t text_emphasis;
 	// linear/overlay/radial gradients + background-grid moved to RareStyle (rare).
 	style_color_t active_bg_color;
 	// CSS `vertical-align` of an inline-level box: 0 baseline, 1 top, 2 bottom,

@@ -222,6 +222,10 @@ void rootScrollImageHoldTick();
 				// That line may use ellipsisWidth px from x, up to its line box end.
 				uint16_t blockEllipsis;
 				int16_t ellipsisWidth;
+				// text-emphasis marks (ComputedStyle::text_emphasis bits, 0 = none),
+				// painted in emphasisColor unless the bits say transparent.
+				uint8_t emphasis;
+				gea::framework::graphics::pixel::native_t emphasisColor;
 			} text;
 			struct
 			{
@@ -588,7 +592,8 @@ void rootScrollImageHoldTick();
 		                             int width, uint8_t *outCoverage);
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
-														int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0);
+														int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0,
+														int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);

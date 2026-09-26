@@ -6713,7 +6713,7 @@ int gLastScrollUiFrame = -1000;
 																		c.text.align, c.text.containerWidth, c.text.fontId, c.text.textTransform, c.text.lineHeight,
 																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent,
 																			c.text.alignLast, c.text.lineLimit,
-																			c.text.blockEllipsis, c.text.ellipsisWidth);
+																			c.text.blockEllipsis, c.text.ellipsisWidth, c.text.emphasis, c.text.emphasisColor);
 					break;
 				case DisplayCommandType::BlitImage:
 #if GEA_PIXEL_STORAGE_PACKED
