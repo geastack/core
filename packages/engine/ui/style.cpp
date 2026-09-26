@@ -505,6 +505,11 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    ar.containment != br.containment ||
 	    ar.bg_clip != br.bg_clip ||
 	    ar.bg_blend != br.bg_blend ||
+	    ar.border_image_source != br.border_image_source ||
+	    ar.border_image_slice != br.border_image_slice ||
+	    ar.border_image_width != br.border_image_width ||
+	    ar.border_image_outset != br.border_image_outset ||
+	    ar.border_image_repeat != br.border_image_repeat ||
 	    ar.bg_size_list != br.bg_size_list ||
 	    ar.bg_position_list != br.bg_position_list ||
 	    ar.bg_repeat_list != br.bg_repeat_list ||
@@ -1291,6 +1296,12 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "background-color") == 0) return CssDeclarationId::BackgroundColor;
 	if (std::strcmp(property, "background-clip") == 0) return CssDeclarationId::BackgroundClip;
 	if (std::strcmp(property, "background-blend-mode") == 0) return CssDeclarationId::BackgroundBlendMode;
+	if (std::strcmp(property, "border-image") == 0) return CssDeclarationId::BorderImage;
+	if (std::strcmp(property, "border-image-source") == 0) return CssDeclarationId::BorderImageSourceDeclaration;
+	if (std::strcmp(property, "border-image-slice") == 0) return CssDeclarationId::BorderImageSliceDeclaration;
+	if (std::strcmp(property, "border-image-width") == 0) return CssDeclarationId::BorderImageWidthDeclaration;
+	if (std::strcmp(property, "border-image-outset") == 0) return CssDeclarationId::BorderImageOutsetDeclaration;
+	if (std::strcmp(property, "border-image-repeat") == 0) return CssDeclarationId::BorderImageRepeatDeclaration;
 	if (std::strcmp(property, "background-image") == 0) return CssDeclarationId::BackgroundImage;
 	if (std::strcmp(property, "background") == 0) return CssDeclarationId::Background;
 	if (std::strcmp(property, "background-size") == 0) return CssDeclarationId::BackgroundSize;
@@ -1546,9 +1557,10 @@ struct CssCompiledValue {
 	std::uint16_t flags = 0;
 	std::uint8_t aux = 0;
 	CssLengthSpec lengths[4];
-	// Four direct-property pairs are the largest scalar payload. Transform
-	// rotation and scale occupy slots 0..5; translations use lengths[].
-	std::int32_t values[8]{};
+	// Five direct-property pairs (the border-image shorthand) are the largest
+	// scalar payload. Transform rotation and scale occupy slots 0..5;
+	// translations use lengths[].
+	std::int32_t values[10]{};
 };
 
 CssLengthSpec cssLengthSpecForStatic(StaticStyleLengthSpec spec);
@@ -1976,6 +1988,10 @@ std::uint16_t storeDirectPropertyCompiledValue(Property property, int value)
 	return static_cast<std::uint16_t>(list.size() - 1);
 }
 
+// CssCompiledValue::values holds up to five property/value pairs; aux holds the count.
+constexpr int kDirectPropertyGroupCapacity = 5;
+static_assert(2 * kDirectPropertyGroupCapacity <= static_cast<int>(sizeof(CssCompiledValue::values) / sizeof(CssCompiledValue::values[0])));
+
 std::uint16_t storeDirectPropertyGroupCompiledValue(std::initializer_list<StaticStylePropertyValue> properties)
 {
 	auto &list = compiledCssValues();
@@ -1984,7 +2000,7 @@ std::uint16_t storeDirectPropertyGroupCompiledValue(std::initializer_list<Static
 	compiled.kind = CssCompiledKind::DirectPropertyGroup;
 	int count = 0;
 	for (const StaticStylePropertyValue &entry : properties) {
-		if (count >= 4) break;
+		if (count >= kDirectPropertyGroupCapacity) break;
 		compiled.values[count * 2] = static_cast<int>(entry.property);
 		compiled.values[1 + count * 2] = entry.value;
 		count++;
@@ -2399,11 +2415,25 @@ std::vector<std::vector<std::uint8_t>> &backgroundBlendLists()
 	return lists;
 }
 
+std::vector<BorderImageSource> &borderImageSources()
+{
+	static std::vector<BorderImageSource> list;
+	return list;
+}
+
+std::vector<BorderImageSides> &borderImageSideLists()
+{
+	static std::vector<BorderImageSides> list;
+	return list;
+}
+
 void clearCompiledCssBackgrounds()
 {
 	compiledCssBackgrounds().clear();
 	backgroundClipLists().clear();
 	backgroundBlendLists().clear();
+	borderImageSources().clear();
+	borderImageSideLists().clear();
 	backgroundPlacementLists().clear();
 }
 
@@ -6983,6 +7013,218 @@ int borderStyleWrites(CssDeclarationId declaration, const std::string &value, St
 
 // text-emphasis (CSS Text Decoration 3.3) and its longhands as writes to the
 // ComputedStyle::text_emphasis bits and colour. A string mark is unsupported.
+BorderImageSides initialBorderImageSides(int which)
+{
+	BorderImageSides sides;
+	for (int i = 0; i < 4; ++i) {
+		sides.kind[i] = which == 0 ? 2 : 0;
+		sides.value[i] = which == 0 ? 100.0f : which == 1 ? 1.0f : 0.0f;
+	}
+	return sides;
+}
+
+bool sameBorderImageSides(const BorderImageSides &a, const BorderImageSides &b)
+{
+	return a.fill == b.fill && std::equal(a.kind, a.kind + 4, b.kind) && std::equal(a.value, a.value + 4, b.value);
+}
+
+// One-byte handle for a slice (0), width (1) or outset (2) list; 0 is initial.
+int internBorderImageSides(int which, const BorderImageSides &sides)
+{
+	if (sameBorderImageSides(sides, initialBorderImageSides(which))) return 0;
+	auto &list = borderImageSideLists();
+	for (std::size_t i = 0; i < list.size(); ++i) if (sameBorderImageSides(list[i], sides)) return static_cast<int>(i + 1);
+	if (list.size() >= 255) return -1;
+	list.push_back(sides);
+	return static_cast<int>(list.size());
+}
+
+// Tokens of a border-image value: function-aware words, with '/' on its own.
+std::vector<std::string> borderImageTokens(const std::string &value)
+{
+	std::vector<std::string> tokens;
+	std::string current;
+	int depth = 0;
+	for (const char c : value) {
+		if (c == '(') ++depth;
+		else if (c == ')' && depth > 0) --depth;
+		if (depth == 0 && (c == '/' || std::isspace(static_cast<unsigned char>(c)))) {
+			if (!current.empty()) tokens.push_back(current);
+			current.clear();
+			if (c == '/') tokens.emplace_back("/");
+			continue;
+		}
+		current += c;
+	}
+	if (!current.empty()) tokens.push_back(current);
+	return tokens;
+}
+
+// A border-image-source handle: 0 for none and for images Gea cannot paint
+// (only linear-gradient() paints), -1 when invalid.
+int borderImageSourceHandle(const std::string &token)
+{
+	const auto lower = toLowerAscii(trimCssValue(token));
+	if (lower == "none") return 0;
+	if (lower.rfind("linear-gradient(", 0) != 0) return lower.find('(') != std::string::npos ? 0 : -1;
+	const ParsedLinearGradient parsed = parseLinearGradient(token);
+	if (!parsed.valid) return -1;
+	const CssCompiledLinearGradient g = compileLinearGradientLayer(parsed);
+	const BorderImageSource source{g.fromNativeColor, g.midNativeColor, g.toNativeColor, g.fromAlpha, g.midAlpha, g.toAlpha,
+	                               g.hasMid, g.midStopPermille, g.toStopPermille, g.angleTenths};
+	auto same = [&](const BorderImageSource &a) {
+		return a.from == source.from && a.mid == source.mid && a.to == source.to && a.fromAlpha == source.fromAlpha &&
+		       a.midAlpha == source.midAlpha && a.toAlpha == source.toAlpha && a.hasMid == source.hasMid &&
+		       a.midStop == source.midStop && a.toStop == source.toStop && a.angle == source.angle;
+	};
+	auto &list = borderImageSources();
+	for (std::size_t i = 0; i < list.size(); ++i)
+		if (same(list[i])) return static_cast<int>(i + 1);
+	if (list.size() >= 255) return -1;
+	list.push_back(source);
+	return static_cast<int>(list.size());
+}
+
+// Kind of one slice (0), width (1) or outset (2) value, -1 when invalid.
+// Font-relative lengths are not resolved here and are rejected.
+int borderImageSideValue(const std::string &token, int which, float *value)
+{
+	const auto word = toLowerAscii(token);
+	if (which == 1 && word == "auto") { *value = 0.0f; return 3; }
+	CssLengthSpec length;
+	if (!parseCompiledLengthSpec(word, length) || length.value < 0.0f) return -1;
+	*value = length.value;
+	if (length.unit == CssLengthUnit::Raw) return 0;
+	if (length.unit == CssLengthUnit::Percent && which != 2) return 2;
+	if (length.unit != CssLengthUnit::Px || which == 0) return -1;
+	*value = static_cast<float>(cssPixelLength(length.value));
+	return 1;
+}
+
+bool borderImageSideToken(const std::string &token, int which)
+{
+	float value = 0.0f;
+	return (which == 0 && toLowerAscii(token) == "fill") || borderImageSideValue(token, which, &value) >= 0;
+}
+
+// One to four values in [begin, end) as box sides, plus fill for a slice.
+bool parseBorderImageSides(const std::vector<std::string> &tokens, std::size_t begin, std::size_t end, int which, BorderImageSides &out)
+{
+	int count = 0;
+	for (std::size_t i = begin; i < end; ++i) {
+		if (which == 0 && toLowerAscii(tokens[i]) == "fill") {
+			if (out.fill) return false;
+			out.fill = 1;
+			continue;
+		}
+		if (count == 4) return false;
+		const int kind = borderImageSideValue(tokens[i], which, &out.value[count]);
+		if (kind < 0) return false;
+		out.kind[count++] = static_cast<std::uint8_t>(kind);
+	}
+	if (!count) return false;
+	for (int i = count; i < 4; ++i) {
+		const int from = count == 1 ? 0 : i - 2;
+		out.kind[i] = out.kind[from];
+		out.value[i] = out.value[from];
+	}
+	return true;
+}
+
+int borderImageRepeatKeyword(const std::string &token)
+{
+	const auto word = toLowerAscii(token);
+	return word == "stretch" ? 0 : word == "repeat" ? 1 : word == "round" ? 2 : word == "space" ? 3 : -1;
+}
+
+int borderImageRepeatValue(const std::vector<std::string> &tokens, std::size_t begin, std::size_t end)
+{
+	if (end <= begin || end - begin > 2) return -1;
+	const int horizontal = borderImageRepeatKeyword(tokens[begin]);
+	const int vertical = end - begin == 2 ? borderImageRepeatKeyword(tokens[begin + 1]) : horizontal;
+	return horizontal < 0 || vertical < 0 ? -1 : horizontal | vertical << 2;
+}
+
+// border-image (CSS Backgrounds 3, section 6) and its longhands as writes to
+// the RareStyle handles. The shorthand resets all five longhands.
+int borderImageWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[5])
+{
+	using D = CssDeclarationId;
+	static constexpr Property kSideProperties[] = {Property::BorderImageSlice, Property::BorderImageWidth, Property::BorderImageOutset};
+	const int side = declaration == D::BorderImageSliceDeclaration ? 0 : declaration == D::BorderImageWidthDeclaration ? 1 :
+	    declaration == D::BorderImageOutsetDeclaration ? 2 : -1;
+	if (side < 0 && declaration != D::BorderImage && declaration != D::BorderImageSourceDeclaration &&
+	    declaration != D::BorderImageRepeatDeclaration) return -1;
+	const auto tokens = borderImageTokens(trimCssValue(value));
+	if (tokens.empty()) return 0;
+	const auto keyword = toLowerAscii(trimCssValue(value));
+	const bool initial = keyword == "initial" || keyword == "unset";
+	if (declaration == D::BorderImageSourceDeclaration) {
+		const int source = initial ? 0 : tokens.size() == 1 ? borderImageSourceHandle(tokens[0]) : -1;
+		if (source < 0) return 0;
+		out[0] = {Property::BorderImageSource, source};
+		return 1;
+	}
+	if (declaration == D::BorderImageRepeatDeclaration) {
+		const int repeat = initial ? 0 : borderImageRepeatValue(tokens, 0, tokens.size());
+		if (repeat < 0) return 0;
+		out[0] = {Property::BorderImageRepeat, repeat};
+		return 1;
+	}
+	if (side >= 0) {
+		BorderImageSides sides;
+		if (!initial && !parseBorderImageSides(tokens, 0, tokens.size(), side, sides)) return 0;
+		const int handle = internBorderImageSides(side, initial ? initialBorderImageSides(side) : sides);
+		if (handle < 0) return 0;
+		out[0] = {kSideProperties[side], handle};
+		return 1;
+	}
+	// <source> || <slice> [ / <width> | / <width>? / <outset> ]? || <repeat>
+	int source = -1, repeat = -1;
+	bool present[3] = {};
+	BorderImageSides sides[3];
+	for (std::size_t i = 0; !initial && i < tokens.size();) {
+		const auto word = toLowerAscii(tokens[i]);
+		if (source < 0 && (word == "none" || word.find('(') != std::string::npos)) {
+			source = borderImageSourceHandle(tokens[i++]);
+			if (source < 0) return 0;
+			continue;
+		}
+		if (repeat < 0 && borderImageRepeatKeyword(word) >= 0) {
+			std::size_t end = i + 1;
+			if (end < tokens.size() && borderImageRepeatKeyword(tokens[end]) >= 0) ++end;
+			repeat = borderImageRepeatValue(tokens, i, end);
+			i = end;
+			continue;
+		}
+		if (present[0]) return 0;
+		std::size_t end = i;
+		while (end < tokens.size() && borderImageSideToken(tokens[end], 0)) ++end;
+		if (!parseBorderImageSides(tokens, i, end, 0, sides[0])) return 0;
+		present[0] = true;
+		i = end;
+		for (int part = 1; part <= 2 && i < tokens.size() && tokens[i] == "/"; ++part) {
+			end = ++i;
+			while (end < tokens.size() && borderImageSideToken(tokens[end], part)) ++end;
+			if (end > i) {
+				if (!parseBorderImageSides(tokens, i, end, part, sides[part])) return 0;
+				present[part] = true;
+			} else if (part == 2 || i >= tokens.size() || tokens[i] != "/") {
+				return 0;
+			}
+			i = end;
+		}
+	}
+	out[0] = {Property::BorderImageSource, std::max(0, source)};
+	for (int part = 0; part < 3; ++part) {
+		const int handle = internBorderImageSides(part, present[part] ? sides[part] : initialBorderImageSides(part));
+		if (handle < 0) return 0;
+		out[1 + part] = {kSideProperties[part], handle};
+	}
+	out[4] = {Property::BorderImageRepeat, std::max(0, repeat)};
+	return 5;
+}
+
 int textEmphasisWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
 {
 	const bool shorthand = declaration == CssDeclarationId::TextEmphasis;
@@ -7581,18 +7823,19 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		return storeCompiledCssValue(compiled);
 	}
 
-	StaticStylePropertyValue clampWrites[4];
+	StaticStylePropertyValue clampWrites[kDirectPropertyGroupCapacity];
 	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = multicolWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = borderStyleWrites(declaration, value, clampWrites);
 	if (clampCount < 0 && !hasVar) clampCount = textEmphasisWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = borderImageWrites(declaration, value, clampWrites);
 	if (const int count = clampCount; count >= 0) {
 		if (count == 0) return kNoCompiledCssValue;
 		compiled.kind = CssCompiledKind::DirectPropertyGroup;
-		compiled.values[0] = count;
+		compiled.aux = static_cast<std::uint8_t>(count);
 		for (int i = 0; i < count; ++i) {
-			compiled.values[1 + i * 2] = static_cast<int>(clampWrites[i].property);
-			compiled.values[2 + i * 2] = clampWrites[i].value;
+			compiled.values[i * 2] = static_cast<int>(clampWrites[i].property);
+			compiled.values[1 + i * 2] = clampWrites[i].value;
 		}
 		return storeCompiledCssValue(compiled);
 	}
@@ -8004,6 +8247,11 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_BACKGROUND_LAYERS
 	case Property::BackgroundClip: rstyleMut(style).bg_clip = value; return true;
 	case Property::BackgroundBlendMode: rstyleMut(style).bg_blend = value; return true;
+	case Property::BorderImageSource: rstyleMut(style).border_image_source = value; return true;
+	case Property::BorderImageSlice: rstyleMut(style).border_image_slice = value; return true;
+	case Property::BorderImageWidth: rstyleMut(style).border_image_width = value; return true;
+	case Property::BorderImageOutset: rstyleMut(style).border_image_outset = value; return true;
+	case Property::BorderImageRepeat: rstyleMut(style).border_image_repeat = value; return true;
 	case Property::BackgroundSizeList: rstyleMut(style).bg_size_list = value; return true;
 	case Property::BackgroundPositionList: rstyleMut(style).bg_position_list = value; return true;
 	case Property::BackgroundRepeatList: rstyleMut(style).bg_repeat_list = value; return true;
@@ -9933,12 +10181,19 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::TextEmphasis:
 	case CssDeclarationId::TextEmphasisStyleDeclaration:
 	case CssDeclarationId::TextEmphasisColorDeclaration:
-	case CssDeclarationId::TextEmphasisPositionDeclaration: {
-		StaticStylePropertyValue writes[4];
+	case CssDeclarationId::TextEmphasisPositionDeclaration:
+	case CssDeclarationId::BorderImage:
+	case CssDeclarationId::BorderImageSourceDeclaration:
+	case CssDeclarationId::BorderImageSliceDeclaration:
+	case CssDeclarationId::BorderImageWidthDeclaration:
+	case CssDeclarationId::BorderImageOutsetDeclaration:
+	case CssDeclarationId::BorderImageRepeatDeclaration: {
+		StaticStylePropertyValue writes[kDirectPropertyGroupCapacity];
 		int count = lineClampWrites(declaration, value, writes);
 		if (count < 0) count = multicolWrites(declaration, value, writes);
 		if (count < 0) count = borderStyleWrites(declaration, value, writes);
 		if (count < 0) count = textEmphasisWrites(declaration, value, writes);
+		if (count < 0) count = borderImageWrites(declaration, value, writes);
 		for (int i = 0; i < count; ++i) setStyleValue(node, writes[i].property, writes[i].value, source);
 		return true;
 	}
@@ -11401,7 +11656,7 @@ bool applyCompiledCssValueWithSource(NodeHandle node, const CssCompiledValue &co
 		case CssCompiledKind::DirectPropertyGroup: {
 			int count = compiled.aux;
 			if (count < 0) count = 0;
-			if (count > 4) count = 4;
+			if (count > kDirectPropertyGroupCapacity) count = kDirectPropertyGroupCapacity;
 			for (int i = 0; i < count; ++i) {
 				const int propertyIndex = compiled.values[i * 2];
 				if (propertyIndex < 0 || propertyIndex >= static_cast<int>(Property::Count)) return false;
@@ -11991,6 +12246,14 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 		return removeInlineStyleProperties(id, {Property::BackgroundColor, Property::BackgroundAlpha, Property::BackgroundImage, Property::BackgroundClip, Property::HasBackground, Property::BackgroundSizeList, Property::BackgroundPositionList, Property::BackgroundRepeatList, Property::BackgroundAttachmentList, Property::BackgroundOriginList});
 	if (property == "background-clip") return removeInlineStyleProperties(id, {Property::BackgroundClip});
 	if (property == "background-blend-mode") return removeInlineStyleProperties(id, {Property::BackgroundBlendMode});
+	if (property == "border-image")
+		return removeInlineStyleProperties(id, {Property::BorderImageSource, Property::BorderImageSlice, Property::BorderImageWidth,
+		                                        Property::BorderImageOutset, Property::BorderImageRepeat});
+	if (property == "border-image-source") return removeInlineStyleProperties(id, {Property::BorderImageSource});
+	if (property == "border-image-slice") return removeInlineStyleProperties(id, {Property::BorderImageSlice});
+	if (property == "border-image-width") return removeInlineStyleProperties(id, {Property::BorderImageWidth});
+	if (property == "border-image-outset") return removeInlineStyleProperties(id, {Property::BorderImageOutset});
+	if (property == "border-image-repeat") return removeInlineStyleProperties(id, {Property::BorderImageRepeat});
 	if (property == "background-size") return removeInlineStyleProperties(id, {Property::BackgroundSizeList});
 	if (property == "background-position") return removeInlineStyleProperties(id, {Property::BackgroundPositionList});
 	if (property == "background-repeat") return removeInlineStyleProperties(id, {Property::BackgroundRepeatList});
@@ -15181,7 +15444,7 @@ bool addCompiledValueWrites(const CssCompiledValue &compiled, PropertyWriteMask 
 	case CssCompiledKind::DirectPropertyGroup: {
 		int count = compiled.aux;
 		if (count < 0) count = 0;
-		if (count > 4) count = 4;
+		if (count > kDirectPropertyGroupCapacity) count = kDirectPropertyGroupCapacity;
 		for (int i = 0; i < count; ++i) {
 			const int propertyIndex = compiled.values[i * 2];
 			if (propertyIndex < 0 || propertyIndex >= static_cast<int>(Property::Count)) return false;
@@ -17718,6 +17981,31 @@ bool StyleValues::hasTextBackgroundClip(const ComputedStyle &style)
 	if (!handle || handle > lists.size()) return false;
 	const auto &list = lists[handle - 1];
 	return std::find(list.begin(), list.end(), 3) != list.end();
+}
+
+const BorderImageSource *StyleValues::borderImageSource(const ComputedStyle &style)
+{
+	const auto handle = rstyle(style).border_image_source;
+	const auto &list = borderImageSources();
+	return handle && handle <= list.size() ? &list[handle - 1] : nullptr;
+}
+
+BorderImageSides StyleValues::borderImageSides(const ComputedStyle &style, int which)
+{
+	const auto &r = rstyle(style);
+	const auto handle = which == 0 ? r.border_image_slice : which == 1 ? r.border_image_width : r.border_image_outset;
+	const auto &list = borderImageSideLists();
+	return handle && handle <= list.size() ? list[handle - 1] : initialBorderImageSides(which);
+}
+
+int StyleValues::borderImageOutsetExtent(const ComputedStyle &style)
+{
+	if (!rstyle(style).border_image_source) return 0;
+	const auto outset = borderImageSides(style, 2);
+	float extent = 0.0f;
+	for (int i = 0; i < 4; ++i)
+		extent = std::max(extent, outset.kind[i] == 1 ? outset.value[i] : outset.value[i] * computedBorderWidth(style, i));
+	return static_cast<int>(std::ceil(extent));
 }
 
 int StyleValues::backgroundBlendMode(const ComputedStyle &style, int layer)

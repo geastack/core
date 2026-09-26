@@ -8,6 +8,20 @@
 namespace gea::embedded::ui {
 
 struct ComputedStyle;
+// A border-image-source that paints: a linear-gradient().
+struct BorderImageSource {
+	gea::framework::graphics::pixel::native_t from, mid, to;
+	std::uint8_t fromAlpha, midAlpha, toAlpha, hasMid;
+	std::uint16_t midStop, toStop;
+	std::int16_t angle;
+};
+// border-image-slice, -width or -outset for top, right, bottom, left. kind 0:
+// number, 1: device px, 2: percentage, 3: auto.
+struct BorderImageSides {
+	float value[4] = {};
+	std::uint8_t kind[4] = {};
+	std::uint8_t fill = 0;
+};
 struct BackgroundPlacement {
 	int x, y, width, height;
 	int repeatX = 0, repeatY = 0; // repeat, no-repeat, round, space
@@ -27,6 +41,12 @@ public:
 	// saturation, color, luminosity.
 	static int backgroundBlendMode(const ComputedStyle &style, int layer);
 	static bool hasTextBackgroundClip(const ComputedStyle &style);
+	// Null when border-image-source is none or an image Gea cannot paint.
+	static const BorderImageSource *borderImageSource(const ComputedStyle &style);
+	// 0: slice, 1: width, 2: outset.
+	static BorderImageSides borderImageSides(const ComputedStyle &style, int which);
+	// How far the border image reaches outside the border box, in px.
+	static int borderImageOutsetExtent(const ComputedStyle &style);
 	static BackgroundPlacement backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
 	                                              int x, int y, int width, int height);
 	// Convert a raw style-value colour int into this board's native pixel, applied

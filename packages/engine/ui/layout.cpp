@@ -1402,7 +1402,7 @@ public:
 		const int run = edgeTextRun(item, false);
 		if (run < 0) return true;
 		const Node &text = Tree::instance().nodes()[run];
-		return !text.text.empty() && collapsibleSpace(text.text.front()) && wrapsLines(text);
+		return !text.text.empty() && collapsibleSpace(text.text.str().front()) && wrapsLines(text);
 	}
 
 	static bool trailingSoftWrap(const Node &item)
@@ -1410,7 +1410,7 @@ public:
 		const int run = edgeTextRun(item, true);
 		if (run < 0) return true;
 		const Node &text = Tree::instance().nodes()[run];
-		return !text.text.empty() && collapsibleSpace(text.text.back()) && wrapsLines(text);
+		return !text.text.empty() && collapsibleSpace(text.text.str().back()) && wrapsLines(text);
 	}
 
 	// A collapsible space that opens an atomic text item is removed at the
@@ -1421,12 +1421,12 @@ public:
 	{
 		const Node &item = nodes[children_[k]];
 		if (item.type != NodeType::Text || isFragmentableRun(item) || item.text.empty() ||
-		    !collapsibleSpace(item.text.front()) || !collapsesSpaces(item)) return 0;
+		    !collapsibleSpace(item.text.str().front()) || !collapsesSpaces(item)) return 0;
 		if (!lineStart) {
 			const int before = k > 0 ? edgeTextRun(nodes[children_[k - 1]], true) : -1;
 			if (before < 0) return 0;
 			const Node &previous = nodes[before];
-			if (previous.text.empty() || !collapsibleSpace(previous.text.back()) || !collapsesSpaces(previous)) return 0;
+			if (previous.text.empty() || !collapsibleSpace(previous.text.str().back()) || !collapsesSpaces(previous)) return 0;
 		}
 		return TextRenderer::measureWidth(" ", item.style.font_id, item.style.font_size);
 	}
@@ -1464,7 +1464,7 @@ public:
 		const int run = edgeTextRun(item, true);
 		if (run < 0) return false;
 		const Node &text = Tree::instance().nodes()[run];
-		return !text.text.empty() && collapsibleSpace(text.text.back()) && collapsesSpaces(text);
+		return !text.text.empty() && collapsibleSpace(text.text.str().back()) && collapsesSpaces(text);
 	}
 
 	// The collapsible space that ends a line item hangs past the line's end.
@@ -1473,7 +1473,7 @@ public:
 		const int run = edgeTextRun(item, true);
 		if (run < 0) return 0;
 		const Node &text = Tree::instance().nodes()[run];
-		if (text.text.empty() || !collapsibleSpace(text.text.back()) || !collapsesSpaces(text)) return 0;
+		if (text.text.empty() || !collapsibleSpace(text.text.str().back()) || !collapsesSpaces(text)) return 0;
 		return TextRenderer::measureWidth(" ", text.style.font_id, text.style.font_size);
 	}
 
@@ -2676,8 +2676,10 @@ public:
 		int used = std::max(1, (flow + height - 1) / height);
 		if (flags & 32) used = std::min(used, g.count);
 		ensureRareData(id_).multicol = MulticolLayout{clampInt16(g.width), clampInt16(g.gap), clampInt16(height), clampInt16(used), true, (flags & 32) != 0};
+#if GEA_CSS_SCROLLING
 		node_.layout.scroll_content_width = clampInt16(std::max<int>(node_.layout.width, insetsX + used * (g.width + g.gap) - g.gap));
 		node_.layout.scroll_content_height = node_.layout.height;
+#endif
 	}
 
 	// The shortest column height that fits the flow into `count` columns with
@@ -5104,16 +5106,33 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 
 namespace {
 
+// The position offset macros select a side at compile time.
+template <int side>
+int stickyInsetFor(const Node &node, int basis)
+{
+	int inset = GEA_CSS_POSITION_PX(node.style, side) != kUnset ? GEA_CSS_POSITION_PX(node.style, side) : 0;
+	if (GEA_CSS_POSITION_PERCENT(node.style, side) != kUnset) inset += basis * GEA_CSS_POSITION_PERCENT(node.style, side) / 1000;
+	return inset;
+}
+
 int stickyInset(const Node &node, int side, int basis)
 {
-	int inset = node.style.pos_offsets[side] != kUnset ? node.style.pos_offsets[side] : 0;
-	if (node.style.pos_offset_percent[side] != kUnset) inset += basis * node.style.pos_offset_percent[side] / 1000;
-	return inset;
+	switch (side) {
+	case 0: return stickyInsetFor<0>(node, basis);
+	case 1: return stickyInsetFor<1>(node, basis);
+	case 2: return stickyInsetFor<2>(node, basis);
+	default: return stickyInsetFor<3>(node, basis);
+	}
 }
 
 bool hasStickyInset(const Node &node, int side)
 {
-	return node.style.pos_offsets[side] != kUnset || node.style.pos_offset_percent[side] != kUnset;
+	switch (side) {
+	case 0: return hasPositionOffsetValue<0>(node);
+	case 1: return hasPositionOffsetValue<1>(node);
+	case 2: return hasPositionOffsetValue<2>(node);
+	default: return hasPositionOffsetValue<3>(node);
+	}
 }
 
 // position: sticky (CSS Position 3): shift the box, never out of its

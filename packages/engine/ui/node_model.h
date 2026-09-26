@@ -401,9 +401,13 @@ struct RareStyle {
 	uint8_t bg_gradient_from_alpha = 255;
 	uint8_t bg_gradient_mid_alpha = 255;
 	uint8_t bg_gradient_to_alpha = 255;
+	// border-image-* (see StyleValues::borderImageSource/Sides/Repeat) sit in
+	// padding here: interned handles, zero is the initial value.
+	uint8_t border_image_source = 0;
 	uint16_t bg_gradient_mid_stop = 500;
 	uint16_t bg_gradient_to_stop = 1000;
 	uint8_t bg_gradient_has_mid = 0;
+	uint8_t border_image_slice = 0;
 	int16_t bg_gradient_angle = 1800;
 	uint8_t bg_overlay_gradient = 0;
 	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
@@ -413,11 +417,14 @@ struct RareStyle {
 	uint8_t bg_overlay_gradient_from_alpha = 255;
 	uint8_t bg_overlay_gradient_mid_alpha = 255;
 	uint8_t bg_overlay_gradient_to_alpha = 255;
+	uint8_t border_image_width = 0;
 	uint16_t bg_overlay_gradient_mid_stop = 500;
 	uint16_t bg_overlay_gradient_to_stop = 1000;
 	uint8_t bg_overlay_gradient_has_mid = 0;
+	uint8_t border_image_outset = 0;
 	int16_t bg_overlay_gradient_angle = 1800;
 	uint8_t bg_radial_gradient = 0;
+	uint8_t border_image_repeat = 0; // bits 0-1 horizontal, 2-3 vertical: stretch, repeat, round, space
 	style_color_t bg_radial_gradient_from_color = 0;
 	style_color_t bg_radial_gradient_to_color = 0;
 	uint8_t bg_radial_gradient_from_alpha = 255;
