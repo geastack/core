@@ -333,9 +333,13 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		// it so the inline-formatting heuristic treats e.g. `display:block` on a
 		// <span> as block-level (stacks) rather than its default inline behaviour.
 #if GEA_CSS_DISPLAY_EXPLICIT
-		if (!style.display_explicit) { style.display_explicit = 1; changed = 1; }
+		// Keyword bits above the box kind (flow-root) are recorded with it.
+		if (style.display_explicit != (kDisplayExplicit | (value >> kDisplayFlagShift))) {
+			style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+			changed = 1;
+		}
 #endif
-		if (style.display != value) { style.display = value; changed = 1; }
+		if (style.display != (value & kDisplayKindMask)) { style.display = value & kDisplayKindMask; changed = 1; }
 		break;
 #if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
