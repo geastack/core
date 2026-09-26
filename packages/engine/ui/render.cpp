@@ -10072,8 +10072,10 @@ int gLastScrollUiFrame = -1000;
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
 		const bool item = n.parent >= 0 &&
-		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
-		return isContext(id) || n.computedStyle().position != 0 || n.computedStyle().float_side || item;
+		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		// An inline-block, inline-flex or inline-grid paints atomically, like a
+		// float (CSS 2.2 Appendix E).
+		return isContext(id) || n.style.position != 0 || n.style.float_side || item || isAtomicInline(n.style);
 	}
 
 	std::vector<int> PaintOrder::collectChildren(int root, bool groupRoot, bool includePositioned)

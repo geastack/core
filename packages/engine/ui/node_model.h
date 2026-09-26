@@ -85,7 +85,9 @@ inline constexpr int kDisplayKindMask = 15;
 inline constexpr int kDisplayFlagShift = 4;
 inline constexpr int8_t kDisplayExplicit = 1;
 inline constexpr int8_t kDisplayFlowRoot = 2; // display: flow-root
-inline constexpr int8_t kDisplayInline = 4; // inline-flex, inline-grid: an atomic inline-level box
+// display: inline on a block kind; with kDisplayFlowRoot it is inline-block, and
+// on a flex or grid kind inline-flex or inline-grid. Those three are atomic.
+inline constexpr int8_t kDisplayInline = 4;
 inline constexpr int kPositionFixed = 3;
 // position: sticky stays in flow; the absolute-coordinate pass shifts it.
 inline constexpr int kPositionSticky = 4;
@@ -1266,11 +1268,19 @@ inline bool isFlowRoot(const ComputedStyle &style)
 	return style.display == kDisplayBlock && (style.display_explicit & kDisplayFlowRoot);
 }
 
-// inline-flex and inline-grid sit on a line like an image, sized to their
-// content. Floats and absolutely positioned boxes are blockified.
+// inline-block, inline-flex and inline-grid sit on a line like an image, sized
+// to their content. Floats and absolutely positioned boxes are blockified.
 inline bool isAtomicInline(const ComputedStyle &style)
 {
-	return (style.display_explicit & kDisplayInline) && !style.float_side && !isOutOfFlowPosition(style.position);
+	return (style.display_explicit & kDisplayInline) && (style.display != kDisplayBlock || (style.display_explicit & kDisplayFlowRoot)) &&
+	    !style.float_side && !isOutOfFlowPosition(style.position);
+}
+
+// An authored display: inline, which makes any element an inline box like a
+// <span>.
+inline bool isInlineBoxDisplay(const ComputedStyle &style)
+{
+	return style.display == kDisplayBlock && (style.display_explicit & (kDisplayInline | kDisplayFlowRoot)) == kDisplayInline;
 }
 
 inline bool usesRowLayout(const ComputedStyle &style)

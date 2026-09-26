@@ -4847,6 +4847,8 @@ int displayValue(const std::string &value)
 	if (value == "flex") return kDisplayFlex;
 	if (value == "inline-flex") return kDisplayFlex | (kDisplayInline << kDisplayFlagShift);
 	if (value == "flow-root") return kDisplayBlock | (kDisplayFlowRoot << kDisplayFlagShift);
+	if (value == "inline") return kDisplayBlock | (kDisplayInline << kDisplayFlagShift);
+	if (value == "inline-block") return kDisplayBlock | ((kDisplayInline | kDisplayFlowRoot) << kDisplayFlagShift);
 	return kDisplayBlock;
 }
 

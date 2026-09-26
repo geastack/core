@@ -758,6 +758,8 @@ int clampBorderSize(LayoutEngine &engine, const Node &node, int size, bool horiz
 }
 
 static bool isInlineLevelTag(const char *tag);
+static bool inlineBoxView(const Node &n);
+bool blockLevelView(const Node &node);
 
 class FlexLayoutPass {
 public:
@@ -1421,7 +1423,7 @@ public:
 		const Node *nodes = Tree::instance().nodes();
 		const Node *n = &item;
 		while (n->type == NodeType::View) {
-			if (n->style.display_explicit || isLineBreak(*n) || !isInlineLevelTag(tagFromId(n->tag_id))) return -1;
+			if (!inlineBoxView(*n) || isLineBreak(*n)) return -1;
 			int c = last ? n->last_child : n->first_child;
 			while (c >= 0 && (isDisplayNone(nodes[c].style) || isOutOfFlowPosition(nodes[c].style.position) || nodes[c].style.float_side))
 				c = last ? nodes[c].prev_sibling : nodes[c].next_sibling;
@@ -2354,10 +2356,40 @@ private:
 		descent += shift;
 	}
 
+	// The baseline of a block container's last in-flow line box, or -1 without
+	// one. A block child without line boxes adds none; one that clips its
+	// overflow stands for its bottom margin edge.
+	int lastLineBaseline(const Node &block) const
+	{
+		const Node *nodes = Tree::instance().nodes();
+		for (int c = block.last_child; c >= 0; c = nodes[c].prev_sibling) {
+			const Node &inner = nodes[c];
+			if (isDisplayNone(inner.style) || isOutOfFlowPosition(inner.style.position) || inner.style.float_side ||
+			    collapsibleSpaceOnly(inner)) continue;
+			// Blocks and inline boxes are searched in turn; atomic boxes and text
+			// sit on a line of this container.
+			if (inner.type == NodeType::View && inner.style.display == kDisplayBlock && !isAtomicInline(inner.style)) {
+				if (blockLevelView(inner) && overflowEstablishesContext(inner.style))
+					return inner.layout.y + inner.layout.height + inner.style.margin[2];
+				const int line = lastLineBaseline(inner);
+				if (line >= 0) return inner.layout.y + line;
+				continue;
+			}
+			return inner.layout.y + childBaseline(inner, true);
+		}
+		return -1;
+	}
+
 	int childBaseline(const Node &childNode, bool last = false) const
 	{
 		if ((childNode.type == NodeType::Text || isLineBreak(childNode)) && childNode.computedStyle().font_id >= 0)
 			return TextRenderer::baselineOffset(childNode, last);
+		// An inline-block takes its last line box's baseline, or its bottom
+		// margin edge when it has none or clips its overflow (CSS 2.2 10.8.1).
+		if (childNode.type == NodeType::View && childNode.style.display == kDisplayBlock && isAtomicInline(childNode.style)) {
+			const int line = overflowEstablishesContext(childNode.style) ? -1 : lastLineBaseline(childNode);
+			return line >= 0 ? line : childNode.layout.height + childNode.style.margin[2];
+		}
 		// An inline wrapper (a <span> around text) carries no text of its own, so
 		// CSS takes the baseline of its FIRST in-flow line box. Its children were
 		// already positioned by measureChildren, and layout.y is still parent-
@@ -2369,7 +2401,8 @@ private:
 			const Node *nodes = Tree::instance().nodes();
 			for (int c = last ? childNode.last_child : childNode.first_child; c >= 0; c = last ? nodes[c].prev_sibling : nodes[c].next_sibling) {
 				const Node &inner = nodes[c];
-				if (isDisplayNone(inner.computedStyle()) || isOutOfFlowPosition(inner.computedStyle().position)) continue;
+				// Collapsible white space alone makes no line box, so no baseline.
+				if (isDisplayNone(inner.style) || isOutOfFlowPosition(inner.style.position) || collapsibleSpaceOnly(inner)) continue;
 				return inner.layout.y + childBaseline(inner, last);
 			}
 		}
@@ -2425,6 +2458,13 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "mark") == 0;
 }
 
+// A view that is an inline box: an authored display: inline, or an inline-level
+// tag with no authored display.
+static bool inlineBoxView(const Node &n)
+{
+	return n.type == NodeType::View && (n.style.display_explicit ? isInlineBoxDisplay(n.style) : isInlineLevelTag(tagFromId(n.tag_id)));
+}
+
 // A block container with a column count or width (CSS Multi-column 2).
 // Spanning elements (column-span: all) split the columns into sets, which
 // this layout does not do: such a container keeps a single column.
@@ -2454,12 +2494,11 @@ bool emptyInlineBox(const Node &node)
 	return !boxInsets(node.style, true) && !boxInsets(node.style, false) && FlexLayoutPass::paintsNoBox(node);
 }
 
-// A view that is block-level in its parent: an explicit display or a
-// block-level tag, unless it is an atomic inline-level box (inline-flex).
+// A view that is block-level in its parent: neither an inline box nor an
+// atomic inline-level box (inline-block, inline-flex).
 bool blockLevelView(const Node &node)
 {
-	return node.type == NodeType::View && !isAtomicInline(node.style) &&
-	    (node.style.display_explicit || !isInlineLevelTag(tagFromId(node.tag_id)));
+	return node.type == NodeType::View && !isAtomicInline(node.style) && !inlineBoxView(node);
 }
 
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
@@ -2468,10 +2507,9 @@ bool blockLevelView(const Node &node)
 bool splitInlineWrapper(const Node *nodes, int id)
 {
 	const Node &n = nodes[id];
-	if (n.type != NodeType::View || n.computedStyle().display_explicit || n.computedStyle().display != kDisplayBlock ||
-	    !isInlineLevelTag(tagFromId(n.tag_id)) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
-	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.computedStyle(), true) || boxInsets(n.computedStyle(), false) ||
-	    n.computedStyle().margin[1] || n.computedStyle().margin[3] || n.computedStyle().opacity != 255 || overflowEstablishesContext(n.computedStyle())) return false;
+	if (!inlineBoxView(n) || n.style.float_side || isOutOfFlowPosition(n.style.position) ||
+	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.style, true) || boxInsets(n.style, false) ||
+	    n.style.margin[1] || n.style.margin[3] || n.style.opacity != 255 || overflowEstablishesContext(n.style)) return false;
 	bool containsBlock = false;
 	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
 		const Node &child = nodes[c];
@@ -4048,9 +4086,9 @@ private:
 	void captureBlockStaticPositions()
 	{
 		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling)
-			if (isOutOfFlowPosition(nodes_[c].computedStyle().position)) layoutState(c).static_block_axis = 0;
-		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit ||
-		    (LayoutEngine::isInlineLevelNode(node_) && !isOutOfFlowPosition(node_.computedStyle().position))) return;
+			if (isOutOfFlowPosition(nodes_[c].style.position)) nodes_[c].layout.static_block_axis = 0;
+		if (node_.style.display != kDisplayBlock || node_.style.flex_direction_explicit ||
+		    (LayoutEngine::isInlineLevelNode(node_) && !isAtomicInline(node_.style) && !isOutOfFlowPosition(node_.style.position))) return;
 		const bool vertical = writingMode(node_) != 0;
 		const bool reversed = vertical && gridAxisReversed(node_, true);
 		int cursor = boxInset(node_.computedStyle(), blockMarginSide(false));
@@ -4692,7 +4730,7 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 	// box is wider than its static-position parent. Its actual containing
 	// block can be an entirely different ancestor.
 	if (horizontal == (writingMode(parent) == 0) && parent.style.display == kDisplayBlock &&
-	    (!isInlineLevelNode(parent) || isOutOfFlowPosition(parent.style.position)) &&
+	    (!isInlineLevelNode(parent) || isAtomicInline(parent.style) || isOutOfFlowPosition(parent.style.position)) &&
 	    !parent.style.flex_direction_explicit) {
 		// An explicit justify-self aligns the margin box in the parent's content
 		// box, the static-position rectangle's inline extent. auto stays normal
@@ -4810,14 +4848,14 @@ bool LayoutEngine::isInlineLevelNode(const Node &n)
 	// the weather city list's .city-name/.city-detail spans set display:block to
 	// stack the name over the region). Without an explicit display, fall back to
 	// the tag's intrinsic inline-ness.
-	if (n.computedStyle().display == kDisplayBlock && n.computedStyle().display_explicit) return false;
+	if (n.style.display == kDisplayBlock && n.style.display_explicit && !isInlineBoxDisplay(n.style)) return false;
 	// In Gea's native layout model, vertical margins on inline-level wrappers are
 	// used as an authoring signal that the wrapper occupies its own line. Keep
 	// default spans inline, but do not merge title/score spans with margin-bottom
 	// into one row.
 	if (n.computedStyle().margin[0] != 0 || n.computedStyle().margin[2] != 0) return false;
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return isInlineLevelTag(tagFromId(n.tag_id));
+	return inlineBoxView(n);
 }
 
 // Mirror of startsFormattingLine: walk forward through siblings and inline
@@ -4866,14 +4904,14 @@ bool LayoutEngine::endsFormattingLine(int id)
 
 bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
 {
-	if (n.computedStyle().display == kDisplayNone || n.computedStyle().display_explicit) return false;
-	if (!hypothetical && (n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position))) return false;
+	if (n.style.display == kDisplayNone || (n.style.display_explicit && !isInlineBoxDisplay(n.style))) return false;
+	if (!hypothetical && (n.style.float_side || isOutOfFlowPosition(n.style.position))) return false;
 	if (!hypothetical && n.parent >= 0) {
 		const Node &parent = Tree::instance().nodes()[n.parent];
 		if (parent.computedStyle().display == kDisplayFlex || isDisplayGrid(parent.computedStyle())) return false;
 	}
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return n.type == NodeType::View && isInlineLevelTag(tagFromId(n.tag_id));
+	return inlineBoxView(n);
 }
 
 int LayoutEngine::clampSize(int size, int minSize, int maxSize) const
