@@ -1592,6 +1592,16 @@ export function createGeaHostShims(): HostShimDefinitions {
         emit: "gea::embedded::ui::Document::instance().createElement(({arg0}))",
         returnType: "gea::embedded::ui::NodeHandle",
       },
+      // `document.createElementNS(namespace, name)`. The embedded document
+      // holds HTML elements only (engine/ui/document.h has no namespaces), so
+      // this is `createElement(name)`: exact for the XHTML namespace, which is
+      // what three.js's `createElementNS` helper passes (utils.js). The
+      // namespace argument is a value already computed, so leaving it out of
+      // the call drops no effect.
+      createElementNS: {
+        emit: "gea::embedded::ui::Document::instance().createElement(({arg1}))",
+        returnType: "gea::embedded::ui::NodeHandle",
+      },
       createTextNode: {
         emit: "gea::embedded::ui::Document::instance().createText(({arg0}))",
         returnType: "gea::embedded::ui::NodeHandle",
