@@ -2045,7 +2045,7 @@ function cssStaticPropertyValue(property, rawValue) {
   switch (property) {
     case 'display': {
       // Keyword flags above the box kind, as in the engine's displayValue().
-      const values = new Map([['block', 0], ['none', 1], ['grid', 2], ['inline-grid', 66], ['flex', 3], ['inline-flex', 67], ['flow-root', 32]])
+      const values = new Map([['block', 0], ['none', 1], ['grid', 2], ['inline-grid', 66], ['flex', 3], ['inline-flex', 67], ['flow-root', 32], ['inline', 64], ['inline-block', 96]])
       return values.has(value) ? direct('Display', values.get(value)) : null
     }
     case 'box-sizing':
