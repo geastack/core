@@ -393,7 +393,7 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
 ])
 
 // As in the engine's displayValue(): keyword flags sit above the box kind,
-// 32 for flow-root and 64 for an atomic inline-level box.
+// 32 for flow-root and 64 for inline (both together: inline-block).
 const DISPLAY_KEYWORDS = new Map<string, number>([
   ['block', 0],
   ['none', 1],
@@ -402,6 +402,8 @@ const DISPLAY_KEYWORDS = new Map<string, number>([
   ['flex', 3],
   ['inline-flex', 67],
   ['flow-root', 32],
+  ['inline', 64],
+  ['inline-block', 96],
 ])
 
 const FLEX_DIRECTION_KEYWORDS = new Map<string, number>([
