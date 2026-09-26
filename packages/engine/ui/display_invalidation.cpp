@@ -43,6 +43,7 @@ bool DisplayInvalidation::rebuildsNodeDisplayCommands(Property prop)
 	case Property::BackgroundColor:
 	case Property::BackgroundAlpha:
 	case Property::BackgroundClip:
+	case Property::BackgroundBlendMode:
 	case Property::BackgroundImage:
 	case Property::Containment:
 	case Property::ActiveBackgroundColor:
