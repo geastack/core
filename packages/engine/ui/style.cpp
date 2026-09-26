@@ -4855,6 +4855,9 @@ int selfAlignValue(const std::string &raw, bool physical = false)
 	}
 	if (position == "self-start") return kAlignSelfStart | overflow;
 	if (position == "self-end") return kAlignSelfEnd | overflow;
+	// Without a default anchor box, anchor-center behaves as center (CSS Anchor
+	// Positioning); Gea has no anchors.
+	if (value == "anchor-center") return 1;
 	if (physical && position == "left") return kAlignLeft | overflow;
 	if (physical && position == "right") return kAlignRight | overflow;
 	const int alignment = flexAlignValue(value);
@@ -4869,6 +4872,7 @@ int justifySelfValue(const std::string &raw)
 	const std::string value = toLowerAscii(trimCssValue(raw));
 	if (value == "auto") return -1;
 	if (value == "normal" || value == "stretch") return 0;
+	if (value == "anchor-center") return 1;
 	const int baseline = flexAlignValue(value);
 	if (baseline == 5 || baseline == kAlignLastBaseline) return baseline;
 	const auto words = splitFunctionAwareWords(value);
