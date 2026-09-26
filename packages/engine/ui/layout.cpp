@@ -3261,7 +3261,9 @@ private:
 				const double bottom = cursor + drift + exact;
 				const int height = static_cast<int>(std::floor(bottom + 0.5)) - cursor;
 				if (height >= 0 && height != child.layout.height) {
+#if GEA_CSS_SCROLLING
 					if (child.layout.scroll_content_height == child.layout.height) child.layout.scroll_content_height = clampInt16(height);
+#endif
 					child.layout.height = clampInt16(height);
 					engine_.repositionChildren(id);
 				}
@@ -3420,6 +3422,22 @@ private:
 						flowY = nextBottom;
 					}
 					if (right - left != runWidth) extent = layoutRun(std::max(0, right - left));
+					// A float after a one-line run goes to the top of that line when it
+					// fits beside the run's content (CSS 2.2 9.5.1): place the float
+					// first, then flow the run again beside it.
+					if (end < count && nodes_[children[end]].style.float_side && !nodes_[children[end]].style.clear_side &&
+					    !isLineBreak(nodes_[children[end - 1]]) && extent.height == extent.firstLineHeight) {
+						const Node &next = nodes_[children[end]];
+						engine_.layoutNode(children[end], contentWidth, contentHeight, measureWidth);
+						if (extent.width + next.layout.width + next.style.margin[1] + next.style.margin[3] <= right - left) {
+#if GEA_CSS_FIRST_LINE
+							if (ownerRare) ownerRare->firstLineBackground.lineValid = ownerLineWasValid;
+#endif
+							std::rotate(children + i, children + end, children + end + 1);
+							--i;
+							continue;
+						}
+					}
 #if GEA_CSS_FIRST_LINE
 					if (!ownerLineWasValid && ownerRare && ownerRare->firstLineBackground.lineValid)
 						ownerRare->firstLineBackground.lineY = clampInt16(ownerRare->firstLineBackground.lineY + flowY);
