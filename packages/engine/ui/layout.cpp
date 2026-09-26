@@ -641,7 +641,7 @@ bool definiteFlexCrossSize(const Node &parent, const Node &child, bool row)
 void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 {
 	if (!preferredRatio(node) || (node.type != NodeType::View && node.type != NodeType::Image)) return;
-	if (node.type != NodeType::Image && LayoutEngine::isInlineLevelNode(node)) return;
+	if (node.type != NodeType::Image && !isAtomicInline(node.style) && LayoutEngine::isInlineLevelNode(node)) return;
 	bool width = hasExplicitWidth(node), height = hasExplicitHeight(node);
 	if (width && height) return;
 	const Node *parent = node.parent >= 0 ? &Tree::instance().nodes()[node.parent] : nullptr;
@@ -1582,7 +1582,8 @@ public:
 			cn.render.inline_baseline = placed;
 			// An inline wrapper (<span>text</span>) contributes its CHILD's glyphs to
 			// this line box, so the flag has to reach the node that actually draws.
-			if (cn.type == NodeType::View) {
+			// An atomic inline box (inline-flex) lays out its own children.
+			if (cn.type == NodeType::View && !isAtomicInline(cn.style)) {
 				for (int c = cn.first_child; c >= 0; c = nodes[c].next_sibling)
 					if (nodes[c].type == NodeType::Text) nodes[c].render.inline_baseline = placed;
 			}
@@ -2453,6 +2454,14 @@ bool emptyInlineBox(const Node &node)
 	return !boxInsets(node.style, true) && !boxInsets(node.style, false) && FlexLayoutPass::paintsNoBox(node);
 }
 
+// A view that is block-level in its parent: an explicit display or a
+// block-level tag, unless it is an atomic inline-level box (inline-flex).
+bool blockLevelView(const Node &node)
+{
+	return node.type == NodeType::View && !isAtomicInline(node.style) &&
+	    (node.style.display_explicit || !isInlineLevelTag(tagFromId(node.tag_id)));
+}
+
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
 // ancestry still owns inheritance, events, relative translation, and painting.
 // Visible inline decorations require fragments; keep those on their own path.
@@ -2474,7 +2483,7 @@ bool splitInlineWrapper(const Node *nodes, int id)
 		if (child.style.float_side) { containsBlock = true; continue; }
 		// A forced break splits the inline across line boxes.
 		if (isLineBreak(child)) { containsBlock = true; continue; }
-		if (child.type == NodeType::View && (child.style.display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
+		if (blockLevelView(child)) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
 	return containsBlock;
@@ -2493,7 +2502,7 @@ bool splitDecoratedInline(const Node *nodes, int id)
 	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
 		const Node &child = nodes[c];
 		if (!isDisplayNone(child.style) && !isOutOfFlowPosition(child.style.position) && !child.style.float_side &&
-		    child.type == NodeType::View && (child.style.display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) return true;
+		    blockLevelView(child)) return true;
 	}
 	return false;
 }
@@ -2909,8 +2918,7 @@ private:
 
 	bool blockBox(const Node &n) const
 	{
-		return n.type == NodeType::View && !isDisplayNone(n.computedStyle()) &&
-		    (n.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(n.tag_id)));
+		return !isDisplayNone(n.style) && blockLevelView(n);
 	}
 
 	bool flowChild(int parent, int child) const
@@ -4771,8 +4779,9 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 
 bool LayoutEngine::isInlineLevelNode(const Node &n)
 {
-	if (n.computedStyle().display == kDisplayFlex || n.computedStyle().display == kDisplayGrid || n.computedStyle().display == kDisplayNone)
-		return false;
+	if (n.style.display == kDisplayNone) return false;
+	if (isAtomicInline(n.style)) return true;
+	if (n.style.display == kDisplayFlex || n.style.display == kDisplayGrid) return false;
 	// An explicit `display:block` makes even an inline-level tag (a <span>) — or a
 	// Text/Image node — a BLOCK-LEVEL box, so it stacks vertically among siblings
 	// instead of flowing into an inline row. Browsers do this; gea must too (e.g.
@@ -5020,13 +5029,14 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	Node &node = Tree::instance().nodes()[id];
 	auto &persistent = layoutState(id);
 	const Node *parent = node.parent >= 0 ? &Tree::instance().nodes()[node.parent] : nullptr;
-	// Horizontal non-replaced floats use the same min/max-content measurement
-	// and final used-width phase as fit-content. Floats on flex/grid items are
-	// ignored; orthogonal automatic inline sizing is handled separately.
-	const bool shrinkFloat = node.type == NodeType::View && node.computedStyle().float_side &&
-	    !isOutOfFlowPosition(node.computedStyle().position) &&
-	    (!parent || (parent->computedStyle().display != kDisplayFlex && !isDisplayGrid(parent->computedStyle()))) &&
-	    node.computedStyle().width == kUnset && node.computedStyle().width_percent == kUnset && node.computedStyle().width_expression == -1 &&
+	// Horizontal non-replaced floats and atomic inline boxes (inline-flex) use
+	// the same min/max-content measurement and final used-width phase as
+	// fit-content. Flex and grid items are blockified, so they are left alone;
+	// orthogonal automatic inline sizing is handled separately.
+	const bool shrinkFloat = node.type == NodeType::View && (node.style.float_side || isAtomicInline(node.style)) &&
+	    !isOutOfFlowPosition(node.style.position) &&
+	    (!parent || (parent->style.display != kDisplayFlex && !isDisplayGrid(parent->style))) &&
+	    node.style.width == kUnset && node.style.width_percent == kUnset && node.style.width_expression == -1 &&
 	    writingMode(node) == 0;
 	// CSS Writing Modes 7.3.2: an orthogonal flow root's automatic inline
 	// size is fit-content. Measure before fixing the used size so cyclic

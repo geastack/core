@@ -392,13 +392,16 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
   ['text-transform', ['TextTransform']],
 ])
 
+// As in the engine's displayValue(): keyword flags sit above the box kind,
+// 32 for flow-root and 64 for an atomic inline-level box.
 const DISPLAY_KEYWORDS = new Map<string, number>([
   ['block', 0],
   ['none', 1],
   ['grid', 2],
-  ['inline-grid', 2],
+  ['inline-grid', 66],
   ['flex', 3],
-  ['inline-flex', 3],
+  ['inline-flex', 67],
+  ['flow-root', 32],
 ])
 
 const FLEX_DIRECTION_KEYWORDS = new Map<string, number>([

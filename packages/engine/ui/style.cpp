@@ -4842,8 +4842,10 @@ int flexAlignValue(const std::string &raw)
 int displayValue(const std::string &value)
 {
 	if (value == "none") return kDisplayNone;
-	if (value == "grid" || value == "inline-grid") return kDisplayGrid;
-	if (value == "flex" || value == "inline-flex") return kDisplayFlex;
+	if (value == "grid") return kDisplayGrid;
+	if (value == "inline-grid") return kDisplayGrid | (kDisplayInline << kDisplayFlagShift);
+	if (value == "flex") return kDisplayFlex;
+	if (value == "inline-flex") return kDisplayFlex | (kDisplayInline << kDisplayFlagShift);
 	if (value == "flow-root") return kDisplayBlock | (kDisplayFlowRoot << kDisplayFlagShift);
 	return kDisplayBlock;
 }
