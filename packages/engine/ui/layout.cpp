@@ -720,6 +720,27 @@ int usedGridAlignment(const Node &parent, const Node &child, int alignment, int 
 	return usedAlignment(alignment, free, gridAxisReversed(parent, horizontal));
 }
 
+// Half of a free space, rounded half up like a fractional edge snapped to the
+// nearest pixel (12.5 -> 13, -12.5 -> -12).
+int roundedHalf(int free) { return free >= -1 ? (free + 1) / 2 : -(-free / 2); }
+
+// An absolute box with both insets of an axis set and an explicit, non-normal
+// self-alignment places its margin box inside the inset-modified containing
+// block (CSS Position 3, 4.4; CSS Align 3). offset is measured from the
+// containing area's start. Auto margins, normal and stretch keep the CSS 2
+// placement from the start inset.
+bool insetAlignedOffset(const Node &containing, const Node &absolute, bool horizontal, int areaSize, int start, int end, int &offset)
+{
+	// justify-self works in the containing block's inline axis, align-self in its block axis.
+	const int align = horizontal == (writingMode(containing) == 0) ? rstyle(absolute.style).justify_self : absolute.style.align_self;
+	if (align <= 0 || (absolute.style.margin_auto & (horizontal ? 10 : 5))) return false;
+	const int before = absolute.style.margin[horizontal ? 3 : 0], after = absolute.style.margin[horizontal ? 1 : 2];
+	const int free = areaSize - start - end - (horizontal ? absolute.layout.width : absolute.layout.height) - before - after;
+	const int used = usedGridAlignment(containing, absolute, align, free, horizontal);
+	offset = start + before + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
+	return true;
+}
+
 void gridPhysicalRange(const Node &parent, bool columns, int start, int end, int &offset, int &size)
 {
 	const bool horizontal = columns == (writingMode(parent) == 0);
@@ -760,6 +781,7 @@ int clampBorderSize(LayoutEngine &engine, const Node &node, int size, bool horiz
 static bool isInlineLevelTag(const char *tag);
 static bool inlineBoxView(const Node &n);
 bool blockLevelView(const Node &node);
+bool splitInlineWrapper(const Node *nodes, int id);
 
 class FlexLayoutPass {
 public:
@@ -962,17 +984,29 @@ public:
 #endif
 		std::vector<std::pair<int, int>> staticBoundaries;
 		int flowIndex = 0;
-		for (int child = node_.first_child; child >= 0; child = nodes[child].next_sibling) {
-			if (isDisplayNone(nodes[child].computedStyle()) || suppressAnonymousWhitespace(nodes, parentId, child)) continue;
-			if (isOutOfFlowPosition(nodes[child].computedStyle().position)) {
-				if (auto *rare = rareDataFor(child)) rare->inlineStaticPosition.valid = false;
-				if (LayoutEngine::isCssInlineLevelBox(nodes[child], true))
-					staticBoundaries.emplace_back(flowIndex, child);
-				continue;
+		// Split inline wrappers lend their children to this flow, out-of-flow
+		// ones included. Inside an inline box block-level boxes take static
+		// positions from the lines too, as it has no block layout of its own.
+		const bool inlineBox = LayoutEngine::isCssInlineLevelBox(node_) && LayoutEngine::isInlineLevelNode(node_);
+		auto collectStaticBoundaries = [&](auto &&self, int parent) -> void {
+			for (int child = nodes[parent].first_child; child >= 0; child = nodes[child].next_sibling) {
+				if (isDisplayNone(nodes[child].style) || suppressAnonymousWhitespace(nodes, parent, child)) continue;
+				if (isOutOfFlowPosition(nodes[child].style.position)) {
+					if (auto *rare = rareDataFor(child)) rare->inlineStaticPosition.valid = false;
+					if (parent != parentId || inlineBox || LayoutEngine::isCssInlineLevelBox(nodes[child], true))
+						staticBoundaries.emplace_back(flowIndex, child);
+					continue;
+				}
+				if (splitInlineWrapper(nodes, child) &&
+				    std::find(children_, children_ + childCount_, child) == children_ + childCount_) {
+					self(self, child);
+					continue;
+				}
+				while (flowIndex < childCount_ && children_[flowIndex] != child) ++flowIndex;
+				if (flowIndex < childCount_) ++flowIndex;
 			}
-			while (flowIndex < childCount_ && children_[flowIndex] != child) ++flowIndex;
-			if (flowIndex < childCount_) ++flowIndex;
-		}
+		};
+		collectStaticBoundaries(collectStaticBoundaries, parentId);
 		int contentW = mainAvail_ < 0 ? 0 : mainAvail_;
 		if (intrinsicWidthConstraint(node_) == 1) {
 			int pendingWord = 0;
@@ -1018,6 +1052,8 @@ public:
 				    continuationLine && LayoutEngine::isCssInlineLevelBox(node_);
 				rare.inlineStaticPosition.x = clampInt16(
 				    (rare.inlineStaticPosition.continuationLine ? 0 : contentLeft) + pen);
+				rare.inlineStaticPosition.afterContent = pen > 0 || continuationLine;
+				rare.inlineStaticPosition.flowNode = static_cast<std::int16_t>(parentId);
 			}
 		};
 
@@ -4276,11 +4312,20 @@ private:
 	{
 		int x, y, width, height;
 		LayoutEngine::absoluteContainingArea(node_, childNode, x, y, width, height);
-		if (hasPositionOffset<3>(childNode)) childNode.layout.x = x + resolvedPositionOffsetWithBasis<3>(childNode, width) + childNode.computedStyle().margin[3];
-		else if (hasPositionOffset<1>(childNode)) childNode.layout.x = x + width - childNode.layout.width - resolvedPositionOffsetWithBasis<1>(childNode, width) - childNode.computedStyle().margin[1];
+		int offset = 0;
+		if (hasPositionOffset<3>(childNode) && hasPositionOffset<1>(childNode) &&
+		    insetAlignedOffset(node_, childNode, true, width, resolvedPositionOffsetWithBasis<3>(childNode, width),
+		                       resolvedPositionOffsetWithBasis<1>(childNode, width), offset))
+			childNode.layout.x = x + offset;
+		else if (hasPositionOffset<3>(childNode)) childNode.layout.x = x + resolvedPositionOffsetWithBasis<3>(childNode, width) + childNode.style.margin[3];
+		else if (hasPositionOffset<1>(childNode)) childNode.layout.x = x + width - childNode.layout.width - resolvedPositionOffsetWithBasis<1>(childNode, width) - childNode.style.margin[1];
 		else childNode.layout.x = alignedAbsoluteChildPosition(childNode, true);
-		if (hasPositionOffset<0>(childNode)) childNode.layout.y = y + resolvedPositionOffsetWithBasis<0>(childNode, height) + childNode.computedStyle().margin[0];
-		else if (hasPositionOffset<2>(childNode)) childNode.layout.y = y + height - childNode.layout.height - resolvedPositionOffsetWithBasis<2>(childNode, height) - childNode.computedStyle().margin[2];
+		if (hasPositionOffset<0>(childNode) && hasPositionOffset<2>(childNode) &&
+		    insetAlignedOffset(node_, childNode, false, height, resolvedPositionOffsetWithBasis<0>(childNode, height),
+		                       resolvedPositionOffsetWithBasis<2>(childNode, height), offset))
+			childNode.layout.y = y + offset;
+		else if (hasPositionOffset<0>(childNode)) childNode.layout.y = y + resolvedPositionOffsetWithBasis<0>(childNode, height) + childNode.style.margin[0];
+		else if (hasPositionOffset<2>(childNode)) childNode.layout.y = y + height - childNode.layout.height - resolvedPositionOffsetWithBasis<2>(childNode, height) - childNode.style.margin[2];
 		else childNode.layout.y = alignedAbsoluteChildPosition(childNode, false);
 	}
 
@@ -4532,16 +4577,24 @@ void positionAbsoluteNodeInContainingBlock(int node, int containing, Node *nodes
 	if (!hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute))
 		absolute.layout.y = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, false, &containingNode, areaY - parentOffsetY, areaHeight);
 
-	int containingX = absolute.layout.x + parentOffsetX;
-	if (hasPositionOffsetValue<3>(absolute))
-		containingX = areaX + resolvedPositionOffsetForBasis<3>(absolute, areaWidth) + absolute.computedStyle().margin[3];
+	int containingX = absolute.layout.x + parentOffsetX, offset = 0;
+	if (hasPositionOffsetValue<3>(absolute) && hasPositionOffsetValue<1>(absolute) &&
+	    insetAlignedOffset(containingNode, absolute, true, areaWidth, resolvedPositionOffsetForBasis<3>(absolute, areaWidth),
+	                       resolvedPositionOffsetForBasis<1>(absolute, areaWidth), offset))
+		containingX = areaX + offset;
+	else if (hasPositionOffsetValue<3>(absolute))
+		containingX = areaX + resolvedPositionOffsetForBasis<3>(absolute, areaWidth) + absolute.style.margin[3];
 	else if (hasPositionOffsetValue<1>(absolute))
 		containingX = areaX + areaWidth - absolute.layout.width -
 		              resolvedPositionOffsetForBasis<1>(absolute, areaWidth) - absolute.computedStyle().margin[1];
 
 	int containingY = absolute.layout.y + parentOffsetY;
-	if (hasPositionOffsetValue<0>(absolute))
-		containingY = areaY + resolvedPositionOffsetForBasis<0>(absolute, areaHeight) + absolute.computedStyle().margin[0];
+	if (hasPositionOffsetValue<0>(absolute) && hasPositionOffsetValue<2>(absolute) &&
+	    insetAlignedOffset(containingNode, absolute, false, areaHeight, resolvedPositionOffsetForBasis<0>(absolute, areaHeight),
+	                       resolvedPositionOffsetForBasis<2>(absolute, areaHeight), offset))
+		containingY = areaY + offset;
+	else if (hasPositionOffsetValue<0>(absolute))
+		containingY = areaY + resolvedPositionOffsetForBasis<0>(absolute, areaHeight) + absolute.style.margin[0];
 	else if (hasPositionOffsetValue<2>(absolute))
 		containingY = areaY + areaHeight - absolute.layout.height -
 		              resolvedPositionOffsetForBasis<2>(absolute, areaHeight) - absolute.computedStyle().margin[2];
@@ -4679,51 +4732,67 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 	const Node *treeNodes = Tree::instance().nodes();
 	const int childId = static_cast<int>(&childNode - treeNodes);
 	if (const auto *rare = rareDataFor(childId); rare && rare->inlineStaticPosition.valid) {
-		int continuationOrigin = 0;
-		if (horizontal && rare->inlineStaticPosition.continuationLine) {
-			// Resolve fragmented inline origins here, after ancestor layout has
-			// finalized their first-fragment x positions. The continuation line
-			// starts at the nearest formatting block's content edge, not at the
-			// inline parent's first-fragment padding edge.
-			int inlineOffset = 0;
-			int cursor = static_cast<int>(&parent - treeNodes);
-			while (cursor >= 0 && isCssInlineLevelBox(treeNodes[cursor])) {
-				inlineOffset += treeNodes[cursor].layout.x;
-				cursor = treeNodes[cursor].parent;
-			}
-			if (cursor >= 0) continuationOrigin = boxInset(treeNodes[cursor].computedStyle(), 3) - inlineOffset;
+		const auto &position = rare->inlineStaticPosition;
+		// A block-level box that a line placed stands where the block it would be
+		// starts: at the next line box when content precedes it on its line
+		// (CSS 2.2 10.3.7).
+		const bool nextLine = blockLevelView(childNode) && position.afterContent && writingMode(parent) == 0;
+		// A box inside a split inline wrapper was placed by an ancestor's lines;
+		// the wrappers in between may have moved to their fragment rectangles.
+		int dx = 0, dy = 0, cursor = static_cast<int>(&parent - treeNodes);
+		for (; cursor >= 0 && cursor != position.flowNode; cursor = treeNodes[cursor].parent) {
+			dx += treeNodes[cursor].layout.x;
+			dy += treeNodes[cursor].layout.y;
 		}
-		if (horizontal) return rare->inlineStaticPosition.x + continuationOrigin + childNode.style.margin[3];
+		if (cursor < 0) dx = dy = 0;
+		if (horizontal) {
+			int x = position.x - dx;
+			if (position.continuationLine || nextLine) {
+				// Resolve fragmented inline origins here, after ancestor layout has
+				// finalized their first-fragment x positions. A new line starts at
+				// the nearest formatting block's content edge, not at the inline
+				// parent's first-fragment padding edge.
+				int inlineOffset = 0;
+				int cursor = static_cast<int>(&parent - treeNodes);
+				while (cursor >= 0 && isCssInlineLevelBox(treeNodes[cursor])) {
+					inlineOffset += treeNodes[cursor].layout.x;
+					cursor = treeNodes[cursor].parent;
+				}
+				const int origin = cursor >= 0 ? boxInset(treeNodes[cursor].style, 3) - inlineOffset : 0;
+				x = (nextLine ? 0 : position.x) + origin;
+			}
+			// The static-position rectangle has no inline size, so an explicit
+			// justify-self centers or ends the margin box on it.
+			const int justify = rstyle(childNode.style).justify_self;
+			const int free = -(childNode.layout.width + childNode.style.margin[1] + childNode.style.margin[3]);
+			const int used = justify > 0 && writingMode(parent) == 0 ? usedGridAlignment(parent, childNode, justify, free, true, true) : 6;
+			return x + childNode.style.margin[3] + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
+		}
 		// The static-position rectangle spans the line box's block extent, so an
 		// explicit align-self aligns within it (CSS Position 3, 4.1).
-		int y = rare->inlineStaticPosition.y + childNode.style.margin[0];
+		int y = position.y - dy + (nextLine ? position.lineHeight : 0) + childNode.style.margin[0];
 		const int align = childNode.style.align_self;
 		if (align >= 0 && writingMode(parent) == 0) {
-			const int free = rare->inlineStaticPosition.lineHeight - childNode.layout.height -
+			const int free = position.lineHeight - childNode.layout.height -
 			                 childNode.style.margin[0] - childNode.style.margin[2];
-			const int self = physicalSelfAlignment(parent, childNode, align, free, false);
-			const int used = self >= 0 ? self : usedAlignment(align, free);
-			if (used == 1) y += free / 2;
+			const int used = usedGridAlignment(parent, childNode, align, free, false, true);
+			if (used == 1) y += roundedHalf(free);
 			else if (used == 2) y += free;
 		}
 		return y;
 	}
-	const auto &persistent = layoutState(childId);
-	if (parent.computedStyle().display == kDisplayBlock && !parent.computedStyle().flex_direction_explicit &&
-	    persistent.static_block_axis == (horizontal ? 2 : 1)) {
+	if (parent.style.display == kDisplayBlock && !parent.style.flex_direction_explicit &&
+	    childNode.layout.static_block_axis == (horizontal ? 2 : 1)) {
+		// A block-level static-position rectangle has no block size: the margin
+		// box starts at it, or with an explicit align-self centers or ends on it
+		// (CSS Align 3). A reversed block axis (vertical-rl) starts on the right.
 		const bool reversed = horizontal && gridAxisReversed(parent, true);
-		int offset = childNode.layout.static_block_start + (reversed ? -childNode.layout.width - childNode.style.margin[1]
-		    : childNode.style.margin[horizontal ? 3 : 0]);
-		// A block-level static-position rectangle has no block size, so an
-		// explicit align-self centers or ends the margin box on it (CSS Align 3).
+		const int free = -((horizontal ? childNode.layout.width : childNode.layout.height) +
+		    childNode.style.margin[horizontal ? 3 : 0] + childNode.style.margin[horizontal ? 1 : 2]);
 		const int align = childNode.style.align_self;
-		if (!horizontal && align >= 0 && writingMode(parent) == 0) {
-			const int free = -(childNode.layout.height + childNode.style.margin[0] + childNode.style.margin[2]);
-			const int used = usedGridAlignment(parent, childNode, align, free, false, true);
-			if (used == 1) offset += free / 2;
-			else if (used == 2) offset += free;
-		}
-		return offset;
+		const int used = align >= 0 ? usedGridAlignment(parent, childNode, align, free, horizontal, true) : reversed ? 2 : 6;
+		return childNode.layout.static_block_start + childNode.style.margin[horizontal ? 3 : 0] +
+		    (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
 	}
 	// In block layout the hypothetical box starts at the parent's inline
 	// content edge. RTL anchors its inline-end margin edge, even when the absolute
@@ -4736,11 +4805,13 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 		// box, the static-position rectangle's inline extent. auto stays normal
 		// for an absolutely positioned box (CSS Align 3, 6.1).
 		const int justify = rstyle(childNode.style).justify_self;
-		if (horizontal && justify >= 0 && writingMode(parent) == 0) {
-			const int free = parent.layout.width - boxInsets(parent.style, true) - childNode.layout.width -
-			    childNode.style.margin[1] - childNode.style.margin[3];
-			const int used = usedGridAlignment(parent, childNode, justify, free, true, true);
-			return boxInset(parent.style, 3) + childNode.style.margin[3] + (used == 1 ? free / 2 : used == 2 ? free : 0);
+		if (justify >= 0) {
+			const int free = (horizontal ? parent.layout.width : parent.layout.height) - boxInsets(parent.style, horizontal) -
+			    (horizontal ? childNode.layout.width : childNode.layout.height) -
+			    childNode.style.margin[horizontal ? 3 : 0] - childNode.style.margin[horizontal ? 1 : 2];
+			const int used = usedGridAlignment(parent, childNode, justify, free, horizontal, true);
+			return boxInset(parent.style, horizontal ? 3 : 0) + childNode.style.margin[horizontal ? 3 : 0] +
+			    (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
 		}
 		return rightToLeft(parent)
 		    ? (horizontal ? parent.layout.width : parent.layout.height) - boxInset(parent.computedStyle(), horizontal ? 1 : 2) -
