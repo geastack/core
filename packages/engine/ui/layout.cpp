@@ -4127,7 +4127,7 @@ private:
 		    (LayoutEngine::isInlineLevelNode(node_) && !isAtomicInline(node_.style) && !isOutOfFlowPosition(node_.style.position))) return;
 		const bool vertical = writingMode(node_) != 0;
 		const bool reversed = vertical && gridAxisReversed(node_, true);
-		int cursor = boxInset(node_.computedStyle(), blockMarginSide(false));
+		int cursor = boxInset(node_.style, blockMarginSide(false)) + contentShift_;
 		bool first = true;
 		CollapsedMargin pending;
 		visitFormattingChildren(nodes_, id_, [&](int id) {
@@ -4156,8 +4156,44 @@ private:
 		});
 	}
 
+	// CSS Align 3: center or end align-content on a block container moves its
+	// in-flow content down when its content box is taller; with no content, the
+	// static positions of its absolute children move. Recomputed from the
+	// content's current top, so a second call leaves it where it is.
+	int contentShift_ = 0;
+	void alignBlockContent()
+	{
+		contentShift_ = 0;
+		const int keyword = node_.style.align_content & 15;
+		const bool center = keyword == 1 || keyword == 4 || keyword == kAlignSpaceEvenly, end = keyword == 2 || keyword == kAlignEnd;
+		// An automatic height already fits the content, floats included.
+		if ((!center && !end) || (!hasExplicitHeight(node_) && node_.style.min_height <= 0) ||
+		    node_.style.display != kDisplayBlock || node_.style.flex_direction_explicit ||
+		    inlineBoxView(node_) || writingMode(node_) != 0 || overflowEstablishesContext(node_.style) || isMulticolContainer(node_)) return;
+		const int top = boxInset(node_.style, 0);
+		int first = INT_MAX, last = top;
+		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling) {
+			const Node &child = nodes_[c];
+			if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position) || suppressAnonymousWhitespace(nodes_, id_, c)) continue;
+			first = std::min(first, child.layout.y - child.style.margin[0]);
+			last = std::max(last, child.layout.y + child.layout.height + child.style.margin[2]);
+		}
+		if (first == INT_MAX) first = top;
+		const int free = node_.layout.height - boxInsets(node_.style, false) - (last - first);
+		if (free <= 0) return;
+		contentShift_ = end ? free : roundedHalf(free);
+		const int delta = top + contentShift_ - first;
+		if (!delta) return;
+		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling) {
+			Node &child = nodes_[c];
+			if (isDisplayNone(child.style) || isOutOfFlowPosition(child.style.position)) continue;
+			child.layout.y = clampInt16(child.layout.y + delta);
+		}
+	}
+
 	void positionAbsoluteChildren()
 	{
+		alignBlockContent();
 		captureBlockStaticPositions();
 		for (int child = node_.first_child; child >= 0; child = nodes_[child].next_sibling) {
 			Node &childNode = nodes_[child];
