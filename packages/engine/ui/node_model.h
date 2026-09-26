@@ -79,6 +79,12 @@ inline constexpr int8_t kDisplayBlock = 0;
 inline constexpr int8_t kDisplayNone = 1;
 inline constexpr int8_t kDisplayGrid = 2;
 inline constexpr int8_t kDisplayFlex = 3;
+// A Display property value carries the box kind in its low bits and extra
+// keyword bits above kDisplayFlagShift; the extra bits land in display_explicit.
+inline constexpr int kDisplayKindMask = 15;
+inline constexpr int kDisplayFlagShift = 4;
+inline constexpr int8_t kDisplayExplicit = 1;
+inline constexpr int8_t kDisplayFlowRoot = 2; // display: flow-root
 inline constexpr int kPositionFixed = 3;
 // position: sticky stays in flow; the absolute-coordinate pass shifts it.
 inline constexpr int kPositionSticky = 4;
@@ -515,31 +521,8 @@ struct ComputedStyle {
 	// inline-formatting heuristic distinguish an explicit `display:block` on an
 	// inline-level tag (e.g. <span style="display:block">, which is block-level
 	// and stacks) from a span's default inline behaviour. Mirrors
-	// flex_direction_explicit.
-#if GEA_CSS_DISPLAY_EXPLICIT
-	uint8_t display_explicit : 1;
-#else
-	static constexpr uint8_t display_explicit = 0;
-#endif
-#if GEA_CSS_TEXT_ALIGN
-	int8_t text_align;
-#else
-	static constexpr int8_t text_align = 0;
-#endif
-	int8_t overflow : 3;
-	uint8_t position : 2;
-	uint8_t has_bg : 1;
-#if GEA_CSS_Z_INDEX
-	uint8_t z_index_auto : 1;
-#else
-	static constexpr int8_t z_index_auto = 1;
-#endif
-// A proven single byte radius fills the leading text-alignment slot when
-// that field is absent. Its read remains one ordinary byte load.
-#if GEA_CSS_U8_RADIUS && GEA_CSS_RADIUS_COUNT == 1 && !GEA_CSS_TEXT_ALIGN
-	uint8_t border_radius[1];
-#endif
-#if GEA_CSS_FLEX_DIRECTION
+	// flex_direction_explicit. Other bits: kDisplayFlowRoot.
+	int8_t display_explicit;
 	int8_t flex_direction;
 #else
 	static constexpr int8_t flex_direction = 0;
@@ -1275,6 +1258,11 @@ inline bool isDisplayNone(const ComputedStyle &style)
 inline bool isDisplayGrid(const ComputedStyle &style)
 {
 	return GEA_CSS_GRID && style.display == kDisplayGrid;
+}
+
+inline bool isFlowRoot(const ComputedStyle &style)
+{
+	return style.display == kDisplayBlock && (style.display_explicit & kDisplayFlowRoot);
 }
 
 inline bool usesRowLayout(const ComputedStyle &style)
