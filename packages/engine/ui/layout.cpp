@@ -2282,8 +2282,15 @@ private:
 
 			const int mainSize = isRow_ ? childNode.layout.width : childNode.layout.height;
 			mainOffset += mainSize + mainMarginAfter + mainGap_;
-			// Flex items own their boxes; nothing here shares a line box.
-			childNode.render.inline_baseline = 0;
+			// Flex items own their boxes; nothing here shares a line box. Ink
+			// centring stays for a text item the container centres vertically,
+			// which is where optical centring is what the author asked for. Any
+			// other text item sits on its baseline, as the anonymous block around
+			// bare flex text puts it (CSS Flexbox 4).
+			const int verticalAlignment = isRow_ ? crossAlignFor(childNode) : node_.style.justify_content;
+			const bool centredText = verticalAlignment >= 0 && (verticalAlignment & 15) == 1;
+			const bool baselineText = childNode.type == NodeType::Text && node_.style.display == kDisplayFlex && !centredText;
+			childNode.render.inline_baseline = baselineText ? 1 : 0;
 		}
 	}
 
