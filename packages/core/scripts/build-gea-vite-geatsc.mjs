@@ -1536,22 +1536,27 @@ function parseStaticSelectorPlanSpec(selector) {
   if (!text) return null
   const parts = []
   let nextDirect = false
+  // Relation to the previous part: 1 next sibling (+), 2 any earlier sibling (~).
+  let nextSibling = 0
+  const combinator = (char) => char === '>' || char === '+' || char === '~'
   let i = 0
   while (i < text.length) {
     while (i < text.length && text.charCodeAt(i) <= 32) i++
     if (i >= text.length) break
-    if (text[i] === '>') {
-      nextDirect = true
+    if (combinator(text[i])) {
+      nextDirect = text[i] === '>'
+      nextSibling = text[i] === '+' ? 1 : text[i] === '~' ? 2 : 0
       i++
       continue
     }
     const start = i
-    while (i < text.length && text.charCodeAt(i) > 32 && text[i] !== '>') i++
+    while (i < text.length && text.charCodeAt(i) > 32 && !combinator(text[i])) i++
     if (i <= start) continue
     const simple = parseStaticSimpleSelectorSpec(text.slice(start, i))
     if (!simple) return null
-    parts.push({ simple, directParent: nextDirect })
+    parts.push({ simple, directParent: nextDirect, sibling: nextSibling })
     nextDirect = false
+    nextSibling = 0
   }
   return parts.length > 0 ? { text, parts } : null
 }
@@ -1564,7 +1569,7 @@ function staticSimpleSelectorSpecCode(simple) {
 }
 
 function staticSelectorPartSpecCode(part) {
-  return `{${staticSimpleSelectorSpecCode(part.simple)}, ${part.directParent ? 'true' : 'false'}}`
+  return `{${staticSimpleSelectorSpecCode(part.simple)}, ${part.directParent ? 'true' : 'false'}, ${part.sibling}}`
 }
 
 function staticSelectorPlanRegistration(selector) {

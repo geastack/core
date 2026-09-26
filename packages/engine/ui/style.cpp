@@ -12515,6 +12515,16 @@ bool isRootNode(int node)
 	return state.nodes[node].parent < 0;
 }
 
+// The element sibling before node; text and generated content are not elements.
+int previousElementSibling(int node)
+{
+	const auto &state = treeState();
+	if (node < 0 || node >= state.nodeCount) return -1;
+	for (int sibling = state.nodes[node].prev_sibling; sibling >= 0; sibling = state.nodes[sibling].prev_sibling)
+		if (!isGeneratedPseudoNode(state.nodes[sibling]) && !isAnonymousTextNode(state.nodes[sibling])) return sibling;
+	return -1;
+}
+
 bool isFirstElementChild(int node)
 {
 	const auto &state = treeState();
@@ -12680,6 +12690,8 @@ ParsedSimpleSelector parseSimpleSelector(const char *rawSimple, std::size_t rawL
 struct SelectorPart {
 	[[no_unique_address]] ParsedSimpleSelector simple;
 	bool directParent = false;
+	// Relation to the part on its left: 1 next sibling (+), 2 any earlier sibling (~).
+	std::uint8_t sibling = 0;
 };
 
 struct SelectorPlan {
@@ -12689,6 +12701,8 @@ struct SelectorPlan {
 	bool rightmostRoot = false;
 	bool valid = true;
 	[[no_unique_address]] SmallSelectorList<CssAtomId, 4> ancestorClasses;
+	[[no_unique_address]] SmallSelectorList<CssAtomId, 4> siblingClasses;
+	[[no_unique_address]] SmallSelectorList<int16_t, 4> siblingTags;
 	CssAtomId rightmostId = kInvalidCssAtom;
 	[[no_unique_address]] SmallSelectorList<int16_t, 4> ancestorTags;
 	CssAtomId rightmostClass = kInvalidCssAtom;
@@ -12735,13 +12749,16 @@ void finishSelectorPlan(SelectorPlan &plan)
 	}
 
 	for (std::size_t p = 0; p + 1 < plan.parts.size(); ++p) {
+		// A part joined to the next by + or ~ matches an earlier sibling, not an
+		// ancestor: a change to it restyles the siblings that follow.
+		const bool sibling = plan.parts.at(p + 1).sibling != 0;
 		const ParsedSimpleSelector &ancestor = plan.parts.at(p).simple;
 		for (std::size_t c = 0, n = ancestor.classIds.size(); c < n; ++c) {
 			const CssAtomId cls = ancestor.classIds.at(c);
-			if (cls != kInvalidCssAtom) appendUnique(plan.ancestorClasses, cls);
+			if (cls != kInvalidCssAtom) appendUnique(sibling ? plan.siblingClasses : plan.ancestorClasses, cls);
 		}
 		if (ancestor.hasTag && !ancestor.rootTag && ancestor.tagId >= 0)
-			appendUnique(plan.ancestorTags, ancestor.tagId);
+			appendUnique(sibling ? plan.siblingTags : plan.ancestorTags, ancestor.tagId);
 	}
 }
 
@@ -12750,22 +12767,27 @@ SelectorPlan parseNormalizedSelectorPlan(const char *selectorText, std::size_t s
 	SelectorPlan plan;
 	const char *selector = selectorText ? selectorText : "";
 	bool nextDirect = false;
+	std::uint8_t nextSibling = 0;
+	auto combinator = [](char c) { return c == '>' || c == '+' || c == '~'; };
 	std::size_t i = 0;
 	while (i < selectorLength) {
 		while (i < selectorLength && static_cast<unsigned char>(selector[i]) <= ' ') ++i;
 		if (i >= selectorLength) break;
-		if (selector[i] == '>') {
-			nextDirect = true;
+		if (combinator(selector[i])) {
+			nextDirect = selector[i] == '>';
+			nextSibling = selector[i] == '+' ? 1 : selector[i] == '~' ? 2 : 0;
 			++i;
 			continue;
 		}
 		const std::size_t start = i;
-		while (i < selectorLength && static_cast<unsigned char>(selector[i]) > ' ' && selector[i] != '>') ++i;
+		while (i < selectorLength && static_cast<unsigned char>(selector[i]) > ' ' && !combinator(selector[i])) ++i;
 		if (i <= start) continue;
 		SelectorPart part;
 		part.simple = parseSimpleSelector(selector + start, i - start);
 		part.directParent = nextDirect;
+		part.sibling = nextSibling;
 		nextDirect = false;
+		nextSibling = 0;
 		if (!part.simple.valid) plan.valid = false;
 		plan.specificity += simpleSelectorSpecificity(part.simple);
 		plan.parts.push_back(std::move(part));
@@ -12852,6 +12874,7 @@ std::uint16_t storeStaticSelectorPlan(const char *selector,
 		SelectorPart part;
 		part.simple = staticSimpleSelectorForSpec(spec.simple);
 		part.directParent = spec.directParent;
+		part.sibling = spec.sibling;
 		if (!part.simple.valid) plan.valid = false;
 		plan.specificity += simpleSelectorSpecificity(part.simple);
 		plan.parts.push_back(std::move(part));
@@ -12921,6 +12944,19 @@ bool selectorPlanMatchesNode(const SelectorPlan &plan, int node)
 
 	for (int target = last - 1; target >= 0; --target) {
 		const bool direct = parts.at(static_cast<std::size_t>(target + 1)).directParent;
+		const std::uint8_t sibling = parts.at(static_cast<std::size_t>(target + 1)).sibling;
+		if (sibling) {
+			bool found = false;
+			for (int earlier = previousElementSibling(current); earlier >= 0; earlier = sibling == 1 ? -1 : previousElementSibling(earlier)) {
+				if (matchSimpleSelector(earlier, parts.at(static_cast<std::size_t>(target)).simple)) {
+					current = earlier;
+					found = true;
+					break;
+				}
+			}
+			if (!found) return false;
+			continue;
+		}
 		const int parent = current >= 0 && current < state.nodeCount ? state.nodes[current].parent : -1;
 		if (direct) {
 			current = parent;
@@ -13686,6 +13722,11 @@ struct RuleIndex {
 	// recomputed in full — a custom-prop/inheritance diff alone wouldn't catch it.
 	DenseIdSet ancestorClasses;
 	DenseIdSet ancestorTags;
+	// The same for parts joined by + or ~, which match an earlier sibling: a
+	// change to one of these keys restyles the siblings after the node.
+	DenseIdSet siblingClasses;
+	DenseIdSet siblingTags;
+	bool hasSiblingRules = false;
 	// CSS specificity per rule (indexed by rule index), packed as
 	// ids*10000 + (classes+pseudo-classes)*100 + (elements+pseudo-elements). Used to
 	// order the cascade: a more-specific rule wins over a less-specific one
@@ -13778,6 +13819,9 @@ void rebuildRuleIndexIfNeeded()
 	clearCachedStyleApplyOps();
 	g_ruleIndex.ancestorClasses.clear();
 	g_ruleIndex.ancestorTags.clear();
+	g_ruleIndex.siblingClasses.clear();
+	g_ruleIndex.siblingTags.clear();
+	g_ruleIndex.hasSiblingRules = false;
 	const auto &list = rules();
 	g_ruleIndex.specificity.assign(list.size(), 0);
 	g_ruleIndex.writeMasks.assign(list.size(), {});
@@ -13833,6 +13877,12 @@ void rebuildRuleIndexIfNeeded()
 					const int16_t tag = plan->ancestorTags.at(ancestor);
 					if (tag >= 0) g_ruleIndex.ancestorTags.insert(tag);
 				}
+				for (std::size_t p = 0; p < plan->parts.size(); ++p)
+					if (plan->parts.at(p).sibling) g_ruleIndex.hasSiblingRules = true;
+				for (std::size_t sibling = 0, count = plan->siblingClasses.size(); sibling < count; ++sibling)
+					g_ruleIndex.siblingClasses.insert(plan->siblingClasses.at(sibling));
+				for (std::size_t sibling = 0, count = plan->siblingTags.size(); sibling < count; ++sibling)
+					g_ruleIndex.siblingTags.insert(plan->siblingTags.at(sibling));
 			}
 			break;
 		}
@@ -16838,6 +16888,18 @@ struct NodeClassSnapshot {
 	}
 };
 
+bool classTokensTouchSiblingSelectors(int node, const NodeClassSnapshot &oldTokens, const NodeClassList &current)
+{
+	rebuildRuleIndexIfNeeded();
+	if (!g_ruleIndex.hasSiblingRules) return false;
+	if (g_ruleIndex.siblingTags.contains(treeState().nodes[node].tag_id)) return true;
+	for (std::size_t i = 0; i < oldTokens.count; ++i)
+		if (g_ruleIndex.siblingClasses.contains(oldTokens.at(i))) return true;
+	for (std::size_t i = 0, n = current.size(); i < n; ++i)
+		if (g_ruleIndex.siblingClasses.contains(current.at(i))) return true;
+	return false;
+}
+
 bool classTokensTouchAncestorSelectors(const NodeClassSnapshot &oldTokens, const NodeClassList &current)
 {
 	if (g_ruleIndex.ancestorClasses.empty()) return false;
@@ -16980,10 +17042,14 @@ void snapshotCustomProperties(const NodeRareData *rareData, CustomPropertySnapsh
 
 void noteClassMutationForIncremental(int node, const NodeClassSnapshot &oldTokens)
 {
-	if (!g_styleMountBatchActive) return;
-	rebuildRuleIndexIfNeeded();
 	const auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
+	// A + or ~ selector keyed on the old or new classes (or the tag) restyles
+	// the siblings after this node.
+	if (classTokensTouchSiblingSelectors(node, oldTokens, state.classLists[node]))
+		StyleSheet::instance().recomputeSiblingsFrom(state.nodes[node].next_sibling);
+	if (!g_styleMountBatchActive) return;
+	rebuildRuleIndexIfNeeded();
 	if (classTokensTouchAncestorSelectors(oldTokens, state.classLists[node]))
 		g_forceFullSubtreeMark.insert(node);
 }
@@ -19001,6 +19067,15 @@ void StyleSheet::hoverChanged() const
 void StyleSheet::recomputeSubtree(int nodeId) const
 {
 	recomputeSubtreeClassStyles(nodeId);
+}
+
+void StyleSheet::recomputeSiblingsFrom(int nodeId) const
+{
+	rebuildRuleIndexIfNeeded();
+	if (!g_ruleIndex.hasSiblingRules) return;
+	auto &state = treeState();
+	for (int sibling = nodeId; sibling >= 0 && sibling < state.nodeCount; sibling = state.nodes[sibling].next_sibling)
+		recomputeSubtreeClassStyles(sibling);
 }
 
 void StyleSheet::startCssAnimations(std::uint32_t nowMs) const

@@ -469,6 +469,8 @@ struct StaticStyleSimpleSelectorSpec {
 struct StaticStyleSelectorPartSpec {
 	StaticStyleSimpleSelectorSpec simple;
 	bool directParent = false;
+	// Relation to the part on its left: 1 next sibling (+), 2 any earlier sibling (~).
+	std::uint8_t sibling = 0;
 };
 
 enum class StaticStyleMediaFeatureKind : std::uint8_t {
@@ -922,6 +924,8 @@ public:
 		bool applyNumberProperty(NodeHandle node, const char *property, double value) const;
 		bool removeProperty(NodeHandle node, const std::string &property) const;
 	void recomputeSubtree(int nodeId) const;
+	// Restyles nodeId and the siblings after it when a + or ~ selector exists.
+	void recomputeSiblingsFrom(int nodeId) const;
 	void hoverChanged() const;
 	void startCssAnimations(std::uint32_t nowMs) const;
 
