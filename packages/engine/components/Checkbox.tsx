@@ -10,6 +10,7 @@ export interface CheckboxProps {
   onChange?: (checked: boolean) => void
   onPress?: PressHandler
   onClick?: PressHandler
+  ariaLabel?: string
 }
 
 const resolveClass = (val?: ClassValue | null): string => {
@@ -35,6 +36,7 @@ export function Checkbox({
   onChange,
   onPress,
   onClick,
+  ariaLabel
 }: CheckboxProps) {
   const toggle = () => {
     if (disabled) return
@@ -77,6 +79,7 @@ export function Checkbox({
       role="checkbox"
       aria-checked={indeterminate ? 'mixed' : checked}
       aria-disabled={disabled}
+      aria-label={ariaLabel}
       tabIndex={disabled ? -1 : 0}
     >
       <span class="gea-checkbox-mark">{mark}</span>
