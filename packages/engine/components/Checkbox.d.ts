@@ -19,6 +19,8 @@ export interface CheckboxProps {
   onPress?: PressHandler
   /** Triggered via click. Note: Runs through the native click event path */
   onClick?: PressHandler
+  /** Accessibility Labels When Labels Are Not Displayed */
+  ariaLabel?: string
 }
 
 export function Checkbox(props: CheckboxProps): any
