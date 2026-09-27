@@ -2870,6 +2870,22 @@ CssRule makeStaticCompiledCssRule(StaticStyleSelectorKind selectorKind,
 	return rule;
 }
 
+// A direct property rule is applied through its compiled value, so its
+// declaration only says which pass it belongs to. The font metrics are resolved
+// first, by a pass that picks its rules by declaration (setsFontMetrics), and
+// every later pass drops them as settled (setStyleValue's g_resolvedFontNode
+// guard). Registered as Ignored, a static `font-weight: 600` therefore never
+// landed anywhere: every node kept 400 on every target.
+CssDeclarationId declarationForDirectProperty(Property property)
+{
+	switch (property) {
+	case Property::FontId: return CssDeclarationId::FontFamily;
+	case Property::FontSize: return CssDeclarationId::FontSize;
+	case Property::FontWeight: return CssDeclarationId::FontWeight;
+	default: return CssDeclarationId::Ignored;
+	}
+}
+
 CssRule makeDirectPropertyCssRule(StaticStyleSelectorKind selectorKind,
                                   const char *selector,
                                   Property property,
@@ -2879,7 +2895,7 @@ CssRule makeDirectPropertyCssRule(StaticStyleSelectorKind selectorKind,
 	return makeStaticCompiledCssRule(selectorKind,
 	                                 selector,
 	                                 CssRuleProperty::Other,
-	                                 CssDeclarationId::Ignored,
+	                                 declarationForDirectProperty(property),
 	                                 storeDirectPropertyCompiledValue(property, value),
 	                                 media);
 }
@@ -2889,10 +2905,18 @@ CssRule makeDirectPropertyGroupCssRule(StaticStyleSelectorKind selectorKind,
                                        std::initializer_list<StaticStylePropertyValue> properties,
                                        const char *media)
 {
+	// A group that carries a font metric joins the font pass whole. Its other
+	// properties are plain values, so applying them early is harmless: the
+	// ordinary pass replays the cascade over them in order.
+	CssDeclarationId declaration = CssDeclarationId::Ignored;
+	for (const StaticStylePropertyValue &entry : properties) {
+		const CssDeclarationId candidate = declarationForDirectProperty(entry.property);
+		if (candidate != CssDeclarationId::Ignored) declaration = candidate;
+	}
 	return makeStaticCompiledCssRule(selectorKind,
 	                                 selector,
 	                                 CssRuleProperty::Other,
-	                                 CssDeclarationId::Ignored,
+	                                 declaration,
 	                                 storeDirectPropertyGroupCompiledValue(properties),
 	                                 media);
 }
