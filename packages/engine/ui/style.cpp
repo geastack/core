@@ -5847,10 +5847,16 @@ ResolvedCssLength resolveCompiledLengthForNodeDetailed(const CssLengthSpec &leng
 	if (tryResolveStaticLengthExpressionCached(handle, expression, nodeId, axis, depth, cached)) return cached;
 	// The ordinary dynamic cache keys containing-block dimensions. Font metrics
 	// are another dependency, so never reuse that cache for font-relative input.
+	// A var() is a third: its value is an ancestor's custom property, and a
+	// node styled before it is parented (templates build children first)
+	// resolves to nothing under the same handle, basis and axis -- an entry
+	// that would then answer every later resolution, layout's included, and
+	// `.screen { padding: var(--safe-x) }` stayed at 0 that way.
 	const bool fontRelative = g_fontSizeBasisNode >= 0 || lengthDependsOnFont(length, nodeId);
-	if (!fontRelative && tryResolveDynamicLengthExpressionCached(handle, nodeId, axis, cached)) return cached;
+	const bool cacheable = !fontRelative && !compiledLengthSpecHasCustomRuntimeInputs(length, depth);
+	if (cacheable && tryResolveDynamicLengthExpressionCached(handle, nodeId, axis, cached)) return cached;
 	ResolvedCssLength resolved = resolveCompiledLengthExpressionForNode(expression, nodeId, axis, depth);
-	if (!fontRelative) storeDynamicLengthExpressionCached(handle, nodeId, axis, resolved);
+	if (cacheable) storeDynamicLengthExpressionCached(handle, nodeId, axis, resolved);
 	return resolved;
 }
 
@@ -8986,7 +8992,8 @@ bool propertyAffectsDescendantStyle(Property property)
 	       property == Property::LineHeight || property == Property::LineHeightExpression || property == Property::LineHeightMultiplier ||
 	       property == Property::TextAlign ||
 	       property == Property::TextTransform ||
-	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::BorderWidth ||
+	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::PointerEvents ||
+	       property == Property::BorderWidth ||
 	       (property >= Property::BorderTopWidth && property <= Property::BorderLeftWidth);
 }
 
@@ -9016,6 +9023,12 @@ void applyInheritedStyleDefaults(int node)
 	style.white_space = parentStyle.white_space;
 #if GEA_CSS_VISIBILITY
 	style.visibility = parentStyle.visibility;
+#endif
+#if GEA_CSS_POINTER_EVENTS
+	// pointer-events inherits in CSS: `.overlay { pointer-events: none }` lets
+	// hits fall through its images too, which is how a decorative layer stays
+	// out of the way of what sits under it.
+	style.pointer_events = parentStyle.pointer_events;
 #endif
 }
 
@@ -15597,6 +15610,11 @@ struct ParentStyleSnapshot {
 #else
 	static constexpr std::uint8_t visibility = 0;
 #endif
+#if GEA_CSS_POINTER_EVENTS
+	std::int8_t pointer_events;
+#else
+	static constexpr std::int8_t pointer_events = 0;
+#endif
 #if GEA_CSS_SIDE_BORDERS
 	std::array<int, 4> border_widths;
 #else
@@ -15624,6 +15642,9 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 #if GEA_CSS_VISIBILITY
 	out.visibility = s.visibility;
 #endif
+#if GEA_CSS_POINTER_EVENTS
+	out.pointer_events = s.pointer_events;
+#endif
 #if GEA_CSS_SIDE_BORDERS
 	out.border_widths = {computedBorderWidth(s, 0), computedBorderWidth(s, 1),
 	                    computedBorderWidth(s, 2), computedBorderWidth(s, 3)};
@@ -15638,7 +15659,8 @@ bool parentStylesDiffer(const ParentStyleSnapshot &a, const ParentStyleSnapshot 
 	return a.text_color != b.text_color || a.text_alpha != b.text_alpha || a.font_id != b.font_id || a.font_size != b.font_size ||
 	       a.font_weight != b.font_weight || a.line_height != b.line_height || a.line_height_multiplier != b.line_height_multiplier ||
 	       a.text_align != b.text_align || a.text_transform != b.text_transform ||
-	       a.white_space != b.white_space || a.visibility != b.visibility || a.border_widths != b.border_widths;
+	       a.white_space != b.white_space || a.visibility != b.visibility || a.pointer_events != b.pointer_events ||
+	       a.border_widths != b.border_widths;
 }
 
 inline void listInsertUnique(CssAtomSmallList &v, CssAtomId s)
@@ -16903,6 +16925,17 @@ void beginStyleMountBatch()
 bool styleMountBatchActive()
 {
 	return g_styleMountBatchActive;
+}
+
+void noteMountedRootStyle(int root)
+{
+	auto &state = treeState();
+	if (root < 0 || root >= state.nodeCount) return;
+	// Under the mount batch this only records the root as pending; being the
+	// ancestor of everything else queued, it subsumes them and the batch's
+	// incremental walk styles the root first, so its custom properties are in
+	// place before any descendant's var() is resolved.
+	recomputeSubtreeClassStyles(root);
 }
 
 void endStyleMountBatch()

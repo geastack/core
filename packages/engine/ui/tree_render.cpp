@@ -1635,9 +1635,14 @@ namespace gea::embedded::ui
 			return;
 		state.refreshSerial++;
 
+		const int previousRoot = state.mountedRoot;
 		state.mountedRoot = root;
 		state.mountedWidth = width;
 		state.mountedHeight = height;
+		// A root mounted for the first time has never had its class styles
+		// computed: `:root` rules (custom properties above all) apply to it and
+		// nowhere else. The styled re-mount at boot passes the same root again.
+		if (previousRoot != root) noteMountedRootStyle(root);
 
 		// While the initial style batch is open, per-node class styles haven't been
 		// applied yet, so laying out now produces UNSTYLED, content-sized boxes. That
