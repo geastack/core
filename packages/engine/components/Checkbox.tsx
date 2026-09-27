@@ -69,6 +69,8 @@ export function Checkbox({
 
   const mark = indeterminate ? '-' : checked ? '✓' : ''
 
+  const computedAriaLabel = ariaLabel || label || 'Checkbox'
+
   return (
     <div
       class={checkClass}
@@ -79,7 +81,7 @@ export function Checkbox({
       role="checkbox"
       aria-checked={indeterminate ? 'mixed' : checked}
       aria-disabled={disabled}
-      aria-label={ariaLabel}
+      aria-label={computedAriaLabel}
       tabIndex={disabled ? -1 : 0}
     >
       <span class="gea-checkbox-mark">{mark}</span>
