@@ -619,7 +619,8 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		                               !horizontal &&
 		                               n->type != NodeType::VirtualList &&
 		                               slotCount == 0 &&
-		                               extraDirtyCount == 0;
+		                               extraDirtyCount == 0 &&
+		                               !list.hasColumnCopies();
 		const int coverageDelta = scrollYNow - coverageScrollY;
 		const bool coverageValid = translateEligible &&
 		                           coverageRoot == root &&

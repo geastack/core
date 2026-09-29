@@ -2147,9 +2147,12 @@ function cssStaticPropertyValue(property, rawValue) {
       if (lower === 'scale-down') return direct('ImageFit', 4)
       return null
     case 'text-align':
-      if (value === 'left' || value === 'start') return direct('TextAlign', 0)
+      // 0 start, 1 center, 2 right, 3 left, 4 end (see textAlignValue in style.cpp).
+      if (value === 'start') return direct('TextAlign', 0)
       if (value === 'center') return direct('TextAlign', 1)
-      if (value === 'right' || value === 'end') return direct('TextAlign', 2)
+      if (value === 'right') return direct('TextAlign', 2)
+      if (value === 'left') return direct('TextAlign', 3)
+      if (value === 'end') return direct('TextAlign', 4)
       return null
     case 'text-decoration':
     case 'text-decoration-line':

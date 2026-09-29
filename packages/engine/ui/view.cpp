@@ -2814,10 +2814,7 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 	// Clip commands carry int16 rects. Past that range the saturated rect
 	// clips exactly as much: no screen reaches beyond it. A transformed clip
 	// takes its rect from the projected corners instead.
-	if (!transformed) {
-		w = std::min({w, 32767 - x, 32767});
-		h = std::min({h, 32767 - y, 32767});
-	}
+	if (!transformed) saturateRect16(x, y, w, h);
 	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
 	// The padding edge is rounded with the outer radii less the border widths.
 	const auto &s = node.style;

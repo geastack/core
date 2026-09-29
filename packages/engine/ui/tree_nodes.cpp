@@ -639,11 +639,16 @@ void Tree::insertBefore(int child, int parent, int reference)
 
 void Tree::removeNode(int id)
 {
+	removeNode(id, true);
+}
+
+void Tree::removeNode(int id, bool restyleSiblings)
+{
 	auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount || !state.nodeActive[id]) return;
 	if (containsNode(id, state.hoveredNodeId)) pointerHover(-1, -1);
 	while (state.nodes[id].first_child >= 0) {
-		removeNode(state.nodes[id].first_child);
+		removeNode(state.nodes[id].first_child, false);
 		if (id >= state.nodeCount || !state.nodeActive[id]) return;
 	}
 	Node *n = &state.nodes[id];
@@ -667,7 +672,7 @@ void Tree::removeNode(int id)
 	if (n->prev_sibling >= 0) state.nodes[n->prev_sibling].next_sibling = n->next_sibling;
 	if (n->next_sibling >= 0) state.nodes[n->next_sibling].prev_sibling = n->prev_sibling;
 	// Sibling selectors (+, ~) of the siblings that followed it.
-	StyleSheet::instance().recomputeSiblingsFrom(next);
+	if (restyleSiblings) StyleSheet::instance().recomputeSiblingsFrom(next);
 	n = &state.nodes[id];
 	n->style.display = 1;
 	n->parent = -1;

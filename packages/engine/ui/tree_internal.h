@@ -162,6 +162,9 @@ public:
 
 private:
 	Tree() = default;
+	// restyleSiblings is false for the children of a node being removed: their
+	// siblings are removed next, so restyling them is wasted work.
+	void removeNode(int node, bool restyleSiblings);
 };
 
 // Document-level (off-tree) events: `rotary` always, and `keydown` bound on a
