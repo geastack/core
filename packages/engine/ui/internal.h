@@ -440,6 +440,10 @@ void rootScrollImageHoldTick();
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
 		bool hasTextClippedBackgrounds() const;
+		// True when the list holds multicol column copies (replicateColumns). In-place
+		// translation and re-recording do not update them, so callers fall back to a
+		// full record.
+		bool hasColumnCopies() const;
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;

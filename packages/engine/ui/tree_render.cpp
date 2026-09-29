@@ -10,6 +10,7 @@
 #include "style_values.h"
 #include "tree_state.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -266,7 +267,7 @@ namespace gea::embedded::ui
 				return true;
 			if (node.style.mask_right_fade_width > 0)
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || rstyle(node.style).border_image_source)
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 || rstyle(node.style).border_image_source)
 				return true;
 			return node.style.has_bg && (styleHasRoundedRasterEdge(node.style) || node.style.bg_alpha < 255);
 		}
@@ -288,8 +289,10 @@ namespace gea::embedded::ui
 		{
 			if (!dirtyRectNeedsRasterGuard(node))
 				return rect;
-			// border-image-outset paints outside the border box.
-			return expandDirtyRect(rect, 1 + StyleValues::borderImageOutsetExtent(node.style));
+			// border-image-outset and an outer box-shadow paint outside the border box;
+			// the previous shadow extent covers pixels a moved or shrunk shadow left.
+			const int shadow = std::max(boxShadowExtent(node.style), static_cast<int>(node.render.previous_box_shadow_extent));
+			return expandDirtyRect(rect, 1 + std::max(StyleValues::borderImageOutsetExtent(node.style), shadow));
 		}
 
 		DirtyRegions::Rect dirtyRectWithRetainedMoveGuard(DirtyRegions::Rect rect)
@@ -2185,6 +2188,11 @@ namespace gea::embedded::ui
 				int dy = n->layout.y - n->layout.previous_y - inherited_dy;
 				if (dx || dy)
 				{
+					if (DisplayList::instance().hasColumnCopies())
+					{
+						can_keep_display_list = 0;
+						break;
+					}
 					if (n->first_child >= 0)
 						DisplayList::instance().translateSubtreeCommands(i, dx, dy);
 					else

@@ -1516,8 +1516,9 @@ struct RenderState {
 		struct { int16_t x0, x1; } text_dirty;
 	};
 	// boxShadowExtent at the last snapshot, so a moved or restyled shadow
-	// invalidates the pixels it used to cover. Sits in trailing padding.
-	int16_t previous_box_shadow_extent;
+	// invalidates the pixels it used to cover. Spread, blur and offset are each
+	// int16_t, so their sum needs 32 bits.
+	int32_t previous_box_shadow_extent;
 };
 
 inline bool hadIndividualLinearTransform(const RenderState &s)

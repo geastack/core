@@ -1619,7 +1619,8 @@ private:
 			if (penY + glyphHeight - 1 >= clipY0) {
 				const int align = lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]);
 				const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, line.renderBytes, glyphWidth) : 0;
-				int penX = lineOriginX + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent);
+				const int lineX = lineOriginX + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent);
+				int penX = lineX;
 				if (penX <= clipX1 && penX + line.width - 1 >= clipX0) {
 					const char *glyph = lineStart;
 					const char *renderEnd = lineStart + line.renderBytes;
@@ -1634,8 +1635,7 @@ private:
 						penX += glyphWidth;
 					}
 				}
-				drawEmphasisMarks(lineStart, line.renderBytes, lineOriginX + alignedOffset(lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]), containerWidth, line.width),
-				                  penY, glyphHeight, glyphHeight, ellipsis, [glyphWidth](int) { return glyphWidth; }, coverageSink);
+				drawEmphasisMarks(lineStart, line.renderBytes, lineX, penY, glyphHeight, glyphHeight, ellipsis, [glyphWidth](int) { return glyphWidth; }, coverageSink);
 			}
 
 			lineStart += line.consumedBytes;

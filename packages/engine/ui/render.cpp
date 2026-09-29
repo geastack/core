@@ -2122,16 +2122,18 @@ int gLastScrollUiFrame = -1000;
 				std::size_t offset;
 			};
 
+			// Per-core banks: the 2-core band split replays both halves concurrently,
+			// and each half pushes and pops its own shaped clips.
 			static std::vector<Entry> &entries()
 			{
-				static std::vector<Entry> value;
-				return value;
+				static std::vector<Entry> value[2];
+				return value[gea_current_render_core() & 1];
 			}
 
 			static std::vector<gea::framework::graphics::pixel::native_t> &saved()
 			{
-				static std::vector<gea::framework::graphics::pixel::native_t> value;
-				return value;
+				static std::vector<gea::framework::graphics::pixel::native_t> value[2];
+				return value[gea_current_render_core() & 1];
 			}
 
 			static void begin(const TransformedRoundedRectCommand &shape)
@@ -10518,6 +10520,11 @@ int gLastScrollUiFrame = -1000;
 		return state.textClippedBackgrounds;
 	}
 
+	bool DisplayList::hasColumnCopies() const
+	{
+		return !columnCopies().empty();
+	}
+
 	void DisplayList::clearRetainedBackgroundRecolors()
 	{
 		state.retainedBackgroundRecolorCount = 0;
@@ -12932,6 +12939,10 @@ int gLastScrollUiFrame = -1000;
 		int start = state.nodeDrawStart[node];
 		int end = state.nodeDrawEnd[node];
 		if (start < 0 || end < start || end > state.commandCount)
+			return false;
+		// Splicing moves commands but not the multicol column copies, which would
+		// then point at stale indices; only a full record rebuilds them.
+		if (!columnCopies().empty())
 			return false;
 
 		DisplayCommand tmp[96];

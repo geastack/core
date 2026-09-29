@@ -6909,10 +6909,10 @@ const CssCompiledBackground *compiledCssBackgroundForHandle(std::uint16_t handle
 bool backgroundImageIsValid(int handle, int nodeId);
 
 // line-clamp (CSS Overflow 4) and its longhands as MaxLines, LineClampContinue,
-// BlockEllipsis and BlockEllipsisString writes. A custom ellipsis string is
+// LineClampDiscard, BlockEllipsis and BlockEllipsisString writes. A custom ellipsis string is
 // interned as a CSS atom; an empty one paints nothing, like none.
 // Returns the write count, 0 for an invalid value, -1 for other declarations.
-int lineClampWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+int lineClampWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[5])
 {
 	const bool shorthand = declaration == CssDeclarationId::LineClamp || declaration == CssDeclarationId::WebkitLineClamp;
 	if (!shorthand && declaration != CssDeclarationId::MaxLines && declaration != CssDeclarationId::Continue &&
@@ -6962,7 +6962,8 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 		out[1] = {Property::LineClampContinue, 0};
 		out[2] = {Property::BlockEllipsis, 0};
 		out[3] = {Property::BlockEllipsisString, 0};
-		return 4;
+		out[4] = {Property::LineClampDiscard, 0};
+		return 5;
 	}
 	for (const auto &word : words) {
 		if (lineCount(word, lines)) continue;
@@ -6977,7 +6978,8 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 	out[1] = {Property::LineClampContinue, declaration == CssDeclarationId::LineClamp};
 	out[2] = {Property::BlockEllipsis, ellipsis && (!quoted || customAtom != 0)};
 	out[3] = {Property::BlockEllipsisString, customAtom};
-	return 4;
+	out[4] = {Property::LineClampDiscard, 0};
+	return 5;
 }
 
 // border-style and its longhands as per-side relief writes (CSS Backgrounds
@@ -12088,7 +12090,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "float") return removeInlineStyleProperties(id, {Property::Float});
 	if (property == "margin-trim") return removeInlineStyleProperties(id, {Property::MarginTrim});
 	if (property == "line-clamp" || property == "-webkit-line-clamp")
-		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::BlockEllipsis, Property::BlockEllipsisString});
+		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::LineClampDiscard, Property::BlockEllipsis, Property::BlockEllipsisString});
 	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});
 	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue, Property::LineClampDiscard});
 	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis, Property::BlockEllipsisString});
@@ -18727,8 +18729,12 @@ void StyleSheet::recomputeSiblingsFrom(int nodeId) const
 	rebuildRuleIndexIfNeeded();
 	if (!g_ruleIndex.hasSiblingRules) return;
 	auto &state = treeState();
-	for (int sibling = nodeId; sibling >= 0 && sibling < state.nodeCount; sibling = state.nodes[sibling].next_sibling)
+	// ::before/::after nodes take their style from the owner's rule plan, not
+	// their own tag, so they are skipped like in recomputeSubtreeClassStyles.
+	for (int sibling = nodeId; sibling >= 0 && sibling < state.nodeCount; sibling = state.nodes[sibling].next_sibling) {
+		if (isGeneratedPseudoNode(state.nodes[sibling])) continue;
 		recomputeSubtreeClassStyles(sibling);
+	}
 }
 
 void StyleSheet::startCssAnimations(std::uint32_t nowMs) const
