@@ -520,5 +520,45 @@ int main()
 		if (!expectEqual(tree.node(child).layout.y, 44, "normal sibling resize recomputes static anchor")) return 1;
 	}
 
+	// Components may allocate their text before the carousel containers that
+	// adopt them. Repainting that text during a move must not translate it twice.
+	resetNativeHost();
+	setNativeDisplaySize(120, 80);
+	setViewportMetrics(120, 80, 1.0);
+	{
+		auto &tree = Tree::instance();
+		const int label = tree.createText();
+		const int panel = tree.createView();
+		const int root = tree.createView();
+		NodeHandle(root).appendChild(NodeHandle(panel));
+		NodeHandle(panel).appendChild(NodeHandle(label));
+		NodeHandle(root).style().width(120);
+		NodeHandle(root).style().height(80);
+		NodeHandle(root).style().backgroundColor(0x0000);
+		NodeHandle(panel).style().position(1);
+		NodeHandle(panel).style().left(10);
+		NodeHandle(panel).style().width(80);
+		NodeHandle(panel).style().height(60);
+		NodeHandle(label).style().width(60);
+		NodeHandle(label).style().color(0xffff);
+		NodeHandle(label).setText("FLORA");
+		tree.mount(root, 120, 80);
+		NodeHandle(panel).style().left(30);
+		NodeHandle(label).style().color(0x07e0);
+		tree.refresh(root, 120, 80);
+		bool found = false;
+		for (int i = 0; i < DisplayList::instance().nodeCommandCount(label); ++i) {
+			const auto *command = DisplayList::instance().nodeCommandAt(label, i);
+			if (command->type != DisplayCommandType::DrawText) continue;
+			found = true;
+			if (!expectEqual(command->text.x, tree.node(label).layout.x,
+			                 "child allocated before parent must not double translate fresh text")) return 1;
+		}
+		if (!found) {
+			std::fprintf(stderr, "expected retained carousel text command\n");
+			return 1;
+		}
+	}
+
 	return 0;
 }

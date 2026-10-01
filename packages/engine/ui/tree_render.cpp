@@ -2214,6 +2214,16 @@ namespace gea::embedded::ui
 					}
 #endif
 				}
+			}
+			// Allocation order is not tree order: component text can precede
+			// its parent panel. Finish translating all retained commands before
+			// recording any replacements at their final layout coordinates, or
+			// a later parent translation moves freshly recorded text twice.
+			for (int i = 0; can_keep_display_list && i < state.nodeCount; i++)
+			{
+				Node *n = &state.nodes[i];
+				if (!n->render.dirty)
+					continue;
 				if (layoutSizeChangeNeedsCommandRerecord(*n))
 					state.nodeCommandDirty[i] = 1;
 				if (state.nodeCommandDirty[i] && n->render.transform_dirty && n->first_child >= 0)
