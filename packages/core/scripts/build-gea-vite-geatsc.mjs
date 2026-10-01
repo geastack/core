@@ -1529,22 +1529,27 @@ function parseStaticSelectorPlanSpec(selector) {
   if (!text) return null
   const parts = []
   let nextDirect = false
+  // Relation to the previous part: 1 next sibling (+), 2 any earlier sibling (~).
+  let nextSibling = 0
+  const combinator = (char) => char === '>' || char === '+' || char === '~'
   let i = 0
   while (i < text.length) {
     while (i < text.length && text.charCodeAt(i) <= 32) i++
     if (i >= text.length) break
-    if (text[i] === '>') {
-      nextDirect = true
+    if (combinator(text[i])) {
+      nextDirect = text[i] === '>'
+      nextSibling = text[i] === '+' ? 1 : text[i] === '~' ? 2 : 0
       i++
       continue
     }
     const start = i
-    while (i < text.length && text.charCodeAt(i) > 32 && text[i] !== '>') i++
+    while (i < text.length && text.charCodeAt(i) > 32 && !combinator(text[i])) i++
     if (i <= start) continue
     const simple = parseStaticSimpleSelectorSpec(text.slice(start, i))
     if (!simple) return null
-    parts.push({ simple, directParent: nextDirect })
+    parts.push({ simple, directParent: nextDirect, sibling: nextSibling })
     nextDirect = false
+    nextSibling = 0
   }
   return parts.length > 0 ? { text, parts } : null
 }
@@ -1557,7 +1562,7 @@ function staticSimpleSelectorSpecCode(simple) {
 }
 
 function staticSelectorPartSpecCode(part) {
-  return `{${staticSimpleSelectorSpecCode(part.simple)}, ${part.directParent ? 'true' : 'false'}}`
+  return `{${staticSimpleSelectorSpecCode(part.simple)}, ${part.directParent ? 'true' : 'false'}, ${part.sibling}}`
 }
 
 function staticSelectorPlanRegistration(selector) {
@@ -2039,7 +2044,8 @@ function cssStaticPropertyValue(property, rawValue) {
   const length = simpleStaticLength(value)
   switch (property) {
     case 'display': {
-      const values = new Map([['block', 0], ['none', 1], ['grid', 2], ['inline-grid', 2], ['flex', 3], ['inline-flex', 3]])
+      // Keyword flags above the box kind, as in the engine's displayValue().
+      const values = new Map([['block', 0], ['none', 1], ['grid', 2], ['inline-grid', 66], ['flex', 3], ['inline-flex', 67], ['flow-root', 32], ['inline', 64], ['inline-block', 96]])
       return values.has(value) ? direct('Display', values.get(value)) : null
     }
     case 'box-sizing':
@@ -2134,9 +2140,12 @@ function cssStaticPropertyValue(property, rawValue) {
       if (lower === 'scale-down') return direct('ImageFit', 4)
       return null
     case 'text-align':
-      if (value === 'left' || value === 'start') return direct('TextAlign', 0)
+      // 0 start, 1 center, 2 right, 3 left, 4 end (see textAlignValue in style.cpp).
+      if (value === 'start') return direct('TextAlign', 0)
       if (value === 'center') return direct('TextAlign', 1)
-      if (value === 'right' || value === 'end') return direct('TextAlign', 2)
+      if (value === 'right') return direct('TextAlign', 2)
+      if (value === 'left') return direct('TextAlign', 3)
+      if (value === 'end') return direct('TextAlign', 4)
       return null
     case 'text-decoration':
     case 'text-decoration-line':

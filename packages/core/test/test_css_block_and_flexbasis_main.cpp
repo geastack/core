@@ -4370,11 +4370,12 @@ void testBaselineAlignment()
 					StyleSheet::instance().registerRule("baseline-child", "align-self", "last baseline");
 					StyleSheet::instance().registerRule("baseline-child", "justify-self", "baseline last");
 					tree.mount(root, 300, 200);
+					// The fallback end belongs to the grid, not the child's own
+					// direction or writing mode (WPT grid-abspos-staticpos-*-002).
 					const bool reversed = std::strcmp(mode, "ltr") != 0;
-					const bool endAtLeft = reversed && !ownWritingMode;
 					const int areaLeft = positioned && !small ? (reversed ? 21 : 5) : 3;
 					const int areaWidth = small ? 2 : positioned ? 20 : 40;
-					const int x = areaLeft + (endAtLeft ? 0 : areaWidth - 8);
+					const int x = areaLeft + (reversed ? 0 : areaWidth - 8);
 					const int y = small ? -1 : positioned ? 19 : 37;
 					expectEqual(tree.node(child).layout.x - tree.node(grid).layout.x, x, "absolute baseline fallback uses logical horizontal end without overflow clamp");
 					expectEqual(tree.node(child).layout.y - tree.node(grid).layout.y, y, "absolute baseline fallback uses logical vertical end without overflow clamp");

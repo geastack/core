@@ -402,6 +402,11 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.float_side != b.float_side ||
 	    a.clear_side != b.clear_side ||
 	    ar.margin_trim != br.margin_trim ||
+	    ar.max_lines != br.max_lines ||
+	    ar.line_clamp_flags != br.line_clamp_flags ||
+	    ar.block_ellipsis != br.block_ellipsis ||
+	    ar.column_count != br.column_count ||
+	    ar.column_width != br.column_width ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -499,6 +504,12 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.bg_fill != b.bg_fill ||
 	    ar.containment != br.containment ||
 	    ar.bg_clip != br.bg_clip ||
+	    ar.bg_blend != br.bg_blend ||
+	    ar.border_image_source != br.border_image_source ||
+	    ar.border_image_slice != br.border_image_slice ||
+	    ar.border_image_width != br.border_image_width ||
+	    ar.border_image_outset != br.border_image_outset ||
+	    ar.border_image_repeat != br.border_image_repeat ||
 	    ar.bg_size_list != br.bg_size_list ||
 	    ar.bg_position_list != br.bg_position_list ||
 	    ar.bg_repeat_list != br.bg_repeat_list ||
@@ -600,6 +611,10 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.font_weight != b.font_weight ||
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
+	    a.text_align_last != b.text_align_last ||
+	    a.text_emphasis != b.text_emphasis ||
+	    a.text_emphasis_color != b.text_emphasis_color ||
+	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -627,6 +642,11 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.float_side != b.float_side ||
 	    a.clear_side != b.clear_side ||
 	    ar.margin_trim != br.margin_trim ||
+	    ar.max_lines != br.max_lines ||
+	    ar.line_clamp_flags != br.line_clamp_flags ||
+	    ar.block_ellipsis != br.block_ellipsis ||
+	    ar.column_count != br.column_count ||
+	    ar.column_width != br.column_width ||
 	    a.writing_mode != b.writing_mode ||
 	    a.direction != b.direction ||
 	    a.row_gap != b.row_gap ||
@@ -719,6 +739,10 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.font_weight != b.font_weight ||
 	    a.line_height != b.line_height ||
 	    a.text_align != b.text_align ||
+	    a.text_align_last != b.text_align_last ||
+	    a.text_emphasis != b.text_emphasis ||
+	    a.text_emphasis_color != b.text_emphasis_color ||
+	    a.vertical_align != b.vertical_align ||
 	    a.overflow != b.overflow ||
 	    a.overflow_x != b.overflow_x ||
 	    a.overflow_y != b.overflow_y ||
@@ -1088,6 +1112,88 @@ enum class CssRuleProperty : std::uint8_t {
 
 using CssDeclarationId = StyleDeclaration;
 
+// CSS Logical Properties 4, resolved for horizontal-tb ltr: the inline axis is
+// horizontal and starts on the left. Other writing modes and rtl still map this
+// way. A logical longhand classifies as its physical property.
+const char *physicalLogicalLonghand(const char *property)
+{
+	static const std::pair<const char *, const char *> longhands[] = {
+		{"inline-size", "width"},
+		{"block-size", "height"},
+		{"min-inline-size", "min-width"},
+		{"min-block-size", "min-height"},
+		{"max-inline-size", "max-width"},
+		{"max-block-size", "max-height"},
+		{"margin-inline-start", "margin-left"},
+		{"margin-inline-end", "margin-right"},
+		{"margin-block-start", "margin-top"},
+		{"margin-block-end", "margin-bottom"},
+		{"padding-inline-start", "padding-left"},
+		{"padding-inline-end", "padding-right"},
+		{"padding-block-start", "padding-top"},
+		{"padding-block-end", "padding-bottom"},
+		{"inset-inline-start", "left"},
+		{"inset-inline-end", "right"},
+		{"inset-block-start", "top"},
+		{"inset-block-end", "bottom"},
+		{"border-inline-start", "border-left"},
+		{"border-inline-end", "border-right"},
+		{"border-block-start", "border-top"},
+		{"border-block-end", "border-bottom"},
+		{"border-inline-start-width", "border-left-width"},
+		{"border-inline-start-color", "border-left-color"},
+		{"border-inline-start-style", "border-left-style"},
+		{"border-inline-end-width", "border-right-width"},
+		{"border-inline-end-color", "border-right-color"},
+		{"border-inline-end-style", "border-right-style"},
+		{"border-block-start-width", "border-top-width"},
+		{"border-block-start-color", "border-top-color"},
+		{"border-block-start-style", "border-top-style"},
+		{"border-block-end-width", "border-bottom-width"},
+		{"border-block-end-color", "border-bottom-color"},
+		{"border-block-end-style", "border-bottom-style"},
+		{"border-start-start-radius", "border-top-left-radius"},
+		{"border-start-end-radius", "border-top-right-radius"},
+		{"border-end-start-radius", "border-bottom-left-radius"},
+		{"border-end-end-radius", "border-bottom-right-radius"}
+	};
+	for (const auto &entry : longhands)
+		if (std::strcmp(property, entry.first) == 0) return entry.second;
+	return nullptr;
+}
+
+// A logical shorthand for two physical sides: `split` values give the second
+// side its own value (one value sets both); otherwise both take the value.
+struct LogicalPair {
+	const char *name;
+	StyleDeclaration declaration;
+	StyleDeclaration first, second;
+	bool split;
+};
+
+const LogicalPair *logicalPairFor(const char *property, StyleDeclaration declaration = StyleDeclaration::Unknown)
+{
+	static const LogicalPair pairs[] = {
+		{"margin-inline", StyleDeclaration::MarginInline, StyleDeclaration::MarginLeft, StyleDeclaration::MarginRight, true},
+		{"margin-block", StyleDeclaration::MarginBlock, StyleDeclaration::MarginTop, StyleDeclaration::MarginBottom, true},
+		{"padding-inline", StyleDeclaration::PaddingInline, StyleDeclaration::PaddingLeft, StyleDeclaration::PaddingRight, true},
+		{"padding-block", StyleDeclaration::PaddingBlock, StyleDeclaration::PaddingTop, StyleDeclaration::PaddingBottom, true},
+		{"inset-inline", StyleDeclaration::InsetInline, StyleDeclaration::Left, StyleDeclaration::Right, true},
+		{"inset-block", StyleDeclaration::InsetBlock, StyleDeclaration::Top, StyleDeclaration::Bottom, true},
+		{"border-inline", StyleDeclaration::BorderInline, StyleDeclaration::BorderLeft, StyleDeclaration::BorderRight, false},
+		{"border-block", StyleDeclaration::BorderBlock, StyleDeclaration::BorderTop, StyleDeclaration::BorderBottom, false},
+		{"border-inline-width", StyleDeclaration::BorderInlineWidth, StyleDeclaration::BorderLeftWidth, StyleDeclaration::BorderRightWidth, true},
+		{"border-block-width", StyleDeclaration::BorderBlockWidth, StyleDeclaration::BorderTopWidth, StyleDeclaration::BorderBottomWidth, true},
+		{"border-inline-color", StyleDeclaration::BorderInlineColor, StyleDeclaration::BorderLeftColor, StyleDeclaration::BorderRightColor, true},
+		{"border-block-color", StyleDeclaration::BorderBlockColor, StyleDeclaration::BorderTopColor, StyleDeclaration::BorderBottomColor, true},
+		{"border-inline-style", StyleDeclaration::BorderInlineStyle, StyleDeclaration::BorderLeftStyle, StyleDeclaration::BorderRightStyle, true},
+		{"border-block-style", StyleDeclaration::BorderBlockStyle, StyleDeclaration::BorderTopStyle, StyleDeclaration::BorderBottomStyle, true}
+	};
+	for (const auto &pair : pairs)
+		if (property ? std::strcmp(property, pair.name) == 0 : pair.declaration == declaration) return &pair;
+	return nullptr;
+}
+
 CssDeclarationId classifyDeclaration(const char *property)
 {
 	if (!property || !*property) return CssDeclarationId::Unknown;
@@ -1097,6 +1203,10 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "right") == 0) return CssDeclarationId::Right;
 	if (std::strcmp(property, "bottom") == 0) return CssDeclarationId::Bottom;
 	if (property[0] == '-' && property[1] == '-') return CssDeclarationId::Custom;
+	if (std::strstr(property, "inline") || std::strstr(property, "block") || std::strstr(property, "start") || std::strstr(property, "end")) {
+		if (const char *physical = physicalLogicalLonghand(property)) return classifyDeclaration(physical);
+		if (const LogicalPair *pair = logicalPairFor(property)) return pair->declaration;
+	}
 	if (std::strcmp(property, "color-scheme") == 0 ||
 		    std::strcmp(property, "isolation") == 0 ||
 	    std::strcmp(property, "letter-spacing") == 0 ||
@@ -1163,6 +1273,16 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "float") == 0) return CssDeclarationId::Float;
 	if (std::strcmp(property, "aspect-ratio") == 0) return CssDeclarationId::AspectRatio;
 	if (std::strcmp(property, "margin-trim") == 0) return CssDeclarationId::MarginTrim;
+	if (std::strcmp(property, "line-clamp") == 0) return CssDeclarationId::LineClamp;
+	if (std::strcmp(property, "-webkit-line-clamp") == 0) return CssDeclarationId::WebkitLineClamp;
+	if (std::strcmp(property, "max-lines") == 0) return CssDeclarationId::MaxLines;
+	if (std::strcmp(property, "continue") == 0) return CssDeclarationId::Continue;
+	if (std::strcmp(property, "block-ellipsis") == 0) return CssDeclarationId::BlockEllipsis;
+	if (std::strcmp(property, "columns") == 0) return CssDeclarationId::Columns;
+	if (std::strcmp(property, "column-count") == 0) return CssDeclarationId::ColumnCount;
+	if (std::strcmp(property, "column-width") == 0) return CssDeclarationId::ColumnWidth;
+	if (std::strcmp(property, "column-fill") == 0) return CssDeclarationId::ColumnFill;
+	if (std::strcmp(property, "column-span") == 0) return CssDeclarationId::ColumnSpan;
 	if (std::strcmp(property, "clear") == 0) return CssDeclarationId::Clear;
 	if (std::strcmp(property, "direction") == 0) return CssDeclarationId::Direction;
 	if (std::strcmp(property, "writing-mode") == 0) return CssDeclarationId::WritingMode;
@@ -1175,6 +1295,13 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "contain") == 0) return CssDeclarationId::Contain;
 	if (std::strcmp(property, "background-color") == 0) return CssDeclarationId::BackgroundColor;
 	if (std::strcmp(property, "background-clip") == 0) return CssDeclarationId::BackgroundClip;
+	if (std::strcmp(property, "background-blend-mode") == 0) return CssDeclarationId::BackgroundBlendMode;
+	if (std::strcmp(property, "border-image") == 0) return CssDeclarationId::BorderImage;
+	if (std::strcmp(property, "border-image-source") == 0) return CssDeclarationId::BorderImageSourceDeclaration;
+	if (std::strcmp(property, "border-image-slice") == 0) return CssDeclarationId::BorderImageSliceDeclaration;
+	if (std::strcmp(property, "border-image-width") == 0) return CssDeclarationId::BorderImageWidthDeclaration;
+	if (std::strcmp(property, "border-image-outset") == 0) return CssDeclarationId::BorderImageOutsetDeclaration;
+	if (std::strcmp(property, "border-image-repeat") == 0) return CssDeclarationId::BorderImageRepeatDeclaration;
 	if (std::strcmp(property, "background-image") == 0) return CssDeclarationId::BackgroundImage;
 	if (std::strcmp(property, "background") == 0) return CssDeclarationId::Background;
 	if (std::strcmp(property, "background-size") == 0) return CssDeclarationId::BackgroundSize;
@@ -1196,6 +1323,11 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "border-right-width") == 0) return CssDeclarationId::BorderRightWidth;
 	if (std::strcmp(property, "border-bottom-width") == 0) return CssDeclarationId::BorderBottomWidth;
 	if (std::strcmp(property, "border-left-width") == 0) return CssDeclarationId::BorderLeftWidth;
+	if (std::strcmp(property, "border-style") == 0) return CssDeclarationId::BorderStyle;
+	if (std::strcmp(property, "border-top-style") == 0) return CssDeclarationId::BorderTopStyle;
+	if (std::strcmp(property, "border-right-style") == 0) return CssDeclarationId::BorderRightStyle;
+	if (std::strcmp(property, "border-bottom-style") == 0) return CssDeclarationId::BorderBottomStyle;
+	if (std::strcmp(property, "border-left-style") == 0) return CssDeclarationId::BorderLeftStyle;
 	if (std::strcmp(property, "border-top-color") == 0) return CssDeclarationId::BorderTopColor;
 	if (std::strcmp(property, "border-right-color") == 0) return CssDeclarationId::BorderRightColor;
 	if (std::strcmp(property, "border-bottom-color") == 0) return CssDeclarationId::BorderBottomColor;
@@ -1210,6 +1342,12 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "font-weight") == 0) return CssDeclarationId::FontWeight;
 	if (std::strcmp(property, "line-height") == 0) return CssDeclarationId::LineHeight;
 	if (std::strcmp(property, "text-align") == 0) return CssDeclarationId::TextAlign;
+	if (std::strcmp(property, "text-align-last") == 0) return CssDeclarationId::TextAlignLast;
+	if (std::strcmp(property, "text-emphasis") == 0) return CssDeclarationId::TextEmphasis;
+	if (std::strcmp(property, "text-emphasis-style") == 0) return CssDeclarationId::TextEmphasisStyleDeclaration;
+	if (std::strcmp(property, "text-emphasis-color") == 0) return CssDeclarationId::TextEmphasisColorDeclaration;
+	if (std::strcmp(property, "text-emphasis-position") == 0) return CssDeclarationId::TextEmphasisPositionDeclaration;
+	if (std::strcmp(property, "vertical-align") == 0) return CssDeclarationId::VerticalAlign;
 	if (std::strcmp(property, "text-decoration") == 0 || std::strcmp(property, "text-decoration-line") == 0) return CssDeclarationId::TextDecoration;
 	if (std::strcmp(property, "text-transform") == 0) return CssDeclarationId::TextTransform;
 	if (std::strcmp(property, "white-space") == 0) return CssDeclarationId::WhiteSpace;
@@ -1419,9 +1557,10 @@ struct CssCompiledValue {
 	std::uint16_t flags = 0;
 	std::uint8_t aux = 0;
 	CssLengthSpec lengths[4];
-	// Four direct-property pairs are the largest scalar payload. Transform
-	// rotation and scale occupy slots 0..5; translations use lengths[].
-	std::int32_t values[8]{};
+	// Five direct-property pairs (the border-image shorthand) are the largest
+	// scalar payload. Transform rotation and scale occupy slots 0..5;
+	// translations use lengths[].
+	std::int32_t values[10]{};
 };
 
 CssLengthSpec cssLengthSpecForStatic(StaticStyleLengthSpec spec);
@@ -1849,6 +1988,10 @@ std::uint16_t storeDirectPropertyCompiledValue(Property property, int value)
 	return static_cast<std::uint16_t>(list.size() - 1);
 }
 
+// CssCompiledValue::values holds up to five property/value pairs; aux holds the count.
+constexpr int kDirectPropertyGroupCapacity = 5;
+static_assert(2 * kDirectPropertyGroupCapacity <= static_cast<int>(sizeof(CssCompiledValue::values) / sizeof(CssCompiledValue::values[0])));
+
 std::uint16_t storeDirectPropertyGroupCompiledValue(std::initializer_list<StaticStylePropertyValue> properties)
 {
 	auto &list = compiledCssValues();
@@ -1857,7 +2000,7 @@ std::uint16_t storeDirectPropertyGroupCompiledValue(std::initializer_list<Static
 	compiled.kind = CssCompiledKind::DirectPropertyGroup;
 	int count = 0;
 	for (const StaticStylePropertyValue &entry : properties) {
-		if (count >= 4) break;
+		if (count >= kDirectPropertyGroupCapacity) break;
 		compiled.values[count * 2] = static_cast<int>(entry.property);
 		compiled.values[1 + count * 2] = entry.value;
 		count++;
@@ -2266,10 +2409,31 @@ std::vector<std::vector<std::uint8_t>> &backgroundClipLists()
 	return lists;
 }
 
+std::vector<std::vector<std::uint8_t>> &backgroundBlendLists()
+{
+	static std::vector<std::vector<std::uint8_t>> lists;
+	return lists;
+}
+
+std::vector<BorderImageSource> &borderImageSources()
+{
+	static std::vector<BorderImageSource> list;
+	return list;
+}
+
+std::vector<BorderImageSides> &borderImageSideLists()
+{
+	static std::vector<BorderImageSides> list;
+	return list;
+}
+
 void clearCompiledCssBackgrounds()
 {
 	compiledCssBackgrounds().clear();
 	backgroundClipLists().clear();
+	backgroundBlendLists().clear();
+	borderImageSources().clear();
+	borderImageSideLists().clear();
 	backgroundPlacementLists().clear();
 }
 
@@ -3707,26 +3871,61 @@ int containmentValue(const std::string &value)
 std::vector<std::string> splitFunctionAwareWords(const std::string &value);
 int parseOriginPart(const std::string &part, int fallback);
 
-int parseCalcExpression(const std::string &expr, int nodeId, LengthAxis axis)
+// The operator a calc() sum or product splits at, following CSS precedence: the
+// last top-level + or - (sums are left-associative), else the last * or /.
+// A + or - is binary only after an operand, not as a number's sign or exponent.
+std::size_t calcOperatorSplit(const std::string &text)
 {
-	const std::string text = trimCssValue(expr);
-	for (char op : {'/', '*', '+', '-'}) {
+	for (const char *ops : {"+-", "*/"}) {
 		int depth = 0;
+		std::size_t split = std::string::npos;
 		for (std::size_t i = 0; i < text.size(); ++i) {
 			const char c = text[i];
 			if (c == '(') depth++;
 			else if (c == ')' && depth > 0) depth--;
-			else if (c == op && depth == 0 && i > 0) {
-				const int left = parseLengthForNode(text.substr(0, i), nodeId, axis);
-				const double right = std::strtod(text.substr(i + 1).c_str(), nullptr);
-				if (op == '/') return right == 0.0 ? 0 : roundToInt(static_cast<double>(left) / right);
-				if (op == '*') return roundToInt(static_cast<double>(left) * right);
-				const int rightLength = parseLengthForNode(text.substr(i + 1), nodeId, axis);
-				return op == '+' ? left + rightLength : left - rightLength;
+			else if (depth == 0 && i > 0 && std::strchr(ops, c)) {
+				std::size_t p = i;
+				while (p > 0 && text[p - 1] == ' ') --p;
+				if (p == 0) continue;
+				const char previous = text[p - 1];
+				if (ops[0] == '+' && (std::strchr("+-*/(", previous) ||
+				    (p == i && (previous == 'e' || previous == 'E') && p >= 2 && std::isdigit(static_cast<unsigned char>(text[p - 2]))))) continue;
+				split = i;
 			}
 		}
+		if (split != std::string::npos) return split;
 	}
-	return parseLengthForNode(text, nodeId, axis);
+	return std::string::npos;
+}
+
+bool calcNumber(const std::string &raw, double &out)
+{
+	const std::string text = trimCssValue(raw);
+	char *end = nullptr;
+	out = std::strtod(text.c_str(), &end);
+	return !text.empty() && end && *end == '\0';
+}
+
+int parseCalcExpression(const std::string &expr, int nodeId, LengthAxis axis)
+{
+	const std::string text = trimCssValue(expr);
+	const std::size_t split = calcOperatorSplit(text);
+	if (split == std::string::npos) {
+		if (text.size() > 1 && text.front() == '(' && text.back() == ')') return parseCalcExpression(text.substr(1, text.size() - 2), nodeId, axis);
+		return parseLengthForNode(text, nodeId, axis);
+	}
+	const char op = text[split];
+	const std::string left = text.substr(0, split), right = text.substr(split + 1);
+	if (op == '+' || op == '-') {
+		const int a = parseCalcExpression(left, nodeId, axis), b = parseCalcExpression(right, nodeId, axis);
+		return op == '+' ? a + b : a - b;
+	}
+	double scalar = 0.0;
+	if (op == '*' && calcNumber(left, scalar)) return roundToInt(static_cast<double>(parseCalcExpression(right, nodeId, axis)) * scalar);
+	scalar = std::strtod(right.c_str(), nullptr);
+	const int length = parseCalcExpression(left, nodeId, axis);
+	if (op == '/') return scalar == 0.0 ? 0 : roundToInt(static_cast<double>(length) / scalar);
+	return roundToInt(static_cast<double>(length) * scalar);
 }
 
 int parseLengthForNode(const std::string &rawValue, int nodeId, LengthAxis axis)
@@ -4643,8 +4842,13 @@ int flexAlignValue(const std::string &raw)
 int displayValue(const std::string &value)
 {
 	if (value == "none") return kDisplayNone;
-	if (value == "grid" || value == "inline-grid") return kDisplayGrid;
-	if (value == "flex" || value == "inline-flex") return kDisplayFlex;
+	if (value == "grid") return kDisplayGrid;
+	if (value == "inline-grid") return kDisplayGrid | (kDisplayInline << kDisplayFlagShift);
+	if (value == "flex") return kDisplayFlex;
+	if (value == "inline-flex") return kDisplayFlex | (kDisplayInline << kDisplayFlagShift);
+	if (value == "flow-root") return kDisplayBlock | (kDisplayFlowRoot << kDisplayFlagShift);
+	if (value == "inline") return kDisplayBlock | (kDisplayInline << kDisplayFlagShift);
+	if (value == "inline-block") return kDisplayBlock | ((kDisplayInline | kDisplayFlowRoot) << kDisplayFlagShift);
 	return kDisplayBlock;
 }
 
@@ -4683,6 +4887,9 @@ int selfAlignValue(const std::string &raw, bool physical = false)
 	}
 	if (position == "self-start") return kAlignSelfStart | overflow;
 	if (position == "self-end") return kAlignSelfEnd | overflow;
+	// Without a default anchor box, anchor-center behaves as center (CSS Anchor
+	// Positioning); Gea has no anchors.
+	if (value == "anchor-center") return 1;
 	if (physical && position == "left") return kAlignLeft | overflow;
 	if (physical && position == "right") return kAlignRight | overflow;
 	const int alignment = flexAlignValue(value);
@@ -4697,6 +4904,7 @@ int justifySelfValue(const std::string &raw)
 	const std::string value = toLowerAscii(trimCssValue(raw));
 	if (value == "auto") return -1;
 	if (value == "normal" || value == "stretch") return 0;
+	if (value == "anchor-center") return 1;
 	const int baseline = flexAlignValue(value);
 	if (baseline == 5 || baseline == kAlignLastBaseline) return baseline;
 	const auto words = splitFunctionAwareWords(value);
@@ -4765,13 +4973,36 @@ int positionValue(const std::string &value)
 	if (value == "absolute") return 1;
 	if (value == "fixed") return kPositionFixed;
 	if (value == "relative") return 2;
+	if (value == "sticky" || value == "-webkit-sticky") return kPositionSticky;
 	return 0;
 }
 
+// 0 start, 1 center, 2 right, 3 left, 4 end; justify is unsupported and starts.
+// LayoutEngine::physicalTextAlign resolves start and end by direction.
 int textAlignValue(const std::string &value)
 {
 	if (value == "center") return 1;
-	if (value == "right" || value == "end") return 2;
+	if (value == "right") return 2;
+	if (value == "left") return 3;
+	if (value == "end") return 4;
+	return 0;
+}
+
+// Keywords only; a length or percentage shift keeps the previous value.
+int verticalAlignValue(const std::string &value)
+{
+	static const char *const keywords[] = {"baseline", "top", "bottom", "middle", "text-top", "text-bottom", "sub", "super"};
+	for (int i = 0; i < 8; ++i) if (value == keywords[i]) return i;
+	return value == "initial" || value == "unset" ? 0 : -1;
+}
+
+// 0 = auto, else the physical alignment plus one: 1 left, 2 center, 3 right.
+// start and end map as in ltr. Justification is unsupported and starts.
+int textAlignLastValue(const std::string &value)
+{
+	if (value == "left" || value == "start" || value == "justify") return 1;
+	if (value == "center") return 2;
+	if (value == "right" || value == "end") return 3;
 	return 0;
 }
 
@@ -4919,7 +5150,9 @@ struct ParsedBoxShadow {
 	ParsedCssColor color;
 };
 
-ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
+// Gea paints one shadow per box: the first inset layer when there is one,
+// otherwise the first outer layer.
+ParsedBoxShadow parseBoxShadow(const std::string &value, int nodeId)
 {
 	ParsedBoxShadow out;
 	out.color.r = 0;
@@ -4937,6 +5170,7 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 		return out;
 	}
 
+	ParsedBoxShadow outer;
 	for (const auto &rawLayer : splitTopLevel(text, ',')) {
 		const auto tokens = splitFunctionAwareWords(rawLayer);
 		bool inset = false;
@@ -4956,18 +5190,20 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 			if (lower == "outset") continue;
 			lengths.push_back(token);
 		}
-		if (!inset) continue;
-		out.valid = true;
-		out.inset = true;
-		out.color = color;
-		if (!lengths.empty()) out.offsetX = parseLengthForNode(lengths[0], nodeId, LengthAxis::Horizontal);
-		if (lengths.size() > 1) out.offsetY = parseLengthForNode(lengths[1], nodeId, LengthAxis::Vertical);
-		if (lengths.size() > 2) out.blur = parseLengthForNode(lengths[2], nodeId, LengthAxis::None);
-		if (lengths.size() > 3) out.spread = parseLengthForNode(lengths[3], nodeId, LengthAxis::None);
-		if (out.blur < 0) out.blur = 0;
-		if (out.blur > 96) out.blur = 96;
-		return out;
+		if (!inset && outer.valid) continue;
+		ParsedBoxShadow &layer = inset ? out : outer;
+		layer.valid = true;
+		layer.inset = inset;
+		layer.color = color;
+		if (!lengths.empty()) layer.offsetX = parseLengthForNode(lengths[0], nodeId, LengthAxis::Horizontal);
+		if (lengths.size() > 1) layer.offsetY = parseLengthForNode(lengths[1], nodeId, LengthAxis::Vertical);
+		if (lengths.size() > 2) layer.blur = parseLengthForNode(lengths[2], nodeId, LengthAxis::None);
+		if (lengths.size() > 3) layer.spread = parseLengthForNode(lengths[3], nodeId, LengthAxis::None);
+		if (layer.blur < 0) layer.blur = 0;
+		if (layer.blur > 96) layer.blur = 96;
+		if (inset) return out;
 	}
+	if (outer.valid) return outer;
 
 	out.valid = true;
 	out.inset = false;
@@ -4977,8 +5213,8 @@ ParsedBoxShadow parseInsetBoxShadow(const std::string &value, int nodeId)
 
 void applyBoxShadowValue(NodeHandle node, const std::string &value, StyleApplicationSource source)
 {
-	const ParsedBoxShadow shadow = parseInsetBoxShadow(value, node.id());
-	if (!shadow.valid || !shadow.inset || shadow.color.a == 0) {
+	const ParsedBoxShadow shadow = parseBoxShadow(value, node.id());
+	if (!shadow.valid || shadow.color.a == 0) {
 		setStyleValue(node, Property::BoxShadowInset, 0, source);
 		setStyleValue(node, Property::BoxShadowOffsetX, 0, source);
 		setStyleValue(node, Property::BoxShadowOffsetY, 0, source);
@@ -4994,7 +5230,7 @@ void applyBoxShadowValue(NodeHandle node, const std::string &value, StyleApplica
 	setStyleValue(node, Property::BoxShadowSpread, shadow.spread, source);
 	setStyleValue(node, Property::BoxShadowColor, cssColorStyleValue(shadow.color), source);
 	setStyleValue(node, Property::BoxShadowAlpha, shadow.color.a, source);
-	setStyleValue(node, Property::BoxShadowInset, 1, source);
+	setStyleValue(node, Property::BoxShadowInset, shadow.inset ? 1 : 0, source);
 }
 
 int numericLength(double value)
@@ -5508,37 +5744,29 @@ bool parseCompiledLengthSpec(const std::string &raw, CssLengthSpec &out, bool al
 bool parseCompiledCalcExpression(const std::string &expr, CssLengthSpec &out)
 {
 	const std::string text = trimCssValue(expr);
-	for (char op : {'/', '*', '+', '-'}) {
-		int depth = 0;
-		for (std::size_t i = 0; i < text.size(); ++i) {
-			const char c = text[i];
-			if (c == '(') depth++;
-			else if (c == ')' && depth > 0) depth--;
-			else if (c == op && depth == 0 && i > 0) {
-				CssLengthExpression expression;
-				if (!parseCompiledLengthSpec(text.substr(0, i), expression.a)) return false;
-				if (op == '/' || op == '*') {
-					const std::string right = trimCssValue(text.substr(i + 1));
-					char *end = nullptr;
-					const double scalar = std::strtod(right.c_str(), &end);
-					if (end == right.c_str()) return false;
-					while (*end == ' ') ++end;
-					if (*end != '\0') return false;
-					expression.scalar = static_cast<float>(scalar);
-					expression.kind = op == '/'
-					    ? CssLengthExpressionKind::Divide
-					    : CssLengthExpressionKind::Multiply;
-				} else {
-					if (!parseCompiledLengthSpec(text.substr(i + 1), expression.b)) return false;
-					expression.kind = op == '+'
-					    ? CssLengthExpressionKind::Add
-					    : CssLengthExpressionKind::Subtract;
-				}
-				return storeCompiledCssLengthExpressionSpec(expression, out);
-			}
-		}
+	const std::size_t split = calcOperatorSplit(text);
+	if (split == std::string::npos) {
+		if (text.size() > 1 && text.front() == '(' && text.back() == ')') return parseCompiledCalcExpression(text.substr(1, text.size() - 2), out);
+		return parseCompiledLengthSpec(text, out);
 	}
-	return parseCompiledLengthSpec(text, out);
+	const char op = text[split];
+	const std::string left = text.substr(0, split), right = text.substr(split + 1);
+	CssLengthExpression expression;
+	if (op == '+' || op == '-') {
+		if (!parseCompiledCalcExpression(left, expression.a) || !parseCompiledCalcExpression(right, expression.b)) return false;
+		expression.kind = op == '+' ? CssLengthExpressionKind::Add : CssLengthExpressionKind::Subtract;
+	} else {
+		// A product takes its number on either side; a quotient divides by one.
+		double scalar = 0.0;
+		if (op == '*' && calcNumber(left, scalar)) {
+			if (!parseCompiledCalcExpression(right, expression.a)) return false;
+		} else if (!calcNumber(right, scalar) || !parseCompiledCalcExpression(left, expression.a)) {
+			return false;
+		}
+		expression.scalar = static_cast<float>(scalar);
+		expression.kind = op == '/' ? CssLengthExpressionKind::Divide : CssLengthExpressionKind::Multiply;
+	}
+	return storeCompiledCssLengthExpressionSpec(expression, out);
 }
 
 bool compileLengthExpressionSpec(const std::string &raw, CssLengthSpec &out)
@@ -6244,6 +6472,7 @@ bool compileBoxShadowValue(const std::string &value, CssCompiledValue &compiled)
 	compiled.values[1] = 0;
 	if (text.empty() || lowerText == "none") return true;
 
+	// aux: 1 = inset layer, 2 = outer layer (see parseBoxShadow for the choice).
 	for (const auto &rawLayer : splitTopLevel(text, ',')) {
 		const auto tokens = splitFunctionAwareWords(rawLayer);
 		bool inset = false;
@@ -6270,24 +6499,14 @@ bool compileBoxShadowValue(const std::string &value, CssCompiledValue &compiled)
 			if (!parseCompiledLengthSpec(token, length)) return false;
 			if (lengths.size() < 4) lengths.push_back(length);
 		}
-		if (!inset) continue;
-		compiled.aux = 1;
-		for (std::size_t i = 0; i < lengths.size(); ++i) compiled.lengths[i] = lengths[i];
+		if (!inset && compiled.aux == 2) continue;
+		compiled.aux = inset ? 1 : 2;
+		for (std::size_t i = 0; i < 4; ++i) compiled.lengths[i] = i < lengths.size() ? lengths[i] : CssLengthSpec{};
 		compiled.values[0] = static_cast<std::int32_t>(cssColorStyleValue(color));
 		compiled.values[1] = color.a;
-		return true;
+		if (inset) return true;
 	}
 	return true;
-}
-
-bool boxShadowValueHasInsetLayer(const std::string &value)
-{
-	for (const auto &rawLayer : splitTopLevel(value, ',')) {
-		for (const auto &token : splitFunctionAwareWords(rawLayer)) {
-			if (toLowerAscii(trimCssValue(token)) == "inset") return true;
-		}
-	}
-	return false;
 }
 
 bool compileBorderWidthBox(const std::string &value, CssCompiledValue &compiled)
@@ -6662,7 +6881,7 @@ int compileBackgroundClip(const std::string &value, bool shorthand = false)
 	for (const auto &layer : splitTopLevel(lower, ',')) {
 		if (!shorthand) {
 			const auto word = trimCssValue(layer);
-			const int clip = word == "text" ? 3 : backgroundBoxValue(word);
+			const int clip = word == "text" ? 3 : word == "border-area" ? 4 : backgroundBoxValue(word);
 			if (clip < 0) return -1;
 			clips.push_back(clip);
 		} else {
@@ -6680,6 +6899,31 @@ int compileBackgroundClip(const std::string &value, bool shorthand = false)
 	return storeBackgroundClipList(clips);
 }
 
+// background-blend-mode as an interned per-layer list; the handle is one
+// byte, so an app gets 255 distinct non-normal lists.
+int compileBackgroundBlendMode(const std::string &value)
+{
+	static constexpr const char *kModes[] = {"normal", "multiply", "screen", "overlay", "darken", "lighten",
+	    "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation",
+	    "color", "luminosity"};
+	const auto lower = toLowerAscii(trimCssValue(value));
+	if (lower == "initial" || lower == "unset") return 0;
+	std::vector<std::uint8_t> modes;
+	for (const auto &layer : splitTopLevel(lower, ',')) {
+		const auto word = trimCssValue(layer);
+		const auto *mode = std::find_if(std::begin(kModes), std::end(kModes), [&](const char *name) { return word == name; });
+		if (mode == std::end(kModes)) return -1;
+		modes.push_back(static_cast<std::uint8_t>(mode - std::begin(kModes)));
+	}
+	if (modes.empty()) return -1;
+	if (std::all_of(modes.begin(), modes.end(), [](auto mode) { return mode == 0; })) return 0;
+	auto &lists = backgroundBlendLists();
+	for (std::size_t i = 0; i < lists.size(); ++i) if (lists[i] == modes) return static_cast<int>(i + 1);
+	if (lists.size() >= 255) return -1;
+	lists.push_back(modes);
+	return static_cast<int>(lists.size());
+}
+
 ParsedCssColor backgroundBaseColor(const std::string &value)
 {
 	ParsedCssColor color;
@@ -6693,6 +6937,427 @@ ParsedCssColor backgroundBaseColor(const std::string &value)
 
 const CssCompiledBackground *compiledCssBackgroundForHandle(std::uint16_t handle);
 bool backgroundImageIsValid(int handle, int nodeId);
+
+// line-clamp (CSS Overflow 4) and its longhands as MaxLines, LineClampContinue,
+// LineClampDiscard, BlockEllipsis and BlockEllipsisString writes. A custom ellipsis string is
+// interned as a CSS atom; an empty one paints nothing, like none.
+// Returns the write count, 0 for an invalid value, -1 for other declarations.
+int lineClampWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[5])
+{
+	const bool shorthand = declaration == CssDeclarationId::LineClamp || declaration == CssDeclarationId::WebkitLineClamp;
+	if (!shorthand && declaration != CssDeclarationId::MaxLines && declaration != CssDeclarationId::Continue &&
+	    declaration != CssDeclarationId::BlockEllipsis) return -1;
+	const std::string trimmed = trimCssValue(value);
+	std::string lower = toLowerAscii(trimmed);
+	bool quoted = false;
+	std::string custom;
+	const auto quote = lower.find_first_of("\"'");
+	if (quote != std::string::npos) {
+		const auto close = lower.find(lower[quote], quote + 1);
+		if (close == std::string::npos) return 0;
+		custom = trimmed.substr(quote + 1, close - quote - 1);
+		lower.erase(quote, close - quote + 1);
+		quoted = true;
+	}
+	const int customAtom = custom.empty() ? 0 : internCssAtom(custom);
+	auto lineCount = [](const std::string &word, int &n) {
+		if (word.empty() || word.size() > 6 || word.find_first_not_of("0123456789") != std::string::npos) return false;
+		n = std::min(255, std::atoi(word.c_str()));
+		return n >= 1;
+	};
+	const auto words = splitWords(lower);
+	if (declaration == CssDeclarationId::MaxLines) {
+		int lines = 0;
+		if (quoted || words.size() != 1 || (words[0] != "none" && !lineCount(words[0], lines))) return 0;
+		out[0] = {Property::MaxLines, lines};
+		return 1;
+	}
+	if (declaration == CssDeclarationId::Continue) {
+		if (quoted || words.size() != 1 || (words[0] != "auto" && words[0] != "collapse" && words[0] != "discard")) return 0;
+		out[0] = {Property::LineClampContinue, words[0] != "auto"};
+		out[1] = {Property::LineClampDiscard, words[0] == "discard"};
+		return 2;
+	}
+	if (declaration == CssDeclarationId::BlockEllipsis) {
+		const bool keyword = !quoted && words.size() == 1 && (words[0] == "none" || words[0] == "auto");
+		if (!keyword && !(quoted && words.empty())) return 0;
+		out[0] = {Property::BlockEllipsis, quoted ? customAtom != 0 : words[0] == "auto"};
+		out[1] = {Property::BlockEllipsisString, customAtom};
+		return 2;
+	}
+	int lines = 0;
+	bool automatic = false, ellipsis = true;
+	if (!quoted && words.size() == 1 && words[0] == "none") {
+		out[0] = {Property::MaxLines, 0};
+		out[1] = {Property::LineClampContinue, 0};
+		out[2] = {Property::BlockEllipsis, 0};
+		out[3] = {Property::BlockEllipsisString, 0};
+		out[4] = {Property::LineClampDiscard, 0};
+		return 5;
+	}
+	for (const auto &word : words) {
+		if (lineCount(word, lines)) continue;
+		if (word == "auto" && declaration == CssDeclarationId::LineClamp) automatic = true;
+		else if (word == "no-ellipsis" && declaration == CssDeclarationId::LineClamp) ellipsis = false;
+		else if (word != "-webkit-legacy") return 0;
+	}
+	if ((lines > 0) == automatic || (!ellipsis && quoted)) return 0;
+	// -webkit-line-clamp is the legacy form, which clamps only display:
+	// -webkit-box. Gea has no such display, so it never collapses here.
+	out[0] = {Property::MaxLines, lines};
+	out[1] = {Property::LineClampContinue, declaration == CssDeclarationId::LineClamp};
+	out[2] = {Property::BlockEllipsis, ellipsis && (!quoted || customAtom != 0)};
+	out[3] = {Property::BlockEllipsisString, customAtom};
+	out[4] = {Property::LineClampDiscard, 0};
+	return 5;
+}
+
+// border-style and its longhands as per-side relief writes (CSS Backgrounds
+// 3.3); none and hidden set kBorderStyleNone, which keeps the side's width 0.
+// dashed, dotted and double paint as solid.
+int borderStyleWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+{
+	int first = -1;
+	switch (declaration) {
+	case CssDeclarationId::BorderStyle: first = 0; break;
+	case CssDeclarationId::BorderTopStyle: first = 0; break;
+	case CssDeclarationId::BorderRightStyle: first = 1; break;
+	case CssDeclarationId::BorderBottomStyle: first = 2; break;
+	case CssDeclarationId::BorderLeftStyle: first = 3; break;
+	default: return -1;
+	}
+	const auto words = splitWords(toLowerAscii(trimCssValue(value)));
+	const bool shorthand = declaration == CssDeclarationId::BorderStyle;
+	if (words.empty() || words.size() > (shorthand ? 4u : 1u)) return 0;
+	int reliefs[4];
+	for (std::size_t i = 0; i < words.size(); ++i) {
+		const auto &w = words[i];
+		if (w == "none" || w == "hidden") reliefs[i] = kBorderStyleNone;
+		else if (w == "solid" || w == "dashed" || w == "dotted" || w == "double") reliefs[i] = 0;
+		else if (w == "groove" || w == "ridge" || w == "inset" || w == "outset")
+			reliefs[i] = w == "groove" ? 1 : w == "ridge" ? 2 : w == "inset" ? 3 : 4;
+		else return 0;
+	}
+	if (!shorthand) {
+		out[0] = {static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + first), reliefs[0]};
+		return 1;
+	}
+	// top, right, bottom, left from one to four values.
+	const int count = static_cast<int>(words.size());
+	const int side[4] = {reliefs[0], reliefs[count > 1 ? 1 : 0], reliefs[count > 2 ? 2 : 0], reliefs[count > 3 ? 3 : count > 1 ? 1 : 0]};
+	for (int i = 0; i < 4; ++i) out[i] = {static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + i), side[i]};
+	return 4;
+}
+
+// text-emphasis (CSS Text Decoration 3.3) and its longhands as writes to the
+// ComputedStyle::text_emphasis bits and colour. A string mark is unsupported.
+BorderImageSides initialBorderImageSides(int which)
+{
+	BorderImageSides sides;
+	for (int i = 0; i < 4; ++i) {
+		sides.kind[i] = which == 0 ? 2 : 0;
+		sides.value[i] = which == 0 ? 100.0f : which == 1 ? 1.0f : 0.0f;
+	}
+	return sides;
+}
+
+bool sameBorderImageSides(const BorderImageSides &a, const BorderImageSides &b)
+{
+	return a.fill == b.fill && std::equal(a.kind, a.kind + 4, b.kind) && std::equal(a.value, a.value + 4, b.value);
+}
+
+// One-byte handle for a slice (0), width (1) or outset (2) list; 0 is initial.
+int internBorderImageSides(int which, const BorderImageSides &sides)
+{
+	if (sameBorderImageSides(sides, initialBorderImageSides(which))) return 0;
+	auto &list = borderImageSideLists();
+	for (std::size_t i = 0; i < list.size(); ++i) if (sameBorderImageSides(list[i], sides)) return static_cast<int>(i + 1);
+	if (list.size() >= 255) return -1;
+	list.push_back(sides);
+	return static_cast<int>(list.size());
+}
+
+// Tokens of a border-image value: function-aware words, with '/' on its own.
+std::vector<std::string> borderImageTokens(const std::string &value)
+{
+	std::vector<std::string> tokens;
+	std::string current;
+	int depth = 0;
+	for (const char c : value) {
+		if (c == '(') ++depth;
+		else if (c == ')' && depth > 0) --depth;
+		if (depth == 0 && (c == '/' || std::isspace(static_cast<unsigned char>(c)))) {
+			if (!current.empty()) tokens.push_back(current);
+			current.clear();
+			if (c == '/') tokens.emplace_back("/");
+			continue;
+		}
+		current += c;
+	}
+	if (!current.empty()) tokens.push_back(current);
+	return tokens;
+}
+
+// A border-image-source handle: 0 for none and for images Gea cannot paint
+// (only linear-gradient() paints), -1 when invalid.
+int borderImageSourceHandle(const std::string &token)
+{
+	const auto lower = toLowerAscii(trimCssValue(token));
+	if (lower == "none") return 0;
+	if (lower.rfind("linear-gradient(", 0) != 0) return lower.find('(') != std::string::npos ? 0 : -1;
+	const ParsedLinearGradient parsed = parseLinearGradient(token);
+	if (!parsed.valid) return -1;
+	const CssCompiledLinearGradient g = compileLinearGradientLayer(parsed);
+	const BorderImageSource source{g.fromNativeColor, g.midNativeColor, g.toNativeColor, g.fromAlpha, g.midAlpha, g.toAlpha,
+	                               g.hasMid, g.midStopPermille, g.toStopPermille, g.angleTenths};
+	auto same = [&](const BorderImageSource &a) {
+		return a.from == source.from && a.mid == source.mid && a.to == source.to && a.fromAlpha == source.fromAlpha &&
+		       a.midAlpha == source.midAlpha && a.toAlpha == source.toAlpha && a.hasMid == source.hasMid &&
+		       a.midStop == source.midStop && a.toStop == source.toStop && a.angle == source.angle;
+	};
+	auto &list = borderImageSources();
+	for (std::size_t i = 0; i < list.size(); ++i)
+		if (same(list[i])) return static_cast<int>(i + 1);
+	if (list.size() >= 255) return -1;
+	list.push_back(source);
+	return static_cast<int>(list.size());
+}
+
+// Kind of one slice (0), width (1) or outset (2) value, -1 when invalid.
+// Font-relative lengths are not resolved here and are rejected.
+int borderImageSideValue(const std::string &token, int which, float *value)
+{
+	const auto word = toLowerAscii(token);
+	if (which == 1 && word == "auto") { *value = 0.0f; return 3; }
+	CssLengthSpec length;
+	if (!parseCompiledLengthSpec(word, length) || length.value < 0.0f) return -1;
+	*value = length.value;
+	if (length.unit == CssLengthUnit::Raw) return 0;
+	if (length.unit == CssLengthUnit::Percent && which != 2) return 2;
+	if (length.unit != CssLengthUnit::Px || which == 0) return -1;
+	*value = static_cast<float>(cssPixelLength(length.value));
+	return 1;
+}
+
+bool borderImageSideToken(const std::string &token, int which)
+{
+	float value = 0.0f;
+	return (which == 0 && toLowerAscii(token) == "fill") || borderImageSideValue(token, which, &value) >= 0;
+}
+
+// One to four values in [begin, end) as box sides, plus fill for a slice.
+bool parseBorderImageSides(const std::vector<std::string> &tokens, std::size_t begin, std::size_t end, int which, BorderImageSides &out)
+{
+	int count = 0;
+	for (std::size_t i = begin; i < end; ++i) {
+		if (which == 0 && toLowerAscii(tokens[i]) == "fill") {
+			if (out.fill) return false;
+			out.fill = 1;
+			continue;
+		}
+		if (count == 4) return false;
+		const int kind = borderImageSideValue(tokens[i], which, &out.value[count]);
+		if (kind < 0) return false;
+		out.kind[count++] = static_cast<std::uint8_t>(kind);
+	}
+	if (!count) return false;
+	for (int i = count; i < 4; ++i) {
+		const int from = count == 1 ? 0 : i - 2;
+		out.kind[i] = out.kind[from];
+		out.value[i] = out.value[from];
+	}
+	return true;
+}
+
+int borderImageRepeatKeyword(const std::string &token)
+{
+	const auto word = toLowerAscii(token);
+	return word == "stretch" ? 0 : word == "repeat" ? 1 : word == "round" ? 2 : word == "space" ? 3 : -1;
+}
+
+int borderImageRepeatValue(const std::vector<std::string> &tokens, std::size_t begin, std::size_t end)
+{
+	if (end <= begin || end - begin > 2) return -1;
+	const int horizontal = borderImageRepeatKeyword(tokens[begin]);
+	const int vertical = end - begin == 2 ? borderImageRepeatKeyword(tokens[begin + 1]) : horizontal;
+	return horizontal < 0 || vertical < 0 ? -1 : horizontal | vertical << 2;
+}
+
+// border-image (CSS Backgrounds 3, section 6) and its longhands as writes to
+// the RareStyle handles. The shorthand resets all five longhands.
+int borderImageWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[5])
+{
+	using D = CssDeclarationId;
+	static constexpr Property kSideProperties[] = {Property::BorderImageSlice, Property::BorderImageWidth, Property::BorderImageOutset};
+	const int side = declaration == D::BorderImageSliceDeclaration ? 0 : declaration == D::BorderImageWidthDeclaration ? 1 :
+	    declaration == D::BorderImageOutsetDeclaration ? 2 : -1;
+	if (side < 0 && declaration != D::BorderImage && declaration != D::BorderImageSourceDeclaration &&
+	    declaration != D::BorderImageRepeatDeclaration) return -1;
+	const auto tokens = borderImageTokens(trimCssValue(value));
+	if (tokens.empty()) return 0;
+	const auto keyword = toLowerAscii(trimCssValue(value));
+	const bool initial = keyword == "initial" || keyword == "unset";
+	if (declaration == D::BorderImageSourceDeclaration) {
+		const int source = initial ? 0 : tokens.size() == 1 ? borderImageSourceHandle(tokens[0]) : -1;
+		if (source < 0) return 0;
+		out[0] = {Property::BorderImageSource, source};
+		return 1;
+	}
+	if (declaration == D::BorderImageRepeatDeclaration) {
+		const int repeat = initial ? 0 : borderImageRepeatValue(tokens, 0, tokens.size());
+		if (repeat < 0) return 0;
+		out[0] = {Property::BorderImageRepeat, repeat};
+		return 1;
+	}
+	if (side >= 0) {
+		BorderImageSides sides;
+		if (!initial && !parseBorderImageSides(tokens, 0, tokens.size(), side, sides)) return 0;
+		const int handle = internBorderImageSides(side, initial ? initialBorderImageSides(side) : sides);
+		if (handle < 0) return 0;
+		out[0] = {kSideProperties[side], handle};
+		return 1;
+	}
+	// <source> || <slice> [ / <width> | / <width>? / <outset> ]? || <repeat>
+	int source = -1, repeat = -1;
+	bool present[3] = {};
+	BorderImageSides sides[3];
+	for (std::size_t i = 0; !initial && i < tokens.size();) {
+		const auto word = toLowerAscii(tokens[i]);
+		if (source < 0 && (word == "none" || word.find('(') != std::string::npos)) {
+			source = borderImageSourceHandle(tokens[i++]);
+			if (source < 0) return 0;
+			continue;
+		}
+		if (repeat < 0 && borderImageRepeatKeyword(word) >= 0) {
+			std::size_t end = i + 1;
+			if (end < tokens.size() && borderImageRepeatKeyword(tokens[end]) >= 0) ++end;
+			repeat = borderImageRepeatValue(tokens, i, end);
+			i = end;
+			continue;
+		}
+		if (present[0]) return 0;
+		std::size_t end = i;
+		while (end < tokens.size() && borderImageSideToken(tokens[end], 0)) ++end;
+		if (!parseBorderImageSides(tokens, i, end, 0, sides[0])) return 0;
+		present[0] = true;
+		i = end;
+		for (int part = 1; part <= 2 && i < tokens.size() && tokens[i] == "/"; ++part) {
+			end = ++i;
+			while (end < tokens.size() && borderImageSideToken(tokens[end], part)) ++end;
+			if (end > i) {
+				if (!parseBorderImageSides(tokens, i, end, part, sides[part])) return 0;
+				present[part] = true;
+			} else if (part == 2 || i >= tokens.size() || tokens[i] != "/") {
+				return 0;
+			}
+			i = end;
+		}
+	}
+	out[0] = {Property::BorderImageSource, std::max(0, source)};
+	for (int part = 0; part < 3; ++part) {
+		const int handle = internBorderImageSides(part, present[part] ? sides[part] : initialBorderImageSides(part));
+		if (handle < 0) return 0;
+		out[1 + part] = {kSideProperties[part], handle};
+	}
+	out[4] = {Property::BorderImageRepeat, std::max(0, repeat)};
+	return 5;
+}
+
+int textEmphasisWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+{
+	const bool shorthand = declaration == CssDeclarationId::TextEmphasis;
+	if (!shorthand && declaration != CssDeclarationId::TextEmphasisStyleDeclaration &&
+	    declaration != CssDeclarationId::TextEmphasisColorDeclaration && declaration != CssDeclarationId::TextEmphasisPositionDeclaration) return -1;
+	const auto words = splitFunctionAwareWords(trimCssValue(value));
+	if (words.empty()) return 0;
+	if (declaration == CssDeclarationId::TextEmphasisPositionDeclaration) {
+		int under = -1;
+		for (const auto &word : words) {
+			const auto lower = toLowerAscii(word);
+			if (lower == "over") under = 0;
+			else if (lower == "under") under = 0x10;
+			else if (lower != "right" && lower != "left") return 0;
+		}
+		if (under < 0) return 0;
+		out[0] = {Property::TextEmphasisPosition, under};
+		return 1;
+	}
+	int mark = -1, open = -1, colorMode = -1, color = 0;
+	for (const auto &word : words) {
+		const auto lower = toLowerAscii(word);
+		if (declaration != CssDeclarationId::TextEmphasisColorDeclaration) {
+			if (lower == "none") { mark = 0; continue; }
+			if (lower == "filled" || lower == "open") { open = lower == "open" ? 8 : 0; continue; }
+			if (lower == "dot" || lower == "circle" || lower == "double-circle" || lower == "triangle" || lower == "sesame") {
+				mark = lower == "dot" ? 1 : lower == "circle" ? 2 : lower == "double-circle" ? 3 : lower == "triangle" ? 4 : 5;
+				continue;
+			}
+		}
+		if (declaration == CssDeclarationId::TextEmphasisStyleDeclaration || colorMode >= 0) return 0;
+		if (lower == "currentcolor") { colorMode = 0; continue; }
+		const ParsedCssColor parsed = parseCssColor(word);
+		if (!parsed.valid) return 0;
+		colorMode = parsed.a == 0 ? 0x40 : 0x20;
+		color = static_cast<int>(cssColorStyleValue(parsed));
+	}
+	int count = 0;
+	if (declaration != CssDeclarationId::TextEmphasisColorDeclaration) {
+		if (mark < 0 && open < 0) return 0;
+		// filled / open alone mean a dot in horizontal text; a shape alone is filled.
+		out[count++] = {Property::TextEmphasisStyle, mark == 0 ? 0 : (mark < 0 ? 1 : mark) | (open < 0 ? 0 : open)};
+	}
+	if (declaration != CssDeclarationId::TextEmphasisStyleDeclaration) {
+		if (colorMode < 0) colorMode = 0;
+		out[count++] = {Property::TextEmphasisColorMode, colorMode};
+		if (colorMode == 0x20) out[count++] = {Property::TextEmphasisColor, color};
+	}
+	return count;
+}
+
+// Only whether columns are set matters: line-clamp skips multicol containers.
+// columns / column-count / column-width / column-fill as ColumnCount(Set) and
+// ColumnWidth(Set) writes plus the column-fill flag. A column width other than
+// px is not resolved here and leaves the width auto.
+int multicolWrites(CssDeclarationId declaration, const std::string &value, StaticStylePropertyValue out[4])
+{
+	const auto words = splitWords(toLowerAscii(trimCssValue(value)));
+	if (declaration == CssDeclarationId::ColumnSpan) {
+		if (words.size() != 1 || (words[0] != "none" && words[0] != "all")) return 0;
+		out[0] = {Property::ColumnSpanAll, words[0] == "all"};
+		return 1;
+	}
+	if (declaration == CssDeclarationId::ColumnFill) {
+		if (words.size() != 1 || (words[0] != "auto" && words[0] != "balance" && words[0] != "balance-all")) return 0;
+		out[0] = {Property::ColumnFillAuto, words[0] == "auto"};
+		return 1;
+	}
+	const bool shorthand = declaration == CssDeclarationId::Columns;
+	if (!shorthand && declaration != CssDeclarationId::ColumnCount && declaration != CssDeclarationId::ColumnWidth) return -1;
+	if (words.empty() || words.size() > (shorthand ? 2u : 1u)) return 0;
+	bool count = false, width = false;
+	int countValue = 0, widthValue = -1;
+	for (const auto &word : words) {
+		if (word == "auto") continue;
+		if (word.find_first_not_of("0123456789") == std::string::npos && word != "0" && declaration != CssDeclarationId::ColumnWidth) {
+			count = true;
+			countValue = std::min(255, std::atoi(word.c_str()));
+		} else if (CssLengthSpec length; declaration != CssDeclarationId::ColumnCount && parseCompiledLengthSpec(word, length)) {
+			width = true;
+			if (length.unit == CssLengthUnit::Px || length.unit == CssLengthUnit::Raw)
+				widthValue = std::max(1, std::min(32767, length.unit == CssLengthUnit::Px ? cssPixelLength(length.value) : rawNumber(length.value)));
+		} else return 0;
+	}
+	int n = 0;
+	if (declaration != CssDeclarationId::ColumnWidth) {
+		out[n++] = {Property::ColumnCountSet, count};
+		out[n++] = {Property::ColumnCount, countValue};
+	}
+	if (declaration != CssDeclarationId::ColumnCount) {
+		out[n++] = {Property::ColumnWidthSet, width};
+		out[n++] = {Property::ColumnWidth, widthValue};
+	}
+	return n;
+}
 
 int marginTrimValue(const std::string &raw)
 {
@@ -6938,6 +7603,12 @@ bool compileKeywordValue(CssDeclarationId declaration, const std::string &value,
 	case CssDeclarationId::TextAlign:
 		compiled.values[0] = textAlignValue(value);
 		return true;
+	case CssDeclarationId::TextAlignLast:
+		compiled.values[0] = textAlignLastValue(value);
+		return true;
+	case CssDeclarationId::VerticalAlign:
+		compiled.values[0] = verticalAlignValue(value);
+		return compiled.values[0] >= 0;
 	case CssDeclarationId::TextDecoration:
 		compiled.values[0] = textDecorationValue(value);
 		return true;
@@ -7179,6 +7850,31 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		compiled.kind = CssCompiledKind::DirectProperty;
 		compiled.values[0] = static_cast<int>(Property::BackgroundClip);
 		compiled.values[1] = clip;
+		return storeCompiledCssValue(compiled);
+	}
+	if (declaration == CssDeclarationId::BackgroundBlendMode && !hasVar) {
+		const int blend = compileBackgroundBlendMode(value);
+		if (blend < 0) return kNoCompiledCssValue;
+		compiled.kind = CssCompiledKind::DirectProperty;
+		compiled.values[0] = static_cast<int>(Property::BackgroundBlendMode);
+		compiled.values[1] = blend;
+		return storeCompiledCssValue(compiled);
+	}
+
+	StaticStylePropertyValue clampWrites[kDirectPropertyGroupCapacity];
+	int clampCount = hasVar ? -1 : lineClampWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = multicolWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = borderStyleWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = textEmphasisWrites(declaration, value, clampWrites);
+	if (clampCount < 0 && !hasVar) clampCount = borderImageWrites(declaration, value, clampWrites);
+	if (const int count = clampCount; count >= 0) {
+		if (count == 0) return kNoCompiledCssValue;
+		compiled.kind = CssCompiledKind::DirectPropertyGroup;
+		compiled.aux = static_cast<std::uint8_t>(count);
+		for (int i = 0; i < count; ++i) {
+			compiled.values[i * 2] = static_cast<int>(clampWrites[i].property);
+			compiled.values[1 + i * 2] = clampWrites[i].value;
+		}
 		return storeCompiledCssValue(compiled);
 	}
 
@@ -7474,12 +8170,7 @@ std::uint16_t compileCssValue(CssDeclarationId declaration, const CssText &rawVa
 		return storeCompiledCssValue(compiled);
 	case CssDeclarationId::BoxShadow:
 		if (!compiledCssValueFeatureEnabled(kCssCompiledFeatureEffects)) return kNoCompiledCssValue;
-		if (hasDynamicCssValue(value)) {
-			if (boxShadowValueHasInsetLayer(value)) return kNoCompiledCssValue;
-			compiled.kind = CssCompiledKind::BoxShadow;
-			compiled.aux = 0;
-			return storeCompiledCssValue(compiled);
-		}
+		if (hasDynamicCssValue(value)) return kNoCompiledCssValue;
 		if (!compileBoxShadowValue(value, compiled)) return kNoCompiledCssValue;
 		compiled.kind = CssCompiledKind::BoxShadow;
 		return storeCompiledCssValue(compiled);
@@ -7575,9 +8266,9 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	switch (property) {
 	case Property::Display:
 #if GEA_CSS_DISPLAY_EXPLICIT
-		style.display_explicit = 1;
+		style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
 #endif
-		style.display = value;
+		style.display = value & kDisplayKindMask;
 		return true;
 #if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
@@ -7593,6 +8284,12 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 #if GEA_CSS_BACKGROUND_LAYERS
 	case Property::BackgroundClip: rstyleMut(style).bg_clip = value; return true;
+	case Property::BackgroundBlendMode: rstyleMut(style).bg_blend = value; return true;
+	case Property::BorderImageSource: rstyleMut(style).border_image_source = value; return true;
+	case Property::BorderImageSlice: rstyleMut(style).border_image_slice = value; return true;
+	case Property::BorderImageWidth: rstyleMut(style).border_image_width = value; return true;
+	case Property::BorderImageOutset: rstyleMut(style).border_image_outset = value; return true;
+	case Property::BorderImageRepeat: rstyleMut(style).border_image_repeat = value; return true;
 	case Property::BackgroundSizeList: rstyleMut(style).bg_size_list = value; return true;
 	case Property::BackgroundPositionList: rstyleMut(style).bg_position_list = value; return true;
 	case Property::BackgroundRepeatList: rstyleMut(style).bg_repeat_list = value; return true;
@@ -7639,6 +8336,22 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: rstyleMut(style).margin_trim = value; return true;
 #endif
+	case Property::MaxLines: rstyleMut(style).max_lines = static_cast<uint8_t>(value); return true;
+	case Property::BlockEllipsisString: rstyleMut(style).block_ellipsis = static_cast<uint16_t>(value); return true;
+	case Property::ColumnCount: rstyleMut(style).column_count = static_cast<uint8_t>(value); return true;
+	case Property::ColumnWidth: rstyleMut(style).column_width = static_cast<int16_t>(value); return true;
+	case Property::LineClampContinue:
+	case Property::BlockEllipsis:
+	case Property::ColumnCountSet:
+	case Property::ColumnWidthSet:
+	case Property::ColumnFillAuto:
+	case Property::LineClampDiscard:
+	case Property::ColumnSpanAll: {
+		const int bit = lineClampFlagBit(property);
+		auto &flags = rstyleMut(style).line_clamp_flags;
+		flags = static_cast<uint8_t>(value ? flags | bit : flags & ~bit);
+		return true;
+	}
 #if GEA_CSS_FLOATS
 	case Property::Clear: style.clear_side = value; return true;
 #endif
@@ -7855,7 +8568,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::Position: if (value == kPositionFixed) treeState().fixedPositionUsed = true; style.position = value; return true;
 	case Property::Top:
 #if GEA_CSS_POSITION_TOP
-		GEA_CSS_POSITION_PX_0(style) = value;
+		GEA_CSS_POSITION_PX_0(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_TOP_PERCENT
 		GEA_CSS_POSITION_PERCENT_0(style) = kUnset;
 #endif
@@ -7865,7 +8578,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Right:
 #if GEA_CSS_POSITION_RIGHT
-		GEA_CSS_POSITION_PX_1(style) = value;
+		GEA_CSS_POSITION_PX_1(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_RIGHT_PERCENT
 		GEA_CSS_POSITION_PERCENT_1(style) = kUnset;
 #endif
@@ -7875,7 +8588,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Bottom:
 #if GEA_CSS_POSITION_BOTTOM
-		GEA_CSS_POSITION_PX_2(style) = value;
+		GEA_CSS_POSITION_PX_2(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_BOTTOM_PERCENT
 		GEA_CSS_POSITION_PERCENT_2(style) = kUnset;
 #endif
@@ -7885,7 +8598,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::Left:
 #if GEA_CSS_POSITION_LEFT
-		GEA_CSS_POSITION_PX_3(style) = value;
+		GEA_CSS_POSITION_PX_3(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_LEFT_PERCENT
 		GEA_CSS_POSITION_PERCENT_3(style) = kUnset;
 #endif
@@ -8013,12 +8726,15 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::BorderLeftRelief: {
 		const int side = static_cast<int>(property) - static_cast<int>(Property::BorderTopRelief);
 		if (rstyle(style).border_relief[side] != value) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
+		if (value & kBorderStyleNone) setComputedBorderWidth(style, side, 0, nullptr);
 		return true;
 	}
-	case Property::BorderRelief:
-		if (value == 0 && !hasBorderRelief(style)) return true;
+	case Property::BorderRelief: {
+		const auto &relief = rstyle(style).border_relief;
+		if (value == 0 && !(relief[0] | relief[1] | relief[2] | relief[3])) return true;
 		for (int side = 0; side < 4; ++side) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
 		return true;
+	}
 #endif
 #if GEA_CSS_SIDE_BORDERS
 	case Property::BorderTopWidth: setComputedBorderWidth(style, 0, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
@@ -8122,6 +8838,12 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_TEXT_ALIGN
 	case Property::TextAlign: style.text_align = value; return true;
 #endif
+	case Property::TextAlignLast: style.text_align_last = value; return true;
+	case Property::TextEmphasisStyle: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x0f) | (value & 0x0f)); return true;
+	case Property::TextEmphasisPosition: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x10) | (value & 0x10)); return true;
+	case Property::TextEmphasisColorMode: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x60) | (value & 0x60)); return true;
+	case Property::TextEmphasisColor: style.text_emphasis_color = StyleValues::pixelFromStyleValue(value); return true;
+	case Property::VerticalAlign: style.vertical_align = value; return true;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration: style.text_decoration = value; return true;
 #endif
@@ -8564,6 +9286,22 @@ void setIndividualTranslation(NodeHandle node, const TransformComponents &t, Sty
 	setStyleValue(node, Property::TranslateYPercent, t.translateYPercent, source);
 }
 
+// transform: inherit takes the parent's transform list as it computed.
+TransformComponents inheritedTransformComponents(int nodeId)
+{
+	TransformComponents t;
+	const int parent = Tree::instance().node(nodeId).parent;
+	if (parent < 0) return t;
+	const RareStyle &r = rstyle(Tree::instance().node(parent).computedStyle());
+	t.translateOuterAxes = r.transform_translate_outer_axes;
+	t.rotateX = r.transform_rotate_x; t.rotateY = r.transform_rotate_y; t.rotateZ = r.transform_rotate;
+	t.translateX = r.transform_translate_x; t.translateY = r.transform_translate_y; t.translateZ = r.transform_translate_z;
+	t.translateXPercent = r.transform_translate_x_percent; t.translateYPercent = r.transform_translate_y_percent;
+	t.scaleX = r.transform_scale_x; t.scaleY = r.transform_scale_y; t.scaleZ = r.transform_scale_z;
+	t.hasRotateZ = r.transform_present;
+	return t;
+}
+
 void setTransformComponents(NodeHandle node, const TransformComponents &t, StyleApplicationSource source)
 {
 	setStyleValue(node, Property::TransformTranslateOuterAxes, t.translateOuterAxes, source);
@@ -8755,9 +9493,10 @@ void applyBorderShorthand(NodeHandle node, const std::string &value, StyleApplic
 	const auto parts = splitFunctionAwareWords(value);
 	const int width = resolveBorderWidth(compiled.lengths[0], node.id());
 	if (width < 0) return;
-	setLengthStyleValue(node, compiled.lengths[0], Property::BorderWidth, width, source);
+	// The shorthand resets border-style first, so a side that was none takes the width.
 	for (int side = 0; side < 4; ++side)
 		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), compiled.values[2], source);
+	setLengthStyleValue(node, compiled.lengths[0], Property::BorderWidth, width, source);
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
 		if (part[0] == '#' || part.find("rgb") != std::string::npos || toLowerAscii(part) == "transparent") {
@@ -9124,7 +9863,9 @@ bool propertyAffectsDescendantStyle(Property property)
 	       property == Property::FontSize ||
 	       property == Property::FontWeight ||
 	       property == Property::LineHeight || property == Property::LineHeightExpression || property == Property::LineHeightMultiplier ||
-	       property == Property::TextAlign ||
+	       property == Property::TextAlign || property == Property::TextAlignLast ||
+	       property == Property::TextEmphasisStyle || property == Property::TextEmphasisPosition ||
+	       property == Property::TextEmphasisColorMode || property == Property::TextEmphasisColor ||
 	       property == Property::TextTransform ||
 	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::BorderWidth ||
 	       (property >= Property::BorderTopWidth && property <= Property::BorderLeftWidth);
@@ -9158,6 +9899,9 @@ void applyInheritedStyleDefaults(int node)
 #if GEA_CSS_TEXT_ALIGN
 	style.text_align = parentStyle.text_align;
 #endif
+	style.text_align_last = parentStyle.text_align_last;
+	style.text_emphasis = parentStyle.text_emphasis;
+	style.text_emphasis_color = parentStyle.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	style.text_transform = parentStyle.text_transform;
 #endif
@@ -9396,6 +10140,14 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (clip >= 0) setStyleValue(node, Property::BackgroundClip, clip, source);
 		return true;
 	}
+	case CssDeclarationId::BackgroundBlendMode: {
+		const int parent = Tree::instance().node(nodeId).parent;
+		const int blend = toLowerAscii(trimCssValue(value)) == "inherit"
+		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).computedStyle()).bg_blend : 0)
+		    : compileBackgroundBlendMode(value);
+		if (blend >= 0) setStyleValue(node, Property::BackgroundBlendMode, blend, source);
+		return true;
+	}
 	case CssDeclarationId::Contain: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int flags = toLowerAscii(trimCssValue(value)) == "inherit"
@@ -9461,6 +10213,40 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (value == "right") setStyleValue(node, Property::Float, 2, source);
 		return true;
 #endif
+	case CssDeclarationId::LineClamp:
+	case CssDeclarationId::WebkitLineClamp:
+	case CssDeclarationId::MaxLines:
+	case CssDeclarationId::Continue:
+	case CssDeclarationId::BlockEllipsis:
+	case CssDeclarationId::Columns:
+	case CssDeclarationId::ColumnCount:
+	case CssDeclarationId::ColumnWidth:
+	case CssDeclarationId::ColumnFill:
+	case CssDeclarationId::ColumnSpan:
+	case CssDeclarationId::BorderStyle:
+	case CssDeclarationId::BorderTopStyle:
+	case CssDeclarationId::BorderRightStyle:
+	case CssDeclarationId::BorderBottomStyle:
+	case CssDeclarationId::BorderLeftStyle:
+	case CssDeclarationId::TextEmphasis:
+	case CssDeclarationId::TextEmphasisStyleDeclaration:
+	case CssDeclarationId::TextEmphasisColorDeclaration:
+	case CssDeclarationId::TextEmphasisPositionDeclaration:
+	case CssDeclarationId::BorderImage:
+	case CssDeclarationId::BorderImageSourceDeclaration:
+	case CssDeclarationId::BorderImageSliceDeclaration:
+	case CssDeclarationId::BorderImageWidthDeclaration:
+	case CssDeclarationId::BorderImageOutsetDeclaration:
+	case CssDeclarationId::BorderImageRepeatDeclaration: {
+		StaticStylePropertyValue writes[kDirectPropertyGroupCapacity];
+		int count = lineClampWrites(declaration, value, writes);
+		if (count < 0) count = multicolWrites(declaration, value, writes);
+		if (count < 0) count = borderStyleWrites(declaration, value, writes);
+		if (count < 0) count = textEmphasisWrites(declaration, value, writes);
+		if (count < 0) count = borderImageWrites(declaration, value, writes);
+		for (int i = 0; i < count; ++i) setStyleValue(node, writes[i].property, writes[i].value, source);
+		return true;
+	}
 	case CssDeclarationId::MarginTrim: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int flags = toLowerAscii(trimCssValue(value)) == "inherit"
@@ -9679,6 +10465,29 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (compileFlexBasisValue(value, compiled)) setFlexBasisValue(node, compiled.aux != 0, compiled.lengths[0], source);
 		return true;
 	}
+	case CssDeclarationId::MarginInline:
+	case CssDeclarationId::MarginBlock:
+	case CssDeclarationId::PaddingInline:
+	case CssDeclarationId::PaddingBlock:
+	case CssDeclarationId::InsetInline:
+	case CssDeclarationId::InsetBlock:
+	case CssDeclarationId::BorderInline:
+	case CssDeclarationId::BorderBlock:
+	case CssDeclarationId::BorderInlineWidth:
+	case CssDeclarationId::BorderBlockWidth:
+	case CssDeclarationId::BorderInlineColor:
+	case CssDeclarationId::BorderBlockColor:
+	case CssDeclarationId::BorderInlineStyle:
+	case CssDeclarationId::BorderBlockStyle:
+	{
+		const LogicalPair *pair = logicalPairFor(nullptr, declaration);
+		if (!pair) return true;
+		const auto parts = pair->split ? splitFunctionAwareWords(value) : std::vector<std::string>{value};
+		if (parts.empty() || parts.size() > 2) return true;
+		applyKnownResolvedPropertyWithSource(node, pair->first, parts[0], source);
+		applyKnownResolvedPropertyWithSource(node, pair->second, parts.size() > 1 ? parts[1] : parts[0], source);
+		return true;
+	}
 	case CssDeclarationId::Padding:
 	case CssDeclarationId::PaddingTop:
 	case CssDeclarationId::PaddingRight:
@@ -9855,6 +10664,12 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::TextAlign:
 		setStyleValue(node, Property::TextAlign, textAlignValue(value), source);
 		return true;
+	case CssDeclarationId::TextAlignLast:
+		setStyleValue(node, Property::TextAlignLast, textAlignLastValue(value), source);
+		return true;
+	case CssDeclarationId::VerticalAlign:
+		if (const int align = verticalAlignValue(value); align >= 0) setStyleValue(node, Property::VerticalAlign, align, source);
+		return true;
 	case CssDeclarationId::TextDecoration:
 		setStyleValue(node, Property::TextDecoration, textDecorationValue(value), source);
 		return true;
@@ -9912,7 +10727,8 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		return true;
 	}
 	case CssDeclarationId::Transform:
-		setTransformComponents(node, parseTransformComponents(value, nodeId), source);
+		setTransformComponents(node, toLowerAscii(trimCssValue(value)) == "inherit" ? inheritedTransformComponents(nodeId)
+		                                                                          : parseTransformComponents(value, nodeId), source);
 		return true;
 	case CssDeclarationId::Rotate: {
 		IndividualRotation rotation;
@@ -10675,11 +11491,11 @@ bool applyRuntimeBorderShorthandValue(NodeHandle node,
 	Node &target = state.nodes[nodeId];
 	const int snappedWidth = resolveBorderWidth(width, nodeId);
 	if (snappedWidth < 0) return true;
+	for (int side = 0; side < 4; ++side)
+		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), relief, source);
 	setUniformBorderWidth(node, snappedWidth, source);
 	if (source == StyleApplicationSource::Inline && width.unit == CssLengthUnit::Px)
 		ensureRareData(node.id()).inlineStyles.setCssPixels(Property::BorderWidth, width.value);
-	for (int side = 0; side < 4; ++side)
-		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), relief, source);
 	if (alpha >= 0) {
 		setStyleValue(node, Property::BorderColor, color, source);
 #if GEA_CSS_BORDER_ALPHA
@@ -10823,7 +11639,7 @@ bool applyCompiledBoxShadowValue(NodeHandle node, const CssCompiledValue &compil
 	              source);
 	setStyleValue(node, Property::BoxShadowColor, compiled.values[0], source);
 	setStyleValue(node, Property::BoxShadowAlpha, compiled.values[1], source);
-	setStyleValue(node, Property::BoxShadowInset, 1, source);
+	setStyleValue(node, Property::BoxShadowInset, compiled.aux == 1 ? 1 : 0, source);
 	return true;
 }
 
@@ -10891,7 +11707,7 @@ bool applyCompiledCssValueWithSource(NodeHandle node, const CssCompiledValue &co
 		case CssCompiledKind::DirectPropertyGroup: {
 			int count = compiled.aux;
 			if (count < 0) count = 0;
-			if (count > 4) count = 4;
+			if (count > kDirectPropertyGroupCapacity) count = kDirectPropertyGroupCapacity;
 			for (int i = 0; i < count; ++i) {
 				const int propertyIndex = compiled.values[i * 2];
 				if (propertyIndex < 0 || propertyIndex >= static_cast<int>(Property::Count)) return false;
@@ -10919,6 +11735,8 @@ bool applyCompiledCssValueWithSource(NodeHandle node, const CssCompiledValue &co
 		case CssDeclarationId::AlignSelf: setStyleValue(node, Property::AlignSelf, compiled.values[0], source); return true;
 		case CssDeclarationId::Position: setStyleValue(node, Property::Position, compiled.values[0], source); return true;
 		case CssDeclarationId::TextAlign: setStyleValue(node, Property::TextAlign, compiled.values[0], source); return true;
+		case CssDeclarationId::TextAlignLast: setStyleValue(node, Property::TextAlignLast, compiled.values[0], source); return true;
+		case CssDeclarationId::VerticalAlign: setStyleValue(node, Property::VerticalAlign, compiled.values[0], source); return true;
 		case CssDeclarationId::TextDecoration: setStyleValue(node, Property::TextDecoration, compiled.values[0], source); return true;
 		case CssDeclarationId::TextTransform: setStyleValue(node, Property::TextTransform, compiled.values[0], source); return true;
 		case CssDeclarationId::WhiteSpace: setStyleValue(node, Property::WhiteSpace, compiled.values[0], source); return true;
@@ -11332,6 +12150,30 @@ bool removeInlineStyleProperties(int node, std::initializer_list<Property> prope
 bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 {
 	if (!node) return false;
+	if (const char *physical = physicalLogicalLonghand(property.c_str())) return removeInlineStyleProperty(node, physical);
+	if (const LogicalPair *pair = logicalPairFor(property.c_str())) {
+		const auto &names = [](StyleDeclaration side) {
+			static const std::pair<StyleDeclaration, const char *> table[] = {
+				{StyleDeclaration::MarginLeft, "margin-left"}, {StyleDeclaration::MarginRight, "margin-right"},
+				{StyleDeclaration::MarginTop, "margin-top"}, {StyleDeclaration::MarginBottom, "margin-bottom"},
+				{StyleDeclaration::PaddingLeft, "padding-left"}, {StyleDeclaration::PaddingRight, "padding-right"},
+				{StyleDeclaration::PaddingTop, "padding-top"}, {StyleDeclaration::PaddingBottom, "padding-bottom"},
+				{StyleDeclaration::Left, "left"}, {StyleDeclaration::Right, "right"}, {StyleDeclaration::Top, "top"}, {StyleDeclaration::Bottom, "bottom"},
+				{StyleDeclaration::BorderLeft, "border-left"}, {StyleDeclaration::BorderRight, "border-right"},
+				{StyleDeclaration::BorderTop, "border-top"}, {StyleDeclaration::BorderBottom, "border-bottom"},
+				{StyleDeclaration::BorderLeftWidth, "border-left-width"}, {StyleDeclaration::BorderRightWidth, "border-right-width"},
+				{StyleDeclaration::BorderTopWidth, "border-top-width"}, {StyleDeclaration::BorderBottomWidth, "border-bottom-width"},
+				{StyleDeclaration::BorderLeftColor, "border-left-color"}, {StyleDeclaration::BorderRightColor, "border-right-color"},
+				{StyleDeclaration::BorderTopColor, "border-top-color"}, {StyleDeclaration::BorderBottomColor, "border-bottom-color"},
+				{StyleDeclaration::BorderLeftStyle, "border-left-style"}, {StyleDeclaration::BorderRightStyle, "border-right-style"},
+				{StyleDeclaration::BorderTopStyle, "border-top-style"}, {StyleDeclaration::BorderBottomStyle, "border-bottom-style"},
+			};
+			for (const auto &entry : table) if (entry.first == side) return entry.second;
+			return "";
+		};
+		const bool first = removeInlineStyleProperty(node, names(pair->first));
+		return removeInlineStyleProperty(node, names(pair->second)) || first;
+	}
 	if (property.rfind("--", 0) == 0) {
 #if GEA_CSS_CUSTOM_PROPERTIES
 		NodeRareData *rare = rareDataFor(node.id());
@@ -11433,6 +12275,16 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "box-sizing") return removeInlineStyleProperties(id, {Property::BoxSizing});
 	if (property == "float") return removeInlineStyleProperties(id, {Property::Float});
 	if (property == "margin-trim") return removeInlineStyleProperties(id, {Property::MarginTrim});
+	if (property == "line-clamp" || property == "-webkit-line-clamp")
+		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::LineClampDiscard, Property::BlockEllipsis, Property::BlockEllipsisString});
+	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});
+	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue, Property::LineClampDiscard});
+	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis, Property::BlockEllipsisString});
+	if (property == "columns") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnWidthSet, Property::ColumnCount, Property::ColumnWidth});
+	if (property == "column-count") return removeInlineStyleProperties(id, {Property::ColumnCountSet, Property::ColumnCount});
+	if (property == "column-width") return removeInlineStyleProperties(id, {Property::ColumnWidthSet, Property::ColumnWidth});
+	if (property == "column-fill") return removeInlineStyleProperties(id, {Property::ColumnFillAuto});
+	if (property == "column-span") return removeInlineStyleProperties(id, {Property::ColumnSpanAll});
 	if (property == "clear") return removeInlineStyleProperties(id, {Property::Clear});
 	if (property == "direction") return removeInlineStyleProperties(id, {Property::Direction});
 	if (property == "writing-mode") return removeInlineStyleProperties(id, {Property::WritingMode});
@@ -11444,6 +12296,15 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "background")
 		return removeInlineStyleProperties(id, {Property::BackgroundColor, Property::BackgroundAlpha, Property::BackgroundImage, Property::BackgroundClip, Property::HasBackground, Property::BackgroundSizeList, Property::BackgroundPositionList, Property::BackgroundRepeatList, Property::BackgroundAttachmentList, Property::BackgroundOriginList});
 	if (property == "background-clip") return removeInlineStyleProperties(id, {Property::BackgroundClip});
+	if (property == "background-blend-mode") return removeInlineStyleProperties(id, {Property::BackgroundBlendMode});
+	if (property == "border-image")
+		return removeInlineStyleProperties(id, {Property::BorderImageSource, Property::BorderImageSlice, Property::BorderImageWidth,
+		                                        Property::BorderImageOutset, Property::BorderImageRepeat});
+	if (property == "border-image-source") return removeInlineStyleProperties(id, {Property::BorderImageSource});
+	if (property == "border-image-slice") return removeInlineStyleProperties(id, {Property::BorderImageSlice});
+	if (property == "border-image-width") return removeInlineStyleProperties(id, {Property::BorderImageWidth});
+	if (property == "border-image-outset") return removeInlineStyleProperties(id, {Property::BorderImageOutset});
+	if (property == "border-image-repeat") return removeInlineStyleProperties(id, {Property::BorderImageRepeat});
 	if (property == "background-size") return removeInlineStyleProperties(id, {Property::BackgroundSizeList});
 	if (property == "background-position") return removeInlineStyleProperties(id, {Property::BackgroundPositionList});
 	if (property == "background-repeat") return removeInlineStyleProperties(id, {Property::BackgroundRepeatList});
@@ -11467,6 +12328,11 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "border-right-width") return removeInlineStyleProperties(id, {Property::BorderRightWidth});
 	if (property == "border-bottom-width") return removeInlineStyleProperties(id, {Property::BorderBottomWidth});
 	if (property == "border-left-width") return removeInlineStyleProperties(id, {Property::BorderLeftWidth});
+	if (property == "border-style") return removeInlineStyleProperties(id, {Property::BorderTopRelief, Property::BorderRightRelief, Property::BorderBottomRelief, Property::BorderLeftRelief});
+	if (property == "border-top-style") return removeInlineStyleProperties(id, {Property::BorderTopRelief});
+	if (property == "border-right-style") return removeInlineStyleProperties(id, {Property::BorderRightRelief});
+	if (property == "border-bottom-style") return removeInlineStyleProperties(id, {Property::BorderBottomRelief});
+	if (property == "border-left-style") return removeInlineStyleProperties(id, {Property::BorderLeftRelief});
 	if (property == "border-top-color") return removeInlineStyleProperties(id, {Property::BorderTopColor, Property::BorderTopAlpha, Property::BorderTopColorCurrent});
 	if (property == "border-right-color") return removeInlineStyleProperties(id, {Property::BorderRightColor, Property::BorderRightAlpha, Property::BorderRightColorCurrent});
 	if (property == "border-bottom-color") return removeInlineStyleProperties(id, {Property::BorderBottomColor, Property::BorderBottomAlpha, Property::BorderBottomColorCurrent});
@@ -11494,6 +12360,12 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "font-weight") return removeInlineStyleProperties(id, {Property::FontWeight});
 	if (property == "line-height") return removeInlineStyleProperties(id, {Property::LineHeight, Property::LineHeightExpression, Property::LineHeightMultiplier});
 	if (property == "text-align") return removeInlineStyleProperties(id, {Property::TextAlign});
+	if (property == "text-align-last") return removeInlineStyleProperties(id, {Property::TextAlignLast});
+	if (property == "text-emphasis") return removeInlineStyleProperties(id, {Property::TextEmphasisStyle, Property::TextEmphasisColorMode, Property::TextEmphasisColor});
+	if (property == "text-emphasis-style") return removeInlineStyleProperties(id, {Property::TextEmphasisStyle});
+	if (property == "text-emphasis-color") return removeInlineStyleProperties(id, {Property::TextEmphasisColorMode, Property::TextEmphasisColor});
+	if (property == "text-emphasis-position") return removeInlineStyleProperties(id, {Property::TextEmphasisPosition});
+	if (property == "vertical-align") return removeInlineStyleProperties(id, {Property::VerticalAlign});
 	if (property == "text-decoration" || property == "text-decoration-line")
 		return removeInlineStyleProperties(id, {Property::TextDecoration});
 	if (property == "text-transform") return removeInlineStyleProperties(id, {Property::TextTransform});
@@ -11641,6 +12513,16 @@ bool isRootNode(int node)
 	const int mountedRoot = Tree::instance().mountedRoot();
 	if (mountedRoot >= 0) return node == mountedRoot;
 	return state.nodes[node].parent < 0;
+}
+
+// The element sibling before node; text and generated content are not elements.
+int previousElementSibling(int node)
+{
+	const auto &state = treeState();
+	if (node < 0 || node >= state.nodeCount) return -1;
+	for (int sibling = state.nodes[node].prev_sibling; sibling >= 0; sibling = state.nodes[sibling].prev_sibling)
+		if (!isGeneratedPseudoNode(state.nodes[sibling]) && !isAnonymousTextNode(state.nodes[sibling])) return sibling;
+	return -1;
 }
 
 bool isFirstElementChild(int node)
@@ -11808,6 +12690,8 @@ ParsedSimpleSelector parseSimpleSelector(const char *rawSimple, std::size_t rawL
 struct SelectorPart {
 	[[no_unique_address]] ParsedSimpleSelector simple;
 	bool directParent = false;
+	// Relation to the part on its left: 1 next sibling (+), 2 any earlier sibling (~).
+	std::uint8_t sibling = 0;
 };
 
 struct SelectorPlan {
@@ -11817,6 +12701,8 @@ struct SelectorPlan {
 	bool rightmostRoot = false;
 	bool valid = true;
 	[[no_unique_address]] SmallSelectorList<CssAtomId, 4> ancestorClasses;
+	[[no_unique_address]] SmallSelectorList<CssAtomId, 4> siblingClasses;
+	[[no_unique_address]] SmallSelectorList<int16_t, 4> siblingTags;
 	CssAtomId rightmostId = kInvalidCssAtom;
 	[[no_unique_address]] SmallSelectorList<int16_t, 4> ancestorTags;
 	CssAtomId rightmostClass = kInvalidCssAtom;
@@ -11863,13 +12749,16 @@ void finishSelectorPlan(SelectorPlan &plan)
 	}
 
 	for (std::size_t p = 0; p + 1 < plan.parts.size(); ++p) {
+		// A part joined to the next by + or ~ matches an earlier sibling, not an
+		// ancestor: a change to it restyles the siblings that follow.
+		const bool sibling = plan.parts.at(p + 1).sibling != 0;
 		const ParsedSimpleSelector &ancestor = plan.parts.at(p).simple;
 		for (std::size_t c = 0, n = ancestor.classIds.size(); c < n; ++c) {
 			const CssAtomId cls = ancestor.classIds.at(c);
-			if (cls != kInvalidCssAtom) appendUnique(plan.ancestorClasses, cls);
+			if (cls != kInvalidCssAtom) appendUnique(sibling ? plan.siblingClasses : plan.ancestorClasses, cls);
 		}
 		if (ancestor.hasTag && !ancestor.rootTag && ancestor.tagId >= 0)
-			appendUnique(plan.ancestorTags, ancestor.tagId);
+			appendUnique(sibling ? plan.siblingTags : plan.ancestorTags, ancestor.tagId);
 	}
 }
 
@@ -11878,22 +12767,27 @@ SelectorPlan parseNormalizedSelectorPlan(const char *selectorText, std::size_t s
 	SelectorPlan plan;
 	const char *selector = selectorText ? selectorText : "";
 	bool nextDirect = false;
+	std::uint8_t nextSibling = 0;
+	auto combinator = [](char c) { return c == '>' || c == '+' || c == '~'; };
 	std::size_t i = 0;
 	while (i < selectorLength) {
 		while (i < selectorLength && static_cast<unsigned char>(selector[i]) <= ' ') ++i;
 		if (i >= selectorLength) break;
-		if (selector[i] == '>') {
-			nextDirect = true;
+		if (combinator(selector[i])) {
+			nextDirect = selector[i] == '>';
+			nextSibling = selector[i] == '+' ? 1 : selector[i] == '~' ? 2 : 0;
 			++i;
 			continue;
 		}
 		const std::size_t start = i;
-		while (i < selectorLength && static_cast<unsigned char>(selector[i]) > ' ' && selector[i] != '>') ++i;
+		while (i < selectorLength && static_cast<unsigned char>(selector[i]) > ' ' && !combinator(selector[i])) ++i;
 		if (i <= start) continue;
 		SelectorPart part;
 		part.simple = parseSimpleSelector(selector + start, i - start);
 		part.directParent = nextDirect;
+		part.sibling = nextSibling;
 		nextDirect = false;
+		nextSibling = 0;
 		if (!part.simple.valid) plan.valid = false;
 		plan.specificity += simpleSelectorSpecificity(part.simple);
 		plan.parts.push_back(std::move(part));
@@ -11980,6 +12874,7 @@ std::uint16_t storeStaticSelectorPlan(const char *selector,
 		SelectorPart part;
 		part.simple = staticSimpleSelectorForSpec(spec.simple);
 		part.directParent = spec.directParent;
+		part.sibling = spec.sibling;
 		if (!part.simple.valid) plan.valid = false;
 		plan.specificity += simpleSelectorSpecificity(part.simple);
 		plan.parts.push_back(std::move(part));
@@ -12049,6 +12944,19 @@ bool selectorPlanMatchesNode(const SelectorPlan &plan, int node)
 
 	for (int target = last - 1; target >= 0; --target) {
 		const bool direct = parts.at(static_cast<std::size_t>(target + 1)).directParent;
+		const std::uint8_t sibling = parts.at(static_cast<std::size_t>(target + 1)).sibling;
+		if (sibling) {
+			bool found = false;
+			for (int earlier = previousElementSibling(current); earlier >= 0; earlier = sibling == 1 ? -1 : previousElementSibling(earlier)) {
+				if (matchSimpleSelector(earlier, parts.at(static_cast<std::size_t>(target)).simple)) {
+					current = earlier;
+					found = true;
+					break;
+				}
+			}
+			if (!found) return false;
+			continue;
+		}
 		const int parent = current >= 0 && current < state.nodeCount ? state.nodes[current].parent : -1;
 		if (direct) {
 			current = parent;
@@ -12814,6 +13722,11 @@ struct RuleIndex {
 	// recomputed in full — a custom-prop/inheritance diff alone wouldn't catch it.
 	DenseIdSet ancestorClasses;
 	DenseIdSet ancestorTags;
+	// The same for parts joined by + or ~, which match an earlier sibling: a
+	// change to one of these keys restyles the siblings after the node.
+	DenseIdSet siblingClasses;
+	DenseIdSet siblingTags;
+	bool hasSiblingRules = false;
 	// CSS specificity per rule (indexed by rule index), packed as
 	// ids*10000 + (classes+pseudo-classes)*100 + (elements+pseudo-elements). Used to
 	// order the cascade: a more-specific rule wins over a less-specific one
@@ -12906,6 +13819,9 @@ void rebuildRuleIndexIfNeeded()
 	clearCachedStyleApplyOps();
 	g_ruleIndex.ancestorClasses.clear();
 	g_ruleIndex.ancestorTags.clear();
+	g_ruleIndex.siblingClasses.clear();
+	g_ruleIndex.siblingTags.clear();
+	g_ruleIndex.hasSiblingRules = false;
 	const auto &list = rules();
 	g_ruleIndex.specificity.assign(list.size(), 0);
 	g_ruleIndex.writeMasks.assign(list.size(), {});
@@ -12961,6 +13877,12 @@ void rebuildRuleIndexIfNeeded()
 					const int16_t tag = plan->ancestorTags.at(ancestor);
 					if (tag >= 0) g_ruleIndex.ancestorTags.insert(tag);
 				}
+				for (std::size_t p = 0; p < plan->parts.size(); ++p)
+					if (plan->parts.at(p).sibling) g_ruleIndex.hasSiblingRules = true;
+				for (std::size_t sibling = 0, count = plan->siblingClasses.size(); sibling < count; ++sibling)
+					g_ruleIndex.siblingClasses.insert(plan->siblingClasses.at(sibling));
+				for (std::size_t sibling = 0, count = plan->siblingTags.size(); sibling < count; ++sibling)
+					g_ruleIndex.siblingTags.insert(plan->siblingTags.at(sibling));
 			}
 			break;
 		}
@@ -13738,6 +14660,8 @@ bool addCachedKeywordDeclaration(CachedStyleApplyOp &op, CssDeclarationId declar
 	case CssDeclarationId::AlignSelf: return addCachedStyleApplyProperty(op, Property::AlignSelf, value);
 	case CssDeclarationId::Position: return addCachedStyleApplyProperty(op, Property::Position, value);
 	case CssDeclarationId::TextAlign: return addCachedStyleApplyProperty(op, Property::TextAlign, value);
+	case CssDeclarationId::TextAlignLast: return addCachedStyleApplyProperty(op, Property::TextAlignLast, value);
+	case CssDeclarationId::VerticalAlign: return addCachedStyleApplyProperty(op, Property::VerticalAlign, value);
 	case CssDeclarationId::TextDecoration: return addCachedStyleApplyProperty(op, Property::TextDecoration, value);
 	case CssDeclarationId::TextTransform: return addCachedStyleApplyProperty(op, Property::TextTransform, value);
 	case CssDeclarationId::WhiteSpace: return addCachedStyleApplyProperty(op, Property::WhiteSpace, value);
@@ -14124,8 +15048,8 @@ bool buildCachedStyleApplyOp(const CssCompiledValue *compiled, CachedStyleApplyO
 			op.values[3] = compiled->aux != 0 ? compiled->values[1] : -1;
 			return true;
 		}
-		if (!addCachedUniformBorderWidth(op, width)) return false;
 		if (!addCachedStyleApplyProperty(op, Property::BorderRelief, compiled->values[2])) return false;
+		if (!addCachedUniformBorderWidth(op, width)) return false;
 		return compiled->aux == 0 ? addCachedStyleApplyProperty(op, Property::BorderColorCurrent, 1) : addCachedStyleApplyProperty(op, Property::BorderColor, compiled->values[0]);
 	}
 	case CssCompiledKind::BorderSideShorthand: {
@@ -14621,7 +15545,7 @@ bool addCompiledValueWrites(const CssCompiledValue &compiled, PropertyWriteMask 
 	case CssCompiledKind::DirectPropertyGroup: {
 		int count = compiled.aux;
 		if (count < 0) count = 0;
-		if (count > 4) count = 4;
+		if (count > kDirectPropertyGroupCapacity) count = kDirectPropertyGroupCapacity;
 		for (int i = 0; i < count; ++i) {
 			const int propertyIndex = compiled.values[i * 2];
 			if (propertyIndex < 0 || propertyIndex >= static_cast<int>(Property::Count)) return false;
@@ -14649,6 +15573,8 @@ bool addCompiledValueWrites(const CssCompiledValue &compiled, PropertyWriteMask 
 		case CssDeclarationId::AlignSelf: addPropertyWrite(mask, Property::AlignSelf); return true;
 		case CssDeclarationId::Position: addPropertyWrite(mask, Property::Position); return true;
 		case CssDeclarationId::TextAlign: addPropertyWrite(mask, Property::TextAlign); return true;
+		case CssDeclarationId::TextAlignLast: addPropertyWrite(mask, Property::TextAlignLast); return true;
+		case CssDeclarationId::VerticalAlign: addPropertyWrite(mask, Property::VerticalAlign); return true;
 		case CssDeclarationId::TextDecoration: addPropertyWrite(mask, Property::TextDecoration); return true;
 		case CssDeclarationId::TextTransform: addPropertyWrite(mask, Property::TextTransform); return true;
 		case CssDeclarationId::WhiteSpace: addPropertyWrite(mask, Property::WhiteSpace); return true;
@@ -15829,6 +16755,9 @@ struct ParentStyleSnapshot {
 #else
 	static constexpr std::uint8_t text_align = 0;
 #endif
+	std::uint8_t text_align_last;
+	std::uint8_t text_emphasis;
+	style_color_t text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	std::uint8_t text_transform;
 #else
@@ -15872,6 +16801,9 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 #if GEA_CSS_TEXT_ALIGN
 	out.text_align = s.text_align;
 #endif
+	out.text_align_last = s.text_align_last;
+	out.text_emphasis = s.text_emphasis;
+	out.text_emphasis_color = s.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	out.text_transform = s.text_transform;
 #endif
@@ -15894,7 +16826,8 @@ bool parentStylesDiffer(const ParentStyleSnapshot &a, const ParentStyleSnapshot 
 {
 	return a.text_color != b.text_color || a.text_alpha != b.text_alpha || a.font_id != b.font_id || a.font_size != b.font_size ||
 	       a.font_weight != b.font_weight || a.line_height != b.line_height || a.line_height_multiplier != b.line_height_multiplier ||
-	       a.text_align != b.text_align || a.text_transform != b.text_transform ||
+	       a.text_align != b.text_align || a.text_align_last != b.text_align_last || a.text_transform != b.text_transform ||
+	       a.text_emphasis != b.text_emphasis || a.text_emphasis_color != b.text_emphasis_color ||
 	       a.white_space != b.white_space || a.visibility != b.visibility || a.border_widths != b.border_widths;
 }
 
@@ -15958,6 +16891,18 @@ struct NodeClassSnapshot {
 		return spillTokens ? spillTokens[index] : inlineTokens[index];
 	}
 };
+
+bool classTokensTouchSiblingSelectors(int node, const NodeClassSnapshot &oldTokens, const NodeClassList &current)
+{
+	rebuildRuleIndexIfNeeded();
+	if (!g_ruleIndex.hasSiblingRules) return false;
+	if (g_ruleIndex.siblingTags.contains(treeState().nodes[node].tag_id)) return true;
+	for (std::size_t i = 0; i < oldTokens.count; ++i)
+		if (g_ruleIndex.siblingClasses.contains(oldTokens.at(i))) return true;
+	for (std::size_t i = 0, n = current.size(); i < n; ++i)
+		if (g_ruleIndex.siblingClasses.contains(current.at(i))) return true;
+	return false;
+}
 
 bool classTokensTouchAncestorSelectors(const NodeClassSnapshot &oldTokens, const NodeClassList &current)
 {
@@ -16101,10 +17046,14 @@ void snapshotCustomProperties(const NodeRareData *rareData, CustomPropertySnapsh
 
 void noteClassMutationForIncremental(int node, const NodeClassSnapshot &oldTokens)
 {
-	if (!g_styleMountBatchActive) return;
-	rebuildRuleIndexIfNeeded();
 	const auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
+	// A + or ~ selector keyed on the old or new classes (or the tag) restyles
+	// the siblings after this node.
+	if (classTokensTouchSiblingSelectors(node, oldTokens, state.classLists[node]))
+		StyleSheet::instance().recomputeSiblingsFrom(state.nodes[node].next_sibling);
+	if (!g_styleMountBatchActive) return;
+	rebuildRuleIndexIfNeeded();
 	if (classTokensTouchAncestorSelectors(oldTokens, state.classLists[node]))
 		g_forceFullSubtreeMark.insert(node);
 }
@@ -17104,13 +18053,57 @@ bool StyleValues::hasTextBackgroundClip(const ComputedStyle &style)
 	return std::find(list.begin(), list.end(), 3) != list.end();
 }
 
+const BorderImageSource *StyleValues::borderImageSource(const ComputedStyle &style)
+{
+	const auto handle = rstyle(style).border_image_source;
+	const auto &list = borderImageSources();
+	return handle && handle <= list.size() ? &list[handle - 1] : nullptr;
+}
+
+BorderImageSides StyleValues::borderImageSides(const ComputedStyle &style, int which)
+{
+	const auto &r = rstyle(style);
+	const auto handle = which == 0 ? r.border_image_slice : which == 1 ? r.border_image_width : r.border_image_outset;
+	const auto &list = borderImageSideLists();
+	return handle && handle <= list.size() ? list[handle - 1] : initialBorderImageSides(which);
+}
+
+int StyleValues::borderImageOutsetExtent(const ComputedStyle &style)
+{
+	if (!rstyle(style).border_image_source) return 0;
+	const auto outset = borderImageSides(style, 2);
+	float extent = 0.0f;
+	for (int i = 0; i < 4; ++i)
+		extent = std::max(extent, outset.kind[i] == 1 ? outset.value[i] : outset.value[i] * computedBorderWidth(style, i));
+	return static_cast<int>(std::ceil(extent));
+}
+
+int StyleValues::backgroundBlendMode(const ComputedStyle &style, int layer)
+{
+	const auto handle = rstyle(style).bg_blend;
+	const auto &lists = backgroundBlendLists();
+	if (!handle || handle > lists.size()) return 0;
+	const auto &list = lists[handle - 1];
+	return list[std::max(0, layer) % list.size()];
+}
+
 int StyleValues::backgroundClip(const ComputedStyle &style, int layer)
 {
 	const auto handle = rstyle(style).bg_clip;
 	const auto &lists = backgroundClipLists();
-	if (!handle || handle > lists.size()) return 0;
-	const auto &list = lists[handle - 1];
-	return list[std::max(0, layer) % list.size()];
+	int clip = 0;
+	if (handle && handle <= lists.size()) {
+		const auto &list = lists[handle - 1];
+		clip = list[std::max(0, layer) % list.size()];
+	}
+	// A local background scrolls with a scroll container's contents, so its
+	// painting area is the scrollport: border-box clipping acts as padding-box.
+	if (clip != 0 || !overflowEstablishesContext(style)) return clip;
+	const int attachments = rstyle(style).bg_attachment_list;
+	const auto &placements = backgroundPlacementLists();
+	if (attachments < 0 || attachments >= static_cast<int>(placements.size()) || placements[attachments].empty()) return clip;
+	const auto &list = placements[attachments];
+	return list[std::max(0, layer) % list.size()].a == 2 ? 1 : clip;
 }
 
 BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
@@ -17126,19 +18119,21 @@ BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style,
 	if (const auto *v = entry(r.bg_attachment_list)) out.attachment = v->a;
 	if (const auto *v = entry(r.bg_origin_list)) out.origin = v->a;
 	if (const auto *v = entry(r.bg_repeat_list)) { out.repeatX = v->a; out.repeatY = v->b; }
-	const Node &node = treeState().nodes[nodeId];
+	const auto &state = treeState();
+	// Detached boxes (nodeIndex() == -1) have no scroll or edge state to read.
+	const Node *node = nodeId >= 0 && nodeId < state.nodeCount ? &state.nodes[nodeId] : nullptr;
 	if (out.attachment == 1) {
-		x = y = 0; width = treeState().mountedWidth; height = treeState().mountedHeight;
-	} else {
+		x = y = 0; width = state.mountedWidth; height = state.mountedHeight;
+	} else if (node) {
 		if (out.attachment == 2) {
-			width = std::max<int>(width, node.layout.scroll_content_width);
-			height = std::max<int>(height, node.layout.scroll_content_height);
-			x -= node.layout.scroll_x; y -= node.layout.scroll_y;
+			width = std::max<int>(width, node->layout.scroll_content_width);
+			height = std::max<int>(height, node->layout.scroll_content_height);
+			x -= node->layout.scroll_x; y -= node->layout.scroll_y;
 		}
 		if (out.origin != 0) {
 			int inset[4];
-			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node.computedStyle(), i) +
-			    (out.origin == 2 ? std::max<int>(0, node.computedStyle().padding[i]) : 0);
+			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->computedStyle(), i) +
+			    (out.origin == 2 ? std::max<int>(0, node->computedStyle().padding[i]) : 0);
 			x += inset[3]; y += inset[0]; width -= inset[1]+inset[3]; height -= inset[0]+inset[2];
 		}
 	}
@@ -18013,6 +19008,19 @@ void StyleSheet::hoverChanged() const
 void StyleSheet::recomputeSubtree(int nodeId) const
 {
 	recomputeSubtreeClassStyles(nodeId);
+}
+
+void StyleSheet::recomputeSiblingsFrom(int nodeId) const
+{
+	rebuildRuleIndexIfNeeded();
+	if (!g_ruleIndex.hasSiblingRules) return;
+	auto &state = treeState();
+	// ::before/::after nodes take their style from the owner's rule plan, not
+	// their own tag, so they are skipped like in recomputeSubtreeClassStyles.
+	for (int sibling = nodeId; sibling >= 0 && sibling < state.nodeCount; sibling = state.nodes[sibling].next_sibling) {
+		if (isGeneratedPseudoNode(state.nodes[sibling])) continue;
+		recomputeSubtreeClassStyles(sibling);
+	}
 }
 
 void StyleSheet::startCssAnimations(std::uint32_t nowMs) const

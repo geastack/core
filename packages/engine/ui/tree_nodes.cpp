@@ -522,6 +522,7 @@ void Tree::setParent(int child, int parent)
 	if (reparentWouldCycle(state, child, parent)) return;
 	Node *c = &state.nodes[child];
 	const bool localMutation = localAbsoluteLeafTreeMutation(state, child);
+	const int oldNext = c->next_sibling;
 	if (c->parent >= 0) {
 		Node *old_parent = &state.nodes[c->parent];
 		if (old_parent->first_child == child) old_parent->first_child = c->next_sibling;
@@ -562,6 +563,8 @@ void Tree::setParent(int child, int parent)
 	else
 		markDisplayListDirty();
 	StyleSheet::instance().recomputeSubtree(child);
+	// Sibling selectors (+, ~) of the siblings after the old position.
+	StyleSheet::instance().recomputeSiblingsFrom(oldNext);
 }
 
 void Tree::insertBefore(int child, int parent, int reference)
@@ -579,6 +582,7 @@ void Tree::insertBefore(int child, int parent, int reference)
 
 	Node *c = &state.nodes[child];
 	const bool localMutation = localAbsoluteLeafTreeMutation(state, child);
+	const int oldNext = c->next_sibling;
 	// Detach `child` from its current position first; this may mutate the
 	// reference node's prev_sibling if they were adjacent, so re-read it after.
 	if (c->parent >= 0) {
@@ -623,15 +627,23 @@ void Tree::insertBefore(int child, int parent, int reference)
 	else
 		markDisplayListDirty();
 	StyleSheet::instance().recomputeSubtree(child);
+	// Sibling selectors (+, ~) of the siblings after the old and new positions.
+	if (oldNext != reference) StyleSheet::instance().recomputeSiblingsFrom(oldNext);
+	StyleSheet::instance().recomputeSiblingsFrom(reference);
 }
 
 void Tree::removeNode(int id)
+{
+	removeNode(id, true);
+}
+
+void Tree::removeNode(int id, bool restyleSiblings)
 {
 	auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount || !state.nodeActive[id]) return;
 	if (containsNode(id, state.hoveredNodeId)) pointerHover(-1, -1);
 	while (state.nodes[id].first_child >= 0) {
-		removeNode(state.nodes[id].first_child);
+		removeNode(state.nodes[id].first_child, false);
 		if (id >= state.nodeCount || !state.nodeActive[id]) return;
 	}
 	Node *n = &state.nodes[id];
@@ -651,8 +663,12 @@ void Tree::removeNode(int id)
 		if (p->first_child == id) p->first_child = n->next_sibling;
 		if (p->last_child == id) p->last_child = n->prev_sibling;
 	}
+	const int next = n->next_sibling;
 	if (n->prev_sibling >= 0) state.nodes[n->prev_sibling].next_sibling = n->next_sibling;
 	if (n->next_sibling >= 0) state.nodes[n->next_sibling].prev_sibling = n->prev_sibling;
+	// Sibling selectors (+, ~) of the siblings that followed it.
+	if (restyleSiblings) StyleSheet::instance().recomputeSiblingsFrom(next);
+	n = &state.nodes[id];
 	n->mutableStyle().display = 1;
 	n->parent = -1;
 	n->first_child = -1;

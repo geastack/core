@@ -1508,6 +1508,33 @@ int gLastScrollUiFrame = -1000;
 
 		using TransformedRoundedRectCommand = decltype(DisplayCommand{}.transformedRoundedRect);
 
+		bool transformedRoundedRectIsRing(const TransformedRoundedRectCommand &r)
+		{
+			return (r.ring[0] | r.ring[1] | r.ring[2] | r.ring[3]) != 0;
+		}
+
+		// The unpainted inside of a border ring: the padding box, whose radii
+		// are the outer radii less the adjoining border widths (CSS Backgrounds 5.2).
+		TransformedRoundedRectCommand transformedRoundedRectHole(const TransformedRoundedRectCommand &r)
+		{
+			TransformedRoundedRectCommand hole = r;
+			hole.ring[0] = hole.ring[1] = hole.ring[2] = hole.ring[3] = 0;
+			hole.lx = static_cast<int16_t>(r.lx + r.ring[3]);
+			hole.ly = static_cast<int16_t>(r.ly + r.ring[0]);
+			hole.lw = static_cast<int16_t>(std::max(0, r.lw - r.ring[1] - r.ring[3]));
+			hole.lh = static_cast<int16_t>(std::max(0, r.lh - r.ring[0] - r.ring[2]));
+			hole.tlRx8 = static_cast<int16_t>(std::max(0, r.tlRx8 - 8 * r.ring[3]));
+			hole.tlRy8 = static_cast<int16_t>(std::max(0, r.tlRy8 - 8 * r.ring[0]));
+			hole.trRx8 = static_cast<int16_t>(std::max(0, r.trRx8 - 8 * r.ring[1]));
+			hole.trRy8 = static_cast<int16_t>(std::max(0, r.trRy8 - 8 * r.ring[0]));
+			hole.brRx8 = static_cast<int16_t>(std::max(0, r.brRx8 - 8 * r.ring[1]));
+			hole.brRy8 = static_cast<int16_t>(std::max(0, r.brRy8 - 8 * r.ring[2]));
+			hole.blRx8 = static_cast<int16_t>(std::max(0, r.blRx8 - 8 * r.ring[3]));
+			hole.blRy8 = static_cast<int16_t>(std::max(0, r.blRy8 - 8 * r.ring[2]));
+			return hole;
+		}
+
+
 		struct RoundedRectScreenSpan
 		{
 			int x;
@@ -1650,7 +1677,7 @@ int gLastScrollUiFrame = -1000;
 		{
 			const auto &r = command.transformedRoundedRect;
 			RoundedRectScreenSpan span{};
-			if (!transformedRoundedRectToScreenSpan(r, &span))
+			if (transformedRoundedRectIsRing(r) || !transformedRoundedRectToScreenSpan(r, &span))
 				return false;
 			if (!roundedRectScreenSpanFitsCanvas(span))
 				return false;
@@ -1851,7 +1878,7 @@ int gLastScrollUiFrame = -1000;
 				pixel = gea::framework::graphics::pixel::blendNative(color, pixel, effectiveAlpha);
 		}
 
-		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		bool roundedRectOuterContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
 		{
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
@@ -1880,6 +1907,13 @@ int gLastScrollUiFrame = -1000;
 			if (blRx > 0.0f && blRy > 0.0f && sx < left + blRx && sy >= bottom - blRy)
 				return roundedCornerContainsFast(left + blRx, bottom - blRy, blRx, blRy, sx, sy);
 			return true;
+		}
+
+		bool roundedRectContainsFast(const TransformedRoundedRectCommand &r, float sx, float sy)
+		{
+			if (!roundedRectOuterContainsFast(r, sx, sy))
+				return false;
+			return !transformedRoundedRectIsRing(r) || !roundedRectOuterContainsFast(transformedRoundedRectHole(r), sx, sy);
 		}
 
 		int roundedRectCoverageFast(const TransformedRoundedRectCommand &r,
@@ -1916,6 +1950,8 @@ int gLastScrollUiFrame = -1000;
 																					float marginX,
 																					float marginY)
 		{
+			if (transformedRoundedRectIsRing(r))
+				return false;
 			const float left = static_cast<float>(r.lx);
 			const float top = static_cast<float>(r.ly);
 			const float right = left + static_cast<float>(r.lw);
@@ -1958,6 +1994,8 @@ int gLastScrollUiFrame = -1000;
 		int roundedRectCoverageHomography(const TransformedRoundedRectCommand &r, const double *homography, int x, int y, int samples)
 		{
 			const float kernelWidth = transformedRoundedRectAntialiasKernelWidth(samples, r);
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 			int coverage = 0;
 			for (int iy = 0; iy < samples; ++iy)
 			{
@@ -1982,12 +2020,223 @@ int gLastScrollUiFrame = -1000;
 																	r.blRx8,
 																	r.blRy8,
 																	sx,
-																	sy))
+																	sy) &&
+					    (!ring || !roundedRectOuterContainsFast(hole, static_cast<float>(sx), static_cast<float>(sy))))
 						++coverage;
 				}
 			}
 			return coverage;
 		}
+
+
+		// Multicol column copies: commands [begin, end) repeat those `offset`
+		// indices earlier, translated into a later column box. Text-clipped
+		// backgrounds in a copy take their glyph mask from the same copy.
+		struct ColumnCopy
+		{
+			int begin, end, offset;
+		};
+
+		std::vector<ColumnCopy> &columnCopies()
+		{
+			static std::vector<ColumnCopy> value;
+			return value;
+		}
+
+		int columnCopyOffset(const DisplayCommand &command)
+		{
+			if (!state.commands || &command < state.commands || &command >= state.commands + state.commandCount)
+				return 0;
+			const int index = static_cast<int>(&command - state.commands);
+			for (const auto &copy : columnCopies())
+				if (index >= copy.begin && index < copy.end)
+					return copy.offset;
+			return 0;
+		}
+
+		// Rounded and transformed overflow clips. Display clips are rectangles, so
+		// replay saves the canvas pixels a shaped clip's bounds may expose, lets
+		// the clipped content paint, then puts back every pixel outside the shape
+		// (in part where antialiasing covers it in part).
+		class ShapedClips
+		{
+		public:
+			static std::size_t depth() { return entries().size(); }
+
+			static void begin(const DisplayCommand &clip)
+			{
+				const auto &c = clip.clip;
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = c.qx[0]; shape.y0 = c.qy[0];
+				shape.x1 = c.qx[1]; shape.y1 = c.qy[1];
+				shape.x2 = c.qx[2]; shape.y2 = c.qy[2];
+				shape.x3 = c.qx[3]; shape.y3 = c.qy[3];
+				shape.lx = c.lx; shape.ly = c.ly; shape.lw = c.lw; shape.lh = c.lh;
+				shape.tlRx8 = c.rx8[0]; shape.tlRy8 = c.ry8[0];
+				shape.trRx8 = c.rx8[1]; shape.trRy8 = c.ry8[1];
+				shape.brRx8 = c.rx8[2]; shape.brRy8 = c.ry8[2];
+				shape.blRx8 = c.rx8[3]; shape.blRy8 = c.ry8[3];
+				begin(shape);
+			}
+
+			static void begin(const OverflowClipShape &clip)
+			{
+				TransformedRoundedRectCommand shape{};
+				shape.x0 = clip.qx[0]; shape.y0 = clip.qy[0];
+				shape.x1 = clip.qx[1]; shape.y1 = clip.qy[1];
+				shape.x2 = clip.qx[2]; shape.y2 = clip.qy[2];
+				shape.x3 = clip.qx[3]; shape.y3 = clip.qy[3];
+				shape.lx = clip.lx; shape.ly = clip.ly; shape.lw = clip.lw; shape.lh = clip.lh;
+				shape.tlRx8 = clip.rx8[0]; shape.tlRy8 = clip.ry8[0];
+				shape.trRx8 = clip.rx8[1]; shape.trRy8 = clip.ry8[1];
+				shape.brRx8 = clip.rx8[2]; shape.brRy8 = clip.ry8[2];
+				shape.blRx8 = clip.rx8[3]; shape.blRy8 = clip.ry8[3];
+				begin(shape);
+			}
+
+			static void endTo(std::size_t mark)
+			{
+				while (entries().size() > mark)
+					end();
+			}
+
+			static void end()
+			{
+				const Entry entry = entries().back();
+				entries().pop_back();
+				restore(entry);
+				saved().resize(entry.offset);
+			}
+
+		private:
+			struct Box
+			{
+				int x0, y0, x1, y1;
+			};
+			struct Entry
+			{
+				TransformedRoundedRectCommand shape;
+				float inv00, inv01, inv10, inv11;
+				Box boxes[4];
+				int boxCount;
+				std::size_t offset;
+			};
+
+			// Per-core banks: the 2-core band split replays both halves concurrently,
+			// and each half pushes and pops its own shaped clips.
+			static std::vector<Entry> &entries()
+			{
+				static std::vector<Entry> value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static std::vector<gea::framework::graphics::pixel::native_t> &saved()
+			{
+				static std::vector<gea::framework::graphics::pixel::native_t> value[2];
+				return value[gea_current_render_core() & 1];
+			}
+
+			static void begin(const TransformedRoundedRectCommand &shape)
+			{
+				Entry entry{};
+				entry.shape = shape;
+				entry.offset = saved().size();
+				auto *canvas = gea::platform::display::Display::canvas();
+				const float a = shape.lw ? static_cast<float>(shape.x1 - shape.x0) / shape.lw : 0.0f;
+				const float b = shape.lh ? static_cast<float>(shape.x3 - shape.x0) / shape.lh : 0.0f;
+				const float c = shape.lw ? static_cast<float>(shape.y1 - shape.y0) / shape.lw : 0.0f;
+				const float d = shape.lh ? static_cast<float>(shape.y3 - shape.y0) / shape.lh : 0.0f;
+				const float det = a * d - b * c;
+				if (canvas && canvas->pixels() && std::fabs(det) >= 1e-6f)
+				{
+					entry.inv00 = d / det;
+					entry.inv01 = -b / det;
+					entry.inv10 = -c / det;
+					entry.inv11 = a / det;
+					Box candidates[4];
+					int count = 0;
+					if (transformedRoundedRectLooksAxisAligned(shape) && shape.x1 - shape.x0 == shape.lw && shape.y3 - shape.y0 == shape.lh)
+					{
+						// Only the corner boxes can lie outside an untransformed rounded rect.
+						const auto extent = [](int radius8) { return (std::max(0, radius8) + 7) / 8; };
+						const int left = shape.lx, top = shape.ly, right = shape.lx + shape.lw - 1, bottom = shape.ly + shape.lh - 1;
+						const int tlW = extent(shape.tlRx8), tlH = extent(shape.tlRy8), trW = extent(shape.trRx8), trH = extent(shape.trRy8);
+						const int brW = extent(shape.brRx8), brH = extent(shape.brRy8), blW = extent(shape.blRx8), blH = extent(shape.blRy8);
+						if (tlW && tlH) candidates[count++] = {left, top, left + tlW - 1, top + tlH - 1};
+						if (trW && trH) candidates[count++] = {right - trW + 1, top, right, top + trH - 1};
+						if (brW && brH) candidates[count++] = {right - brW + 1, bottom - brH + 1, right, bottom};
+						if (blW && blH) candidates[count++] = {left, bottom - blH + 1, left + blW - 1, bottom};
+					}
+					else
+					{
+						int x0, y0, x1, y1;
+						const int16_t xs[4] = {shape.x0, shape.x1, shape.x2, shape.x3};
+						const int16_t ys[4] = {shape.y0, shape.y1, shape.y2, shape.y3};
+						x0 = std::min({xs[0], xs[1], xs[2], xs[3]}); x1 = std::max({xs[0], xs[1], xs[2], xs[3]});
+						y0 = std::min({ys[0], ys[1], ys[2], ys[3]}); y1 = std::max({ys[0], ys[1], ys[2], ys[3]});
+						candidates[count++] = {x0, y0, x1, y1};
+					}
+					int clipX0 = 0, clipY0 = 0, clipX1 = -1, clipY1 = -1;
+					gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+					clipX0 = std::max(clipX0, 0);
+					clipY0 = std::max(clipY0, 0);
+					clipX1 = std::min(clipX1, canvas->width() - 1);
+					clipY1 = std::min(clipY1, canvas->height() - 1);
+					const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+					for (int i = 0; i < count; ++i)
+					{
+						Box box{std::max(candidates[i].x0, clipX0), std::max(candidates[i].y0, clipY0),
+						        std::min(candidates[i].x1, clipX1), std::min(candidates[i].y1, clipY1)};
+						if (box.x0 > box.x1 || box.y0 > box.y1)
+							continue;
+						for (int y = box.y0; y <= box.y1; ++y)
+						{
+							const auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+							saved().insert(saved().end(), row + box.x0, row + box.x1 + 1);
+						}
+						entry.boxes[entry.boxCount++] = box;
+					}
+				}
+				entries().push_back(entry);
+			}
+
+			static void restore(const Entry &entry)
+			{
+				auto *canvas = gea::platform::display::Display::canvas();
+				if (canvas && canvas->pixels() && entry.boxCount > 0)
+				{
+					const auto &r = entry.shape;
+					const int stride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
+					const int samples = gea::framework::graphics::Canvas::antialiasSamples();
+					const int sampleCount = samples >= 2 ? samples * samples : 1;
+					std::size_t index = entry.offset;
+					for (int i = 0; i < entry.boxCount; ++i)
+					{
+						const Box &box = entry.boxes[i];
+						for (int y = box.y0; y <= box.y1; ++y)
+						{
+							auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+							const float py = static_cast<float>(y) + 0.5f - static_cast<float>(r.y0);
+							for (int x = box.x0; x <= box.x1; ++x, ++index)
+							{
+								const float px = static_cast<float>(x) + 0.5f - static_cast<float>(r.x0);
+								const float localX = static_cast<float>(r.lx) + entry.inv00 * px + entry.inv01 * py;
+								const float localY = static_cast<float>(r.ly) + entry.inv10 * px + entry.inv11 * py;
+								const int coverage = samples >= 2
+								    ? roundedRectCoverageFast(r, localX, localY, entry.inv00, entry.inv10, entry.inv01, entry.inv11, samples)
+								    : (roundedRectContainsFast(r, localX, localY) ? 1 : 0);
+								if (coverage >= sampleCount)
+									continue;
+								const auto outside = saved()[index];
+								row[x] = coverage <= 0 ? outside
+								    : gea::framework::graphics::pixel::blendNative(row[x], outside, combinedCoverageAlpha(255, coverage, sampleCount));
+							}
+						}
+						canvas->markDirty(box.x0, box.y0, box.x1, box.y1);
+					}
+				}
+			}
+		};
 
 		bool nodeFilterShapeContains(const Node &node, double sx, double sy)
 		{
@@ -4489,6 +4738,8 @@ int gLastScrollUiFrame = -1000;
 			};
 			static const int quadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
 			const int aaSpanPad = useCoverageAntialias ? 1 : 0;
+			const bool ring = transformedRoundedRectIsRing(r);
+			const TransformedRoundedRectCommand hole = ring ? transformedRoundedRectHole(r) : r;
 
 			for (int y = drawY0; y <= drawY1; ++y)
 			{
@@ -4540,7 +4791,9 @@ int gLastScrollUiFrame = -1000;
 				float localY = static_cast<float>(r.ly) + inv10 * (static_cast<float>(rowDrawX0) + 0.5f - static_cast<float>(r.x0)) + inv11 * py;
 				for (int x = rowDrawX0; x <= rowDrawX1; ++x)
 				{
-					const int coverage = useCoverageAntialias
+					const int coverage = ring && roundedRectSolidCoreContainsFast(hole, localX, localY, sampleMarginX, sampleMarginY)
+																	 ? 0
+																	 : useCoverageAntialias
 																	 ? (roundedRectSolidCoreContainsFast(r, localX, localY, sampleMarginX, sampleMarginY)
 																					? sampleCount
 																					: roundedRectCoverageFast(r, localX, localY, inv00, inv10, inv01, inv11, aaSamples))
@@ -4706,7 +4959,9 @@ int gLastScrollUiFrame = -1000;
 																					 r.blRx8,
 																					 r.blRy8,
 																					 sx,
-																					 sy)
+																					 sy) &&
+													         (!transformedRoundedRectIsRing(r) ||
+													          !roundedRectOuterContainsFast(transformedRoundedRectHole(r), static_cast<float>(sx), static_cast<float>(sy)))
 													 ? 1
 													 : 0;
 					}
@@ -4773,9 +5028,11 @@ int gLastScrollUiFrame = -1000;
 
 			static void clampToNode(const Node &node, int *cx0, int *cy0, int *cx1, int *cy1)
 			{
-				int nx0, ny0, w, h;
-				overflowClipBounds(node, nx0, ny0, w, h);
-				int nx1 = nx0 + w - 1, ny1 = ny0 + h - 1;
+				OverflowClipShape shape;
+				if (!ViewRenderer::overflowClipShape(node, shape))
+					return;
+				const int nx0 = shape.x, ny0 = shape.y;
+				int nx1 = nx0 + shape.w - 1, ny1 = ny0 + shape.h - 1;
 				if (*cx0 < nx0)
 					*cx0 = nx0;
 				if (*cy0 < ny0)
@@ -4956,10 +5213,20 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::PushClip: {
 					const int id = c->clip.nodeId;
 					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
-					if (!owner || overflowX(owner->computedStyle())) c->clip.x += dx;
-					else c->bx -= dx;
-					if (!owner || overflowY(owner->computedStyle())) c->clip.y += dy;
-					else c->by -= dy;
+					const int clipDx = !owner || overflowX(owner->computedStyle()) ? dx : 0;
+					const int clipDy = !owner || overflowY(owner->computedStyle()) ? dy : 0;
+					c->clip.x += clipDx;
+					c->bx -= dx - clipDx;
+					c->clip.y += clipDy;
+					c->by -= dy - clipDy;
+					if (c->clip.shaped) {
+						for (int i = 0; i < 4; ++i) {
+							c->clip.qx[i] += clipDx;
+							c->clip.qy[i] += clipDy;
+						}
+						c->clip.lx += clipDx;
+						c->clip.ly += clipDy;
+					}
 					break;
 				}
 				case DisplayCommandType::FillRect:
@@ -5202,6 +5469,121 @@ int gLastScrollUiFrame = -1000;
 				kw = scrW;
 				kh = scrH;
 				valid = true;
+			}
+		};
+
+		// background-blend-mode (Compositing 1, section 10): a gradient layer
+		// blends with what is painted under it. The backdrop should be only the
+		// element's lower layers; the canvas holds them over whatever is behind the
+		// element, which differs only where those layers are not opaque.
+		struct BlendDrawer
+		{
+			static float softLightD(float cb)
+			{
+				return cb <= 0.25f ? ((16.0f * cb - 12.0f) * cb + 4.0f) * cb : std::sqrt(cb);
+			}
+
+			static float channel(int mode, float cb, float cs)
+			{
+				switch (mode)
+				{
+				case 1: return cb * cs;
+				case 2: return cb + cs - cb * cs;
+				case 3: return channel(8, cs, cb);
+				case 4: return std::min(cb, cs);
+				case 5: return std::max(cb, cs);
+				case 6:
+					if (cb <= 0.0f) return 0.0f;
+					return cs >= 1.0f ? 1.0f : std::min(1.0f, cb / (1.0f - cs));
+				case 7:
+					if (cb >= 1.0f) return 1.0f;
+					return cs <= 0.0f ? 0.0f : 1.0f - std::min(1.0f, (1.0f - cb) / cs);
+				case 8: return cs <= 0.5f ? cb * 2.0f * cs : channel(2, cb, 2.0f * cs - 1.0f);
+				case 9:
+					if (cs <= 0.5f) return cb - (1.0f - 2.0f * cs) * cb * (1.0f - cb);
+					return cb + (2.0f * cs - 1.0f) * (softLightD(cb) - cb);
+				case 10: return std::fabs(cb - cs);
+				case 11: return cb + cs - 2.0f * cb * cs;
+				default: return cs;
+				}
+			}
+
+			static float lum(const float c[3]) { return 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]; }
+
+			static void setLum(float c[3], float l)
+			{
+				const float d = l - lum(c);
+				for (int i = 0; i < 3; ++i) c[i] += d;
+				l = lum(c);
+				const float n = std::min({c[0], c[1], c[2]}), x = std::max({c[0], c[1], c[2]});
+				for (int i = 0; i < 3; ++i) {
+					if (n < 0.0f) c[i] = l + (c[i] - l) * l / (l - n);
+					if (x > 1.0f) c[i] = l + (c[i] - l) * (1.0f - l) / (x - l);
+				}
+			}
+
+			static void setSat(float c[3], float s)
+			{
+				int lo = 0, hi = 0;
+				for (int i = 1; i < 3; ++i) {
+					if (c[i] < c[lo]) lo = i;
+					if (c[i] >= c[hi]) hi = i;
+				}
+				if (lo == hi) { c[0] = c[1] = c[2] = 0.0f; return; }
+				const int mid = 3 - lo - hi;
+				c[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+				c[hi] = s;
+				c[lo] = 0.0f;
+			}
+
+			static float sat(const float c[3]) { return std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]}); }
+
+			// `out` = B(cb, cs), channels in 0..1.
+			static void blend(int mode, const float cb[3], const float cs[3], float out[3])
+			{
+				if (mode < 12) {
+					for (int i = 0; i < 3; ++i) out[i] = channel(mode, cb[i], cs[i]);
+					return;
+				}
+				const float *hueSource = mode == 13 ? cb : cs;
+				for (int i = 0; i < 3; ++i) out[i] = mode == 15 ? cb[i] : hueSource[i];
+				if (mode == 12) setSat(out, sat(cb));
+				if (mode == 13) setSat(out, sat(cs));
+				setLum(out, mode == 15 ? lum(cs) : lum(cb));
+			}
+
+			// Blends the source colour the callback gives for each pixel of the
+			// clipped rows into the canvas. `color(x, y, rgb, &alpha)` returns false
+			// where the layer paints nothing.
+			template <typename Span, typename Color>
+			static void replay(int mode, int x0, int y0, int x1, int y1, Span span, Color color)
+			{
+				auto *canvas = gea::platform::display::Display::canvas();
+				if (!canvas) return;
+				x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+				x1 = std::min(x1, canvas->width() - 1); y1 = std::min(y1, canvas->height() - 1);
+				const int baseAlpha = gea::platform::display::Display::alpha();
+				for (int y = y0; y <= y1; ++y) {
+					int rowX0 = x0, rowX1 = x1;
+					span(y, &rowX0, &rowX1);
+					for (int x = rowX0; x <= rowX1; ++x) {
+						int rgb[3], alpha = 0;
+						if (!color(x, y, rgb, &alpha)) continue;
+						alpha = alpha * baseAlpha / 255;
+						if (alpha <= 0) continue;
+						int br, bg, bb, ba;
+						gea::framework::graphics::pixel::unpackNative8(canvas->readPixelNative(x, y), &br, &bg, &bb, &ba);
+						const float cb[3] = {br / 255.0f, bg / 255.0f, bb / 255.0f};
+						const float cs[3] = {rgb[0] / 255.0f, rgb[1] / 255.0f, rgb[2] / 255.0f};
+						float mixed[3];
+						blend(mode, cb, cs, mixed);
+						const float a = alpha / 255.0f;
+						int out[3];
+						for (int i = 0; i < 3; ++i)
+							out[i] = std::clamp(static_cast<int>((cb[i] + (mixed[i] - cb[i]) * a) * 255.0f + 0.5f), 0, 255);
+						canvas->writePixelNativeExact(x, y, gea::framework::graphics::pixel::packNative8(out[0], out[1], out[2]));
+					}
+				}
 			}
 		};
 
@@ -5477,6 +5859,62 @@ int gLastScrollUiFrame = -1000;
 				*x1 = std::min(*x1, rowRight);
 			}
 
+			// The gradient line: the position of pixel centre (px, py) along it is
+			// px*dx + py*dy, running from minProjection over span.
+			static void axis(const DisplayCommand &c, double *dxOut, double *dyOut, double *minProjectionOut, double *spanOut)
+			{
+				const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
+				double dx = std::sin(angleRadians);
+				double dy = -std::cos(angleRadians);
+				// Snap axis-aligned angles to exact unit vectors: sin(pi) is 1.2e-16,
+				// not 0, so a plain `to bottom` gradient would miss the constant-row
+				// fast path below (and drag ~1e-16 noise through the projection).
+				switch (c.gradient.angle % 3600)
+				{
+				case 0: dx = 0.0; dy = -1.0; break;
+				case 900: dx = 1.0; dy = 0.0; break;
+				case 1800: dx = 0.0; dy = 1.0; break;
+				case 2700: dx = -1.0; dy = 0.0; break;
+				default: break;
+				}
+				const double gx0 = static_cast<double>(c.gradient.x);
+				const double gy0 = static_cast<double>(c.gradient.y);
+				const double gx1 = static_cast<double>(c.gradient.x + c.gradient.w);
+				const double gy1 = static_cast<double>(c.gradient.y + c.gradient.h);
+				const double p0 = gx0 * dx + gy0 * dy;
+				const double p1 = gx1 * dx + gy0 * dy;
+				const double p2 = gx1 * dx + gy1 * dy;
+				const double p3 = gx0 * dx + gy1 * dy;
+				const double minProjection = std::min(std::min(p0, p1), std::min(p2, p3));
+				const double maxProjection = std::max(std::max(p0, p1), std::max(p2, p3));
+				*dxOut = dx;
+				*dyOut = dy;
+				*minProjectionOut = minProjection;
+				*spanOut = maxProjection - minProjection;
+			}
+
+			static void replayBlended(const DisplayCommand &c, int x0, int y0, int x1, int y1)
+			{
+				double dx, dy, minProjection, projectionSpan;
+				axis(c, &dx, &dy, &minProjection, &projectionSpan);
+				const double invSpanPermille = projectionSpan > 0.001 ? 1000.0 / projectionSpan : 0.0;
+				int lastPermille = -1, lastRgb[3] = {}, lastAlpha = 0;
+				BlendDrawer::replay(c.gradient.blend, x0, y0, x1, y1,
+				    [&](int y, int *a, int *b) { roundedRowSpan(c, y, a, b); },
+				    [&](int x, int y, int rgb[3], int *alpha) {
+					    const double projection = (x + 0.5) * dx + (y + 0.5) * dy;
+					    const int permille = clampPermille(static_cast<int>((projection - minProjection) * invSpanPermille + 0.5));
+					    if (permille != lastPermille) {
+						    rgb888At(c, permille, &lastRgb[0], &lastRgb[1], &lastRgb[2]);
+						    lastAlpha = alphaAt(c, permille);
+						    lastPermille = permille;
+					    }
+					    for (int i = 0; i < 3; ++i) rgb[i] = lastRgb[i];
+					    *alpha = lastAlpha;
+					    return true;
+				    });
+			}
+
 			static void fillRun(int x, int y, int w, uint16_t color, uint8_t alpha, uint8_t baseAlpha)
 			{
 				const uint8_t effectiveAlpha = combineAlpha(baseAlpha, alpha);
@@ -5499,6 +5937,31 @@ int gLastScrollUiFrame = -1000;
 				const int y1 = std::min<int>(c.gradient.y + c.gradient.h - 1, cy1);
 				if (x1 < x0 || y1 < y0)
 					return;
+				if (c.gradient.blend)
+				{
+					replayBlended(c, x0, y0, x1, y1);
+					return;
+				}
+
+				// An opaque constant gradient, e.g. linear-gradient(green, green), is a
+				// solid fill: dithering it would speckle a colour a plain fill paints flat.
+				const auto &g = c.gradient;
+				if (g.fromColor == g.toColor && g.fromAlpha == 255 && g.toAlpha == 255 &&
+				    (!g.hasMid || (g.midColor == g.fromColor && g.midAlpha == 255)))
+				{
+					if (g.tl == 0 && g.tr == 0 && g.br == 0 && g.bl == 0)
+					{
+						gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, g.fromColor);
+						return;
+					}
+					for (int y = y0; y <= y1; y++)
+					{
+						int rowX0 = x0, rowX1 = x1;
+						roundedRowSpan(c, y, &rowX0, &rowX1);
+						if (rowX0 <= rowX1) gea::platform::display::Display::fillRect(rowX0, y, rowX1 - rowX0 + 1, 1, g.fromColor);
+					}
+					return;
+				}
 
 				// Static-background gradient cache: a large opaque gradient (the app backdrop)
 				// is re-rasterized over the moving content's dirty region every frame (~23ms
@@ -5578,31 +6041,8 @@ int gLastScrollUiFrame = -1000;
 
 #endif
 
-				const double angleRadians = (static_cast<double>(c.gradient.angle) * kPi) / 1800.0;
-				double dx = std::sin(angleRadians);
-				double dy = -std::cos(angleRadians);
-				// Snap axis-aligned angles to exact unit vectors: sin(pi) is 1.2e-16,
-				// not 0, so a plain `to bottom` gradient would miss the constant-row
-				// fast path below (and drag ~1e-16 noise through the projection).
-				switch (c.gradient.angle % 3600)
-				{
-				case 0: dx = 0.0; dy = -1.0; break;
-				case 900: dx = 1.0; dy = 0.0; break;
-				case 1800: dx = 0.0; dy = 1.0; break;
-				case 2700: dx = -1.0; dy = 0.0; break;
-				default: break;
-				}
-				const double gx0 = static_cast<double>(c.gradient.x);
-				const double gy0 = static_cast<double>(c.gradient.y);
-				const double gx1 = static_cast<double>(c.gradient.x + c.gradient.w);
-				const double gy1 = static_cast<double>(c.gradient.y + c.gradient.h);
-				const double p0 = gx0 * dx + gy0 * dy;
-				const double p1 = gx1 * dx + gy0 * dy;
-				const double p2 = gx1 * dx + gy1 * dy;
-				const double p3 = gx0 * dx + gy1 * dy;
-				const double minProjection = std::min(std::min(p0, p1), std::min(p2, p3));
-				const double maxProjection = std::max(std::max(p0, p1), std::max(p2, p3));
-				const double projectionSpan = maxProjection - minProjection;
+				double dx, dy, minProjection, projectionSpan;
+				axis(c, &dx, &dy, &minProjection, &projectionSpan);
 				if (projectionSpan <= 0.001)
 				{
 					const uint8_t baseAlpha = gea::platform::display::Display::alpha();
@@ -6069,6 +6509,21 @@ int gLastScrollUiFrame = -1000;
 																			 static_cast<float>(c.radialGradient.h) * static_cast<float>(c.radialGradient.ryPermille) / 1000.0f);
 				const float invRadiusX = 1.0f / radiusX;
 				const float invRadiusY = 1.0f / radiusY;
+				if (c.radialGradient.blend)
+				{
+					BlendDrawer::replay(c.radialGradient.blend, x0, y0, x1, y1,
+					    [&](int y, int *a, int *b) { roundedRowSpan(c, y, a, b); },
+					    [&](int x, int y, int rgb[3], int *alpha) {
+						    const float dxv = (static_cast<float>(x) + 0.5f - centerX) * invRadiusX;
+						    const float dyv = (static_cast<float>(y) + 0.5f - centerY) * invRadiusY;
+						    const int permille = std::min(1000, static_cast<int>(std::sqrt(dxv * dxv + dyv * dyv) * 1000.0f + 0.5f));
+						    LinearGradientDrawer::interpolatePremultipliedRgb888(c.radialGradient.fromColor, c.radialGradient.fromAlpha,
+						        c.radialGradient.toColor, c.radialGradient.toAlpha, localPermille(c, permille), &rgb[0], &rgb[1], &rgb[2]);
+						    *alpha = alphaAt(c, permille);
+						    return true;
+					    });
+					return;
+				}
 
 				// Static-gradient bitmap cache (shared StaticGradientCache). The shell's
 				// warm-glow radial is static — fixed colors + box, identical across themes
@@ -6248,17 +6703,24 @@ int gLastScrollUiFrame = -1000;
 				int x0, y0, x1, y1;
 			};
 
+			// `opaque`: no opacity between the owner and this node. Opaque glyphs
+			// paint over the background they clip with the very same coverage, so
+			// that background never shows; leaving them out of the mask also keeps
+			// it out of their antialiased edges, as the text alone would paint them.
 			static void collectTextInk(int id, int owner, int x0, int y0, int x1, int y1,
-			                           std::vector<TextInkCommand> &ink)
+			                           std::vector<TextInkCommand> &ink, bool opaque = true, int copyOffset = 0)
 			{
 				auto &tree = Tree::instance();
 				if (id < 0 || id >= tree.nodeCount()) return;
 				const auto &node = tree.nodes()[id];
 				if (node.computedStyle().display == 1 || (id != owner && isOutOfFlowPosition(node.computedStyle().position))) return;
+				opaque = opaque && node.computedStyle().opacity == 255;
 				if (state.hasNodeScratchFor(id) && node.computedStyle().visibility == 0) {
-					const int begin = state.nodeDrawStart[id], end = state.nodeDrawEnd[id];
+					const bool hidesBackground = opaque && node.type == NodeType::Text && node.computedStyle().text_alpha == 255;
+					const int begin = state.nodeDrawStart[id] + copyOffset, end = state.nodeDrawEnd[id] + copyOffset;
 					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
 						const auto &c = state.commands[ci];
+						if (hidesBackground && c.type == DisplayCommandType::DrawText) continue;
 						if (c.type == DisplayCommandType::DrawText || c.type == DisplayCommandType::DrawProjectedText || c.textDecorationInk)
 							ink.push_back({&c, x0, y0, x1, y1});
 					}
@@ -6266,7 +6728,7 @@ int gLastScrollUiFrame = -1000;
 				// Match the overflow clip recorded for descendants of this node.
 				// Positioned in-flow and stacking-context descendants still contribute;
 				// their opacity does not change the shape of the mask.
-				const int clipIndex = state.hasNodeScratchFor(id) ? state.nodeDrawEnd[id] : -1;
+				const int clipIndex = state.hasNodeScratchFor(id) ? state.nodeDrawEnd[id] + copyOffset : -1;
 				if (clipIndex >= 0 && clipIndex < state.commandCount) {
 					const auto &clip = state.commands[clipIndex];
 					if (clip.type == DisplayCommandType::PushClip && clip.clip.nodeId == id) {
@@ -6276,7 +6738,40 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (x0 > x1 || y0 > y1) return;
 				for (int child = node.first_child; child >= 0; child = tree.nodes()[child].next_sibling)
-					collectTextInk(child, owner, x0, y0, x1, y1, ink);
+					collectTextInk(child, owner, x0, y0, x1, y1, ink, opaque, copyOffset);
+			}
+
+			// The first command of the text-clipped background `command` belongs to:
+			// the element's layers are recorded together under one owner.
+			static int textClipGroupStart(const DisplayCommand &command, int *index)
+			{
+				*index = -1;
+				if (!state.commands || &command < state.commands || &command >= state.commands + state.commandCount) return -1;
+				*index = static_cast<int>(&command - state.commands);
+				int start = *index;
+				while (start > 0 && state.commands[start - 1].textClipOwner == command.textClipOwner) --start;
+				for (int i = start; i < *index; ++i) {
+					const auto type = state.commands[i].type;
+					if (type != DisplayCommandType::SetAlpha && type != DisplayCommandType::PushClip && type != DisplayCommandType::PopClip) return start;
+				}
+				return -1;
+			}
+
+			// Paints the group's layers in [start, end) unclipped by the text.
+			static void replayTextClipBackdrop(int start, int end)
+			{
+				using gea::platform::display::Display;
+				const uint8_t alpha = Display::alpha();
+				int pushed = 0;
+				for (int i = start; i < end; ++i) {
+					DisplayCommand c = state.commands[i];
+					c.textClipOwner = -1;
+					if (c.type == DisplayCommandType::PushClip) { Display::pushClip(c.clip.x, c.clip.y, c.clip.w, c.clip.h); ++pushed; }
+					else if (c.type != DisplayCommandType::PopClip) replay(c);
+					else if (pushed > 0) { Display::popClip(); --pushed; }
+				}
+				while (pushed-- > 0) Display::popClip();
+				Display::setAlpha(alpha);
 			}
 
 			static void replayTextClipped(const DisplayCommand &command)
@@ -6293,14 +6788,16 @@ int gLastScrollUiFrame = -1000;
 				y1 = std::min({y1, canvas->height()-1, command.by+command.bh-1});
 				if (x0 > x1 || y0 > y1) return;
 				std::vector<TextInkCommand> ink;
-				collectTextInk(command.textClipOwner, command.textClipOwner, x0, y0, x1, y1, ink);
+				collectTextInk(command.textClipOwner, command.textClipOwner, x0, y0, x1, y1, ink, true, columnCopyOffset(command));
 				if (ink.empty()) return;
 				DisplayCommand paint = command;
 				paint.textClipOwner = -1;
+				int index = -1;
+				const int groupStart = textClipGroupStart(command, &index);
 				// Stack-local, bounded scratch remains safe if independent dirty rows
 				// are replayed on separate workers. No viewport-sized backing store.
 				constexpr int chunkSize = 128;
-				pixel::native_t before[chunkSize];
+				pixel::native_t before[chunkSize], painted[chunkSize], under[chunkSize];
 				uint8_t coverage[chunkSize];
 				for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; x += chunkSize) {
 					const int width = std::min(chunkSize, x1-x+1);
@@ -6322,9 +6819,35 @@ int gLastScrollUiFrame = -1000;
 					if (std::any_of(coverage, coverage+width, [](uint8_t a) { return a != 0; })) {
 						for (int i = 0; i < width; ++i) before[i] = canvas->readPixelNative(x+i, y);
 						replay(paint);
-						for (int i = 0; i < width; ++i) if (coverage[i] != 255)
-							canvas->writePixelNativeExact(x+i, y, coverage[i] == 0 ? before[i] :
-							    pixel::blendNative(canvas->readPixelNative(x+i, y), before[i], coverage[i]));
+						if (groupStart >= 0 && std::any_of(coverage, coverage+width, [](uint8_t a) { return a != 0 && a != 255; })) {
+							// CSS clips all of an element's layers to the text once. At a
+							// partly covered pixel the canvas already mixes the lower layers
+							// with what is behind them, so add this layer's change to their
+							// unclipped composite instead of blending over that mix.
+							for (int i = 0; i < width; ++i) {
+								painted[i] = canvas->readPixelNative(x+i, y);
+								canvas->writePixelNativeExact(x+i, y, before[i]);
+							}
+							replayTextClipBackdrop(groupStart, index);
+							for (int i = 0; i < width; ++i) under[i] = canvas->readPixelNative(x+i, y);
+							replay(paint);
+							for (int i = 0; i < width; ++i) {
+								if (coverage[i] == 255 || coverage[i] == 0) {
+									canvas->writePixelNativeExact(x+i, y, coverage[i] ? painted[i] : before[i]);
+									continue;
+								}
+								int b[4], u[4], p[4];
+								pixel::unpackNative8(before[i], &b[0], &b[1], &b[2], &b[3]);
+								pixel::unpackNative8(under[i], &u[0], &u[1], &u[2], &u[3]);
+								pixel::unpackNative8(canvas->readPixelNative(x+i, y), &p[0], &p[1], &p[2], &p[3]);
+								for (int k = 0; k < 3; ++k) b[k] = std::clamp(b[k] + ((p[k] - u[k]) * coverage[i] + (p[k] >= u[k] ? 127 : -127)) / 255, 0, 255);
+								canvas->writePixelNativeExact(x+i, y, pixel::packNative8(b[0], b[1], b[2]));
+							}
+						} else {
+							for (int i = 0; i < width; ++i) if (coverage[i] != 255)
+								canvas->writePixelNativeExact(x+i, y, coverage[i] == 0 ? before[i] :
+								    pixel::blendNative(canvas->readPixelNative(x+i, y), before[i], coverage[i]));
+						}
 					}
 					Display::popClip();
 				}
@@ -6423,7 +6946,9 @@ int gLastScrollUiFrame = -1000;
 					TextRenderer::drawWrapped(c.text.text, c.text.x, c.text.y,
 																		c.text.maxWidth, c.text.color, c.text.scale,
 																		c.text.align, c.text.containerWidth, c.text.fontId, c.text.textTransform, c.text.lineHeight,
-																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent);
+																		c.text.whiteSpace, c.text.textOverflow, c.text.maxHeight, c.text.firstLineIndent,
+																			c.text.alignLast, c.text.lineLimit,
+																			c.text.blockEllipsis, c.text.ellipsisWidth, c.text.emphasis, c.text.emphasisColor);
 					break;
 				case DisplayCommandType::BlitImage:
 #if GEA_PIXEL_STORAGE_PACKED
@@ -6677,6 +7202,68 @@ int gLastScrollUiFrame = -1000;
 				~SuspendedRecordClips() { restore(clips); }
 			};
 
+			// Column k of a multicol container shows its flow thread's band
+			// [k * height, (k + 1) * height). The first column stays open above and
+			// the last below, so ink overflowing the fragmentation edges still shows.
+			static bool appendColumnClip(DisplayList &list, const Node &n, const MulticolLayout &columns, int k)
+			{
+				DisplayCommand *cmd = list.append();
+				if (!cmd)
+					return false;
+				const int top = n.layout.y + boxInset(n.computedStyle(), 0);
+				const int y0 = k == 0 ? -16384 : top;
+				const int y1 = k == columns.used - 1 && !columns.discard ? 16383 : top + columns.height;
+				cmd->type = DisplayCommandType::PushClip;
+				cmd->bx = cmd->clip.x = -16384;
+				cmd->bw = cmd->clip.w = 32767;
+				cmd->by = cmd->clip.y = static_cast<int16_t>(y0);
+				cmd->bh = cmd->clip.h = static_cast<int16_t>(y1 - y0);
+				cmd->clip.nodeId = -1;
+				cmd->clip.shaped = 0;
+				return true;
+			}
+
+			static void appendColumnPop(DisplayList &list)
+			{
+				DisplayCommand *cmd = list.append();
+				if (!cmd)
+					return;
+				cmd->type = DisplayCommandType::PopClip;
+				cmd->bx = cmd->by = 0;
+				cmd->bw = cmd->bh = 0;
+				cmd->clip.nodeId = -1;
+			}
+
+			// Paints the flow thread recorded at [begin, end) into every further
+			// column box: a copy translated k columns along the inline direction and
+			// k column heights up. In rtl the columns progress from the right edge.
+			static void replicateColumns(DisplayList &list, const Node &n, const MulticolLayout &columns, int begin, int end)
+			{
+				const bool rtl = LayoutEngine::rightToLeftDirection(n);
+				const int contentWidth = n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
+				const int step = rtl ? -(columns.width + columns.gap) : columns.width + columns.gap;
+				const int start = rtl ? contentWidth - columns.width : 0;
+				if (start != 0)
+					for (int ci = begin; ci < end; ++ci)
+						DisplayCommandTranslator::translate(&state.commands[ci], start, 0);
+				appendColumnPop(list);
+				for (int k = 1; k < columns.used; ++k) {
+					if (!appendColumnClip(list, n, columns, k))
+						return;
+					const int copyBegin = state.commandCount;
+					for (int ci = begin; ci < end; ++ci) {
+						const DisplayCommand copy = state.commands[ci];
+						DisplayCommand *cmd = list.append();
+						if (!cmd)
+							break;
+						*cmd = copy;
+						DisplayCommandTranslator::translate(cmd, k * step, -k * columns.height);
+					}
+					columnCopies().push_back({copyBegin, state.commandCount, copyBegin - begin});
+					appendColumnPop(list);
+				}
+			}
+
 			static void recordNode(int id, uint8_t parent_alpha, int cx0, int cy0, int cx1, int cy1, const Node *mask_node, bool insideDirty = false, const RecordClipFrame *clips = nullptr, bool groupRoot = true, bool includePositioned = true)
 			{
 				if (!state.hasNodeScratchFor(id))
@@ -6693,7 +7280,7 @@ int gLastScrollUiFrame = -1000;
 					return;
 				}
 				Node *n = &Tree::instance().nodes()[id];
-				if (n->computedStyle().display == 1 || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
+				if (n->computedStyle().display == 1 || (n->layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
 					return;
@@ -6852,6 +7439,21 @@ int gLastScrollUiFrame = -1000;
 				else if (pushed_clip)
 					ClipMath::clampToNode(*n, &child_cx0, &child_cy0, &child_cx1, &child_cy1);
 
+				// A multicol flow thread is recorded once, clipped to the first column,
+				// then copied into the others. Its content reaches past the container's
+				// box before it is translated, so it is never culled there.
+				MulticolLayout columns{};
+				if (const NodeRareData *rare = rareDataFor(id); rare && rare->multicol.valid && !state.appendOverride &&
+				    (rare->multicol.used > 1 || LayoutEngine::rightToLeftDirection(*n)))
+					columns = rare->multicol;
+				int columnFlowBegin = -1;
+				if (columns.valid) {
+					child_cy0 = -32768;
+					child_cy1 = 32767;
+					child_cx1 = 32767;
+					if (appendColumnClip(list, *n, columns, 0)) columnFlowBegin = state.commandCount;
+				}
+
 				const RecordClipFrame ownClip{*n, clips};
 				for (int child : children) {
 					// A positioned descendant can paint in this context while its
@@ -6880,6 +7482,8 @@ int gLastScrollUiFrame = -1000;
 					recordNode(child, cur_alpha, x0, y0, x1, y1, active_mask, dirty, childClips, PaintOrder::isGroup(child), PaintOrder::isContext(child));
 					for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame) ViewRenderer::recordClipEnd(frame->node);
 				}
+				if (columnFlowBegin >= 0)
+					replicateColumns(list, *n, columns, columnFlowBegin, state.commandCount);
 
 				state.recordDepth--;
 
@@ -7467,7 +8071,8 @@ int gLastScrollUiFrame = -1000;
 				return false;
 			}
 
-			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount)
+			// Mirrors ViewRenderer::recordClipBegin; `shape` receives the clip.
+			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount, OverflowClipShape *shape = nullptr)
 			{
 				if (node_id < 0 || node_id >= nodeCount)
 					return false;
@@ -7476,7 +8081,8 @@ int gLastScrollUiFrame = -1000;
 					return false;
 				if (node.first_child < 0)
 					return false;
-				return !nodeHasTransformChain(node_id, nodes, nodeCount);
+				OverflowClipShape local;
+				return ViewRenderer::overflowClipShape(node, shape ? *shape : local);
 			}
 
 			static std::uint8_t GEA_RENDER_HOT_SRAM effectiveAlphaForNode(int node_id, Node *nodes, int nodeCount)
@@ -7516,12 +8122,12 @@ int gLastScrollUiFrame = -1000;
 				for (int i = count - 1; i > 0; i--)
 				{
 					const int id = chain[i];
-					if (!nodeRecordsOverflowClip(id, nodes, nodeCount))
+					OverflowClipShape shape;
+					if (!nodeRecordsOverflowClip(id, nodes, nodeCount, &shape))
 						continue;
-					const Node &clip = nodes[id];
-					int x, y, w, h;
-					overflowClipBounds(clip, x, y, w, h);
-					gea::platform::display::Display::pushClip(x, y, w, h);
+					gea::platform::display::Display::pushClip(shape.x, shape.y, shape.w, shape.h);
+					if (shape.shaped)
+						ShapedClips::begin(shape);
 					pushed++;
 				}
 				return pushed;
@@ -8049,6 +8655,7 @@ int gLastScrollUiFrame = -1000;
 				if (start < 0 || end <= start || end > state.commandCount)
 					return;
 
+				const std::size_t shapedMark = ShapedClips::depth();
 				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
 				if (pushedClips < 0)
 					return;
@@ -8062,6 +8669,7 @@ int gLastScrollUiFrame = -1000;
 				replayCommandRange(start, end, x0, y0, x1, y1, roundedRects);
 				if (stateChanged)
 					roundedRects.flush();
+				ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged)
@@ -8387,10 +8995,11 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
+						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
 								clip.layout.x + clip.layout.width - 1 < x1 ||
 								clip.layout.y + clip.layout.height - 1 < y1)
 						{
@@ -8473,10 +9082,11 @@ int gLastScrollUiFrame = -1000;
 					bool clipped = false;
 					for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
 					{
-						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
+						OverflowClipShape shape;
+						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
+						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
 								clip.layout.x + clip.layout.width - 1 < x1 ||
 								clip.layout.y + clip.layout.height - 1 < y1)
 						{
@@ -8690,6 +9300,7 @@ int gLastScrollUiFrame = -1000;
 				if (!commandRangeOverlapsAnyRegion(start, end, regions, count))
 					return;
 
+				const std::size_t shapedMark = ShapedClips::depth();
 				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
 				if (pushedClips < 0)
 					return;
@@ -8731,6 +9342,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (stateChanged || alphaTouched)
 					roundedRects.flush();
+				ShapedClips::endTo(shapedMark);
 				for (int i = 0; i < pushedClips; i++)
 					gea::platform::display::Display::popClip();
 				if (stateChanged || alphaTouched)
@@ -8904,6 +9516,12 @@ int gLastScrollUiFrame = -1000;
 
 			static void GEA_RENDER_HOT_SRAM replay()
 			{
+				// A stream without its PopClip still restores what its shaped clips saved.
+				struct ShapedClipGuard
+				{
+					std::size_t mark = ShapedClips::depth();
+					~ShapedClipGuard() { ShapedClips::endTo(mark); }
+				} shapedClipGuard;
 				int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
 				int clip_dirty = 1;
 				int clip_stack_depth = 0;
@@ -9024,8 +9642,10 @@ int gLastScrollUiFrame = -1000;
 							ny1 = cy1;
 
 						int changed = nx0 != cx0 || ny0 != cy0 || nx1 != cx1 || ny1 != cy1;
+						// Bit 0: a Display clip was pushed; bit 1: a shaped clip began.
+						const bool shaped = c->clip.shaped && state.ensureReplayClipCapacity(clip_stack_depth + 1);
 						if (state.ensureReplayClipCapacity(clip_stack_depth + 1))
-							state.replayClipPushed[clip_stack_depth++] = (uint8_t)changed;
+							state.replayClipPushed[clip_stack_depth++] = static_cast<uint8_t>(changed | (shaped ? 2 : 0));
 						if (changed)
 						{
 							gea::platform::display::Display::pushClip(c->clip.x, c->clip.y, c->clip.w, c->clip.h);
@@ -9034,16 +9654,23 @@ int gLastScrollUiFrame = -1000;
 							cx1 = nx1;
 							cy1 = ny1;
 						}
+						if (shaped)
+							ShapedClips::begin(*c);
 						continue;
 					}
 					case DisplayCommandType::PopClip:
+					{
 						roundedRects.flush();
-						if (clip_stack_depth <= 0 || state.replayClipPushed[--clip_stack_depth])
+						const uint8_t pushed = clip_stack_depth > 0 ? state.replayClipPushed[--clip_stack_depth] : 1;
+						if (pushed & 2)
+							ShapedClips::end();
+						if (pushed & 1)
 						{
 							gea::platform::display::Display::popClip();
 							clip_dirty = 1;
 						}
 						continue;
+					}
 					case DisplayCommandType::SetAlpha:
 						roundedRects.flush();
 						gea::platform::display::Display::setAlpha(c->alpha.alpha);
@@ -9083,8 +9710,10 @@ int gLastScrollUiFrame = -1000;
 		const auto &n = nodes[id];
 		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.computedStyle().position) &&
 		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
+		// A multicol container paints its whole flow thread, positioned content
+		// included, so every column box can repeat it.
 		return n.parent < 0 || n.computedStyle().position == kPositionFixed || ChildZSorter::effectGroup(n) ||
-		    (!n.computedStyle().z_index_auto && (n.computedStyle().position != 0 || item));
+		    (!n.computedStyle().z_index_auto && (n.computedStyle().position != 0 || item)) || LayoutEngine::multicolContainer(n);
 	}
 
 	bool PaintOrder::isGroup(int id)
@@ -9093,7 +9722,9 @@ int gLastScrollUiFrame = -1000;
 		const auto &n = nodes[id];
 		const bool item = n.parent >= 0 &&
 		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
-		return isContext(id) || n.computedStyle().position != 0 || n.computedStyle().float_side || item;
+		// An inline-block, inline-flex or inline-grid paints atomically, like a
+		// float (CSS 2.2 Appendix E).
+		return isContext(id) || n.computedStyle().position != 0 || n.computedStyle().float_side || item || isAtomicInline(n.computedStyle());
 	}
 
 	std::vector<int> PaintOrder::collectChildren(int root, bool groupRoot, bool includePositioned)
@@ -9260,6 +9891,7 @@ int gLastScrollUiFrame = -1000;
 		state.textClippedBackgrounds = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
+		columnCopies().clear();
 		if (!state.ensureNodeScratchCapacity(tree.nodeCount()))
 			return;
 		for (int i = 0; i < tree.nodeCount(); i++)
@@ -9877,6 +10509,9 @@ int gLastScrollUiFrame = -1000;
 				return false;
 			if (nodes[i].computedStyle().overflow == 2)
 				return false;
+			// Multicol content paints as copies no node range describes.
+			if (LayoutEngine::multicolContainer(nodes[i]))
+				return false;
 		}
 		(void)width;
 		(void)height;
@@ -9888,6 +10523,11 @@ int gLastScrollUiFrame = -1000;
 	bool DisplayList::hasTextClippedBackgrounds() const
 	{
 		return state.textClippedBackgrounds;
+	}
+
+	bool DisplayList::hasColumnCopies() const
+	{
+		return !columnCopies().empty();
 	}
 
 	void DisplayList::clearRetainedBackgroundRecolors()
@@ -12311,6 +12951,10 @@ int gLastScrollUiFrame = -1000;
 		int end = state.nodeDrawEnd[node];
 		if (start < 0 || end < start || end > state.commandCount)
 			return false;
+		// Splicing moves commands but not the multicol column copies, which would
+		// then point at stale indices; only a full record rebuilds them.
+		if (!columnCopies().empty())
+			return false;
 
 		DisplayCommand tmp[96];
 		int tmp_len = 0;
@@ -12329,7 +12973,7 @@ int gLastScrollUiFrame = -1000;
 		// an empty range, which `old_len == 0 && tmp_len > 0` below (correctly) refuses
 		// to splice — and the refusal cost the whole frame its retained display list.
 		const bool outsideRecordClip = !isDocumentCanvasRoot(*n) && nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
-		if (!outsideRecordClip && n->computedStyle().visibility == 0 && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
+		if (!outsideRecordClip && n->computedStyle().visibility == 0 && !(n->layout.line_clamp_hidden & 1) && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
 				n->computedStyle().display != 1 &&
 				n->computedStyle().opacity != 0 &&
 				!(n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible) &&

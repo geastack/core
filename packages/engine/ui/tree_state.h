@@ -113,8 +113,39 @@ struct FirstLineFragment {
 struct InlineStaticPosition {
 	std::int16_t x = 0;
 	std::int16_t y = 0;
+	// Block extent of the line box that holds the static position; 0 when the
+	// box is anchored to a line that has not been laid out yet.
+	std::int16_t lineHeight = 0;
+	// The node whose line layout recorded x and y; they are relative to it.
+	std::int16_t flowNode = -1;
 	bool continuationLine = false;
+	// Line content precedes the static position on its line.
+	bool afterContent = false;
+	// The box's right margin edge meets x: an empty line in a right-to-left
+	// block. Laid-out lines keep their items in left-to-right order, so a box
+	// they placed starts at x.
+	bool anchorRight = false;
 	bool valid = false;
+};
+
+// Column boxes of a multicol container (CSS Multi-column). Layout places the
+// content as one column `width` wide; painting slices it into column boxes
+// `height` tall and `gap` apart, `used` of them, first to last. `discard`
+// (continue: discard) drops what overflows the last column box.
+// One fragment of an inline box split by blocks: its border box relative to
+// the element's, and the sides it paints (bits 0-3: top, right, bottom, left).
+struct InlinePart {
+	std::int16_t x = 0, y = 0, width = 0, height = 0;
+	std::uint8_t sides = 0;
+};
+
+struct MulticolLayout {
+	std::int16_t width = 0;
+	std::int16_t gap = 0;
+	std::int16_t height = 0;
+	std::int16_t used = 0;
+	bool valid = false;
+	bool discard = false;
 };
 
 struct NodeCustomProperty {
@@ -242,6 +273,8 @@ struct NodeRareData {
 	inline static constexpr FirstLineBackground firstLineBackground{};
 	inline static constexpr FirstLineFragment firstLineFragment{};
 #endif
+	MulticolLayout multicol;
+	std::vector<InlinePart> inlineParts;
 
 	void clear()
 	{
@@ -264,6 +297,8 @@ struct NodeRareData {
 	firstLineFragment = FirstLineFragment{};
 #endif
 	inlineStaticPosition = InlineStaticPosition{};
+	multicol = MulticolLayout{};
+	inlineParts.clear();
 	}
 };
 
@@ -363,6 +398,10 @@ struct TreeState {
 	static constexpr bool transformPresent = false;
 	static constexpr bool transformScanValid = true;
 #endif
+	// A position: sticky box was placed by the last absolute-coordinate pass.
+	// Its offset depends on the scroll position, so scroll-only fast paths that
+	// shift content without that pass must stand down.
+	bool stickyPresent = false;
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —

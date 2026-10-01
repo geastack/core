@@ -4,6 +4,7 @@
 #include "graphics/font.h"
 #include "refresh_perf.h"
 #include "tree_state.h"
+#include "css_atom.h"
 
 #include <algorithm>
 #include <cctype>
@@ -731,7 +732,7 @@ bool recordProjectedRasterText(const Node &node, const char *text, uint8_t /*par
 	const int fontLineHeight = font.lineHeight();
 	const int lineAdvance = node.computedStyle().line_height > 0 ? node.computedStyle().line_height : fontLineHeight;
 	const int lineBoxOffset = node.computedStyle().line_height > 0 ? (lineAdvance - fontLineHeight) / 2 : 0;
-	const int srcX = tx + alignedOffset(node.computedStyle().text_align, tw, lineWidth);
+	const int srcX = tx + alignedOffset(LayoutEngine::physicalTextAlign(node), tw, lineWidth);
 	const int srcY = ty + lineBoxOffset;
 	const int srcW = lineWidth;
 	const int srcH = fontLineHeight;
@@ -1075,7 +1076,8 @@ public:
 		            command.text.color, command.text.scale, command.text.align, command.text.containerWidth,
 			    command.text.fontId, command.text.textTransform, command.text.lineHeight,
 			    command.text.whiteSpace, command.text.textOverflow, command.text.maxHeight,
-			    command.text.firstLineIndent, &sink);
+			    command.text.firstLineIndent, command.text.alignLast, command.text.lineLimit,
+			    command.text.blockEllipsis, command.text.ellipsisWidth, command.text.emphasis, command.text.emphasisColor, &sink);
 	}
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
@@ -1125,13 +1127,19 @@ public:
 		}
 	}
 
-	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, TextCoverageSink *coverageSink = nullptr)
+	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0, int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0, TextCoverageSink *coverageSink = nullptr)
 	{
 		if (!text || !text[0]) return;
 		std::string transformed;
 		text = textWithTransform(text, textTransform, transformed, whiteSpace);
 		// Pre preserves forced breaks and paints every line without soft wrap.
 		if (whiteSpace == 2) maxWidth = 32767;
+		const BlockEllipsis ellipsis{blockEllipsis == kAutoBlockEllipsis ? "\xE2\x80\xA6" : blockEllipsis ? cssAtomText(static_cast<CssAtomId>(blockEllipsis)) : nullptr,
+		                             blockEllipsis == kAutoBlockEllipsis, ellipsisWidth, (emphasis & 7) ? emphasis : 0, emphasisColor};
+		// The ellipsis line and emphasis marks go through the wrapped painters;
+		// nowrap text is one line there.
+		const bool lineExtras = ellipsis.text || ellipsis.emphasis;
+		if (lineExtras && whiteSpace == 1) maxWidth = 32767;
 
 		int clipX0;
 		int clipY0;
@@ -1148,18 +1156,21 @@ public:
 			coverageSink = &clippedSink;
 		}
 
-		const bool noWrap = whiteSpace == 1;
-		const bool ellipsis = textOverflow == 1;
+		const bool noWrap = whiteSpace == 1 && !lineExtras;
+		const bool overflowEllipsis = textOverflow == 1;
+		// A nowrap run is one line, so only a paragraph end can realign it.
+		const int singleLineAlign = alignLast >= 0 && (alignLast & 4) ? alignLast & 3 : textAlign;
+		const bool hangSpaces = whiteSpace == 0 || whiteSpace == 4;
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		if (fontId >= 0) {
 			const int fontSize = static_cast<int>(scale * kBitmapFontHeight + 0.5f);
 			if (gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize).valid()) {
 				if (noWrap)
-					drawRasterizedSingleLine(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
+					drawRasterizedSingleLine(text, x, y, maxWidth, color, singleLineAlign, containerWidth, fontId, fontSize, lineHeight, overflowEllipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 				else
 					drawRasterizedWrapped(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
-					                      ellipsis ? maxHeight : 0, firstLineIndent, coverageSink);
+					                      overflowEllipsis ? maxHeight : 0, firstLineIndent, alignLast, hangSpaces, lineLimit, ellipsis, coverageSink);
 				return;
 			}
 		}
@@ -1167,14 +1178,147 @@ public:
 		(void)fontId;
 #endif
 		if (noWrap)
-			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, ellipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
+			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, singleLineAlign, containerWidth, lineHeight, overflowEllipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 		else
-			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, coverageSink);
+			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, alignLast, hangSpaces, lineLimit, ellipsis, coverageSink);
 	}
 
 private:
+	// CSS block-ellipsis for the last painted line of a clamped block: the
+	// string, whether it is the default one, and the room from the run's x to
+	// the end of its line box.
+	struct BlockEllipsis {
+		const char *text;
+		bool automatic;
+		int width;
+		// Also carries the text-emphasis marks of every painted line.
+		int emphasis;
+		gea::framework::graphics::pixel::native_t emphasisColor;
+	};
+
+	// One text-emphasis mark centred at (cx, cy): rows of spans, painted or
+	// added to the coverage sink of a text-clipped background.
+	static void fillEmphasisMark(int shape, bool open, int cx, int cy, int r, gea::framework::graphics::pixel::native_t color,
+	                             const TextCoverageSink *sink)
+	{
+		const auto span = [&](int y, int x0, int x1) {
+			if (x1 < x0) return;
+			if (sink) {
+				for (int x = x0; x <= x1; ++x) sink->add(x, y, 255);
+				return;
+			}
+			gea::platform::display::Display::fillRect(x0, y, x1 - x0 + 1, 1, color);
+		};
+		const int top = cy - r, bottom = shape == 4 ? cy + r / 2 : cy + r;
+		for (int y = top; y <= bottom; ++y) {
+			const float dy = static_cast<float>(y) + 0.5f - static_cast<float>(cy);
+			if (shape == 4) {
+				// A triangle pointing up, as wide at its base as it is tall.
+				const int half = static_cast<int>(static_cast<float>(y - top + 1) * static_cast<float>(r) / static_cast<float>(bottom - top + 1));
+				span(y, cx - half, cx + half - 1);
+				continue;
+			}
+			const float rx = shape == 5 ? static_cast<float>(r) * 0.5f : static_cast<float>(r);
+			const float ry = static_cast<float>(r);
+			const float inside = 1.0f - (dy * dy) / (ry * ry);
+			if (inside < 0.0f) continue;
+			const int half = static_cast<int>(std::lround(rx * std::sqrt(inside)));
+			const int ring = shape == 3 || open ? std::max(1, r / 3) : 0;
+			const float innerR = static_cast<float>(r - ring);
+			const float innerInside = innerR > 0.0f ? 1.0f - (dy * dy) / (innerR * innerR) : -1.0f;
+			if (ring && innerInside >= 0.0f) {
+				const int innerHalf = static_cast<int>(std::lround(innerR * (shape == 5 ? 0.5f : 1.0f) * std::sqrt(innerInside)));
+				span(y, cx - half, cx - innerHalf - 1);
+				span(y, cx + innerHalf, cx + half - 1);
+				// A double circle also has a filled dot inside its ring.
+				const float dot = static_cast<float>(r) * 0.45f;
+				const float dotInside = shape == 3 ? 1.0f - (dy * dy) / (dot * dot) : -1.0f;
+				if (dotInside >= 0.0f) {
+					const int dotHalf = static_cast<int>(std::lround(dot * std::sqrt(dotInside)));
+					span(y, cx - dotHalf, cx + dotHalf - 1);
+				}
+			} else {
+				span(y, cx - half, cx + half - 1);
+			}
+		}
+	}
+
+	// CSS text-emphasis: one mark per character that is not a space or
+	// punctuation, centred on its advance, over or under the glyph box.
+	template <class Advance>
+	static void drawEmphasisMarks(const char *line, int bytes, int x, int lineBoxY, int glyphHeight, int fontSize,
+	                              const BlockEllipsis &extras, const Advance &advanceOf, const TextCoverageSink *sink)
+	{
+		const int shape = extras.emphasis & 7;
+		const bool transparent = (extras.emphasis & 0x60) == 0x40;
+		if (!shape || (transparent && !sink)) return;
+		const int r = std::max(1, (shape == 2 || shape == 3 ? 17 : 9) * fontSize / 100);
+		const int gap = std::max(1, fontSize / 10);
+		const int cy = (extras.emphasis & 0x10) ? lineBoxY + glyphHeight + gap + r : lineBoxY - gap - r;
+		int penX = x;
+		for (const char *p = line, *end = line + bytes; p < end && *p;) {
+			const int cp = nextUtf8Codepoint(p);
+			const int advance = advanceOf(cp);
+			const bool punctuation = cp < 128 && cp > ' ' && std::strchr("!\"#%&'()*,-./:;?@[\\]_{}", cp);
+			if (cp > ' ' && cp != 0xA0 && !punctuation)
+				fillEmphasisMark(shape, (extras.emphasis & 8) != 0, penX + advance / 2, cy, r, extras.emphasisColor, sink);
+			penX += advance;
+		}
+	}
+
+	// Keeps the leading glyphs of a line that leave room for the ellipsis,
+	// drops the spaces that would end them, then appends it. Returns the width
+	// of what it wrote to `out` (NUL-terminated).
+	template <class Advance>
+	static int ellipsizedLine(const char *line, int bytes, int budget, const char *ellipsis, const Advance &advanceOf,
+	                          char *out, int capacity)
+	{
+		int ellipsisWidth = 0;
+		for (const char *p = ellipsis; *p;) ellipsisWidth += advanceOf(nextUtf8Codepoint(p));
+		const int ellipsisBytes = static_cast<int>(std::strlen(ellipsis));
+		int len = 0, width = 0;
+		int keptLen = 0, keptWidth = 0;
+		for (const char *p = line, *end = line + bytes; p < end;) {
+			const char *glyphStart = p;
+			const int cp = nextUtf8Codepoint(p);
+			const int advance = advanceOf(cp);
+			const int glyphBytes = static_cast<int>(p - glyphStart);
+			if (width + advance + ellipsisWidth > budget || len + glyphBytes + ellipsisBytes >= capacity) break;
+			std::memcpy(out + len, glyphStart, glyphBytes);
+			len += glyphBytes;
+			width += advance;
+			if (cp != ' ') { keptLen = len; keptWidth = width; }
+		}
+		if (keptLen + ellipsisBytes < capacity) {
+			std::memcpy(out + keptLen, ellipsis, ellipsisBytes);
+			keptLen += ellipsisBytes;
+			keptWidth += ellipsisWidth;
+		}
+		out[keptLen] = '\0';
+		return keptWidth;
+	}
+
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
+	static void drawRasterizedEllipsis(const char *line, int bytes, int x, int lineBoxY, int budget, int align, const BlockEllipsis &ellipsis,
+	                                   std::uint16_t color, int fontId, int fontSize, const gea::framework::graphics::RasterizedFont &font,
+	                                   const TextCoverageSink *coverageSink)
+	{
+		const auto advanceOf = [&font](int cp) {
+			gea::framework::graphics::Glyph glyph{};
+			return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
+		};
+		// A font without U+2026 substitutes '?'; the default is then "...".
+		gea::framework::graphics::Glyph glyph{};
+		const bool horizontalEllipsis = font.glyph(0x2026, &glyph) && glyph.codepoint == 0x2026;
+		const char *text = ellipsis.automatic && !horizontalEllipsis ? "..." : ellipsis.text;
+		char buf[kWrappedLineBufferBytes + 1];
+		const int width = ellipsizedLine(line, bytes, budget, text, advanceOf, buf, static_cast<int>(sizeof(buf)));
+		const int lineX = x + alignedOffset(align, budget, width);
+		if (coverageSink) rasterizedGlyphRun(buf, lineX, lineBoxY, fontId, fontSize, *coverageSink);
+		else gea::platform::display::Display::drawTextFontFamily(buf, lineX, lineBoxY, color, fontId, fontSize);
+	}
+
+	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const BlockEllipsis &ellipsis = {}, const TextCoverageSink *coverageSink = nullptr)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1186,12 +1330,23 @@ private:
 			return budget < 1 ? 1 : budget;
 		};
 		const auto lineOriginX_ = [&](int li) { return li == 0 ? x + firstLineIndent : x; };
+		// The trimmed leading space still sits in line 0's width; aligning must skip it.
+		const auto trimmedIndent_ = [&](int li) { return li == 0 && firstLineIndent < 0 ? -firstLineIndent : 0; };
 		gea::framework::graphics::RasterizedFont font = gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize);
 		if (!font.valid()) return;
 
 		const int glyphHeight = font.lineHeight();
 		const int lineAdvance = lineHeight > 0 ? lineHeight : glyphHeight;
 		const int lineBoxOffset = lineHeight > 0 ? (lineAdvance - glyphHeight) / 2 : 0;
+		gea::framework::graphics::Glyph spaceGlyph{};
+		const int spaceAdvance = font.glyph(' ', &spaceGlyph) ? spaceGlyph.advance : font.sizePx() / 2;
+		const auto glyphAdvance = [&font](int cp) {
+			gea::framework::graphics::Glyph glyph{};
+			return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
+		};
+		// Emphasis marks reach past a line's glyph box, which a row clip must include.
+		const int markAbove = (ellipsis.emphasis & 7) && !(ellipsis.emphasis & 0x10) ? fontSize : 0;
+		const int markBelow = (ellipsis.emphasis & 7) && (ellipsis.emphasis & 0x10) ? fontSize : 0;
 		// Multi-line clamp (text-overflow: ellipsis on WRAPPED text): the content
 		// box caps how many lines draw; the last budgeted line renders through
 		// the single-line ellipsis routine when more text would follow it.
@@ -1246,8 +1401,16 @@ private:
 		if (entry.textPtr == text) {
 			int penY = y;
 			const char *lineStart = text;
+			const int lastLine = (lineLimit > 0 && lineLimit < entry.lineCount ? lineLimit : entry.lineCount) - 1;
 			for (int li = 0; li < entry.lineCount; li++) {
-				if (penY + lineBoxOffset > clipY1) break;
+				if (penY + lineBoxOffset - markAbove > clipY1 || (lineLimit > 0 && li >= lineLimit)) break;
+				if (ellipsis.text && li == lastLine) {
+					if (penY + lineBoxOffset + glyphHeight - 1 >= clipY0)
+						drawRasterizedEllipsis(lineStart, entry.renderBytes[li], lineOriginX_(li), penY + lineBoxOffset,
+						                       ellipsis.width - (li == 0 ? firstLineIndent : 0), textAlign, ellipsis,
+						                       color, fontId, fontSize, font, coverageSink);
+					return;
+				}
 				if (li == lineBudget - 1 && li < entry.lineCount - 1) {
 					// Last budgeted line with more text behind it: ellipsize the rest.
 						drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
@@ -1257,9 +1420,11 @@ private:
 				}
 				const int chars = entry.renderBytes[li];
 				const int lineBoxY = penY + lineBoxOffset;
-				if (lineBoxY + glyphHeight - 1 >= clipY0) {
+				if (lineBoxY + glyphHeight - 1 + markBelow >= clipY0) {
 					const int lineWidth = entry.lineWidths[li];
-					const int lineX = lineOriginX_(li) + alignedOffset(textAlign, containerWidth, lineWidth);
+					const int align = lineAlignment(textAlign, alignLast, lineStart, entry.consumedBytes[li], li == entry.lineCount - 1);
+					const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, chars, spaceAdvance) : 0;
+					const int lineX = lineOriginX_(li) + alignedOffset(align, containerWidth, lineWidth - hanging - trimmedIndent_(li));
 					if (lineX <= clipX1 && lineX + lineWidth - 1 >= clipX0) {
 						char lineBuffer[kWrappedLineBufferBytes + 1];
 						const int copyLen = chars < kWrappedLineBufferBytes ? chars : kWrappedLineBufferBytes;
@@ -1268,6 +1433,7 @@ private:
 						if (coverageSink) rasterizedGlyphRun(lineBuffer, lineX, lineBoxY, fontId, fontSize, *coverageSink);
 						else gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
 					}
+					drawEmphasisMarks(lineStart, chars, lineX, lineBoxY, glyphHeight, fontSize, ellipsis, glyphAdvance, coverageSink);
 				}
 				lineStart += entry.consumedBytes[li];
 				penY += lineAdvance;
@@ -1280,7 +1446,7 @@ private:
 		int penY = y;
 		int li = 0;
 		while (*lineStart) {
-			if (penY + lineBoxOffset > clipY1) break;
+			if (penY + lineBoxOffset - markAbove > clipY1 || (lineLimit > 0 && li >= lineLimit)) break;
 			if (li == lineBudget - 1) {
 				// Budget reached: ellipsize whatever remains onto this final line.
 				drawRasterizedSingleLine(lineStart, lineOriginX_(li), penY, lineBudget_(li), color, textAlign, containerWidth,
@@ -1297,8 +1463,17 @@ private:
 			});
 
 			const int lineBoxY = penY + lineBoxOffset;
-			if (lineBoxY + glyphHeight - 1 >= clipY0) {
-				const int lineX = lineOriginX_(lineIndex) + alignedOffset(textAlign, containerWidth, line.width);
+			if (ellipsis.text && (li == lineLimit || !lineStart[line.consumedBytes])) {
+				if (lineBoxY + glyphHeight - 1 >= clipY0)
+					drawRasterizedEllipsis(lineStart, line.renderBytes, lineOriginX_(lineIndex), lineBoxY,
+					                       ellipsis.width - (lineIndex == 0 ? firstLineIndent : 0), textAlign, ellipsis,
+					                       color, fontId, fontSize, font, coverageSink);
+				return;
+			}
+			if (lineBoxY + glyphHeight - 1 + markBelow >= clipY0) {
+				const int align = lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]);
+				const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, line.renderBytes, spaceAdvance) : 0;
+				const int lineX = lineOriginX_(lineIndex) + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent_(lineIndex));
 				if (lineX <= clipX1 && lineX + line.width - 1 >= clipX0) {
 					char lineBuffer[kWrappedLineBufferBytes + 1];
 					const int copyLen = line.renderBytes < kWrappedLineBufferBytes ? line.renderBytes : kWrappedLineBufferBytes;
@@ -1307,6 +1482,7 @@ private:
 				if (coverageSink) rasterizedGlyphRun(lineBuffer, lineX, lineBoxY, fontId, fontSize, *coverageSink);
 				else gea::platform::display::Display::drawTextFontFamily(lineBuffer, lineX, lineBoxY, color, fontId, fontSize);
 				}
+				drawEmphasisMarks(lineStart, line.renderBytes, lineX, lineBoxY, glyphHeight, fontSize, ellipsis, glyphAdvance, coverageSink);
 			}
 
 			lineStart += line.consumedBytes;
@@ -1390,7 +1566,26 @@ private:
 	}
 #endif
 
-	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr)
+	static void drawBitmapEllipsis(const char *line, int bytes, int x, int y, int budget, int align, const BlockEllipsis &ellipsis,
+	                               std::uint16_t color, float scale, int glyphWidth, const TextCoverageSink *coverageSink)
+	{
+		char buf[kWrappedLineBufferBytes + 1];
+		// The bitmap font has no U+2026.
+		const int width = ellipsizedLine(line, bytes, budget, ellipsis.automatic ? "..." : ellipsis.text,
+		                                 [glyphWidth](int) { return glyphWidth; }, buf, static_cast<int>(sizeof(buf)));
+		int penX = x + alignedOffset(align, budget, width);
+		for (const char *glyph = buf; *glyph;) {
+			const char *glyphStart = glyph;
+			nextUtf8Codepoint(glyph);
+			char one[5] = {};
+			std::memcpy(one, glyphStart, static_cast<std::size_t>(glyph - glyphStart));
+			if (coverageSink) bitmapGlyphRun(one, penX, y, scale, *coverageSink);
+			else gea::platform::display::Display::drawText(one, penX, y, color, scale);
+			penX += glyphWidth;
+		}
+	}
+
+	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const BlockEllipsis &ellipsis = {}, const TextCoverageSink *coverageSink = nullptr)
 	{
 		if (scale < 0.1f) scale = 1.0f;
 		int glyphWidth = static_cast<int>(kBitmapFontWidth * scale + 0.5f);
@@ -1404,16 +1599,26 @@ private:
 		int lineIndex = 0;
 
 		while (*lineStart) {
-			if (penY > clipY1) break;
+			if (penY > clipY1 || (lineLimit > 0 && lineIndex >= lineLimit)) break;
 			// See drawRasterizedWrapped: line 0 of an inline continuation starts at
 			// the inherited pen and has that much less room.
 			const int budget = lineIndex == 0 ? maxWidth - firstLineIndent : maxWidth;
 			const int lineOriginX = lineIndex == 0 ? x + firstLineIndent : x;
+			const int trimmedIndent = lineIndex == 0 && firstLineIndent < 0 ? -firstLineIndent : 0;
 			const WrappedLine line = nextWrappedLine(lineStart, budget < 1 ? 1 : budget, [&](int) { return glyphWidth; });
 			lineIndex++;
+			if (ellipsis.text && (lineIndex == lineLimit || !lineStart[line.consumedBytes])) {
+				if (penY + glyphHeight - 1 >= clipY0)
+					drawBitmapEllipsis(lineStart, line.renderBytes, lineOriginX, penY, ellipsis.width - (lineIndex == 1 ? firstLineIndent : 0),
+					                   textAlign, ellipsis, color, scale, glyphWidth, coverageSink);
+				return;
+			}
 
 			if (penY + glyphHeight - 1 >= clipY0) {
-				int penX = lineOriginX + alignedOffset(textAlign, containerWidth, line.width);
+				const int align = lineAlignment(textAlign, alignLast, lineStart, line.consumedBytes, !lineStart[line.consumedBytes]);
+				const int hanging = hangSpaces && align ? hangingSpaceWidth(lineStart, line.renderBytes, glyphWidth) : 0;
+				const int lineX = lineOriginX + alignedOffset(align, containerWidth, line.width - hanging - trimmedIndent);
+				int penX = lineX;
 				if (penX <= clipX1 && penX + line.width - 1 >= clipX0) {
 					const char *glyph = lineStart;
 					const char *renderEnd = lineStart + line.renderBytes;
@@ -1428,6 +1633,7 @@ private:
 						penX += glyphWidth;
 					}
 				}
+				drawEmphasisMarks(lineStart, line.renderBytes, lineX, penY, glyphHeight, glyphHeight, ellipsis, [glyphWidth](int) { return glyphWidth; }, coverageSink);
 			}
 
 			lineStart += line.consumedBytes;
@@ -1504,6 +1710,23 @@ private:
 		if (textAlign == 1) offset = (containerWidth - lineWidth) / 2;
 		else if (textAlign == 2) offset = containerWidth - lineWidth;
 		return offset < 0 ? 0 : offset;
+	}
+
+	// text-align-last aligns every line a forced break ends and, when the run
+	// closes its paragraph, the run's final line (see DrawText::alignLast).
+	static int lineAlignment(int textAlign, int alignLast, const char *lineStart, int consumedBytes, bool finalLine)
+	{
+		if (alignLast < 0) return textAlign;
+		const bool forcedBreak = consumedBytes > 0 && lineStart[consumedBytes - 1] == '\n';
+		return forcedBreak || (finalLine && (alignLast & 4)) ? alignLast & 3 : textAlign;
+	}
+
+	// Collapsible spaces that end a line hang, so alignment must not count them.
+	static int hangingSpaceWidth(const char *line, int bytes, int spaceAdvance)
+	{
+		int width = 0;
+		for (; bytes > 0 && line[bytes - 1] == ' '; --bytes) width += spaceAdvance;
+		return width;
 	}
 };
 
@@ -1595,7 +1818,7 @@ void Tree::setText(int node, const char *text)
 	const int gid_previousX1 = gid_hadPartial ? target.render.text_dirty.x1 : 0;
 	const bool gid_canPartial = (!target.render.dirty || gid_hadPartial) &&
 			!target.render.bg_recolor_pending && gid_singleLine && target.computedStyle().white_space == 1 &&
-			target.computedStyle().text_align == 0 && gid_prefix < gid_newLen;
+			LayoutEngine::physicalTextAlign(target) == 0 && gid_prefix < gid_newLen;
 	// Text and recolor shortcuts share their payload. Other pending paint
 	// changes require a full node repaint, while consecutive text runs union
 	// their extents so none of the earlier changes is forgotten.
@@ -1715,6 +1938,25 @@ bool TextRenderer::canFragmentInlineRuns(const Node &node)
 	    gea_host_measure_text("Mg", 32767, fontId, fontSize, &w, &h);
 	cached = hostMeasures ? 0 : 1;
 	return cached != 0;
+}
+
+TextRenderer::InlineFontMetrics TextRenderer::inlineFontMetrics(const ComputedStyle &style)
+{
+	const int fontSize = style.font_size > 0 ? style.font_size : 16;
+	const auto font = gea::framework::graphics::FontRegistry::rasterizedFamily(style.font_id, fontSize);
+	InlineFontMetrics metrics{fontSize * 4 / 5, fontSize - fontSize * 4 / 5, fontSize / 2, fontSize, 0, 0};
+	int glyphHeight = fontSize;
+	if (font.valid()) {
+		glyphHeight = font.lineHeight();
+		metrics.ascent = font.ascender();
+		metrics.descent = glyphHeight - metrics.ascent;
+		gea::framework::graphics::Glyph x{};
+		if (font.glyph('x', &x) && x.bearingY > 0) metrics.xHeight = x.bearingY;
+	}
+	const int lineAdvance = style.line_height > 0 ? style.line_height : glyphHeight;
+	metrics.strutAscent = (lineAdvance - glyphHeight) / 2 + metrics.ascent;
+	metrics.strutDescent = lineAdvance - metrics.strutAscent;
+	return metrics;
 }
 
 int TextRenderer::baselineOffset(const Node &node, bool last)
@@ -1886,9 +2128,9 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 	return true;
 }
 
-void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent)
+void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent, int alignLast, int lineLimit, int blockEllipsis, int ellipsisWidth, int emphasis, gea::framework::graphics::pixel::native_t emphasisColor)
 {
-	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent);
+	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent, alignLast, lineLimit, blockEllipsis, ellipsisWidth, emphasis, emphasisColor);
 }
 
 void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
@@ -1915,6 +2157,30 @@ int TextRenderer::measureHeight(const char *text, int fontId, int fontSize, int 
 	const char *measureText = textWithTransform(text, textTransform, transformed);
 	const TextMeasure measured = TextMetrics::measure(measureText, 32767, fontId, fontSize, lineHeight);
 	return measured.height;
+}
+
+// DrawText::blockEllipsis for a run whose last painted line ends a clamped
+// block, and the room from its text origin `textX` to that line box's end.
+static uint16_t blockEllipsisCommand(const Node &run, int textX, int &width)
+{
+	const Tree &tree = Tree::instance();
+	for (int ancestor = run.parent; ancestor >= 0; ancestor = tree.node(ancestor).parent) {
+		const Node &box = tree.node(ancestor);
+		if (!(rstyle(box.computedStyle()).line_clamp_flags & 1)) continue;
+		const int right = box.layout.x + box.layout.width - boxInset(box.computedStyle(), 1);
+		width = std::max(0, std::min(32767, right - textX));
+		return rstyle(box.computedStyle()).block_ellipsis ? rstyle(box.computedStyle()).block_ellipsis : kAutoBlockEllipsis;
+	}
+	return 0;
+}
+
+// DrawText::alignLast for a run: -1 unless text-align-last moves some line.
+static int8_t textAlignLastCommand(const Node &node)
+{
+	const int last = node.computedStyle().text_align_last - 1;
+	if (last < 0 || last == LayoutEngine::physicalTextAlign(node)) return -1;
+	const bool endsParagraph = LayoutEngine::endsFormattingLine(static_cast<int>(&node - Tree::instance().nodes()));
+	return static_cast<int8_t>(last | (endsParagraph ? 4 : 0));
 }
 
 void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlpha)
@@ -1994,6 +2260,10 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 
 
 #endif
+	// Physical alignment. A line the inline layout already aligned as a whole
+	// draws start-aligned inside this run's box.
+	const bool lineAligned = (n->render.inline_baseline & 2) != 0;
+	const int textAlign = lineAligned ? 0 : LayoutEngine::physicalTextAlign(*n);
 	int x = n->layout.x;
 	int y = n->layout.y;
 	int w = n->layout.width;
@@ -2086,7 +2356,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 			int iy1 = -1;
 			if (rasterizedTextInkBounds(measureText,
 			                            drawW,
-			                            n->computedStyle().text_align,
+			                            textAlign,
 			                            containerW,
 			                            n->computedStyle().font_id,
 			                            commandFontSize,
@@ -2163,7 +2433,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				// RenderState::inline_baseline.
 				if (singleLine && !n->render.inline_baseline) {
 					drawY += rasterizedSingleLineInkCenterOffsetY(measureText,
-					                                              n->computedStyle().text_align,
+					                                              textAlign,
 					                                              containerW,
 					                                              n->computedStyle().font_id,
 					                                              commandFontSize,
@@ -2171,7 +2441,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				}
 			}
 #endif
-			const int xOffset = alignedOffset(n->computedStyle().text_align, containerW, paintWidth);
+			const int xOffset = alignedOffset(textAlign, containerW, paintWidth);
 			int paintX0 = drawX + xOffset;
 			int paintY0 = drawY;
 			int paintX1 = paintX0 + paintWidth - 1;
@@ -2184,7 +2454,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 				int iy1 = -1;
 				if (rasterizedTextInkBounds(measureText,
 				                            noSoftWrap ? 32767 : drawW,
-				                            n->computedStyle().text_align,
+				                            textAlign,
 				                            containerW,
 				                            n->computedStyle().font_id,
 				                            commandFontSize,
@@ -2226,7 +2496,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		int inkOff = 0;
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		const int genFonts = 1;
-		inkOff = rasterizedSingleLineInkCenterOffsetY(measureText, n->computedStyle().text_align, containerW,
+		inkOff = rasterizedSingleLineInkCenterOffsetY(measureText, textAlign, containerW,
 		                                             n->computedStyle().font_id, dbgFontSize, commandLineHeight);
 #else
 		const int genFonts = 0;
@@ -2245,6 +2515,31 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	}
 
 
+	const int8_t alignLast = transformed || lineAligned ? -1 : textAlignLastCommand(*n);
+	// The bounds above assume text-align for every line; realigned lines may
+	// sit anywhere across the content box.
+	if (alignLast >= 0) {
+		const int right = std::max(bx + bw, drawX + containerW + 2);
+		bx = std::min(bx, drawX - 2);
+		bw = right - bx;
+	}
+
+	int ellipsisWidth = 0;
+	const uint16_t blockEllipsis = !transformed && (n->layout.line_clamp_hidden & 2)
+	    ? blockEllipsisCommand(*n, n->layout.x + boxInset(n->computedStyle(), 3), ellipsisWidth) : 0;
+	// Emphasis marks sit above (or below) the glyph box, up to half an em.
+	if (n->computedStyle().text_emphasis & 7) {
+		const int reach = n->computedStyle().font_size;
+		if (n->computedStyle().text_emphasis & 0x10) bh += reach;
+		else { by -= reach; bh += reach; }
+	}
+	// The ellipsis may reach past the run's own box to the end of its line.
+	if (blockEllipsis) {
+		const int right = std::max(bx + bw, drawX + ellipsisWidth + 2);
+		bx = std::min(bx, drawX - 2);
+		bw = right - bx;
+	}
+
 	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, n->computedStyle().text_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
 
@@ -2260,7 +2555,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.maxWidth = drawW;
 	cmd->text.color = n->computedStyle().text_color;
 	cmd->text.scale = textScale;
-	cmd->text.align = n->computedStyle().text_align;
+	cmd->text.align = static_cast<int8_t>(textAlign);
 	cmd->text.textTransform = n->computedStyle().text_transform;
 	cmd->text.lineHeight = commandLineHeight;
 	cmd->text.containerWidth = containerW;
@@ -2268,6 +2563,12 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.whiteSpace = n->computedStyle().white_space;
 	cmd->text.textOverflow = n->computedStyle().text_overflow;
 	cmd->text.firstLineIndent = static_cast<int16_t>(inlineIndent);
+	cmd->text.alignLast = alignLast;
+	cmd->text.lineLimit = n->layout.line_clamp_lines;
+	cmd->text.blockEllipsis = blockEllipsis;
+	cmd->text.ellipsisWidth = static_cast<int16_t>(ellipsisWidth);
+	cmd->text.emphasis = (n->computedStyle().text_emphasis & 7) ? n->computedStyle().text_emphasis : 0;
+	cmd->text.emphasisColor = (n->computedStyle().text_emphasis & 0x60) == 0x20 ? n->computedStyle().text_emphasis_color : n->computedStyle().text_color;
 	{
 		const int contentH = h - boxInset(n->computedStyle(), 0) - boxInset(n->computedStyle(), 2);
 		cmd->text.maxHeight = static_cast<int16_t>(contentH > 0 ? (contentH > 32767 ? 32767 : contentH) : 0);
