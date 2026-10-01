@@ -120,6 +120,14 @@ gea_native_object_rel() {
   printf '%s.%s.o\n' "$rel" "$kind"
 }
 
+gea_native_input_is_newer() {
+  # macOS Bash 3.2's builtin -nt compares whole seconds. Generated sources
+  # (especially consecutive mutations of one path) can change after an object
+  # was built within that same second. The system test preserves subsecond
+  # timestamps for sources, headers and objects that require relinking.
+  /bin/test "$1" -nt "$2"
+}
+
 gea_native_depfile_has_newer_input() {
   local depfile="$1"
   local obj="$2"
@@ -128,7 +136,7 @@ gea_native_depfile_has_newer_input() {
   while IFS= read -r dep; do
     [[ -n "$dep" ]] || continue
     dep="${dep//\\ / }"
-    if [[ -e "$dep" && "$dep" -nt "$obj" ]]; then
+    if [[ -e "$dep" ]] && gea_native_input_is_newer "$dep" "$obj"; then
       return 0
     fi
   done < <(sed -e ':again' -e '/\\$/N' -e 's/\\\n/ /' -e 'tagain' -e 's/^[^:]*: //' "$depfile" | tr ' ' '\n' | sed -e 's/\\$//' -e '/^$/d')
@@ -140,7 +148,7 @@ gea_native_needs_compile() {
   local obj="$2"
   [[ -f "$obj" ]] || return 0
   [[ -f "$obj.d" ]] || return 0
-  [[ "$src" -nt "$obj" ]] && return 0
+  gea_native_input_is_newer "$src" "$obj" && return 0
   gea_native_depfile_has_newer_input "$obj.d" "$obj" && return 0
   return 1
 }
@@ -207,7 +215,7 @@ gea_native_link_needs_rebuild() {
   [[ "$(cat "$sigFile")" == "$signature" ]] || return 0
   local obj
   for obj in "${GEA_NATIVE_OBJECTS[@]}"; do
-    [[ "$obj" -nt "$output" ]] && return 0
+    gea_native_input_is_newer "$obj" "$output" && return 0
   done
   return 1
 }

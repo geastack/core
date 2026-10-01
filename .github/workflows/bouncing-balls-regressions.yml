@@ -18,6 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: node --test packages/core/test/test_native_object_cache.mjs
       - run: npm ci && npm run build && node --test --test-name-pattern='rounded CSS|rounded video|radius|circle.*(?:cache|bound)|triangle occlusion|span cache|class.*(?:capacity|proof|token)|Display|v16|v17|v19|custom-property' test/analyze.test.mjs
         working-directory: packages/geatsc-plugin-gea
       - run: bash packages/core/test/run-bouncing-balls-regressions.sh --mutations
