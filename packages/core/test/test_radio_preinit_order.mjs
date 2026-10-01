@@ -23,8 +23,17 @@ assert.ok(ble >= 0, 'runtime should preinit the BLE controller for apps that use
 // different boot path.
 const display = runtime.indexOf('gea::platform::display::Display::init()', ble)
 const wifi = runtime.indexOf('network::wifi().init();', ble)
+const reserve = runtime.indexOf('Display::reserveInternal(', display)
+const applyReserve = runtime.indexOf('Display::applyPendingInternalReserve();', reserve)
 assert.ok(display >= 0, 'runtime should initialize the display after the BLE preinit')
 assert.ok(wifi >= 0, 'runtime should bring up early-connect WiFi')
+assert.match(runtime.slice(reserve, applyReserve), /Display::flushBufferBytes\(\)/,
+  'early startup must yield surplus staging for radio and application audio allocations')
+assert.ok(
+  display < reserve && reserve < applyReserve && applyReserve < wifi,
+  'synchronous early WiFi must apply the display reservation before allocating the radio; ' +
+    'the frame task cannot shrink staging until boot returns'
+)
 
 assert.ok(
   ble < display && display < wifi,

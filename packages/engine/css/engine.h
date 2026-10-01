@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "../ui/css_features.h"
 #include "../ui/style.h"
 #include "animation.h"
 

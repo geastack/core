@@ -25,6 +25,8 @@ NODE_TESTS=(
 
 NATIVE_TESTS=(
   run-packed-copy-overlap.sh
+  run-bouncing-balls-regressions.sh
+  run-text-sprite-cache.sh
   run-canvas-rounded-rect-alpha.sh
   run-transformed-rounded-rect.sh
   run-renderer-features.sh

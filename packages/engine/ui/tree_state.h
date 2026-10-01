@@ -7,8 +7,10 @@
 #include "style.h"
 #include "tree_events.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <memory>
 #include <vector>
@@ -20,7 +22,11 @@ struct NodeClassList {
 	static constexpr std::uint16_t kNoOverflow = 0xFFFFu;
 
 	CssAtomId inlineTokens[kInlineTokenCount]{};
+#if GEA_UI_CLASS_OVERFLOW
 	std::uint16_t overflowHandle = kNoOverflow;
+#else
+	static constexpr std::uint16_t overflowHandle = kNoOverflow;
+#endif
 	std::uint8_t count = 0;
 
 	NodeClassList() = default;
@@ -69,6 +75,17 @@ struct NodeStyleOverrideStore {
 	std::size_t size() const;
 	bool empty() const { return size() == 0; }
 	const NodeStyleOverride &at(std::size_t index) const;
+	StorageUsage storageUsage() const;
+};
+
+// This empty owner is selected only by a complete source/native reachability
+// proof. A violated mutation contract fails loudly instead of dropping styles.
+struct EmptyNodeStyleOverrideStore {
+	void clear() {}
+	void set(Property, int) { std::abort(); }
+	std::size_t size() const { return 0; }
+	const NodeStyleOverride &at(std::size_t) const { std::abort(); }
+	StorageUsage storageUsage() const { return {}; }
 };
 
 // CSS ::first-line painting is uncommon and line fragments are useful only
@@ -160,8 +177,15 @@ struct NodeCustomProperty {
 };
 
 struct NodeCustomPropertyStore {
-	std::vector<NodeCustomProperty> values;
+#if GEA_CSS_CUSTOM_PROPERTIES
+	using Values = std::vector<NodeCustomProperty>;
+	Values values;
+#else
+	using Values = std::array<NodeCustomProperty, 0>;
+	inline static constexpr Values values{};
+#endif
 
+#if GEA_CSS_CUSTOM_PROPERTIES
 	void clear();
 	void set(const std::string &name, const std::string &value);
 	void set(CssAtomId nameId, const std::string &value);
@@ -177,6 +201,16 @@ struct NodeCustomPropertyStore {
 	const std::string *get(const std::string &name) const;
 	const std::string *get(CssAtomId nameId) const;
 	const NodeCustomProperty *getEntry(CssAtomId nameId) const;
+#else
+	void clear() {}
+	void set(const std::string &, const std::string &) {}
+	void set(CssAtomId, const std::string &) {}
+	void setColor(CssAtomId, const std::string &, std::int32_t, std::int32_t, std::uint8_t) {}
+	void setLength(CssAtomId, const std::string &, float, std::uint8_t) {}
+	const std::string *get(const std::string &) const { return nullptr; }
+	const std::string *get(CssAtomId) const { return nullptr; }
+	const NodeCustomProperty *getEntry(CssAtomId) const { return nullptr; }
+#endif
 };
 
 // Generic windowing state for a <virtual-list>. The element renders a small
@@ -207,11 +241,15 @@ struct NodeRareData {
 	// Both members remain ordinary embedded fields with fixed-offset access.
 	[[no_unique_address]] NodeEventListeners listeners;
 	InlineStaticPosition inlineStaticPosition;
-	NodeAttributeStore attributes;
-	NodeCustomPropertyStore customProperties;
+	[[no_unique_address]] NodeAttributeStore attributes;
+	[[no_unique_address]] NodeCustomPropertyStore customProperties;
 	// Authored inline values survive rebuilding the computed custom-property map.
-	NodeCustomPropertyStore inlineCustomProperties;
+	[[no_unique_address]] NodeCustomPropertyStore inlineCustomProperties;
+#if GEA_UI_DEFAULT_STYLES
 	NodeStyleOverrideStore defaultStyles;
+#else
+	[[no_unique_address]] EmptyNodeStyleOverrideStore defaultStyles;
+#endif
 	NodeStyleOverrideStore inlineStyles;
 #if GEA_CSS_GRID
 	CssAtomId inlineGridTemplates[2] = {kInvalidCssAtom, kInvalidCssAtom};
@@ -263,6 +301,13 @@ struct NodeRareData {
 	inlineParts.clear();
 	}
 };
+
+struct NodeAuxiliaryStorageUsage {
+    StorageUsage tree, text, rare, overrides, dependencies;
+};
+StorageUsage treeStorageUsage();
+StorageUsage styleDependencyStorageUsage();
+NodeAuxiliaryStorageUsage nodeAuxiliaryStorageUsage();
 
 struct TreeState {
 	Node nodes[kMaxNodes];

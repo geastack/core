@@ -425,8 +425,8 @@ void mountIfNeeded()
 	// the parent's padding from our offsets — negative Left/Top
 	// cancels the inset.
 	const Node &parent = tree.node(tree.mountedRoot());
-	const int padTop = parent.style.padding[0];
-	const int padLeft = parent.style.padding[3];
+	const int padTop = parent.computedStyle().padding[0];
+	const int padLeft = parent.computedStyle().padding[3];
 
 	const KbMetrics m = kbMetrics();
 	// Float the keyboard above any reserved bottom overlay (home button)
@@ -702,16 +702,16 @@ void applyAppResize()
 	gState.savedStyleCount = 0;
 	// Snapshot every computed value we are about to overwrite before the
 	// first setStyle lands, so none of them is read back post-mutation.
-	const int prevHeight = n.style.height;
-	const int prevFlex = n.style.flex;
+	const int prevHeight = n.computedStyle().height;
+	const int prevFlex = n.computedStyle().flex;
 #if GEA_CSS_OVERFLOW_AXES
-	const int prevOverflowY = n.style.overflow_y;
+	const int prevOverflowY = n.computedStyle().overflow_y;
 #else
-	const int prevOverflowY = n.style.overflow;
+	const int prevOverflowY = n.computedStyle().overflow;
 #endif
-	const int prevPosition = n.style.position;
-	const int prevTop = GEA_CSS_POSITION_PX_0(n.style);
-	const int prevLeft = GEA_CSS_POSITION_PX_3(n.style);
+	const int prevPosition = n.computedStyle().position;
+	const int prevTop = GEA_CSS_POSITION_PX_0(n.computedStyle());
+	const int prevLeft = GEA_CSS_POSITION_PX_3(n.computedStyle());
 	const int viewportH = tree.mountedHeight();
 	// Available vertical space between the top of this node (set by
 	// previous siblings' heights during the most recent layout pass)
@@ -728,8 +728,8 @@ void applyAppResize()
 	// band of the old screen. Absolute takes it out of the parent's flow so
 	// it cannot move; restore puts the original position styles back.
 	const Node &parentNode = tree.node(n.parent >= 0 ? n.parent : target);
-	const int pinTop = n.layout.y - parentNode.layout.y - parentNode.style.padding[0];
-	const int pinLeft = n.layout.x - parentNode.layout.x - parentNode.style.padding[3];
+	const int pinTop = n.layout.y - parentNode.layout.y - parentNode.computedStyle().padding[0];
+	const int pinLeft = n.layout.x - parentNode.layout.x - parentNode.computedStyle().padding[3];
 	pinStyle(tree, target, Property::Position, prevPosition, 1);
 	pinStyle(tree, target, Property::Top, prevTop, pinTop);
 	pinStyle(tree, target, Property::Left, prevLeft, pinLeft);

@@ -1,6 +1,84 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+// Custom-property containers and dependency caches need whole-source proof.
+#ifndef GEA_CSS_CUSTOM_PROPERTIES
+#define GEA_CSS_CUSTOM_PROPERTIES 1
+#endif
+
+// v17 default-field reachability facts; only a whole-source proof disables them.
+#ifndef GEA_CSS_MARGINS
+#define GEA_CSS_MARGINS 1
+#endif
+#ifndef GEA_CSS_PADDING
+#define GEA_CSS_PADDING 1
+#endif
+#ifndef GEA_CSS_FLEX_FACTORS
+#define GEA_CSS_FLEX_FACTORS 1
+#endif
+#ifndef GEA_CSS_GAP
+#define GEA_CSS_GAP 1
+#endif
+#ifndef GEA_CSS_BORDER_WIDTHS
+#define GEA_CSS_BORDER_WIDTHS 1
+#endif
+#ifndef GEA_CSS_BORDER_COLORS
+#define GEA_CSS_BORDER_COLORS 1
+#endif
+#ifndef GEA_CSS_FONT_WEIGHT
+#define GEA_CSS_FONT_WEIGHT 1
+#endif
+#ifndef GEA_CSS_TEXT_ALIGN
+#define GEA_CSS_TEXT_ALIGN 1
+#endif
+#ifndef GEA_CSS_WHITE_SPACE
+#define GEA_CSS_WHITE_SPACE 1
+#endif
+#ifndef GEA_CSS_TEXT_OVERFLOW
+#define GEA_CSS_TEXT_OVERFLOW 1
+#endif
+
+// v16 common-style reachability facts. Unknown builds keep native defaults.
+#ifndef GEA_CSS_FLEX_DIRECTION
+#define GEA_CSS_FLEX_DIRECTION 1
+#endif
+#ifndef GEA_CSS_JUSTIFY_CONTENT
+#define GEA_CSS_JUSTIFY_CONTENT 1
+#endif
+#ifndef GEA_CSS_ALIGN_ITEMS
+#define GEA_CSS_ALIGN_ITEMS 1
+#endif
+#ifndef GEA_CSS_BOX_SIZING
+#define GEA_CSS_BOX_SIZING 1
+#endif
+#ifndef GEA_CSS_MARGIN_AUTO
+#define GEA_CSS_MARGIN_AUTO 1
+#endif
+#ifndef GEA_CSS_LINE_HEIGHT_MULTIPLIER
+#define GEA_CSS_LINE_HEIGHT_MULTIPLIER 1
+#endif
+// Automatic whole-source percentage reachability. Older builds retain fields.
+#ifndef GEA_CSS_WIDTH_PERCENT
+#define GEA_CSS_WIDTH_PERCENT 1
+#endif
+#ifndef GEA_CSS_HEIGHT_PERCENT
+#define GEA_CSS_HEIGHT_PERCENT 1
+#endif
+
+#ifndef GEA_CSS_WIDTH_EXPRESSIONS
+#define GEA_CSS_WIDTH_EXPRESSIONS 1
+#endif
+#ifndef GEA_CSS_MIN_HEIGHT
+#define GEA_CSS_MIN_HEIGHT 1
+#endif
+#ifndef GEA_CSS_MAX_WIDTH
+#define GEA_CSS_MAX_WIDTH 1
+#endif
+#ifndef GEA_CSS_ACTIVE_BACKGROUND
+#define GEA_CSS_ACTIVE_BACKGROUND 1
+#endif
+
+
 #ifndef GEA_CSS_PSEUDO_ELEMENTS
 #define GEA_CSS_PSEUDO_ELEMENTS 1
 #endif
@@ -280,3 +358,12 @@
 	(std::integral_constant<int, (side)>::value == 0 ? GEA_CSS_POSITION_PERCENT_0(style) : \
 	 std::integral_constant<int, (side)>::value == 1 ? GEA_CSS_POSITION_PERCENT_1(style) : \
 	 std::integral_constant<int, (side)>::value == 2 ? GEA_CSS_POSITION_PERCENT_2(style) : GEA_CSS_POSITION_PERCENT_3(style))
+
+// Optional default-valued fields: only a complete compact-style source proof
+// can omit them. Layout uses these constants directly in a pruned application.
+#ifndef GEA_CSS_LINE_HEIGHT
+#define GEA_CSS_LINE_HEIGHT 1
+#endif
+#ifndef GEA_CSS_DISPLAY_EXPLICIT
+#define GEA_CSS_DISPLAY_EXPLICIT 1
+#endif

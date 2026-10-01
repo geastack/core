@@ -1,5 +1,23 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
+
+// Follow Node's node_modules search chain, including hoisted workspace installs.
+// package.json need not be exposed by the package's exports map.
+export function resolveCompilerRuntimeEntry(bases) {
+  for (const base of bases) {
+    const require = createRequire(path.join(path.resolve(base), 'package.json'))
+    for (const modules of require.resolve.paths('@geajs/core') || []) {
+      const source = path.join(modules, '@geajs/core/src')
+      const entry = path.join(source, 'index.ts')
+      if (fs.existsSync(entry) && fs.existsSync(path.join(source, 'compiler-runtime.ts')))
+        return fs.realpathSync(entry)
+      // An installed package shadows ancestors, even if it lacks typed sources.
+      if (fs.existsSync(path.join(modules, '@geajs/core/package.json'))) break
+    }
+  }
+  return ''
+}
 
 /** Native lengths are raw numbers; only an authored CSS unit may introduce scaling. */
 export function geaNativeStylePlugin({ runtimeEntry }) {

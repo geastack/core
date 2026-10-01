@@ -86,18 +86,18 @@ int main(int argc, char **argv)
 			std::fprintf(stderr, "[test_style_viewport_metrics] parsed width must retain its authored CSS pixels\n");
 			return 1;
 		}
-		if (!expectEqual(Tree::instance().node(rawId).style.width, 150, "raw width does not acquire CSS units")) return 1;
-		if (!expectEqual(Tree::instance().node(cssId).style.width, static_cast<int>(150 * ratio), "explicit CSS width scales")) return 1;
-		if (!expectEqual(Tree::instance().node(optimizedId).style.width, Tree::instance().node(cssId).style.width, "optimized px matches parsed px")) return 1;
+		if (!expectEqual(Tree::instance().node(rawId).computedStyle().width, 150, "raw width does not acquire CSS units")) return 1;
+		if (!expectEqual(Tree::instance().node(cssId).computedStyle().width, static_cast<int>(150 * ratio), "explicit CSS width scales")) return 1;
+		if (!expectEqual(Tree::instance().node(optimizedId).computedStyle().width, Tree::instance().node(cssId).computedStyle().width, "optimized px matches parsed px")) return 1;
 		gea::host::Display.setDevicePixelRatio(3);
-		if (!expectEqual(Tree::instance().node(rawId).style.width, 150, "raw width survives a scale change")) return 1;
-		if (!expectEqual(Tree::instance().node(cssId).style.width, 450, "parsed px survives a scale change")) return 1;
-		if (!expectEqual(Tree::instance().node(optimizedId).style.width, 450, "optimized px survives a scale change")) return 1;
+		if (!expectEqual(Tree::instance().node(rawId).computedStyle().width, 150, "raw width survives a scale change")) return 1;
+		if (!expectEqual(Tree::instance().node(cssId).computedStyle().width, 450, "parsed px survives a scale change")) return 1;
+		if (!expectEqual(Tree::instance().node(optimizedId).computedStyle().width, 450, "optimized px survives a scale change")) return 1;
 		StyleSheet::instance().applyNumberProperty(NodeHandle(cssId), "width", 42);
 		StyleSheet::instance().removeProperty(NodeHandle(optimizedId), "width");
 		gea::host::Display.setDevicePixelRatio(1);
-		if (!expectEqual(Tree::instance().node(cssId).style.width, 42, "raw replacement clears the previous CSS unit")) return 1;
-		if (!expectEqual(Tree::instance().node(optimizedId).style.width, kUnset, "removed CSS width stays removed")) return 1;
+		if (!expectEqual(Tree::instance().node(cssId).computedStyle().width, 42, "raw replacement clears the previous CSS unit")) return 1;
+		if (!expectEqual(Tree::instance().node(optimizedId).computedStyle().width, kUnset, "removed CSS width stays removed")) return 1;
 	}
 	// Every CSS declaration optimized from `${value}px` must agree with the
 	// parser, including shorthands and corner radii, before and after rescaling.
@@ -159,7 +159,7 @@ int main(int argc, char **argv)
 	StyleSheet::instance().registerRule("probe", "z-index", "7");
 	node.classList().add("probe");
 
-	const auto &style = Tree::instance().node(nodeId).style;
+	const auto &style = Tree::instance().node(nodeId).computedStyle();
 	if (!expectEqual(style.width, 410, "100vw width")) return 1;
 	if (!expectEqual(style.height, 502, "100vh height")) return 1;
 	if (!expectEqual(style.padding[0], 15, "10px padding-top at 1.5x")) return 1;
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
 	if (!expectEqual(style.border_width, 1, "0.5px border-width")) return 1;
 	if (!expectEqual(style.font_size, 36, "24px font-size at 1.5x")) return 1;
 	if (!expectEqual(style.line_height, 45, "1.25 line-height at 1.5x")) return 1;
-	if (!expectEqual(Tree::instance().node(childId).style.line_height, 45, "inherited line-height")) return 1;
+	if (!expectEqual(Tree::instance().node(childId).computedStyle().line_height, 45, "inherited line-height")) return 1;
 	if (!expectEqual(style.gap, 205, "50vw gap")) return 1;
 	if (!expectEqual(style.min_width, 33, "legacy unitless min-width")) return 1;
 	if (!expectEqual(style.flex, 1, "flex")) return 1;
@@ -180,7 +180,7 @@ int main(int argc, char **argv)
 	gea::host::Display.setDevicePixelRatio(2);
 	if (!expectClose(gea::host::Display.getDevicePixelRatio(), 2.0, "Display device pixel ratio")) return 1;
 
-	const auto &rescaledStyle = Tree::instance().node(nodeId).style;
+	const auto &rescaledStyle = Tree::instance().node(nodeId).computedStyle();
 	if (!expectEqual(rescaledStyle.padding[0], 20, "Display-rescaled padding-top")) return 1;
 	if (!expectEqual(rescaledStyle.font_size, 48, "Display-rescaled font-size")) return 1;
 
@@ -188,8 +188,8 @@ int main(int argc, char **argv)
 	gea::host::Display.setOrientation("landscape-primary");
 	if (!expectEqual(static_cast<int>(gea::host::Display.width()), gea::platform::display::kHeight, "landscape Display.width")) return 1;
 	if (!expectEqual(static_cast<int>(gea::host::Display.height()), gea::platform::display::kWidth, "landscape Display.height")) return 1;
-	if (!expectEqual(Tree::instance().node(nodeId).style.width, gea::platform::display::kHeight, "landscape 100vw width")) return 1;
-	if (!expectEqual(Tree::instance().node(nodeId).style.height, gea::platform::display::kWidth, "landscape 100vh height")) return 1;
+	if (!expectEqual(Tree::instance().node(nodeId).computedStyle().width, gea::platform::display::kHeight, "landscape 100vw width")) return 1;
+	if (!expectEqual(Tree::instance().node(nodeId).computedStyle().height, gea::platform::display::kWidth, "landscape 100vh height")) return 1;
 	gea::host::Display.setAutoRotate(true);
 	gea::framework::display::DisplayBackend::updateAutoRotation(-9.8, 0.0, 0.0);
 	if (!expectEqual(static_cast<int>(gea::host::Display.width()), gea::platform::display::kHeight, "auto-rotated landscape width")) return 1;
@@ -208,7 +208,7 @@ int main(int argc, char **argv)
 	                                     "mask-image",
 	                                     "linear-gradient(to right, #000 0, #000 calc(100% - 14.667px), transparent 100%)");
 
-	const auto &inlineStyle = Tree::instance().node(nodeId).style;
+	const auto &inlineStyle = Tree::instance().node(nodeId).computedStyle();
 	if (!expectEqual(inlineStyle.width, 42, "legacy numeric width")) return 1;
 	if (!expectEqual(inlineStyle.font_size, 12, "legacy numeric font-size")) return 1;
 	if (!expectEqual(inlineStyle.line_height, 18, "legacy numeric line-height")) return 1;
@@ -241,8 +241,8 @@ int main(int argc, char **argv)
 	face.classList().add("cube-face");
 	face.classList().add("cube-face--right");
 
-	const auto &cubeStyle = Tree::instance().node(cubeId).style;
-	const auto &faceStyle = Tree::instance().node(faceId).style;
+	const auto &cubeStyle = Tree::instance().node(cubeId).computedStyle();
+	const auto &faceStyle = Tree::instance().node(faceId).computedStyle();
 	if (!expectEqual(cubeStyle.width, 231, "var/clamp cube width")) return 1;
 	if (!expectEqual(cubeStyle.height, 231, "var/clamp cube height")) return 1;
 	if (!expectEqual(faceStyle.pos_offsets[0], 0, "inset top")) return 1;
@@ -263,7 +263,7 @@ int main(int argc, char **argv)
 	StyleSheet::instance().startCssAnimations(0);
 	gea::css::AnimationEngine::instance().tick(0);
 
-	const auto &animatedCubeStyle = Tree::instance().node(cubeId).style;
+	const auto &animatedCubeStyle = Tree::instance().node(cubeId).computedStyle();
 	if (!expectEqual(static_cast<int>(gea::css::AnimationEngine::instance().count()), 3, "cube-spin animated properties")) return 1;
 	if (!expectEqual(rstyle(animatedCubeStyle).transform_rotate_x, -180, "cube-spin rotateX initial")) return 1;
 	if (!expectEqual(rstyle(animatedCubeStyle).transform_rotate_y, 240, "cube-spin rotateY initial")) return 1;
@@ -314,7 +314,7 @@ int main(int argc, char **argv)
 	    {StaticStyleLengthUnit::Px, 38},
 	    {StaticStyleLengthUnit::Px, 39});
 	NodeHandle(staticBgId).classList().set("static-bg");
-	const auto &staticBgStyle = Tree::instance().node(staticBgId).style;
+	const auto &staticBgStyle = Tree::instance().node(staticBgId).computedStyle();
 	const auto &staticBgRare = rstyle(staticBgStyle);
 	if (!expectEqual(staticBgStyle.has_bg, 1, "static background has_bg")) return 1;
 	if (!expectEqual(staticBgStyle.bg_fill, 1, "static background fill")) return 1;
@@ -336,7 +336,7 @@ int main(int argc, char **argv)
 	int maxRareStyle = firstRareStyle;
 	for (int i = 0; i < 8; ++i) {
 		StyleSheet::instance().recomputeSubtree(staticBgId);
-		const int rareStyle = Tree::instance().node(staticBgId).style.rare_style;
+		const int rareStyle = Tree::instance().node(staticBgId).computedStyle().rare_style;
 		if (rareStyle < 0) {
 			std::fprintf(stderr, "[test_style_viewport_metrics] static background recompute lost RareStyle handle\n");
 			return 1;
@@ -371,7 +371,7 @@ int main(int argc, char **argv)
 	    StaticStyleLengthUnit::Vh,
 	    50);
 	NodeHandle(runtimeLengthId).classList().set("runtime-length");
-	const auto &runtimeLengthStyle = Tree::instance().node(runtimeLengthId).style;
+	const auto &runtimeLengthStyle = Tree::instance().node(runtimeLengthId).computedStyle();
 	if (!expectEqual(runtimeLengthStyle.width, 12, "runtime cached vw width")) return 1;
 	if (!expectEqual(runtimeLengthStyle.height, 28, "runtime cached vh height")) return 1;
 	if (!expectEqual(rstyle(runtimeLengthStyle).perspective, 56, "runtime cached vh perspective")) return 1;
@@ -383,8 +383,8 @@ int main(int argc, char **argv)
 	const int comboExtraId = Tree::instance().createView();
 	NodeHandle(comboOnlyId).classList().set("combo");
 	NodeHandle(comboExtraId).classList().set("combo extra");
-	if (!expectEqual(Tree::instance().node(comboOnlyId).style.width, kUnset, "compound selector missing class")) return 1;
-	if (!expectEqual(Tree::instance().node(comboExtraId).style.width, 42, "compound selector extra class")) return 1;
+	if (!expectEqual(Tree::instance().node(comboOnlyId).computedStyle().width, kUnset, "compound selector missing class")) return 1;
+	if (!expectEqual(Tree::instance().node(comboExtraId).computedStyle().width, 42, "compound selector extra class")) return 1;
 
 	gea::platform::display::Display::clearNoFlush();
 	DisplayList::instance().clear();
@@ -484,16 +484,16 @@ int main(int argc, char **argv)
 	NodeHandle(fourthId).classList().add("value");
 	Tree::instance().computeLayout(panelId, 300, 120);
 
-	const auto &panelStyle = Tree::instance().node(panelId).style;
+	const auto &panelStyle = Tree::instance().node(panelId).computedStyle();
 	if (!expectEqual(panelStyle.text_color, 0, ":root var color")) return 1;
 	if (!expectEqual(panelStyle.border_radius[0], 12, "compound selector var border radius")) return 1;
-	if (!expectEqual(Tree::instance().node(secondId).style.opacity, 72, "descendant selector opacity")) return 1;
-	if (!expectEqual(Tree::instance().node(firstId).style.z_index, 9, "child + first-child selector")) return 1;
+	if (!expectEqual(Tree::instance().node(secondId).computedStyle().opacity, 72, "descendant selector opacity")) return 1;
+	if (!expectEqual(Tree::instance().node(firstId).computedStyle().z_index, 9, "child + first-child selector")) return 1;
 	if (!expectEqual(panelStyle.display, 2, "grid display value")) return 1;
 
 	const int beforeId = findDirectChildByTag(panelId, "::before");
 	if (!expectEqual(beforeId >= 0 ? 1 : 0, 1, "materialized ::before node")) return 1;
-	const auto &beforeStyle = Tree::instance().node(beforeId).style;
+	const auto &beforeStyle = Tree::instance().node(beforeId).computedStyle();
 	if (!expectEqual(beforeStyle.width, 24, "::before width")) return 1;
 	if (!expectEqual(beforeStyle.height, 8, "::before height")) return 1;
 	if (!expectEqual(beforeStyle.has_bg, 1, "::before var background")) return 1;
@@ -551,7 +551,7 @@ int main(int argc, char **argv)
 	flex.classList().set("row-flex");
 	Tree::instance().computeLayout(flexId, 300, 180);
 
-	if (!expectEqual(Tree::instance().node(flexId).style.display, 3, "flex display value")) return 1;
+	if (!expectEqual(Tree::instance().node(flexId).computedStyle().display, 3, "flex display value")) return 1;
 	if (!expectEqual(Tree::instance().node(flexId).layout.height, 40, "flex row min-height")) return 1;
 	if (!expectEqual(Tree::instance().node(flexSecondId).layout.x, 60, "flex default row second child x")) return 1;
 	if (!expectEqual(Tree::instance().node(flexSecondId).layout.y, 0, "flex default row second child y")) return 1;
@@ -685,7 +685,7 @@ int main(int argc, char **argv)
 	nonFlex.classList().set("row-direction-only");
 	Tree::instance().computeLayout(nonFlexId, 300, 180);
 
-	if (!expectEqual(Tree::instance().node(nonFlexId).style.display, 0, "non-flex display value")) return 1;
+	if (!expectEqual(Tree::instance().node(nonFlexId).computedStyle().display, 0, "non-flex display value")) return 1;
 	if (!expectEqual(Tree::instance().node(nonFlexSecondId).layout.x, 0, "flex-direction without flex second child x")) return 1;
 	if (!expectEqual(Tree::instance().node(nonFlexSecondId).layout.y, 30, "flex-direction without flex second child y")) return 1;
 
@@ -735,7 +735,7 @@ int main(int argc, char **argv)
 	implicitGrid.classList().set("implicit-grid");
 	Tree::instance().computeLayout(implicitGridId, 300, 180);
 
-	if (!expectEqual(Tree::instance().node(implicitGridId).style.display, 2, "inline-grid display value")) return 1;
+	if (!expectEqual(Tree::instance().node(implicitGridId).computedStyle().display, 2, "inline-grid display value")) return 1;
 	if (!expectEqual(Tree::instance().node(gridFirstId).layout.width, 300, "implicit grid fills available column")) return 1;
 	if (!expectEqual(Tree::instance().node(gridSecondId).layout.x, 0, "implicit grid second child x")) return 1;
 
@@ -1021,13 +1021,13 @@ int main(int argc, char **argv)
 	NodeHandle(fitImageId).classList().set("object-fit-probe");
 	Tree::instance().node(fitImageId).image_id = registeredImageId;
 	Tree::instance().computeLayout(fitRootId, 40, 30);
-	if (Tree::instance().node(fitImageId).style.image_fit != 1) {
+	if (Tree::instance().node(fitImageId).computedStyle().image_fit != 1) {
 		std::fprintf(stderr, "[test_style_viewport_metrics] expected CSS object-fit:contain to set image_fit=1, got %d\n",
-		             Tree::instance().node(fitImageId).style.image_fit);
+		             Tree::instance().node(fitImageId).computedStyle().image_fit);
 		return 1;
 	}
 	NodeHandle(fitImageId).setAttribute("fit", "cover");
-	if (Tree::instance().node(fitImageId).style.image_fit != 2) {
+	if (Tree::instance().node(fitImageId).computedStyle().image_fit != 2) {
 		std::fprintf(stderr, "[test_style_viewport_metrics] expected fit=cover attribute to set image_fit=2\n");
 		return 1;
 	}

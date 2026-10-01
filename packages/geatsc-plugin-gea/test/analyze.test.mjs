@@ -8,7 +8,7 @@ import { analyzeSourceHostBindings as analyzeAllFeatures } from '../dist/analyze
 // CSS elimination has separate end-to-end assertions below.
 function analyzeSourceHostBindings(entry) {
   const result = analyzeAllFeatures(entry)
-  return { ...result, features: result.features.filter(feature => !feature.startsWith('css-') && !feature.startsWith('node-')) }
+  return { ...result, features: result.features.filter(feature => !feature.startsWith('css-') && !feature.startsWith('node-') && !feature.startsWith('renderer-occlusion-') && !feature.startsWith('runtime-')) }
 }
 
 function app(t, files) {
@@ -42,13 +42,13 @@ test('a WebSocket constructor and a wss literal both bring the network stack', (
   assert.deepEqual(analyzeSourceHostBindings(entry), { bindings: ['websocket'], features: ['https', 'renderer-analysis-v1'] })
 })
 
-test('video-only canvas with ordinary rounded CSS has no renderer caches', (t) => {
+test('rounded CSS retains circle spans even when the canvas only draws video', (t) => {
   const entry = app(t, {
     'index.tsx': `import './style.css'; const frame = <canvas style={{ width: width, borderRadius: 16 }} />;
       ctx.clearRect(0, 0, 240, 240); ctx.drawImage(image, 0, 0); pixels[i] = value;`,
     'style.css': 'canvas { border-radius: 16px; background: #123; }',
   })
-  assert.deepEqual(analyzeSourceHostBindings(entry).features, ['renderer-analysis-v1'])
+  assert.deepEqual(analyzeSourceHostBindings(entry).features, ['renderer-analysis-v1', 'renderer-circles'])
 })
 
 test('CSS imports recurse through quoted and unquoted url imports', (t) => {
@@ -106,14 +106,18 @@ test('opaque package imports retain rendering features conservatively', (t) => {
   assert.deepEqual(analyzeSourceHostBindings(entry).features, ['renderer-analysis-v1', 'renderer-circles', 'renderer-linear-gradients', 'renderer-radial-gradients', 'renderer-transforms'])
 })
 
-function cssFeatures(entry) { return analyzeAllFeatures(entry).features.filter(feature => feature.startsWith('css-') && !feature.startsWith('css-range') && !['css-text-alpha', 'css-border-alpha', 'css-pseudo-elements'].includes(feature)) }
+// Existing family snapshots keep their original scope; complete v16 proofs
+// have independent positive/negative cases below.
+const baseStyleFamilies = ['css-flex-direction', 'css-justify-content', 'css-align-items', 'css-box-sizing', 'css-margin-auto', 'css-line-height-multiplier', 'css-width-expressions', 'css-min-height', 'css-max-width', 'css-active-background']
+const defaultStyleFamilies = ['css-margins', 'css-padding', 'css-flex-factors', 'css-gap', 'css-border-widths', 'css-border-colors', 'css-font-weight', 'css-text-align', 'css-white-space', 'css-text-overflow']
+function cssFeatures(entry) { return analyzeAllFeatures(entry).features.filter(feature => feature.startsWith('css-') && !feature.startsWith('css-range') && !feature.startsWith('css-circle-cache-') && !['css-storage-v1', 'css-line-height', 'css-display-explicit', 'css-width-percent', 'css-height-percent', 'css-custom-properties', 'css-text-alpha', 'css-border-alpha', 'css-pseudo-elements', ...baseStyleFamilies, ...defaultStyleFamilies].includes(feature)) }
 
 test('CSS engine capabilities are inferred without app opt-ins', (t) => {
   const entry = app(t, {
     'index.tsx': `import './style.css'; const node = <div style={{ width: liveWidth }} />`,
     'style.css': `.card { box-sizing: border-box; display: flex; width: calc(100% - 20px); border: 0; }`,
   })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19'])
 })
 
 test('CSS shorthand and selectors retain only reachable semantic families', (t) => {
@@ -121,17 +125,17 @@ test('CSS shorthand and selectors retain only reachable semantic families', (t) 
     'index.tsx': `import './style.css'`,
     'style.css': `.card { border: 3px inset blue; display: grid; } @keyframes spin { to { transform: rotate(1turn); } }`,
   })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-animations', 'css-border-relief', 'css-grid', 'css-transforms'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-animations', 'css-border-relief', 'css-grid', 'css-transforms'])
 })
 
 test('dynamic style names and unknown modules retain all semantics automatically', (t) => {
   const entry = app(t, { 'index.tsx': `element.style[property] = value` })
-  assert.deepEqual(cssFeatures(entry), ['css-align-content', 'css-align-self', 'css-analysis-v15', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
+  assert.deepEqual(cssFeatures(entry), ['css-align-content', 'css-align-self', 'css-analysis-v19', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
 })
 
 test('dynamic values retain their family without retaining unrelated CSS', (t) => {
   const entry = app(t, { 'index.tsx': `const node = <div style={{ display: mode, borderStyle: style, width: liveWidth }} />` })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-border-relief', 'css-grid', 'css-side-borders'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-border-relief', 'css-grid', 'css-side-borders'])
 })
 
 
@@ -142,7 +146,7 @@ test('shadowed constants cannot incorrectly remove a border capability', (t) => 
 
 test('escaping style objects and aliased style setters preserve semantic support', (t) => {
   const entry = app(t, { 'index.tsx': `mutate(node.style); const setter = node.style.setProperty; setter(name, value);` })
-  assert.deepEqual(cssFeatures(entry), ['css-align-content', 'css-align-self', 'css-analysis-v15', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
+  assert.deepEqual(cssFeatures(entry), ['css-align-content', 'css-align-self', 'css-analysis-v19', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
 })
 
 for (const source of [
@@ -157,7 +161,7 @@ for (const source of [
   `element.innerHTML = markup`,
   `const sheet = document.createElement('style'); sheet.textContent = css`,
 ]) test(`opaque style construction preserves semantic support: ${source}`, (t) => {
-  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': source })), ['css-align-content', 'css-align-self', 'css-analysis-v15', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
+  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': source })), ['css-align-content', 'css-align-self', 'css-analysis-v19', 'css-animations', 'css-aspect-ratio', 'css-axis-gap', 'css-background-layers', 'css-blink', 'css-border-relief', 'css-box-expressions', 'css-box-shadow', 'css-containment', 'css-corner-radius', 'css-custom-property-lengths', 'css-filters', 'css-first-line', 'css-flex-basis', 'css-flex-basis-expressions', 'css-flex-line-count', 'css-flex-wrap', 'css-floats', 'css-grid', 'css-height-expressions', 'css-image-fit', 'css-justify-items', 'css-justify-self', 'css-line-height-expressions', 'css-margin-trim', 'css-mask', 'css-max-height', 'css-min-width', 'css-opacity', 'css-order', 'css-overflow-axes', 'css-percent-gap', 'css-percent-radius', 'css-pointer-events', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent', 'css-position-right', 'css-position-right-percent', 'css-position-top', 'css-position-top-percent', 'css-scrolling', 'css-side-borders', 'css-text-decoration', 'css-text-transform', 'css-transforms', 'css-visibility', 'css-writing-mode', 'css-z-index'])
 })
 
 for (const source of [`const card = <div dir="rtl"/>`, `element.dir = direction`, `element.setAttribute('dir', direction)`])
@@ -168,7 +172,7 @@ for (const source of [`const card = <div dir="rtl"/>`, `element.dir = direction`
 
 test('CSS property escapes retain semantics while icon escapes add no features', (t) => {
   const entry = app(t, { 'index.tsx': `import './style.css'`, 'style.css': String.raw`.icon { content: "\f001"; } .card { tr\61 nsform: rotate(10deg); }` })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-transforms'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-transforms'])
 })
 
 for (const mutation of ['mutate(styles)', 'const alias = styles; mutate(alias)', 'mutate({ appearance: styles })', 'const alias = styles; alias[key] = value'])
@@ -183,27 +187,27 @@ for (const source of [
   'element.style.blinkInterval = interval; element.style.order = priority',
 ]) test(`individual style fields retain direct storage when used: ${source}`, (t) => {
   const entry = app(t, { 'index.tsx': source })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-blink', 'css-order'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-blink', 'css-order'])
 })
 
 test('CSS order retains storage and unknown property names retain blink too', (t) => {
   const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': '.card { order: -2; }' })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-order'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-order'])
 })
 
 
 test('literal pixel radii and gaps omit percentage storage automatically', (t) => {
   const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': '.card { border-radius: 3px 2em; gap: 0 12px; }' })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-axis-gap', 'css-corner-radius'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-axis-gap', 'css-corner-radius'])
 })
 for (const value of ['25%', 'calc(25% + 2px)', 'var(--size)'])
   test(`percentage radius/gap representation remains for ${value}`, (t) => {
     const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': `.card { border-top-left-radius: ${value}; column-gap: ${value}; }` })
-    assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-axis-gap', 'css-corner-radius', 'css-percent-gap', 'css-percent-radius'])
+    assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-axis-gap', 'css-corner-radius', 'css-percent-gap', 'css-percent-radius'])
   })
 test('dynamic radius/gap values retain the percentage representation', (t) => {
   const entry = app(t, { 'index.tsx': 'const node = <div style={{ borderRadius: radius, rowGap: gap }} />' })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-axis-gap', 'css-corner-radius', 'css-percent-gap', 'css-percent-radius'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-axis-gap', 'css-corner-radius', 'css-percent-gap', 'css-percent-radius'])
 })
 
 for (const [property, feature] of [
@@ -213,7 +217,7 @@ for (const [property, feature] of [
   ['maskImage', 'css-mask'], ['-webkit-mask-image', 'css-mask'],
 ]) test(`optional property storage is retained automatically: ${property}`, t => {
   const entry = app(t, { 'index.tsx': `const element = <div style={{ '${property}': dynamicValue }} />` })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', feature, ...(property === 'placeSelf' ? ['css-justify-self'] : [])].sort())
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', feature, ...(property === 'placeSelf' ? ['css-justify-self'] : [])].sort())
 })
 for (const source of [
   `const element = <div data-anim="opacity" />`,
@@ -228,7 +232,7 @@ for (const source of [
 })
 test('keyframes preserve opacity and text presentation fields', t => {
   const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': '@keyframes pulse { from { opacity: 0; visibility: hidden; } to { opacity: 1; visibility: visible; } }' })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-animations', 'css-opacity', 'css-visibility'])
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-animations', 'css-opacity', 'css-visibility'])
 })
 
 for (const [property, feature] of [
@@ -238,17 +242,17 @@ for (const [property, feature] of [
   ['minWidth', 'css-min-width'], ['minInlineSize', 'css-min-width'],
 ]) test(`layout/effect storage is retained for ${property}`, t => {
   const entry = app(t, { 'index.tsx': `const node = <div style={{ ${property}: value }} />` })
-  assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', feature, ...(property === 'placeSelf' ? ['css-justify-self'] : [])].sort())
+  assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', feature, ...(property === 'placeSelf' ? ['css-justify-self'] : [])].sort())
 })
 for (const value of ['10px', '25%', '0', 'auto', 'inherit', '20px !important'])
   test(`simple height ${value} needs no deferred expression`, t => {
     const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { height: ${value}; }` })
-    assert.deepEqual(cssFeatures(entry), ['css-analysis-v15'])
+    assert.deepEqual(cssFeatures(entry), ['css-analysis-v19'])
   })
 for (const value of ['calc(100% - 10px)', 'var(--height)', 'max-content', 'fit-content', '10vh', '2em'])
   test(`height ${value} retains deferred representation`, t => {
     const entry = app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { height: ${value}; }` })
-    assert.deepEqual(cssFeatures(entry), ['css-analysis-v15', 'css-height-expressions'])
+    assert.deepEqual(cssFeatures(entry), ['css-analysis-v19', 'css-height-expressions'])
   })
 test('dynamic heights and logical sizes retain height expressions', t => {
   for (const source of ['const node = <div style={{height: size}} />', 'element.style.blockSize = size']) {
@@ -262,18 +266,18 @@ for (const [property, feature] of [
   ['contentVisibility', 'css-containment'], ['justifySelf', 'css-justify-self'],
   ['flexLineCount', 'css-flex-line-count'],
 ]) test(`optional sizing/stacking storage follows ${property}`, t => {
-  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': `const node = <div style={{ ${property}: value }} />` })), ['css-analysis-v15', feature].sort())
+  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': `const node = <div style={{ ${property}: value }} />` })), ['css-analysis-v19', feature].sort())
 })
 for (const value of ['0', '4px', '3px 7px', '0 auto', '-1.5px', 'inherit', '1px 2px 3px 4px !important'])
   test(`fixed edges ${value} need no deferred storage`, t => {
-    assert.deepEqual(cssFeatures(app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { margin: ${value}; padding: ${value}; }` })), ['css-analysis-v15'])
+    assert.deepEqual(cssFeatures(app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { margin: ${value}; padding: ${value}; }` })), ['css-analysis-v19'])
   })
 for (const value of ['10%', '0 10%', '2em', 'calc(10% - 2px)', 'var(--edge)', 'env(safe-area-inset-top)'])
   test(`relative edges ${value} retain deferred storage`, t => {
-    assert.deepEqual(cssFeatures(app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { padding-inline: ${value}; margin-block-start: ${value}; }` })), ['css-analysis-v15', 'css-box-expressions'])
+    assert.deepEqual(cssFeatures(app(t, { 'index.tsx': "import './style.css'", 'style.css': `.node { padding-inline: ${value}; margin-block-start: ${value}; }` })), ['css-analysis-v19', 'css-box-expressions'])
   })
 test('dynamic edges retain deferred storage', t => {
-  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': 'element.style.marginLeft = edge' })), ['css-analysis-v15', 'css-box-expressions'])
+  assert.deepEqual(cssFeatures(app(t, { 'index.tsx': 'element.style.marginLeft = edge' })), ['css-analysis-v19', 'css-box-expressions'])
 })
 
 
@@ -649,6 +653,8 @@ for (const [source, count] of [
 ]) test(`class inline capacity proof: ${source}`, t => {
   const actual = classCapacity(app(t, { 'index.tsx': source }))
   assert.deepEqual(actual, count === undefined ? [] : [`node-class-capacity-v1-${count}`])
+  const storage = analyzeAllFeatures(app(t, { 'index.tsx': source })).features.filter(f => f.startsWith('node-class-storage-'))
+  assert.deepEqual(storage, count === undefined ? [] : [`node-class-storage-v1-${count}`])
 })
 
 test('class numeric property proof follows discovered relative stores', t => {
@@ -698,8 +704,30 @@ for (const css of [
 })
 test('animation frame callbacks and ordinary CSS do not retain CSS animation storage', t => {
   const features = cssFeatures(app(t, { 'index.tsx': `import './app.css'; requestAnimationFrame(tick); cancelAnimationFrame(id); const n = <div />`, 'app.css': '.a { color: #123; width: 20px }' }))
-  assert.ok(features.includes('css-analysis-v15'))
+  assert.ok(features.includes('css-analysis-v19'))
   assert.ok(!features.includes('css-animations'))
+})
+
+test('authored animation store methods do not enable native animation storage', t => {
+  const features = analyzeAllFeatures(app(t, {
+    'index.tsx': "import agent from './store.js'; setInterval(() => agent.animate(), 50)",
+    'store.js': "import { Store } from '@geastack/core'; class AgentStore extends Store { position = 0; animate() { this.position += 1 } }; const agent = new AgentStore(); export default agent",
+  })).features
+  for (const feature of ['css-animations', 'renderer-transforms', 'renderer-linear-gradients', 'renderer-radial-gradients']) assert.ok(!features.includes(feature), feature)
+})
+
+test('authored animation method bodies still retain actual native style operations', t => {
+  const features = analyzeAllFeatures(app(t, {
+    'index.tsx': "class Agent { animate() { el.style.transform = 'rotate(10deg)' } }; const agent = new Agent(); agent.animate()",
+  })).features
+  assert.ok(features.includes('renderer-transforms'))
+})
+
+test('an opaque receiver cast to an authored animation class stays conservative', t => {
+  const features = analyzeAllFeatures(app(t, {
+    'index.tsx': "class Agent { animate() {} }; const agent = el as Agent; agent.animate()",
+  })).features
+  assert.ok(features.includes('css-animations'))
 })
 
 
@@ -819,24 +847,337 @@ for (const selector of ['.x:first-child', '.x:last-child', '.x::first-line', '.x
   })
 }
 
-test('authored animation store methods do not enable native animation storage', t => {
-  const features = analyzeAllFeatures(app(t, {
-    'index.tsx': "import agent from './store.js'; setInterval(() => agent.animate(), 50)",
-    'store.js': "import { Store } from '@geastack/core'; class AgentStore extends Store { position = 0; animate() { this.position += 1 } }; const agent = new AgentStore(); export default agent",
-  })).features
-  for (const feature of ['css-animations', 'renderer-transforms', 'renderer-linear-gradients', 'renderer-radial-gradients']) assert.ok(!features.includes(feature), feature)
+// The original Bouncing Balls JSX uses CSS circles, without a canvas arc call.
+for (const declaration of [
+  'border-radius: 50%', 'border-radius: 16px',
+  ...['top-left', 'top-right', 'bottom-left', 'bottom-right'].map(corner => `border-${corner}-radius: 8px`),
+  'border-radius: var(--radius)',
+]) test(`rounded CSS keeps the span cache: ${declaration}`, t => {
+  const entry = app(t, { 'index.tsx': "import './balls.css'; const ball = <div class='ball' />", 'balls.css': `.ball { ${declaration} }` })
+  assert.ok(analyzeSourceHostBindings(entry).features.includes('renderer-circles'))
+})
+for (const value of ['0', '0px', '0 0', '0px 0 0px 0']) test(`zero radius does not allocate circle caches: ${value}`, t => {
+  const entry = app(t, { 'index.tsx': "import './balls.css'", 'balls.css': `.ball { border-radius: ${value} }` })
+  assert.ok(!analyzeSourceHostBindings(entry).features.includes('renderer-circles'))
+})
+for (const source of [
+  'const ball = <div style={{ borderRadius: radius }} />',
+  'ball.style.borderTopLeftRadius = radius',
+  "ball.style.setProperty('border-radius', radius)",
+]) test(`dynamic radius retains the span cache: ${source}`, t => {
+  assert.ok(analyzeSourceHostBindings(app(t, {'index.tsx': source})).features.includes('renderer-circles'))
+})
+test('unrounded video canvas still strips shape caches', t => {
+  assert.deepEqual(analyzeSourceHostBindings(app(t, {'index.tsx': 'const frame = <canvas />; ctx.drawImage(image, 0, 0)'})).features, ['renderer-analysis-v1'])
 })
 
-test('authored animation method bodies still retain actual native style operations', t => {
-  const features = analyzeAllFeatures(app(t, {
-    'index.tsx': "class Agent { animate() { el.style.transform = 'rotate(10deg)' } }; const agent = new Agent(); agent.animate()",
-  })).features
-  assert.ok(features.includes('renderer-transforms'))
+for (const binding of ['Display', 'Display as Screen']) test(`Display import ${binding} does not inject native nodes or unknown CSS bounds`, t => {
+  const local = binding === 'Display' ? 'Display' : 'Screen'
+  const entry = app(t, { 'index.tsx': `import { ${binding}, mount } from '@geastack/core';
+    ${local}.setFrameRate(120); ${local}.setFlushConfig({ rows: 64, depth: 2 });
+    const node = <div style={{ padding: '8px', borderRadius: '6px', fontSize: '12px' }}>FPS</div>` })
+  assert.deepEqual(nativeNodes(entry), ['node-analysis-v1'])
+  const features = rangeFeatures(entry)
+  assert.ok(!features.includes('css-ranges-unknown'))
+  assert.ok(features.includes('css-range-padding-px-8'))
+  assert.ok(features.includes('css-range-radius-px-6'))
+})
+for (const mutation of [
+  `Screen.setDevicePixelRatio(8)`,
+  `Screen['setDevicePixelRatio'](8)`,
+  `const { setDevicePixelRatio: changeScale } = Screen; changeScale(8)`,
+  `Screen[method](8)`,
+]) test(`Display runtime scaling keeps range bounds conservative: ${mutation}`, t => {
+  const entry = app(t, { 'index.tsx': `import { Display as Screen } from '@geastack/core'; ${mutation}; const node = <div style={{ padding: '8px' }} />` })
+  assert.ok(rangeFeatures(entry).includes('css-ranges-unknown'))
 })
 
-test('an opaque receiver cast to an authored animation class stays conservative', t => {
-  const features = analyzeAllFeatures(app(t, {
-    'index.tsx': "class Agent { animate() {} }; const agent = el as Agent; agent.animate()",
-  })).features
-  assert.ok(features.includes('css-animations'))
+function commonStyleFeatures(entry) {
+  return analyzeAllFeatures(entry).features.filter(feature => baseStyleFamilies.includes(feature)).sort()
+}
+for (const [property, value, families] of [
+  ['flexDirection', 'column', ['flex-direction']], ['flexFlow', 'column wrap', ['flex-direction']],
+  ['justifyContent', 'center', ['justify-content']], ['placeContent', 'center', ['justify-content']],
+  ['alignItems', 'center', ['align-items']], ['placeItems', 'center', ['align-items']],
+  ['boxSizing', 'border-box', ['box-sizing']], ['activeBackgroundColor', '#f00', ['active-background']],
+  ['activeBackground', '#f00', ['active-background']], ['minHeight', '20px', ['min-height']],
+  ['minInlineSize', '20px', ['min-height']], ['maxWidth', '20px', ['max-width']],
+  ['maxBlockSize', '20px', ['max-width']], ['lineHeight', '1.5', ['line-height-multiplier']],
+  ['font', '12px/1.5 Inter', ['line-height-multiplier']], ['width', 'calc(100% - 8px)', ['width-expressions']],
+  ['inlineSize', '20px', ['width-expressions']], ['margin', '0 auto', ['margin-auto']],
+  ['marginInlineStart', 'var(--edge)', ['margin-auto']],
+]) test(`v16 retains common field authored through ${property}`, t => {
+  assert.deepEqual(commonStyleFeatures(app(t, { 'index.tsx': `const n = <div style={{ ${property}: ${JSON.stringify(value)} }} />` })), families.map(f => `css-${f}`).sort())
+})
+for (const value of ['20', '20px', '50%', 'auto', 'initial', 'inherit', 'unset'])
+  test(`v16 simple width needs no deferred storage: ${value}`, t => {
+    assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': `const n = <div style={{ width: '${value}' }} />`})), [])
+  })
+for (const value of ['max-content', 'min-content', 'fit-content', '2em', '30vw', 'var(--size)'])
+  test(`v16 deferred width retains storage: ${value}`, t => {
+    assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': `const n = <div style={{ width: '${value}' }} />`})), ['css-width-expressions'])
+  })
+for (const source of [
+  'element.style[name] = value', 'mutate(element.style)', 'import Unknown from "opaque-package"; Unknown()',
+  'const n = <div style={{...unknown}} />', 'const n = <input />',
+  'import { VirtualList } from "@geastack/core"; const n = new VirtualList()',
+  'const f = document.createElement; f(tag)',
+]) test(`v16 unknown or native defaults retain common fields: ${source}`, t => {
+  assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': source})), [...baseStyleFamilies].sort())
+})
+test('v16 dynamic values keep only their known common family', t => {
+  assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': 'element.style.width = liveWidth; element.style.marginLeft = edge'})), ['css-margin-auto', 'css-width-expressions'])
+})
+test('v16 imported CSS and shorthands participate in the common field proof', t => {
+  assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': "import './a.css'", 'a.css': "@import './b.css'; .x { margin: 0 2px; font-size: 12px; }", 'b.css': '.x { place-items: center; active-background: red; }'})), ['css-active-background', 'css-align-items'])
+})
+test('v16 Display import and fixed numeric margins preserve common-field elimination', t => {
+  assert.deepEqual(commonStyleFeatures(app(t, {'index.tsx': 'import { Display } from "@geastack/core"; Display.setFrameRate(120); const n = <div style={{margin:"0 2px", fontSize:12}} />'})), [])
+})
+
+function defaultStyleFeatures(entry) {
+  return analyzeAllFeatures(entry).features.filter(feature => defaultStyleFamilies.includes(feature)).sort()
+}
+for (const [property, value, families] of [
+  ['margin','-2px 3px',['margins']], ['marginInlineStart','var(--edge)',['margins']],
+  ['padding','1px 2px',['padding']], ['paddingBlockEnd','calc(2px + 3%)',['padding']],
+  ['flex','1 0 20px',['flex-factors']], ['flexGrow',2,['flex-factors']], ['flexShrink',0,['flex-factors']],
+  ['gap','2px',['gap']], ['rowGap','3%',['gap']], ['gridColumnGap','4px',['gap']],
+  ['border','1px solid red',['border-colors','border-widths']], ['borderInline','solid',['border-colors','border-widths']],
+  ['borderStyle','solid',['border-colors','border-widths']], ['borderWidth','2px',['border-widths']],
+  ['borderInlineStartWidth','1px',['border-widths']], ['borderColor','currentColor',['border-colors']],
+  ['borderBlockEndColor','var(--ink)',['border-colors']], ['fontWeight','bold',['font-weight']],
+  ['font','italic bold 12px Inter',['font-weight']], ['textAlign','center',['text-align']],
+  ['whiteSpace','pre-wrap',['white-space']], ['textWrap','nowrap',['white-space']],
+  ['textOverflow','ellipsis',['text-overflow']],
+]) test(`v17 retains authored default field: ${property}`, t => {
+  const source = `const n = <div style={{ ${property}: ${JSON.stringify(value)} }} />`
+  assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':source})), families.map(f => `css-${f}`).sort())
+})
+for (const source of [
+  'element.style[name] = value', 'mutate(element.style)', 'import Unknown from "opaque-package"; Unknown()',
+  'const n = <div style={{...unknown}} />', 'const n = <input />',
+  'import { VirtualList } from "@geastack/core"; const n = new VirtualList()',
+  'const f = document.createElement; f(tag)',
+]) test(`v17 opaque/native defaults retain all default fields: ${source}`, t => {
+  assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':source})), [...defaultStyleFamilies].sort())
+})
+test('v17 dynamic known fields retain only their own families', t => {
+  assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':'element.style.padding = edge; element.style.fontWeight = weight'})), ['css-font-weight','css-padding'])
+})
+test('v17 imported CSS, variables and shorthand inheritance preserve storage', t => {
+  assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':"import './a.css'",'a.css':"@import './b.css'; .x { --edge: 3px; margin: var(--edge); }",'b.css':'.x { border: inherit; text-align: unset; }'})), ['css-border-colors','css-border-widths','css-margins','css-text-align'])
+})
+for (const [tag, features] of [['strong',['css-font-weight']],['pre',['css-white-space']],['th',['css-font-weight','css-text-align']]])
+  test(`v17 intrinsic ${tag} defaults remain available`, t => {
+    assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':`const n = <${tag}>hello</${tag}>`})), features)
+  })
+test('v17 circle radius, color, font size and Display do not require default fields', t => {
+  assert.deepEqual(defaultStyleFeatures(app(t, {'index.tsx':'import { Display } from "@geastack/core"; Display.setFrameRate(120); const n = <span style={{borderRadius:8,color:"red",fontSize:16}}>text</span>'})), [])
+})
+
+
+function hasCustomProperties(t, source, files = {}) {
+  return analyzeAllFeatures(app(t, { 'index.tsx': source, ...files })).features.includes('css-custom-properties')
+}
+for (const source of [
+  'const n = <div style={{ "--color": "red" }} />',
+  'element.style.setProperty("--offset", offset)',
+  'element.style.setProperty(dynamicName, value)',
+  'const n = <div style={unknownStyle} />',
+  'const n = <div style={{ color: "var(--tone, red)" }} />',
+  'element.style.color = "var(--tone)"',
+  'import { Card } from "opaque-component"; const n = <Card />',
+  'const n = <input />',
+]) test(`custom-property storage retained for ${source}`, t => assert.ok(hasCustomProperties(t, source)))
+test('custom-property definitions in imported CSS retain both stores and dependency tracking', t => {
+  assert.ok(hasCustomProperties(t, "import './a.css'", {
+    'a.css': "@import './b.css'; .x { color: var(--tone); }",
+    'b.css': '.x { --tone: red; }',
+  }))
+})
+for (const source of [
+  'const n = <div style={{ left: ball.x, top: ball.y, backgroundColor: ball.color }} />',
+  'element.style.left = x; element.style.top = y',
+  'const n = <span style={{ color: "red", fontSize: 16 }}>FPS</span>',
+]) test(`unused custom-property storage removed for ${source}`, t => assert.equal(hasCustomProperties(t, source), false))
+
+
+function circleBounds(t, source, files = {}) {
+  return analyzeAllFeatures(app(t, { 'index.tsx': source, ...files })).features
+}
+test('CSS-only circle bounds carry an independent whole-source proof', t => {
+  const features = circleBounds(t, "import './shape.css'; const n=<div style={{left:x,top:y}} />", {'shape.css':'.ball { border-radius: 8; }'})
+  assert.ok(features.includes('css-circle-cache-v1'))
+  assert.ok(features.includes('css-range-radius-raw-8'))
+  assert.ok(features.includes('css-range-radius-px-0'))
+  assert.ok(!features.includes('css-circle-cache-unbounded'))
+})
+for (const source of [
+  'ctx.arc(0,0,8,0,6.28)', 'ctx.fillCircle(0,0,8)', 'ctx.fillCircleRgb565(0,0,r,color)', 'ctx.drawImageCircle(image,0,0,w,h)', 'ctx.fillRoundedRect(0,0,16,16,8)',
+  'const f=ctx.fillCircle; f(0,0,r)', 'const {arc: draw}=ctx; draw(0,0,r,0,6)',
+  'ctx["fill"+"Circle"](0,0,r)', 'ctx[name](r)',
+  'const n=<div style={{borderRadius:r}} />', 'const n=<div style={{borderRadius:"50%"}} />',
+  'const n=<div style={unknownStyle} />', 'import {Circle} from "opaque"; const n=<Circle />',
+  'const n=<button />', 'const n=<canvas />', 'const n=<input />',
+  'Display.setDevicePixelRatio(ratio)',
+]) test(`circle caches keep full bounds for ${source}`, t => {
+  const features = circleBounds(t, source)
+  assert.ok(features.includes('css-circle-cache-v1'))
+  assert.ok(features.includes('css-circle-cache-unbounded'), source)
+})
+
+
+for (const source of [
+  'ctx.fillTrianglesRgb565Sorted(xs,ys,colors,order,count)',
+  'ctx.fillTriangleRgb565(x0,y0,x1,y1,x2,y2,color)',
+  'const draw=ctx.fillTrianglesRgb565Sorted; draw(xs,ys,colors,order,count)',
+  'const {fillTrianglesRgb565Sorted:draw}=ctx; draw(xs,ys,colors,order,count)',
+  'const { ["fill"+"TrianglesRgb565Sorted"]:draw }=ctx; draw(xs,ys,colors,order,count)',
+  'const { [key]:draw }=ctx; draw(args)',
+  'ctx["fill"+"TrianglesRgb565Sorted"](xs,ys,colors,order,count)',
+  'ctx[name](args)', 'Reflect.get(ctx,name)(args)',
+  'Object.getOwnPropertyDescriptor(ctx,name).value(args)',
+  'eval(source)', 'new Function(source)()',
+  'import {drawScene} from "opaque-native"; drawScene()',
+  'import {Canvas} from "@geastack/core"; const ctx=new Canvas()',
+  '__gea_Native.drawScene()',
+]) test(`triangle occlusion proof retains reachable or opaque drawing: ${source}`, t => {
+  const features=analyzeAllFeatures(app(t,{'index.tsx':source})).features
+  assert.ok(features.includes('renderer-occlusion-v1'))
+  assert.ok(features.includes('renderer-occlusion-triangles'))
+})
+for (const source of [
+  'const n=<div style={{borderRadius:8,left:x,top:y}} />',
+  'import {Display} from "@geastack/core"; Display.setFrameRate(120); const n=<span>FPS</span>',
+  'ctx.fillCircle(20,20,8)',
+]) test(`triangle occlusion proof removes unused scratch: ${source}`, t => {
+  const features=analyzeAllFeatures(app(t,{'index.tsx':source})).features
+  assert.ok(features.includes('renderer-occlusion-v1'))
+  assert.ok(!features.includes('renderer-occlusion-triangles'))
+})
+
+
+const sizePercentFamilies = ['css-height-percent', 'css-width-percent']
+const sizePercentUsage = entry => analyzeAllFeatures(entry).features.filter(feature => sizePercentFamilies.includes(feature))
+for (const value of ['0', '16', '-2px', '.5em', '2rem', '100vw', '100vh', '3vmin', '5dvh', '2lh', '1cm', 'auto', 'inherit', 'min-content', 'max-content', 'fit-content', '12px !important']) {
+  test(`v19 non-percentage dimension ${value} removes percentage storage`, t => {
+    const entry = app(t, {'index.tsx': `import './style.css'`, 'style.css': `.x {width:${value};height:${value};}`})
+    assert.deepEqual(sizePercentUsage(entry), [])
+    assert.ok(analyzeAllFeatures(entry).features.includes('css-analysis-v19'))
+  })
+}
+for (const value of ['50%', '0%', 'calc(100% - 2px)', 'min(50%, 20px)', 'var(--size)', 'var(--size, 10px)', 'garbage', '10px 20px']) {
+  test(`v19 possible percentage ${value} retains only its dimension`, t => {
+    const entry = app(t, {'index.tsx': `import './style.css'`, 'style.css': `.x {width:${value};height:20px;}`})
+    assert.deepEqual(sizePercentUsage(entry), ['css-width-percent'])
+  })
+}
+for (const source of [
+  'const x = <div style={{width: external, height: other}} />',
+  'node.style.width = value; node.style.height = value',
+  'const x = <div style={opaque} />',
+  'node.style.setProperty(name, value)',
+  'const x = <div style={{inlineSize: value}} />',
+  `import './style.css'`,
+  `import {Input} from '@geastack/core'; const x = <Input/>`,
+  `import {Card} from 'opaque-package'; const x = <Card/>`,
+]) {
+  test(`v19 opaque dimension sources retain both fields: ${source}`, t => {
+    const entry = app(t, {'index.tsx':source,'style.css':'.x{block-size:50%;}'})
+    assert.deepEqual(sizePercentUsage(entry), sizePercentFamilies)
+  })
+}
+test('v19 fixed logical dimensions and class switches preserve the complete percentage union', t => {
+  const entry=app(t, {'index.tsx':`import './style.css'; const x=<div class={condition?'fixed':'fraction'}/>`,'style.css':'.fixed{inline-size:40px;block-size:2rem}.fraction{height:25%}'})
+  assert.deepEqual(sizePercentUsage(entry), ['css-height-percent'])
+})
+
+test('compact auxiliary proof removes only unreachable node owners', (t) => {
+  const entry = app(t, {
+    'index.tsx': `import { Component, Store, mount } from '@geastack/core';
+      class Data extends Store { items: { x: number }[] = [{ x: 0 }]; tick() { for (let i = 0; i < this.items.length; i++) this.items[i].x += 1; } }
+      const data = new Data(); const view = <div class="root">{data.items.map(item => <span style={{ left: item.x }}>FPS</span>)}</div>;`,
+  })
+  const features = analyzeAllFeatures(entry).features
+  assert.ok(features.includes('node-aux-v1'))
+  for (const feature of ['node-listeners', 'node-attributes', 'node-default-styles', 'css-position-left-percent']) assert.ok(!features.includes(feature), feature)
+})
+
+for (const [source, retained] of [
+  ['const view = <div onmousedown={handler} />', ['node-listeners', 'node-attributes']],
+  ['const view = <div click={handler} />', ['node-listeners', 'node-attributes']],
+  ['const view = <div id="counter" />', ['node-attributes']],
+  ['const view = <h1>Title</h1>', ['node-listeners', 'node-attributes', 'node-default-styles']],
+  ['node[operation](value)', ['node-listeners', 'node-attributes', 'node-default-styles']],
+  ['const view = <div {...props} />', ['node-listeners', 'node-attributes', 'node-default-styles']],
+  ['import widget from "opaque-package"; widget()', ['node-listeners', 'node-attributes', 'node-default-styles']],
+]) test(`compact auxiliary proof retains opaque/used storage: ${source}`, (t) => {
+  const features = analyzeAllFeatures(app(t, { 'index.tsx': source })).features
+  for (const feature of retained) assert.ok(features.includes(feature), feature)
+})
+
+test('compact numeric position proof distinguishes numbers, percentages and opaque values', (t) => {
+  const entry = app(t, {
+    'index.tsx': `import './style.css'; const state = { x: 12 }; const view = <div style={{ left: state.x }} />;`,
+    'style.css': '.badge { top: 3vmin; left: 2em; }',
+  })
+  const features = analyzeAllFeatures(entry).features
+  assert.ok(!features.includes('css-position-left-percent'))
+  assert.ok(!features.includes('css-position-top-percent'))
+})
+for (const value of ['"12%"', 'external', 'external as number', '(external as any).x', 'Math.random() ? 5 : "10%"']) {
+  test(`compact numeric position proof retains percentage storage: ${value}`, (t) => {
+    const features = analyzeAllFeatures(app(t, { 'index.tsx': `const view = <div style={{ left: ${value} }} />` })).features
+    assert.ok(features.includes('css-position-left-percent'))
+  })
+}
+
+
+test('compact numeric slots remain numbers when unrelated objects escape', t => {
+  const features = analyzeAllFeatures(app(t, {'index.tsx': `import { Display } from '@geastack/core';
+    class Ball { x: int = 0; y: int = 0; }
+    const balls: Ball[] = []; balls.push({x:0,y:0}); Display.setFlushConfig({rows:64,depth:2});
+    const view=<div>{balls.map(ball=><div style={{left:ball.x,top:ball.y}} />)}</div>;`})).features
+  for (const feature of ['css-position-left-percent','css-position-top-percent','node-listeners','node-attributes','node-default-styles']) assert.ok(!features.includes(feature), feature)
+})
+
+for (const [source, css, expected] of [
+  ['const n=<div style={{color:"red"}}/>', '', []],
+  ['const n=<div style={{display:"none"}}/>', '', ['css-display-explicit']],
+  ['const n=<div style={{lineHeight:18}}/>', '', ['css-line-height']],
+  ['node.style.font="16px/2 sans-serif"', '', ['css-line-height']],
+  ["import './style.css'", '.a{line-height:normal;display:inherit}', ['css-display-explicit','css-line-height']],
+  ['const n=<div style={opaque}/>', '', ['css-display-explicit','css-line-height']],
+  ['const n=<input/>', '', ['css-display-explicit','css-line-height']],
+]) test(`compact default storage follows all source uses: ${source}`, t => {
+  const features=analyzeAllFeatures(app(t, {'index.tsx':source,'style.css':css})).features
+  assert.ok(features.includes('css-storage-v1'))
+  assert.deepEqual(features.filter(f=>['css-line-height','css-display-explicit'].includes(f)),expected)
+})
+
+
+test('implicit root selectors and authored DOM lookups retain attribute identity', t => {
+  for (const source of ['document.getElementById("app")','document.querySelector(selector)','Document.ensureAppRoot("custom")'])
+    assert.ok(analyzeAllFeatures(app(t, {'index.tsx':source})).features.includes('node-attributes'))
+  for (const selector of ['#app','[data-state="active"]',String.raw`\23 app`])
+    assert.ok(analyzeAllFeatures(app(t, {'index.tsx':"import './style.css'",'style.css':`${selector}{color:red}`})).features.includes('node-attributes'),selector)
+})
+
+
+test('CSS colors and quoted declaration contents do not allocate attribute owners', t => {
+  const features=analyzeAllFeatures(app(t, {'index.tsx':"import './style.css'",'style.css':'.app{color:#fff;background:#000} @media (monochrome){.ball{color:#000}}'})).features
+  assert.ok(!features.includes('node-attributes'))
+})
+test('attribute selectors retain owners even when quoted values contain delimiters', t => {
+  const features=analyzeAllFeatures(app(t, {'index.tsx':"import './style.css'",'style.css':'[title=";{}"]{color:red}'})).features
+  assert.ok(features.includes('node-attributes'))
+})
+
+test('canvas inference retains services for imports lowered to native asset loaders', (t) => {
+  const entry = app(t, {
+    'index.tsx': "import { Display } from '@geastack/core'; import image from './picture.png'; Display.ctx.drawImage(image, 0, 0)",
+    'picture.png': 'image data',
+  })
+  assert.ok(!analyzeAllFeatures(entry).features.includes('runtime-canvas-only'))
 })

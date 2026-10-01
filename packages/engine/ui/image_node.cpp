@@ -19,16 +19,16 @@ class ImageFitResolver {
 public:
 	static ImageFitRect resolve(const Node &node, int imageWidth, int imageHeight)
 	{
-		const int contentWidth = node.layout.width - boxInsets(node.style, true);
-		const int contentHeight = node.layout.height - boxInsets(node.style, false);
+		const int contentWidth = node.layout.width - boxInsets(node.computedStyle(), true);
+		const int contentHeight = node.layout.height - boxInsets(node.computedStyle(), false);
 		ImageFitRect rect{
-			node.layout.x + boxInset(node.style, 3),
-			node.layout.y + boxInset(node.style, 0),
+			node.layout.x + boxInset(node.computedStyle(), 3),
+			node.layout.y + boxInset(node.computedStyle(), 0),
 			contentWidth,
 			contentHeight,
 		};
 
-		if (node.style.image_fit == 1 || node.style.image_fit == 4) {
+		if (node.computedStyle().image_fit == 1 || node.computedStyle().image_fit == 4) {
 			const int scaledWidth = (imageWidth * contentHeight) / imageHeight;
 			const int scaledHeight = (imageHeight * contentWidth) / imageWidth;
 			if (scaledWidth <= contentWidth) {
@@ -38,12 +38,12 @@ public:
 				rect.width = contentWidth;
 				rect.height = scaledHeight;
 			}
-			if (node.style.image_fit == 4 && rect.width >= imageWidth && rect.height >= imageHeight) {
+			if (node.computedStyle().image_fit == 4 && rect.width >= imageWidth && rect.height >= imageHeight) {
 				rect.width = imageWidth;
 				rect.height = imageHeight;
 			}
 			center(node, rect);
-		} else if (node.style.image_fit == 2) {
+		} else if (node.computedStyle().image_fit == 2) {
 			const int scaledWidth = (imageWidth * contentHeight) / imageHeight;
 			const int scaledHeight = (imageHeight * contentWidth) / imageWidth;
 			if (scaledWidth >= contentWidth) {
@@ -54,7 +54,7 @@ public:
 				rect.height = scaledHeight;
 			}
 			center(node, rect);
-		} else if (node.style.image_fit == 3) {
+		} else if (node.computedStyle().image_fit == 3) {
 			rect.width = imageWidth;
 			rect.height = imageHeight;
 			center(node, rect);
@@ -66,25 +66,25 @@ public:
 private:
 	static void center(const Node &node, ImageFitRect &rect)
 	{
-		rect.x = node.layout.x + boxInset(node.style, 3) + (node.layout.width - boxInsets(node.style, true) - rect.width) / 2;
-		rect.y = node.layout.y + boxInset(node.style, 0) + (node.layout.height - boxInsets(node.style, false) - rect.height) / 2;
+		rect.x = node.layout.x + boxInset(node.computedStyle(), 3) + (node.layout.width - boxInsets(node.computedStyle(), true) - rect.width) / 2;
+		rect.y = node.layout.y + boxInset(node.computedStyle(), 0) + (node.layout.height - boxInsets(node.computedStyle(), false) - rect.height) / 2;
 	}
 };
 
 bool hasImageRadius(const Node &node)
 {
-	return node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)] > 0 ||
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)] > 0 ||
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)] > 0 ||
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)] > 0;
+	return node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)] > 0 ||
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)] > 0 ||
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)] > 0 ||
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)] > 0;
 }
 
 void setScaledBlitRadius(DisplayCommand *cmd, const Node &node)
 {
-	cmd->scaledBlit.tl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
-	cmd->scaledBlit.tr = node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
-	cmd->scaledBlit.br = node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
-	cmd->scaledBlit.bl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
+	cmd->scaledBlit.tl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+	cmd->scaledBlit.tr = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+	cmd->scaledBlit.br = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+	cmd->scaledBlit.bl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
 }
 
 bool applyAxisAlignedTransform(const Node &node, ImageFitRect &rect)
@@ -112,12 +112,12 @@ void ImageRenderer::layout(int id)
 	int iw = images.width(n->image_id);
 	int ih = images.height(n->image_id);
 
-	if (n->style.width == kUnset && n->style.width_percent == kUnset && n->style.width_expression < 0 && iw > 0)
-		n->layout.width = iw + boxInsets(n->style, true);
-	if (n->style.height == kUnset && n->style.height_percent == kUnset && n->style.height_expression < 0 && ih > 0)
-		n->layout.height = ih + boxInsets(n->style, false);
-	n->layout.width = clampBorderBoxSize(n->style, n->layout.width, true);
-	n->layout.height = clampBorderBoxSize(n->style, n->layout.height, false);
+	if (n->computedStyle().width == kUnset && n->computedStyle().width_percent == kUnset && n->computedStyle().width_expression < 0 && iw > 0)
+		n->layout.width = iw + boxInsets(n->computedStyle(), true);
+	if (n->computedStyle().height == kUnset && n->computedStyle().height_percent == kUnset && n->computedStyle().height_expression < 0 && ih > 0)
+		n->layout.height = ih + boxInsets(n->computedStyle(), false);
+	n->layout.width = clampBorderBoxSize(n->computedStyle(), n->layout.width, true);
+	n->layout.height = clampBorderBoxSize(n->computedStyle(), n->layout.height, false);
 }
 
 void ImageRenderer::record(const Node &node)

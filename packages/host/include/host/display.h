@@ -98,7 +98,7 @@ struct DisplayFacade {
 
   gea::embedded::ui::CanvasRenderingContext2D ctx() const {
 #if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
-    gea::embedded::ui::Document::markDirectCanvasContextUsed();
+    // No document exists in the inferred canvas-only runtime.
     return gea::embedded::ui::CanvasRenderingContext2D(-1);
 #else
     auto &document = gea::embedded::ui::Document::instance();

@@ -30,7 +30,6 @@ char css_size_string[sizeof(std::string)];
 __attribute__((noinline)) int css_probe_corner3(const Node *node) { return node->style.border_radius[GEA_CSS_RADIUS_INDEX(3)]; }
 __attribute__((noinline)) int css_probe_corner_dynamic(const Node *node, int corner) { return node->style.border_radius[GEA_CSS_RADIUS_INDEX(corner)]; }
 __attribute__((noinline)) unsigned css_probe_memo_pass(const Node *node) { return node->layout.memo_pass; }
-__attribute__((noinline)) unsigned css_probe_memo2_pass(const Node *node) { return node->layout.memo2_pass; }
 __attribute__((noinline)) int css_probe_overflow_x(const Node *node) { return overflowX(node->style); }
 __attribute__((noinline)) int css_probe_overflow_y(const Node *node) { return overflowY(node->style); }
 __attribute__((noinline)) int css_probe_gap(const Node *node) { return node->style.gap; }

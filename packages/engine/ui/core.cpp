@@ -16,7 +16,7 @@ Tree &Tree::instance()
 
 void Tree::markDisplayListDirty()
 {
-	refreshPerfStatsMutable().treeMarkDisplayListDirtyCalls++;
+	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeMarkDisplayListDirtyCalls++);
 	auto &state = treeState();
 	state.displayListDirty = true;
 	// Structural: the pending rebuild may change draw order / which commands
@@ -26,7 +26,7 @@ void Tree::markDisplayListDirty()
 
 void Tree::markDisplayListContentDirty()
 {
-	refreshPerfStatsMutable().treeMarkDisplayListContentDirtyCalls++;
+	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeMarkDisplayListContentDirtyCalls++);
 	// Appearance-only rebuild on existing nodes (no draw-order change): request
 	// the rebuild but leave displayListRebuildStructural alone, so refresh can
 	// replay only the dirty-node regions. A structural change elsewhere in the
@@ -37,7 +37,7 @@ void Tree::markDisplayListContentDirty()
 void Tree::markNodeDisplayCommandsDirty(int node)
 {
 	if (node < 0 || node >= kMaxNodes) return;
-	refreshPerfStatsMutable().treeMarkNodeCommandDirtyCalls++;
+	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeMarkNodeCommandDirtyCalls++);
 	auto &state = treeState();
 	state.nodeCommandDirty[node] = 1;
 	const int root = state.mountedRoot;
@@ -97,7 +97,7 @@ bool TreeInspection::hasMountedText(const char *text)
         if (tree.node(i).text != text) continue;
         int node = i;
         for (int depth = 0; node >= 0 && node < tree.nodeCount() && depth < tree.nodeCount(); ++depth) {
-            if (isDisplayNone(tree.node(node).style)) break;
+            if (isDisplayNone(tree.node(node).computedStyle())) break;
             if (node == tree.mountedRoot()) return true;
             node = tree.node(node).parent;
         }

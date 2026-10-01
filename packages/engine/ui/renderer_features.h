@@ -17,3 +17,8 @@
 #ifndef GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
 #define GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS 1
 #endif
+
+// Independent proof: old analyzers cannot certify triangle batches absent.
+#ifndef GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION
+#define GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION 1
+#endif

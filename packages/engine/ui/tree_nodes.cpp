@@ -17,16 +17,16 @@ namespace {
 
 bool nodeCanDrawWithoutCanvas(const Node &node)
 {
-	if (node.style.display == 1) return false;
+	if (node.computedStyle().display == 1) return false;
 	if (node.type == NodeType::Canvas) return false;
 	// A <camera> leaf paints itself from the platform preview buffer (or a
 	// native overlay), never via the box renderer — treat it like a canvas.
 	if (node.type == NodeType::Camera) return false;
-	if (node.style.has_bg || hasAnyBorder(node.style)) return true;
+	if (node.computedStyle().has_bg || hasAnyBorder(node.computedStyle())) return true;
 	if (node.type == NodeType::Text && !node.text.empty()) return true;
 	if (node.type == NodeType::Image && node.image_id >= 0) return true;
 	if (node.type == NodeType::VirtualList) return true;
-	if (isViewLikeNodeType(node.type) && node.style.overflow == 2) return true;
+	if (isViewLikeNodeType(node.type) && node.computedStyle().overflow == 2) return true;
 	return false;
 }
 
@@ -85,7 +85,7 @@ bool canUseDisplayFramebuffer(TreeState &state, int id, int width, int height)
 	int visibleCanvasCount = 0;
 	for (int i = 0; i < state.nodeCount; i++) {
 		Node &node = state.nodes[i];
-		if (node.style.display == 1) continue;
+		if (node.computedStyle().display == 1) continue;
 		if (node.type == NodeType::Canvas) visibleCanvasCount++;
 		if (i != id && nodeCanDrawWithoutCanvas(node)) return failWhy(5, i);
 	}
@@ -105,7 +105,7 @@ void resetNodeSlot(TreeState &state, int id)
 	if (!state.nodes[id].text.empty()) DisplayList::instance().scrubNodeText(state.nodes[id].text.c_str());
 	releaseRareData(id);  // frees the rare-data block: attributes, listeners, custom props, virtual-list
 #if GEA_CSS_RARE_STYLE
-	releaseRareStyle(state.nodes[id].style.rare_style);  // frees the cold-style block
+	releaseRareStyle(state.nodes[id].mutableStyle().rare_style);  // frees the cold-style block
 #endif
 	state.classLists[id].clear();
 	state.canvases.remove(id);
@@ -116,7 +116,8 @@ void resetNodeSlot(TreeState &state, int id)
 	state.nodeInBackdrop[id] = 0;
 	state.nodeActive[id] = 0;
 	NodeLifecycle::init(&state.nodes[id], NodeType::View);
-	state.nodes[id].style.display = kDisplayNone;
+	LayoutEngine::instance().resetNodeLayoutState(id);
+	state.nodes[id].mutableStyle().display = kDisplayNone;
 }
 
 void trimInactiveTail(TreeState &state)
@@ -130,14 +131,14 @@ bool localAbsoluteLeafTreeMutation(const TreeState &state, int child)
 {
 	if (child < 0 || child >= state.nodeCount) return false;
 	const Node &node = state.nodes[child];
-	if (node.style.display == kDisplayNone) return false;
-	if (node.style.position != 1) return false;
-	if (node.style.width == kUnset || node.style.height == kUnset) return false;
+	if (node.computedStyle().display == kDisplayNone) return false;
+	if (node.computedStyle().position != 1) return false;
+	if (node.computedStyle().width == kUnset || node.computedStyle().height == kUnset) return false;
 	if (node.first_child >= 0) return false;
 	if (node.type == NodeType::Text || node.type == NodeType::Canvas || node.type == NodeType::VirtualList) return false;
 	if (!isViewLikeNodeType(node.type) && node.type != NodeType::Image) return false;
-	if ((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0) > 0 || node.style.mask_right_fade_width > 0) return false;
-	if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0) return false;
+	if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0 || node.computedStyle().mask_right_fade_width > 0) return false;
+	if ((GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) > 0) return false;
 	return true;
 }
 
@@ -145,6 +146,8 @@ bool localAbsoluteLeafTreeMutation(const TreeState &state, int child)
 
 void Tree::clear()
 {
+	LayoutEngine::instance().endLayoutPass();
+	LayoutEngine::instance().releasePersistentLayoutStorage();
 	auto &state = treeState();
 	state.refreshSerial++;
 	if (state.refreshSerial == 0) state.refreshSerial = 1;
@@ -229,6 +232,7 @@ int Tree::createNode(NodeType type)
 	state.nodeActive[id] = 1;
 	releaseRareData(id);  // free any block from a prior occupant before reinit
 	NodeLifecycle::init(&state.nodes[id], type);
+	LayoutEngine::instance().resetNodeLayoutState(id);
 	state.classLists[id].clear();
 	if (type == NodeType::VirtualList) VirtualListRenderer::init(id);
 	return id;
@@ -244,12 +248,12 @@ int Tree::cloneNode(int sourceId, bool deep)
 	// is safe; an ACTIVE source slot can never be the one createNode reused.
 	const Node &source = state.nodes[sourceId];
 	Node &clone = state.nodes[id];
-	clone.style = source.style;
-	// clone.style copied source's rare_style HANDLE (shared pool entry). Give the
+	clone.mutableStyle() = source.computedStyle();
+	// clone.computedStyle() copied source's rare_style HANDLE (shared pool entry). Give the
 	// clone its own entry with the same contents, so mutating one never aliases.
 #if GEA_CSS_RARE_STYLE
-	clone.style.rare_style = -1;
-	if (source.style.rare_style >= 0) rstyleMut(clone.style) = rstyle(source.style);
+	clone.mutableStyle().rare_style = -1;
+	if (source.computedStyle().rare_style >= 0) rstyleMut(clone.mutableStyle()) = rstyle(source.computedStyle());
 #endif
 	clone.text = source.text;
 #if GEA_UI_IMAGE_NODES
@@ -314,7 +318,7 @@ int Tree::createCamera() { return createNode(NodeType::Camera); }
 int Tree::createAudio()
 {
 	const int id = createNode(NodeType::Audio);
-	if (id >= 0) treeState().nodes[id].style.display = kDisplayNone;
+	if (id >= 0) treeState().nodes[id].mutableStyle().display = kDisplayNone;
 	return id;
 }
 int Tree::createVirtualList() { return createNode(NodeType::VirtualList); }
@@ -665,7 +669,7 @@ void Tree::removeNode(int id, bool restyleSiblings)
 	// Sibling selectors (+, ~) of the siblings that followed it.
 	if (restyleSiblings) StyleSheet::instance().recomputeSiblingsFrom(next);
 	n = &state.nodes[id];
-	n->style.display = 1;
+	n->mutableStyle().display = 1;
 	n->parent = -1;
 	n->first_child = -1;
 	n->last_child = -1;

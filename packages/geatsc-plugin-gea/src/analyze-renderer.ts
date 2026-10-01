@@ -1,10 +1,12 @@
 import ts from 'typescript'
 
 export const rendererAnalysisVersion = 'renderer-analysis-v1'
+export const rendererOcclusionAnalysisVersion = 'renderer-occlusion-v1'
 const rendererFeatures = ['renderer-circles', 'renderer-transforms', 'renderer-linear-gradients', 'renderer-radial-gradients']
 
 export function addUnknownRendererFeatures(features: Set<string>): void {
   for (const feature of rendererFeatures) features.add(feature)
+  features.add('renderer-occlusion-triangles')
 }
 
 // A cache is an optimization, never a requirement for correct rendering. Source
@@ -17,6 +19,7 @@ export interface StyleUsageObserver {
   property(name: string | undefined, value: string | undefined, expression?: ts.Expression): void
   unknown(): void
   unknownRanges?(): void
+  unknownCircleBounds?(): void
 }
 
 // Proof shared by CSS storage and renderer cache selection. Custom-property
@@ -72,6 +75,9 @@ export function addRendererFeatures(file: string, text: string, features: Set<st
     observer?.property(name, value, expression)
     if (!name) { allStyles(); return }
     const cssName = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`).toLowerCase()
+    // CSS rounded boxes also use the circle span caches in Canvas.
+    if (/^border(?:-(?:top-left|top-right|bottom-left|bottom-right))?-radius$/.test(cssName) &&
+        (value === undefined || !/^0(?:px)?(?:\s+0(?:px)?)*$/i.test(value.trim()))) features.add('renderer-circles')
     if (/^(?:-webkit-)?(?:transform|perspective|translate|rotate|scale)$/.test(cssName)) {
       if (value?.trim().toLowerCase() !== 'none') features.add('renderer-transforms')
     }
@@ -197,21 +203,37 @@ export function addRendererFeatures(file: string, text: string, features: Set<st
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) return opaqueCallable(node.expression, seen)
     return false
   }
-  const circleMethods = new Set(['arc', 'arcTo', 'ellipse', 'roundRect', 'fillCircle', 'fillCircles', 'fillCirclesRgb565', 'fillCirclesRgb565Uniform', 'fillCirclesRgb565WorldYSorted', 'fillCircleBox', 'fillEllipse', 'fillEllipseBatch', 'fillRoundedRectBoxesRgb565'])
+  const circleMethods = new Set(['arc', 'arcTo', 'ellipse', 'roundRect', 'fillCircle', 'fillCircleRgb565', 'drawImageCircle', 'drawImageRounded', 'fillCircles', 'fillCirclesRgb565', 'fillCirclesRgb565Uniform', 'fillCirclesRgb565WorldYSorted', 'fillCircleBox', 'fillEllipse', 'fillEllipseBatch', 'fillRoundedRectBoxesRgb565', 'fillRoundedRect', 'strokeCircle', 'strokeRoundedRect'])
   const visit = (node: ts.Node): void => {
+    // Include references so aliased/destructured drawing cannot evade the proof.
+    if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && /^(?:fillTriangle\w*|TriangleEntry|eval|Function|Reflect)$/.test(node.text)) features.add('renderer-occlusion-triangles')
+    if (ts.isIdentifier(node) && /^__gea_/.test(node.text) && node.text !== '__gea_Display') features.add('renderer-occlusion-triangles')
+    // CSS radius bounds say nothing about imperative drawing, including aliases
+    // and destructured/bare methods. Keep their full caches conservatively.
+    if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && circleMethods.has(node.text)) observer?.unknownCircleBounds?.()
     if (ts.isIdentifier(node) && /^__gea_/.test(node.text) && node.text !== '__gea_Display') observer?.unknownRanges?.()
     // These factories/hosts can inject native defaults or change length scaling
     // outside the authored CSS range proof. Type-only imports cannot do so.
+    // Display alone is safe: actual DPR setters and opaque calls below still
+    // invalidate bounds, including aliased and bracket-access setters.
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) &&
         /^(?:gea-embedded|@geastack\/(?:core|engine)|@geajs\/core)(?:\/|$)/.test(node.moduleSpecifier.text) &&
         node.importClause && !node.importClause.isTypeOnly) {
       const bindings = node.importClause.namedBindings
       if (node.importClause.name || !bindings || !ts.isNamedImports(bindings) ||
-          bindings.elements.some(item => !item.isTypeOnly && !/^(?:Component|Store|mount)$/.test((item.propertyName ?? item.name).text))) observer?.unknownRanges?.()
+          bindings.elements.some(item => !item.isTypeOnly && !/^(?:Component|Store|mount|Display)$/.test((item.propertyName ?? item.name).text))) { observer?.unknownRanges?.(); features.add('renderer-occlusion-triangles') }
     }
     if (ts.isIdentifier(node) && /^(?:setDevicePixelRatio|setViewportMetrics|devicePixelRatio|__gea_StyleSheet|createVirtualList|createInput|createTextInput|VirtualList|VirtualListElement|TextInput|VirtualKeyboard)$/.test(node.text)) observer?.unknownRanges?.()
     if ((ts.isStringLiteralLike(node) && /^(?:virtual-list|input|textarea|select)$/i.test(node.text)) ||
         ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) && /^(?:virtual-list|input|textarea|select)$/i.test(node.tagName.getText(source)))) observer?.unknownRanges?.()
+    // Preserve intrinsic text defaults even when no CSS declaration spells
+    // them out. These observations also cover literal createElement tags.
+    const intrinsicTag = ts.isStringLiteralLike(node) ? node.text.toLowerCase()
+      : ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node) ? node.tagName.getText(source).toLowerCase() : ''
+    if (/^(?:button|img|image|canvas|video|camera|audio|virtual-list|input|textarea|select)$/.test(intrinsicTag)) observer?.unknownCircleBounds?.()
+    if (/^(?:b|strong|h[1-6]|th)$/.test(intrinsicTag)) observer?.property('font-weight', undefined)
+    if (/^(?:pre|textarea)$/.test(intrinsicTag)) observer?.property('white-space', undefined)
+    if (/^(?:center|th)$/.test(intrinsicTag)) observer?.property('text-align', undefined)
     // Native controls can introduce scrollable descendants without authored
     // overflow CSS. Literal tag/factory use retains state; dynamic factories
     // and computed calls are opaque and keep all families below.
@@ -225,13 +247,15 @@ export function addRendererFeatures(file: string, text: string, features: Set<st
         !(node.text === 'animate' && observer?.isSourceMethod?.(node))) allStyles()
     if (ts.isBindingElement(node) && /^(?:createElement|createElementNS|animate|setAttribute|insertRule|replaceSync)$/.test(node.propertyName?.getText(source).replace(/^['"]|['"]$/g, '') ?? node.name.getText(source))) allStyles()
     if (ts.isBindingElement(node) && node.propertyName && ts.isComputedPropertyName(node.propertyName) && literal(node.propertyName.expression) === undefined) allStyles()
+    if (ts.isBindingElement(node) && node.propertyName && ts.isComputedPropertyName(node.propertyName) && /^fillTriangle\w*$/.test(literal(node.propertyName.expression) ?? '')) features.add('renderer-occlusion-triangles')
     if (ts.isTaggedTemplateExpression(node) && ts.isTemplateExpression(node.template)) allStyles()
     // Literal CSS also covers CSS templates, DOM setters and imported helpers.
     if (ts.isStringLiteralLike(node)) css(node.text)
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const name = member(node)
       if (name && /^(?:setDevicePixelRatio|setViewportMetrics|devicePixelRatio)$/.test(name)) observer?.unknownRanges?.()
-      if (name && circleMethods.has(name)) features.add('renderer-circles')
+      if (name && circleMethods.has(name)) { features.add('renderer-circles'); observer?.unknownCircleBounds?.() }
+      if (name && /^fillTriangle\w*$/.test(name)) features.add('renderer-occlusion-triangles')
       if (name === 'dataset' || (name === 'animate' && !observer?.isSourceMethod?.(node))) allStyles()
       if (name && /^(?:setAttribute|insertRule|replaceSync)$/.test(name) && !(ts.isCallExpression(node.parent) && node.parent.expression === node)) allStyles()
       if (name && /^(?:getOwnPropertyDescriptor|getOwnPropertyDescriptors|getPrototypeOf|setPrototypeOf|defineProperty|defineProperties)$/.test(name)) allStyles()
@@ -282,7 +306,8 @@ export function addRendererFeatures(file: string, text: string, features: Set<st
       const name = member(node.expression)
       if ((ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) && isStyleTarget(node.expression.expression) && name !== 'setProperty' && name !== 'removeProperty') observer?.unknownRanges?.()
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword && literal(node.arguments[0]) === undefined) { addUnknownRendererFeatures(features); observer?.unknown() }
-      if (name && circleMethods.has(name)) features.add('renderer-circles')
+      if (name && circleMethods.has(name)) { features.add('renderer-circles'); observer?.unknownCircleBounds?.() }
+      if (name && /^fillTriangle\w*$/.test(name)) features.add('renderer-occlusion-triangles')
       if (name === 'createLinearGradient') features.add('renderer-linear-gradients')
       if (name === 'createRadialGradient') features.add('renderer-radial-gradients')
       if (name === 'registerProperty') allStyles()

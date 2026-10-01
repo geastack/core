@@ -99,7 +99,9 @@ char g_recprofLast[420];
 // those keep their existing computed style (identical to a full recompute). A
 // GEA_INCREMENTAL_VERIFY build additionally runs the full recompute afterwards and
 // asserts every node's style matches, proving equivalence on-device.
+#if GEA_CSS_CUSTOM_PROPERTIES
 std::vector<CssAtomId> g_nodeRefOverflow;
+#endif
 
 struct CssAtomSmallList {
 	static constexpr std::uint8_t kInlineCount = 16;
@@ -157,6 +159,7 @@ struct CssAtomSmallList {
 	}
 };
 
+#if GEA_CSS_CUSTOM_PROPERTIES
 struct NodeCustomPropRefs {
 	static constexpr std::uint8_t kInlineCount = 4;
 	static constexpr std::uint16_t kNoOverflow = 0xFFFFu;
@@ -301,37 +304,44 @@ struct CustomPropertyLookupCache {
 };
 
 CustomPropertyLookupCache g_customPropertyLookupCache;
+#elif !GEA_EMBEDDED_SHARED_STYLES
+bool g_nodeStyleTracked[kMaxNodes]{};
+#endif
 
 void clearDynamicLengthExpressionResolutionCache();
 
 inline void clearCustomPropertyLookupCache()
 {
+#if GEA_CSS_CUSTOM_PROPERTIES
 	g_customPropertyLookupCache.clear();
+#endif
 	clearDynamicLengthExpressionResolutionCache();
 }
 
 struct DenseNodeMark {
+	// A mark stores batch identity, not a node index. Byte epochs retain direct
+	// loads and halve both dense arrays; clear all marks before epoch reuse.
 #if GEA_EMBEDDED_UI_STATE_DYNAMIC_INIT
-	std::uint16_t marks[kMaxNodes];
-	std::uint16_t serial;
+	std::uint8_t marks[kMaxNodes];
+	std::uint8_t serial;
 
 	// Runtime initialization keeps the nonzero serial out of .data (see
 	// state_init.h); noinline stops the compiler folding it back in.
 	__attribute__((noinline)) DenseNodeMark()
 	{
-		for (std::uint16_t &mark : marks) mark = 0;
+		for (std::uint8_t &mark : marks) mark = 0;
 		serial = 1;
 	}
 #else
-	std::uint16_t marks[kMaxNodes]{};
-	std::uint16_t serial = 1;
+	std::uint8_t marks[kMaxNodes]{};
+	std::uint8_t serial = 1;
 #endif
 
 	void clear()
 	{
 		++serial;
 		if (serial == 0) {
-			for (std::uint16_t &mark : marks) mark = 0;
+			for (std::uint8_t &mark : marks) mark = 0;
 			serial = 1;
 		}
 	}
@@ -362,8 +372,12 @@ std::unordered_set<int> g_incrRecomputedNodes;  // nodes the incremental pass ac
 
 inline void recordCustomPropRef(CssAtomId name)
 {
+#if GEA_CSS_CUSTOM_PROPERTIES
 	if (g_recordingNode < 0 || g_recordingNode >= kMaxNodes || name == kInvalidCssAtom) return;
 	g_nodeRefs[g_recordingNode].insert(name);
+#else
+	(void)name;
+#endif
 }
 
 bool nodeParticipatesInMountedTree(const TreeState &state, int node)
@@ -450,8 +464,13 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    GEA_CSS_POSITION_PERCENT_2(a) != GEA_CSS_POSITION_PERCENT_2(b) ||
 	    GEA_CSS_POSITION_PERCENT_3(a) != GEA_CSS_POSITION_PERCENT_3(b)) return false;
 	for (int i = 0; i < 4; ++i) {
-		if (a.padding[i] != b.padding[i] ||
+		if (
+#if GEA_CSS_PADDING
+		    a.padding[i] != b.padding[i] ||
+#endif
+#if GEA_CSS_MARGINS
 		    a.margin[i] != b.margin[i] ||
+#endif
 #if GEA_CSS_BOX_EXPRESSIONS
 		    ar.margin_expression[i] != br.margin_expression[i] ||
 #endif
@@ -686,8 +705,12 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    GEA_CSS_POSITION_PERCENT_3(a) != GEA_CSS_POSITION_PERCENT_3(b)) return false;
 	for (int i = 0; i < 4; ++i) {
 		if (boxInset(a, i) != boxInset(b, i) ||
+#if GEA_CSS_PADDING
 		    a.padding[i] != b.padding[i] ||
+#endif
+#if GEA_CSS_MARGINS
 		    a.margin[i] != b.margin[i] ||
+#endif
 #if GEA_CSS_BOX_EXPRESSIONS
 		    ar.margin_expression[i] != br.margin_expression[i] ||
 #endif
@@ -765,7 +788,7 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	Node &target = state.nodes[node];
-	if (beforeImageId == target.image_id && styleExactlyEqual(beforeStyle, target.style) && !firstLineChanged) return;
+	if (beforeImageId == target.image_id && styleExactlyEqual(beforeStyle, target.computedStyle()) && !firstLineChanged) return;
 	if (!nodeParticipatesInMountedTree(state, node)) return;
 	const bool hadRecolor = target.render.bg_recolor_pending;
 	const bool canRecolor = !target.render.dirty || hadRecolor;
@@ -794,12 +817,12 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 		};
 		invalidateText(invalidateText, node);
 	}
-	if (beforeImageId == target.image_id && styleExactlyEqual(beforeStyle, target.style) && firstLineChanged) {
+	if (beforeImageId == target.image_id && styleExactlyEqual(beforeStyle, target.computedStyle()) && firstLineChanged) {
 		return;
 	}
 
-	if (beforeImageId == target.image_id && styleEqualExceptTextPaint(beforeStyle, target.style)) {
-		if (target.type == NodeType::Text || borderUsesCurrentColor(target.style) || borderUsesCurrentColor(beforeStyle)) {
+	if (beforeImageId == target.image_id && styleEqualExceptTextPaint(beforeStyle, target.computedStyle())) {
+		if (target.type == NodeType::Text || borderUsesCurrentColor(target.computedStyle()) || borderUsesCurrentColor(beforeStyle)) {
 			target.render.dirty = 1;  // paint-only: text color; geometry untouched
 #if GEA_CSS_SCROLLING
 			target.render.non_scroll_dirty = 1;
@@ -809,7 +832,7 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 		return;
 	}
 
-	if (beforeImageId == target.image_id && styleEqualExceptPlainBackgroundColor(beforeStyle, target.style)) {
+	if (beforeImageId == target.image_id && styleEqualExceptPlainBackgroundColor(beforeStyle, target.computedStyle())) {
 		// Preserve `bg_recolor_from` across coalesced changes. The in-place recolor
 		// rewrites framebuffer pixels equal to `from`. If several background-color
 		// changes land between renders (e.g. fast rotary spins A->B->C), overwriting
@@ -834,13 +857,13 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 #if GEA_CSS_SCROLLING
 	target.render.non_scroll_dirty = 1;
 #endif
-	if (preserves3D(beforeStyle) != preserves3D(target.style))
+	if (preserves3D(beforeStyle) != preserves3D(target.computedStyle()))
 		Tree::instance().markDisplayListDirty();
-	if (beforeImageId == target.image_id && styleEqualExceptLocalDisplayCommands(beforeStyle, target.style)) {
+	if (beforeImageId == target.image_id && styleEqualExceptLocalDisplayCommands(beforeStyle, target.computedStyle())) {
 		// Local display-command diff: geometry equal by the predicate's
 		// construction (transforms ride transform_dirty), so no layout pass.
 		const RareStyle &beforeRare = rstyle(beforeStyle);
-		const RareStyle &targetRare = rstyle(target.style);
+		const RareStyle &targetRare = rstyle(target.computedStyle());
 		if (beforeRare.transform_rotate != targetRare.transform_rotate ||
 		    beforeRare.transform_translate_outer_axes != targetRare.transform_translate_outer_axes ||
 		    beforeRare.rotate_angle != targetRare.rotate_angle ||
@@ -882,8 +905,8 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 		}
 		Tree::instance().markNodeDisplayCommandsDirty(node);
 		// Flattened backface visibility changes the whole descendant paint group.
-		if (beforeStyle.backface_hidden != target.style.backface_hidden ||
-		    rstyle(beforeStyle).transform_preserve_3d != rstyle(target.style).transform_preserve_3d)
+		if (beforeStyle.backface_hidden != target.computedStyle().backface_hidden ||
+		    rstyle(beforeStyle).transform_preserve_3d != rstyle(target.computedStyle()).transform_preserve_3d)
 			Tree::instance().markDisplayListDirty();
 		return;
 	}
@@ -1174,6 +1197,11 @@ const LogicalPair *logicalPairFor(const char *property, StyleDeclaration declara
 CssDeclarationId classifyDeclaration(const char *property)
 {
 	if (!property || !*property) return CssDeclarationId::Unknown;
+	// Position updates are frequent; resolve them before the long declaration list.
+	if (std::strcmp(property, "top") == 0) return CssDeclarationId::Top;
+	if (std::strcmp(property, "left") == 0) return CssDeclarationId::Left;
+	if (std::strcmp(property, "right") == 0) return CssDeclarationId::Right;
+	if (std::strcmp(property, "bottom") == 0) return CssDeclarationId::Bottom;
 	if (property[0] == '-' && property[1] == '-') return CssDeclarationId::Custom;
 	if (std::strstr(property, "inline") || std::strstr(property, "block") || std::strstr(property, "start") || std::strstr(property, "end")) {
 		if (const char *physical = physicalLogicalLonghand(property)) return classifyDeclaration(physical);
@@ -1241,10 +1269,6 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "margin-left") == 0) return CssDeclarationId::MarginLeft;
 	if (std::strcmp(property, "position") == 0) return CssDeclarationId::Position;
 	if (std::strcmp(property, "inset") == 0) return CssDeclarationId::Inset;
-	if (std::strcmp(property, "top") == 0) return CssDeclarationId::Top;
-	if (std::strcmp(property, "right") == 0) return CssDeclarationId::Right;
-	if (std::strcmp(property, "bottom") == 0) return CssDeclarationId::Bottom;
-	if (std::strcmp(property, "left") == 0) return CssDeclarationId::Left;
 	if (std::strcmp(property, "box-sizing") == 0) return CssDeclarationId::BoxSizing;
 	if (std::strcmp(property, "float") == 0) return CssDeclarationId::Float;
 	if (std::strcmp(property, "aspect-ratio") == 0) return CssDeclarationId::AspectRatio;
@@ -2437,19 +2461,21 @@ std::vector<CssLengthExpression> &compiledCssLengthExpressions()
 }
 
 struct StaticLengthExpressionResolution {
-	ResolvedCssLength value;
+	// Reuse ResolvedCssLength's two tail-padding bytes for cache bookkeeping.
+	// All members remain direct loads; the cached value keeps its full precision.
+	[[no_unique_address]] ResolvedCssLength value;
 	std::uint8_t status = 0;  // 0 unknown, 1 dynamic, 2 cacheable
 	std::uint8_t valid = 0;
 };
 
 struct DynamicLengthExpressionResolution {
 #if GEA_EMBEDDED_UI_STATE_DYNAMIC_INIT
-	ResolvedCssLength value;
+	[[no_unique_address]] ResolvedCssLength value;
+	std::uint8_t axis;
+	std::uint8_t valid;
 	std::uint16_t handle;
 	std::int16_t nodeId;
 	int basis;
-	std::uint8_t axis;
-	std::uint8_t valid;
 
 	// Runtime initialization keeps the nonzero sentinels out of .data (see
 	// state_init.h); noinline stops the compiler folding them back in.
@@ -2463,12 +2489,12 @@ struct DynamicLengthExpressionResolution {
 		valid = 0;
 	}
 #else
-	ResolvedCssLength value;
+	[[no_unique_address]] ResolvedCssLength value;
+	std::uint8_t axis = 0;
+	std::uint8_t valid = 0;
 	std::uint16_t handle = kNoCompiledCssLengthExpression;
 	std::int16_t nodeId = -1;
 	int basis = 0;
-	std::uint8_t axis = 0;
-	std::uint8_t valid = 0;
 #endif
 };
 
@@ -3648,6 +3674,7 @@ std::vector<std::string> splitTopLevel(const std::string &value, char delimiter)
 
 const NodeCustomProperty *lookupCustomPropertyEntry(int nodeId, CssAtomId name)
 {
+#if GEA_CSS_CUSTOM_PROPERTIES
 	// Record the dependency against the node currently being recomputed (not nodeId:
 	// pseudo-element resolution looks up from the pseudo node but the dependency
 	// belongs to its owner, which is g_recordingNode). Record on every lookup, hit or
@@ -3681,6 +3708,9 @@ const NodeCustomProperty *lookupCustomPropertyEntry(int nodeId, CssAtomId name)
 		}
 	}
 	storeVisited(nullptr);
+#else
+	(void)nodeId; (void)name;
+#endif
 	return nullptr;
 }
 
@@ -3747,17 +3777,17 @@ int percentBasisForNode(int nodeId, LengthAxis axis)
 	int parent = nodeId >= 0 && nodeId < state.nodeCount ? state.nodes[nodeId].parent : -1;
 	if (parent >= 0 && parent < state.nodeCount) {
 		const auto &p = state.nodes[parent];
-		const int padding = boxInsets(p.style, axis != LengthAxis::Vertical);
+		const int padding = boxInsets(p.computedStyle(), axis != LengthAxis::Vertical);
 		auto contentBasis = [padding](int value) {
 			value -= padding;
 			return value < 0 ? 0 : value;
 		};
 		if (axis == LengthAxis::Vertical) {
 			if (p.layout.height > 0) return contentBasis(p.layout.height);
-			if (p.style.height != kUnset) return p.style.box_sizing == 0 ? p.style.height : contentBasis(p.style.height);
+			if (p.computedStyle().height != kUnset) return p.computedStyle().box_sizing == 0 ? p.computedStyle().height : contentBasis(p.computedStyle().height);
 		} else {
 			if (p.layout.width > 0) return contentBasis(p.layout.width);
-			if (p.style.width != kUnset) return p.style.box_sizing == 0 ? p.style.width : contentBasis(p.style.width);
+			if (p.computedStyle().width != kUnset) return p.computedStyle().box_sizing == 0 ? p.computedStyle().width : contentBasis(p.computedStyle().width);
 		}
 	}
 	return axis == LengthAxis::Vertical ? g_viewport_height : g_viewport_width;
@@ -3804,7 +3834,7 @@ int lineHeightForLength(int nodeId, bool rootRelative)
 	if (basis >= 0 && basis < state.nodeCount &&
 	    (basis == g_fontSizeBasisNode || basis == g_lineHeightBasisNode)) basis = state.nodes[basis].parent;
 	if (basis >= 0 && basis < state.nodeCount) {
-		const auto &style = state.nodes[basis].style;
+		const auto &style = state.nodes[basis].computedStyle();
 		if (style.line_height > 0) return style.line_height;
 		return TextRenderer::measureHeight(" ", style.font_id, currentFontSizeForNode(basis));
 	}
@@ -3816,7 +3846,7 @@ int zeroAdvanceForNode(int nodeId)
 {
 	const auto &state = treeState();
 	nodeId = fontMetricBasisNode(nodeId);
-	const int fontId = nodeId >= 0 && nodeId < state.nodeCount ? state.nodes[nodeId].style.font_id : -1;
+	const int fontId = nodeId >= 0 && nodeId < state.nodeCount ? state.nodes[nodeId].computedStyle().font_id : -1;
 	return TextRenderer::measureWidth("0", fontId, currentFontSizeForNode(nodeId));
 }
 
@@ -4060,8 +4090,8 @@ int parseLength(const std::string &value)
 int currentFontSizeForNode(int nodeId)
 {
 	auto &state = treeState();
-	if (nodeId >= 0 && nodeId < state.nodeCount && state.nodes[nodeId].style.font_size > 0)
-		return state.nodes[nodeId].style.font_size;
+	if (nodeId >= 0 && nodeId < state.nodeCount && state.nodes[nodeId].computedStyle().font_size > 0)
+		return state.nodes[nodeId].computedStyle().font_size;
 	return cssPixelLength(16.0);
 }
 
@@ -4373,7 +4403,7 @@ ParsedCssColor parseCssColor(const std::string &value)
 // RAW (pre-panel-swap) native style-value for colours applied via setStyleValue()
 // -> Tree::setStyle() -> StyleValues::pixelFromStyleValue(), which applies the
 // panel byte-swap once on 16-bit boards (must be raw here or colours double-swap,
-// e.g. cream text rendered periwinkle). Colours written straight into node.style
+// e.g. cream text rendered periwinkle). Colours written straight into node.computedStyle()
 // (gradient stops, grid lines) bypass that swap and use cssColorNative() instead.
 // On full-colour boards there is no panel concept, so both are identical RGBA8888.
 gea::framework::graphics::pixel::native_t cssColorStyleValue(const ParsedCssColor &color)
@@ -8182,7 +8212,7 @@ void applyCompiledGridTemplateValue(NodeHandle node, const CssCompiledGridTempla
 	const int nodeId = node.id();
 	Node &target = treeState().nodes[nodeId];
 	const LengthAxis axis = columns ? LengthAxis::Horizontal : LengthAxis::Vertical;
-	RareStyle &rs = rstyleMut(target.style);
+	RareStyle &rs = rstyleMut(target.mutableStyle());
 	int8_t *types = columns ? rs.grid_column_type : rs.grid_row_type;
 	int16_t *values = columns ? rs.grid_column_value : rs.grid_row_value;
 	int8_t &count = columns ? rs.grid_column_count : rs.grid_row_count;
@@ -8232,16 +8262,20 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	    &target == &treeState().nodes[g_resolvedFontNode]) return true;
 	if (g_resolvedLineHeightNode >= 0 && isLineHeightProperty(property) &&
 	    &target == &treeState().nodes[g_resolvedLineHeightNode]) return true;
-	ComputedStyle &style = target.style;
+	ComputedStyle &style = target.mutableStyle();
 	switch (property) {
 	case Property::Display:
+#if GEA_CSS_DISPLAY_EXPLICIT
 		style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+#endif
 		style.display = value & kDisplayKindMask;
 		return true;
+#if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
 		style.flex_direction_explicit = 1;
 		style.flex_direction = value;
 		return true;
+#endif
 #if GEA_CSS_FLEX_WRAP
 	case Property::FlexWrap: style.flex_wrap = value; return true;
 #endif
@@ -8266,8 +8300,12 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_CONTAINMENT
 	case Property::Containment: rstyleMut(style).containment = value; return true;
 #endif
+#if GEA_CSS_JUSTIFY_CONTENT
 	case Property::JustifyContent: style.justify_content = value; return true;
+#endif
+#if GEA_CSS_ALIGN_ITEMS
 	case Property::AlignItems: style.align_items = value; return true;
+#endif
 #if GEA_CSS_JUSTIFY_ITEMS
 	case Property::JustifyItems: style.justify_items = value; return true;
 #endif
@@ -8286,7 +8324,9 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::GridRowEnd: rstyleMut(style).grid_line[2] = value; return true;
 	case Property::GridColumnEnd: rstyleMut(style).grid_line[3] = value; return true;
 #endif
+#if GEA_CSS_BOX_SIZING
 	case Property::BoxSizing: style.box_sizing = value; return true;
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Float: style.float_side = value; return true;
 #endif
@@ -8329,10 +8369,18 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::RowGapPercent: style.row_gap_percent = value; return true;
 	case Property::ColumnGapPercent: style.column_gap_percent = value; return true;
 #endif
+#if GEA_CSS_MARGIN_AUTO
 	case Property::MarginTopAuto: style.margin_auto = (style.margin_auto & ~1) | (value ? 1 : 0); return true;
+#endif
+#if GEA_CSS_MARGIN_AUTO
 	case Property::MarginRightAuto: style.margin_auto = (style.margin_auto & ~2) | (value ? 2 : 0); return true;
+#endif
+#if GEA_CSS_MARGIN_AUTO
 	case Property::MarginBottomAuto: style.margin_auto = (style.margin_auto & ~4) | (value ? 4 : 0); return true;
+#endif
+#if GEA_CSS_MARGIN_AUTO
 	case Property::MarginLeftAuto: style.margin_auto = (style.margin_auto & ~8) | (value ? 8 : 0); return true;
+#endif
 #if GEA_CSS_BOX_EXPRESSIONS
 	case Property::MarginTopExpression: rstyleMut(style).margin_expression[0] = value; return true;
 #endif
@@ -8357,13 +8405,28 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_BOX_EXPRESSIONS
 	case Property::PaddingLeftExpression: rstyleMut(style).padding_expression[3] = value; return true;
 #endif
-	case Property::WidthExpression: style.width_expression = value; style.width = style.width_percent = kUnset; return true;
+#if GEA_CSS_WIDTH_EXPRESSIONS
+	case Property::WidthExpression:
+		style.width_expression = value;
+		style.width = kUnset;
+#if GEA_CSS_WIDTH_PERCENT
+		style.width_percent = kUnset;
+#endif
+		return true;
+#endif
 #if GEA_CSS_HEIGHT_EXPRESSIONS
-	case Property::HeightExpression: style.height_expression = value; style.height = style.height_percent = kUnset; return true;
+	case Property::HeightExpression:
+		style.height_expression = value;
+		style.height = kUnset;
+#if GEA_CSS_HEIGHT_PERCENT
+		style.height_percent = kUnset;
+#endif
+		return true;
 #endif
 #if GEA_CSS_ORDER
 	case Property::Order: style.order = value; return true;
 #endif
+#if GEA_CSS_GAP
 	case Property::Gap:
 		style.gap = value;
 #if GEA_CSS_AXIS_GAP
@@ -8373,40 +8436,59 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		style.row_gap_percent = style.column_gap_percent = kUnset;
 #endif
 		return true;
+#endif
 	case Property::Width:
+#if GEA_CSS_WIDTH_EXPRESSIONS
 		style.width_expression = -1;
+#endif
 		style.width = value;
+#if GEA_CSS_WIDTH_PERCENT
 		style.width_percent = kUnset;
+#endif
 		return true;
 	case Property::Height:
 #if GEA_CSS_HEIGHT_EXPRESSIONS
 		style.height_expression = -1;
 #endif
 		style.height = value;
+#if GEA_CSS_HEIGHT_PERCENT
 		style.height_percent = kUnset;
+#endif
 		return true;
 	case Property::WidthPercent:
+#if GEA_CSS_WIDTH_EXPRESSIONS
 		style.width_expression = -1;
+#endif
+#if GEA_CSS_WIDTH_PERCENT
 		style.width_percent = value;
+#endif
 		style.width = kUnset;
 		return true;
 	case Property::HeightPercent:
 #if GEA_CSS_HEIGHT_EXPRESSIONS
 		style.height_expression = -1;
 #endif
+#if GEA_CSS_HEIGHT_PERCENT
 		style.height_percent = value;
+#endif
 		style.height = kUnset;
 		return true;
 #if GEA_CSS_MIN_WIDTH
 	case Property::MinWidth: style.min_width = value; return true;
 #endif
+#if GEA_CSS_MIN_HEIGHT
 	case Property::MinHeight: style.min_height = value; return true;
+#endif
+#if GEA_CSS_MAX_WIDTH
 	case Property::MaxWidth: style.max_width = value; return true;
+#endif
 #if GEA_CSS_MAX_HEIGHT
 	case Property::MaxHeight: style.max_height = value; return true;
 #endif
+#if GEA_CSS_FLEX_FACTORS
 	case Property::Flex: style.flex = value; return true;
 	case Property::FlexShrink: style.flex_shrink = value; return true;
+#endif
 	case Property::FlexBasis:
 #if GEA_CSS_FLEX_BASIS_EXPRESSIONS
 		if (rstyle(style).flex_basis_expression >= 0) rstyleMut(style).flex_basis_expression = -1;
@@ -8423,6 +8505,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 		return true;
 #endif
+#if GEA_CSS_PADDING
 	case Property::PaddingTop:
 #if GEA_CSS_BOX_EXPRESSIONS
 		if (rstyle(style).padding_expression[0] >= 0) rstyleMut(style).padding_expression[0] = -1;
@@ -8443,26 +8526,45 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		if (rstyle(style).padding_expression[3] >= 0) rstyleMut(style).padding_expression[3] = -1;
 #endif
 		style.padding[3] = value; return true;
+#endif
+#if GEA_CSS_MARGINS
 	case Property::MarginTop:
 #if GEA_CSS_BOX_EXPRESSIONS
 		if (rstyle(style).margin_expression[0] >= 0) rstyleMut(style).margin_expression[0] = -1;
 #endif
-		style.margin_auto &= ~1; style.margin[0] = value; return true;
+
+#if GEA_CSS_MARGIN_AUTO
+		style.margin_auto &= ~1;
+#endif
+		 style.margin[0] = value; return true;
 	case Property::MarginRight:
 #if GEA_CSS_BOX_EXPRESSIONS
 		if (rstyle(style).margin_expression[1] >= 0) rstyleMut(style).margin_expression[1] = -1;
 #endif
-		style.margin_auto &= ~2; style.margin[1] = value; return true;
+
+#if GEA_CSS_MARGIN_AUTO
+		style.margin_auto &= ~2;
+#endif
+		 style.margin[1] = value; return true;
 	case Property::MarginBottom:
 #if GEA_CSS_BOX_EXPRESSIONS
 		if (rstyle(style).margin_expression[2] >= 0) rstyleMut(style).margin_expression[2] = -1;
 #endif
-		style.margin_auto &= ~4; style.margin[2] = value; return true;
+
+#if GEA_CSS_MARGIN_AUTO
+		style.margin_auto &= ~4;
+#endif
+		 style.margin[2] = value; return true;
 	case Property::MarginLeft:
 #if GEA_CSS_BOX_EXPRESSIONS
 		if (rstyle(style).margin_expression[3] >= 0) rstyleMut(style).margin_expression[3] = -1;
 #endif
-		style.margin_auto &= ~8; style.margin[3] = value; return true;
+
+#if GEA_CSS_MARGIN_AUTO
+		style.margin_auto &= ~8;
+#endif
+		 style.margin[3] = value; return true;
+#endif
 	case Property::Position: if (value == kPositionFixed) treeState().fixedPositionUsed = true; style.position = value; return true;
 	case Property::Top:
 #if GEA_CSS_POSITION_TOP
@@ -8560,10 +8662,14 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		StyleValues::applyBackgroundImage(style, value, static_cast<int>(&target - treeState().nodes));
 		return true;
 	case Property::HasBackground: style.has_bg = value; return true;
+#if GEA_CSS_ACTIVE_BACKGROUND
 	case Property::ActiveBackgroundColor:
 		style.active_bg_color = StyleValues::pixelFromStyleValue(value);
 		return true;
+#endif
+#if GEA_CSS_ACTIVE_BACKGROUND
 	case Property::HasActiveBackground: style.has_active_bg = value; return true;
+#endif
 	case Property::Color:
 		style.text_color = StyleValues::pixelFromStyleValue(value);
 #if GEA_CSS_TEXT_ALPHA
@@ -8603,7 +8709,8 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		return true;
 #endif
 	case Property::BorderWidth:
-		setComputedBorderWidth(style, -1, value, target.parent >= 0 ? &treeState().nodes[target.parent].style : nullptr); return true;
+		setComputedBorderWidth(style, -1, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
+#if GEA_CSS_BORDER_COLORS
 	case Property::BorderColor:
 		setBorderColorBinding(style, -1, false);
 		style.border_color = StyleValues::pixelFromStyleValue(value);
@@ -8611,6 +8718,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		style.border_alpha = 255;
 #endif
 		return true;
+#endif
 #if GEA_CSS_BORDER_RELIEF
 	case Property::BorderTopRelief:
 	case Property::BorderRightRelief:
@@ -8629,10 +8737,10 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	}
 #endif
 #if GEA_CSS_SIDE_BORDERS
-	case Property::BorderTopWidth: setComputedBorderWidth(style, 0, value, target.parent >= 0 ? &treeState().nodes[target.parent].style : nullptr); return true;
-	case Property::BorderRightWidth: setComputedBorderWidth(style, 1, value, target.parent >= 0 ? &treeState().nodes[target.parent].style : nullptr); return true;
-	case Property::BorderBottomWidth: setComputedBorderWidth(style, 2, value, target.parent >= 0 ? &treeState().nodes[target.parent].style : nullptr); return true;
-	case Property::BorderLeftWidth: setComputedBorderWidth(style, 3, value, target.parent >= 0 ? &treeState().nodes[target.parent].style : nullptr); return true;
+	case Property::BorderTopWidth: setComputedBorderWidth(style, 0, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
+	case Property::BorderRightWidth: setComputedBorderWidth(style, 1, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
+	case Property::BorderBottomWidth: setComputedBorderWidth(style, 2, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
+	case Property::BorderLeftWidth: setComputedBorderWidth(style, 3, value, target.parent >= 0 ? &treeState().nodes[target.parent].computedStyle() : nullptr); return true;
 	case Property::BorderTopColor:
 		setBorderColorBinding(style, 0, false);
 		rstyleMut(style).border_side_color[0] = StyleValues::pixelFromStyleValue(value);
@@ -8698,26 +8806,38 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 	case Property::FontId: style.font_id = value; return true;
 	case Property::FontSize: style.font_size = value; return true;
+#if GEA_CSS_FONT_WEIGHT
 	case Property::FontWeight: style.font_weight = value; return true;
+#endif
+#if GEA_CSS_LINE_HEIGHT
 	case Property::LineHeight:
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 		if (style.line_height_multiplier >= 0) style.line_height_multiplier = -1;
+#endif
 #if GEA_CSS_LINE_HEIGHT_EXPRESSIONS
 		if (rstyle(style).line_height_expression >= 0) rstyleMut(style).line_height_expression = -1;
 #endif
 		style.line_height = value; return true;
 #if GEA_CSS_LINE_HEIGHT_EXPRESSIONS
 	case Property::LineHeightExpression:
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 		if (style.line_height_multiplier >= 0) style.line_height_multiplier = -1;
+#endif
 		rstyleMut(style).line_height_expression = value;
 		style.line_height = resolveLineHeightExpression(static_cast<int>(&target - treeState().nodes), value); return true;
 #endif
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	case Property::LineHeightMultiplier:
 		style.line_height_multiplier = value;
 #if GEA_CSS_LINE_HEIGHT_EXPRESSIONS
 		if (rstyle(style).line_height_expression >= 0) rstyleMut(style).line_height_expression = -1;
 #endif
 		style.line_height = resolveLineHeightMultiplier(static_cast<int>(&target - treeState().nodes), value); return true;
+#endif
+#endif
+#if GEA_CSS_TEXT_ALIGN
 	case Property::TextAlign: style.text_align = value; return true;
+#endif
 	case Property::TextAlignLast: style.text_align_last = value; return true;
 	case Property::TextEmphasisStyle: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x0f) | (value & 0x0f)); return true;
 	case Property::TextEmphasisPosition: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x10) | (value & 0x10)); return true;
@@ -8730,8 +8850,12 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_TEXT_TRANSFORM
 	case Property::TextTransform: style.text_transform = value; return true;
 #endif
+#if GEA_CSS_WHITE_SPACE
 	case Property::WhiteSpace: style.white_space = static_cast<std::int8_t>(value); return true;
+#endif
+#if GEA_CSS_TEXT_OVERFLOW
 	case Property::TextOverflow: style.text_overflow = static_cast<std::int8_t>(value); return true;
+#endif
 #if GEA_CSS_TRANSFORMS
 	case Property::TransformStyle: rstyleMut(style).transform_preserve_3d = value != 0; return true;
 #endif
@@ -9168,7 +9292,7 @@ TransformComponents inheritedTransformComponents(int nodeId)
 	TransformComponents t;
 	const int parent = Tree::instance().node(nodeId).parent;
 	if (parent < 0) return t;
-	const RareStyle &r = rstyle(Tree::instance().node(parent).style);
+	const RareStyle &r = rstyle(Tree::instance().node(parent).computedStyle());
 	t.translateOuterAxes = r.transform_translate_outer_axes;
 	t.rotateX = r.transform_rotate_x; t.rotateY = r.transform_rotate_y; t.rotateZ = r.transform_rotate;
 	t.translateX = r.transform_translate_x; t.translateY = r.transform_translate_y; t.translateZ = r.transform_translate_z;
@@ -9220,7 +9344,7 @@ bool applyTransformComponentsFast(NodeHandle node, const TransformComponents &t,
 	const int nodeId = node.id();
 	if (nodeId < 0 || nodeId >= state.nodeCount) return true;
 	Node &target = state.nodes[nodeId];
-	const RareStyle &current = rstyle(target.style);
+	const RareStyle &current = rstyle(target.computedStyle());
 	if (current.transform_rotate_x == static_cast<int16_t>(t.rotateX) &&
 	    current.transform_rotate_y == static_cast<int16_t>(t.rotateY) &&
 	    current.transform_rotate == static_cast<int16_t>(t.rotateZ) &&
@@ -9233,7 +9357,7 @@ bool applyTransformComponentsFast(NodeHandle node, const TransformComponents &t,
 	    current.transform_scale_y == static_cast<int16_t>(t.scaleY) &&
 	    current.transform_scale_z == static_cast<int16_t>(t.scaleZ))
 		return true;
-	RareStyle &rs = rstyleMut(target.style);
+	RareStyle &rs = rstyleMut(target.mutableStyle());
 	rs.transform_rotate_x = static_cast<int16_t>(t.rotateX);
 	rs.transform_rotate_y = static_cast<int16_t>(t.rotateY);
 	rs.transform_rotate = static_cast<int16_t>(t.rotateZ);
@@ -9289,7 +9413,7 @@ bool applyTransformSlotsFast(NodeHandle node, const std::int16_t *slots, StyleAp
 	const int nodeId = node.id();
 	if (nodeId < 0 || nodeId >= state.nodeCount) return true;
 	Node &target = state.nodes[nodeId];
-	const RareStyle &current = rstyle(target.style);
+	const RareStyle &current = rstyle(target.computedStyle());
 	if (current.transform_rotate_x == slots[0] &&
 	    current.transform_rotate_y == slots[1] &&
 	    current.transform_rotate == slots[2] &&
@@ -9302,7 +9426,7 @@ bool applyTransformSlotsFast(NodeHandle node, const std::int16_t *slots, StyleAp
 	    current.transform_scale_y == slots[9] &&
 	    current.transform_scale_z == slots[10])
 		return true;
-	RareStyle &rs = rstyleMut(target.style);
+	RareStyle &rs = rstyleMut(target.mutableStyle());
 	rs.transform_rotate_x = slots[0];
 	rs.transform_rotate_y = slots[1];
 	rs.transform_rotate = slots[2];
@@ -9503,7 +9627,7 @@ void applyBackgroundSizeValue(NodeHandle node, const std::string &value)
 {
 	if (!node) return;
 	Node &target = treeState().nodes[node.id()];
-	if (rstyle(target.style).bg_grid_axes == 0) return;
+	if (rstyle(target.computedStyle()).bg_grid_axes == 0) return;
 	const auto layers = splitTopLevel(value, ',');
 	if (layers.empty()) return;
 	const auto parts = splitWords(layers[0]);
@@ -9511,8 +9635,8 @@ void applyBackgroundSizeValue(NodeHandle node, const std::string &value)
 	const int stepX = parseLengthForNode(parts[0], node.id(), LengthAxis::Horizontal);
 	const int stepY = parseLengthForNode(parts.size() > 1 ? parts[1] : parts[0], node.id(), LengthAxis::Vertical);
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
-	if (stepX > 0) rstyleMut(target.style).bg_grid_step_x = static_cast<uint16_t>(std::min(stepX, 65535));
-	if (stepY > 0) rstyleMut(target.style).bg_grid_step_y = static_cast<uint16_t>(std::min(stepY, 65535));
+	if (stepX > 0) rstyleMut(target.mutableStyle()).bg_grid_step_x = static_cast<uint16_t>(std::min(stepX, 65535));
+	if (stepY > 0) rstyleMut(target.mutableStyle()).bg_grid_step_y = static_cast<uint16_t>(std::min(stepY, 65535));
 #endif
 	markNodeDisplayCommandsDirtyForStyleApply(node.id());
 }
@@ -9577,7 +9701,7 @@ bool applyAnimatedTransformStyleValueFast(int nodeId, Property property, int val
 	auto &state = treeState();
 	if (nodeId < 0 || nodeId >= state.nodeCount) return true;
 	Node &target = state.nodes[nodeId];
-	RareStyle &rs = rstyleMut(target.style);
+	RareStyle &rs = rstyleMut(target.mutableStyle());
 	int16_t *slot = animatedTransformSlot(rs, property);
 	if (!slot) return false;
 	const int16_t next = static_cast<int16_t>(value);
@@ -9603,6 +9727,18 @@ bool applyAnimatedTransformStyleValueFast(int nodeId, Property property, int val
 }
 
 }  // namespace
+
+StorageUsage styleDependencyStorageUsage()
+{
+    StorageUsage usage;
+#if GEA_CSS_CUSTOM_PROPERTIES
+    usage.staticBytes = sizeof(g_nodeRefs) + sizeof(g_nodeRefOverflow) + sizeof(g_recordingNode) + sizeof(g_customPropertyLookupCache);
+    usage.addVector(g_nodeRefOverflow);
+#elif !GEA_EMBEDDED_SHARED_STYLES
+    usage.staticBytes = sizeof(g_nodeStyleTracked);
+#endif
+    return usage;
+}
 
 bool layoutSizeExpressionUsesPercentage(int nodeId, int expression)
 {
@@ -9631,7 +9767,7 @@ int resolveLineHeightExpression(int nodeId, int expression)
 
 int resolveLayoutFlexBasis(int nodeId, int percentageBasis, bool horizontal)
 {
-	const auto &style = treeState().nodes[nodeId].style;
+	const auto &style = treeState().nodes[nodeId].computedStyle();
 	const int expression = rstyle(style).flex_basis_expression;
 	if (expression < 0) return style.flex_basis;
 	if (percentageBasis < 0 && layoutSizeExpressionUsesPercentage(nodeId, expression)) return kUnset;
@@ -9647,9 +9783,9 @@ bool resolveLayoutBoxLengths(int nodeId, int percentageBasis)
 #if GEA_CSS_BOX_EXPRESSIONS
 	auto &node = treeState().nodes[nodeId];
 #if !GEA_EMBEDDED_RARE_STYLE_INLINE
-	if (node.style.rare_style < 0) return false;
+	if (node.computedStyle().rare_style < 0) return false;
 #endif
-	const RareStyle &rare = rstyle(node.style);
+	const RareStyle &rare = rstyle(node.computedStyle());
 	const int previous = g_boxPercentageBasis;
 	g_boxPercentageBasis = std::max(0, percentageBasis);
 	bool changed = false;
@@ -9662,9 +9798,13 @@ bool resolveLayoutBoxLengths(int nodeId, int percentageBasis)
 			// Padding can have a proven unsigned byte range while margin remains
 			// signed. Keep writes typed; the existing side choice already branches.
 			if (padding) {
-				if (node.style.padding[side] != value) { node.style.padding[side] = value; changed = true; }
-			} else if (node.style.margin[side] != value) {
-				node.style.margin[side] = static_cast<int16_t>(value); changed = true;
+#if GEA_CSS_PADDING
+				if (node.computedStyle().padding[side] != value) { node.mutableStyle().padding[side] = value; changed = true; }
+#endif
+			} else {
+#if GEA_CSS_MARGINS
+				if (node.computedStyle().margin[side] != value) { node.mutableStyle().margin[side] = static_cast<int16_t>(value); changed = true; }
+#endif
 			}
 		}
 	}
@@ -9738,26 +9878,36 @@ void applyInheritedStyleDefaults(int node)
 	const int parent = state.nodes[node].parent;
 	if (parent < 0 || parent >= state.nodeCount) return;
 
-	const auto &parentStyle = state.nodes[parent].style;
-	auto &style = state.nodes[node].style;
+	const auto &parentStyle = state.nodes[parent].computedStyle();
+	auto &style = state.nodes[node].mutableStyle();
 	style.text_color = parentStyle.text_color;
 #if GEA_CSS_TEXT_ALPHA
 	style.text_alpha = parentStyle.text_alpha;
 #endif
 	style.font_id = parentStyle.font_id;
 	style.font_size = parentStyle.font_size;
+#if GEA_CSS_FONT_WEIGHT
 	style.font_weight = parentStyle.font_weight;
+#endif
+#if GEA_CSS_LINE_HEIGHT
 	style.line_height = parentStyle.line_height;
+#endif
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	if (parentStyle.line_height_multiplier >= 0)
 		style.line_height_multiplier = parentStyle.line_height_multiplier;
+#endif
+#if GEA_CSS_TEXT_ALIGN
 	style.text_align = parentStyle.text_align;
+#endif
 	style.text_align_last = parentStyle.text_align_last;
 	style.text_emphasis = parentStyle.text_emphasis;
 	style.text_emphasis_color = parentStyle.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	style.text_transform = parentStyle.text_transform;
 #endif
+#if GEA_CSS_WHITE_SPACE
 	style.white_space = parentStyle.white_space;
+#endif
 #if GEA_CSS_VISIBILITY
 	style.visibility = parentStyle.visibility;
 #endif
@@ -9934,7 +10084,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	if (placement != Property::Count) {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int handle = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? backgroundPlacementHandle(Tree::instance().node(parent).style, placement) : -1)
+		    ? (parent >= 0 ? backgroundPlacementHandle(Tree::instance().node(parent).computedStyle(), placement) : -1)
 		    : compileBackgroundPlacement(declaration, value);
 		if (handle >= -1) setStyleValue(node, placement, handle, source);
 		return true;
@@ -9985,7 +10135,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::BackgroundClip: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int clip = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).style).bg_clip : 0)
+		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).computedStyle()).bg_clip : 0)
 		    : compileBackgroundClip(value);
 		if (clip >= 0) setStyleValue(node, Property::BackgroundClip, clip, source);
 		return true;
@@ -9993,7 +10143,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::BackgroundBlendMode: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int blend = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).style).bg_blend : 0)
+		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).computedStyle()).bg_blend : 0)
 		    : compileBackgroundBlendMode(value);
 		if (blend >= 0) setStyleValue(node, Property::BackgroundBlendMode, blend, source);
 		return true;
@@ -10001,7 +10151,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::Contain: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int flags = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? (GEA_CSS_CONTAINMENT ? rstyle(Tree::instance().node(parent).style).containment : 0) : 0)
+		    ? (parent >= 0 ? (GEA_CSS_CONTAINMENT ? rstyle(Tree::instance().node(parent).computedStyle()).containment : 0) : 0)
 		    : containmentValue(value);
 		if (flags >= 0) setStyleValue(node, Property::Containment, flags, source);
 		return true;
@@ -10015,7 +10165,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		}
 		if (ratio == "inherit") {
 			const int parent = Tree::instance().node(nodeId).parent;
-			setStyleValue(node, Property::AspectRatio, parent >= 0 ? (GEA_CSS_ASPECT_RATIO ? rstyle(Tree::instance().node(parent).style).aspect_ratio : 0) : 0, source);
+			setStyleValue(node, Property::AspectRatio, parent >= 0 ? (GEA_CSS_ASPECT_RATIO ? rstyle(Tree::instance().node(parent).computedStyle()).aspect_ratio : 0) : 0, source);
 			return true;
 		}
 		const auto words = splitFunctionAwareWords(ratio);
@@ -10100,7 +10250,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::MarginTrim: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int flags = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? (GEA_CSS_MARGIN_TRIM ? rstyle(Tree::instance().node(parent).style).margin_trim : 0) : 0)
+		    ? (parent >= 0 ? (GEA_CSS_MARGIN_TRIM ? rstyle(Tree::instance().node(parent).computedStyle()).margin_trim : 0) : 0)
 		    : marginTrimValue(value);
 		if (flags >= 0) setStyleValue(node, Property::MarginTrim, flags, source);
 		return true;
@@ -10176,7 +10326,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::FlexWrap:
 		if (value == "inherit") {
 			const int parent = Tree::instance().node(nodeId).parent;
-			setStyleValue(node, Property::FlexWrap, parent >= 0 ? Tree::instance().node(parent).style.flex_wrap : 0, source);
+			setStyleValue(node, Property::FlexWrap, parent >= 0 ? Tree::instance().node(parent).computedStyle().flex_wrap : 0, source);
 		} else if (flexWrapValue(value) >= 0) setStyleValue(node, Property::FlexWrap, flexWrapValue(value), source);
 		return true;
 	case CssDeclarationId::FlexLineCount: {
@@ -10184,7 +10334,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (value == "initial" || value == "unset") setStyleValue(node, Property::FlexLineCount, 1, source);
 		else if (value == "inherit") {
 			const int parent = Tree::instance().node(nodeId).parent;
-			setStyleValue(node, Property::FlexLineCount, parent >= 0 ? (GEA_CSS_FLEX_LINE_COUNT ? rstyle(Tree::instance().node(parent).style).flex_line_count : 1) : 1, source);
+			setStyleValue(node, Property::FlexLineCount, parent >= 0 ? (GEA_CSS_FLEX_LINE_COUNT ? rstyle(Tree::instance().node(parent).computedStyle()).flex_line_count : 1) : 1, source);
 		} else if (parseOrder(value, count) && count >= 1) setStyleValue(node, Property::FlexLineCount, count, source);
 		return true;
 	}
@@ -10223,7 +10373,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 			if (parent < 0) {
 				align = justify = declaration == CssDeclarationId::PlaceSelf ? -1 : 0;
 			} else {
-				const auto &inherited = Tree::instance().node(parent).style;
+				const auto &inherited = Tree::instance().node(parent).computedStyle();
 				align = declaration == CssDeclarationId::PlaceItems ? inherited.align_items : declaration == CssDeclarationId::PlaceContent ? inherited.align_content : inherited.align_self;
 				justify = declaration == CssDeclarationId::PlaceItems ? inherited.justify_items : declaration == CssDeclarationId::PlaceContent ? inherited.justify_content : (GEA_CSS_JUSTIFY_SELF ? rstyle(inherited).justify_self : -1);
 			}
@@ -10755,8 +10905,8 @@ bool applyCompiledColorValue(NodeHandle node,
 	Node &target = treeState().nodes[nodeId];
 	switch (declaration) {
 	case CssDeclarationId::Color:
-		if (source == StyleApplicationSource::ClassRule && target.style.text_color == static_cast<style_color_t>(nativeColor) &&
-		    target.style.text_alpha == static_cast<std::uint8_t>(alpha))
+		if (source == StyleApplicationSource::ClassRule && target.computedStyle().text_color == static_cast<style_color_t>(nativeColor) &&
+		    target.computedStyle().text_alpha == static_cast<std::uint8_t>(alpha))
 			return true;
 		setStyleValueKnownTarget(node, target, Property::Color, styleColor, source);
 #if GEA_CSS_TEXT_ALPHA
@@ -10782,8 +10932,8 @@ bool applyCompiledColorValue(NodeHandle node,
 		markNodeDisplayCommandsDirtyForStyleApply(nodeId);
 		return true;
 	case CssDeclarationId::BorderColor:
-		if (source == StyleApplicationSource::ClassRule && target.style.border_color_flags == 16u && target.style.border_color == static_cast<style_color_t>(nativeColor) &&
-		    target.style.border_alpha == static_cast<std::uint8_t>(alpha))
+		if (source == StyleApplicationSource::ClassRule && target.computedStyle().border_color_flags == 16u && target.computedStyle().border_color == static_cast<style_color_t>(nativeColor) &&
+		    target.computedStyle().border_alpha == static_cast<std::uint8_t>(alpha))
 			return true;
 		setStyleValueKnownTarget(node, target, Property::BorderColor, styleColor, source);
 #if GEA_CSS_BORDER_ALPHA
@@ -10798,8 +10948,8 @@ bool applyCompiledColorValue(NodeHandle node,
 			const int side = declaration == CssDeclarationId::BorderTopColor ? 0 :
 			    declaration == CssDeclarationId::BorderRightColor ? 1 :
 			    declaration == CssDeclarationId::BorderBottomColor ? 2 : 3;
-			const RareStyle &current = rstyle(target.style);
-			if (source == StyleApplicationSource::ClassRule && (target.style.border_color_flags & (1u << side)) && !borderColorIsCurrent(target.style, side) && current.border_side_color[side] == static_cast<style_color_t>(nativeColor) &&
+			const RareStyle &current = rstyle(target.computedStyle());
+			if (source == StyleApplicationSource::ClassRule && (target.computedStyle().border_color_flags & (1u << side)) && !borderColorIsCurrent(target.computedStyle(), side) && current.border_side_color[side] == static_cast<style_color_t>(nativeColor) &&
 			    current.border_side_alpha[side] == static_cast<std::uint8_t>(alpha))
 				return true;
 			setStyleValueKnownTarget(node, target, borderSideColorProperty(side), styleColor, source);
@@ -11309,10 +11459,10 @@ bool applyRuntimeBackgroundSizeValue(NodeHandle node,
 	auto &state = treeState();
 	if (nodeId < 0 || nodeId >= state.nodeCount) return true;
 	Node &target = state.nodes[nodeId];
-	if (rstyle(target.style).bg_grid_axes == 0) return true;
+	if (rstyle(target.computedStyle()).bg_grid_axes == 0) return true;
 	const int stepX = resolveCompiledLengthForNode(stepXLength, nodeId, LengthAxis::Horizontal);
 	const int stepY = resolveCompiledLengthForNode(stepYLength, nodeId, LengthAxis::Vertical);
-	RareStyle &rs = rstyleMut(target.style);
+	RareStyle &rs = rstyleMut(target.mutableStyle());
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
 	if (stepX > 0) rs.bg_grid_step_x = static_cast<std::uint16_t>(std::min(stepX, 65535));
 	if (stepY > 0) rs.bg_grid_step_y = static_cast<std::uint16_t>(std::min(stepY, 65535));
@@ -11808,6 +11958,37 @@ const CssCompiledValue *inlineCompiledStyleValueFor(CssDeclarationId declaration
 #endif
 }
 
+// Unitless integers use rawNumber, exactly as parseLengthForNode does.
+// Units, fractions, expressions and values outside this exact range retain
+// the general parser (including px device-pixel-ratio conversion).
+bool applyIntegerPosition(NodeHandle node, CssDeclarationId declaration,
+                          const std::string &text, StyleApplicationSource source)
+{
+	Property property;
+	switch (declaration) {
+	case CssDeclarationId::Top: property = Property::Top; break;
+	case CssDeclarationId::Right: property = Property::Right; break;
+	case CssDeclarationId::Bottom: property = Property::Bottom; break;
+	case CssDeclarationId::Left: property = Property::Left; break;
+	default: return false;
+	}
+	if (text.empty()) return false;
+	std::size_t index = (text[0] == '-' || text[0] == '+') ? 1 : 0;
+	if (index == text.size()) return false;
+	int value = 0;
+	for (; index < text.size(); ++index) {
+		const unsigned digit = static_cast<unsigned char>(text[index]) - '0';
+		if (digit > 9) return false;
+		value = value * 10 + static_cast<int>(digit);
+		if (value > 32767) return false;
+	}
+#if GEA_EMBEDDED_UI_REFRESH_PERF
+	refreshPerfStatsMutable().treeIntegerPositionFastCalls++;
+#endif
+	setStyleValue(node, property, rawNumber(text[0] == '-' ? -value : value), source);
+	return true;
+}
+
 void applyPropertyWithSource(NodeHandle node,
                              CssDeclarationId declaration,
                              const std::string &rawValue,
@@ -11816,6 +11997,7 @@ void applyPropertyWithSource(NodeHandle node,
 	if (!node) return;
 	const int nodeId = node.id();
 	if (declaration == CssDeclarationId::Unknown) return;
+	if (applyIntegerPosition(node, declaration, rawValue, source)) return;
 #if GEA_CSS_GRID
 	if (source == StyleApplicationSource::Inline &&
 	    (declaration == CssDeclarationId::GridTemplateColumns || declaration == CssDeclarationId::GridTemplateRows ||
@@ -11993,6 +12175,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 		return removeInlineStyleProperty(node, names(pair->second)) || first;
 	}
 	if (property.rfind("--", 0) == 0) {
+#if GEA_CSS_CUSTOM_PROPERTIES
 		NodeRareData *rare = rareDataFor(node.id());
 		if (!rare) return false;
 		auto &values = rare->inlineCustomProperties.values;
@@ -12002,6 +12185,9 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 		values.erase(end, values.end());
 		recomputeSubtreeClassStyles(node.id());
 		return true;
+#else
+		return false;
+#endif
 	}
 	const int id = node.id();
 #if GEA_CSS_GRID
@@ -13337,7 +13523,10 @@ int ensurePseudoChild(int parent, CssRule::PseudoElement pseudo)
 
 #endif
 
-static constexpr std::size_t kRuleCandidateCacheClassCapacity = 6;
+// The class-list proof also bounds cache keys. Unknown/overflow-capable apps
+// retain the six-token fast key and the existing uncached fallback beyond it.
+static constexpr std::size_t kRuleCandidateCacheClassCapacity =
+    GEA_UI_CLASS_OVERFLOW ? 6 : std::min<std::size_t>(6, GEA_UI_CLASS_INLINE_TOKENS);
 
 struct RuleCandidateSignature {
 	CssAtomId classes[kRuleCandidateCacheClassCapacity]{};
@@ -13772,16 +13961,24 @@ CssAtomId nodeIdAttributeAtom(int node)
 }
 
 enum ActiveRuleBucket : std::uint8_t {
+#if GEA_CSS_CUSTOM_PROPERTIES
 	kActiveMainCustom,
+#endif
 	kActiveMainRule,
 #if GEA_CSS_PSEUDO_ELEMENTS
+#if GEA_CSS_CUSTOM_PROPERTIES
 	kActiveBeforeCustom,
+#endif
 	kActiveBeforeRule,
+#if GEA_CSS_CUSTOM_PROPERTIES
 	kActiveAfterCustom,
+#endif
 	kActiveAfterRule,
 #endif
 #if GEA_CSS_FIRST_LINE
+#if GEA_CSS_CUSTOM_PROPERTIES
 	kActiveFirstLineCustom,
+#endif
 	kActiveFirstLineRule,
 #endif
 #if GEA_CSS_ANIMATIONS
@@ -13789,6 +13986,19 @@ enum ActiveRuleBucket : std::uint8_t {
 #endif
 	kActiveRuleBucketCount
 };
+
+#if !GEA_CSS_CUSTOM_PROPERTIES
+// Bucket readers already treat negative IDs as empty. Keep that contract
+// without reserving a bucket, count or offset for an absent CSS feature.
+static constexpr int kActiveMainCustom = -1;
+#if GEA_CSS_PSEUDO_ELEMENTS
+static constexpr int kActiveBeforeCustom = -1;
+static constexpr int kActiveAfterCustom = -1;
+#endif
+#if GEA_CSS_FIRST_LINE
+static constexpr int kActiveFirstLineCustom = -1;
+#endif
+#endif
 
 struct ActiveRulePlanCacheEntry;
 
@@ -16009,8 +16219,8 @@ bool applyCachedStyleApplyOpWithSource(NodeHandle node,
 		auto &state = treeState();
 		if (nodeId < 0 || nodeId >= state.nodeCount) return true;
 		Node &target = state.nodes[nodeId];
-		if (rstyle(target.style).bg_grid_axes == 0) return true;
-		RareStyle &rs = rstyleMut(target.style);
+		if (rstyle(target.computedStyle()).bg_grid_axes == 0) return true;
+		RareStyle &rs = rstyleMut(target.mutableStyle());
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
 		if (op.values[0] > 0) rs.bg_grid_step_x = static_cast<std::uint16_t>(op.values[0]);
 		if (op.values[1] > 0) rs.bg_grid_step_y = static_cast<std::uint16_t>(op.values[1]);
@@ -16217,7 +16427,11 @@ void applyActiveRuleSpanToNode(int node, const ActiveRulePlan &plan, int bucketI
 
 void applyActiveRuleSpansToNode(int node, const ActiveRulePlan &plan, int customBucket, int ruleBucket)
 {
+#if GEA_CSS_CUSTOM_PROPERTIES
 	applyActiveRuleSpanToNode(node, plan, customBucket);
+#else
+	(void)customBucket;
+#endif
 	// Resolve the font cascade before any property consumes its metrics. Keep
 	// the winning font fixed while replaying the ordinary cascade so intervening
 	// font declarations cannot change the basis of a padding/line-height/length.
@@ -16232,9 +16446,11 @@ void applyActiveRuleSpansToNode(int node, const ActiveRulePlan &plan, int custom
 	g_resolvedFontNode = node;
 	// Inherited unitless numbers are resolved against this element's final font.
 	// Lengths and percentages inherit their already-computed pixel value.
-	auto &style = treeState().nodes[node].style;
+	auto &style = treeState().nodes[node].mutableStyle();
+#if GEA_CSS_LINE_HEIGHT
 	if (style.line_height_multiplier >= 0)
 		style.line_height = resolveLineHeightMultiplier(node, style.line_height_multiplier);
+#endif
 	// lh consumers need the winning line-height, evaluated using the final font.
 	applyActiveRuleSpanToNode(node, plan, ruleBucket, 2);
 	if (const NodeRareData *rd = rareDataFor(node))
@@ -16351,9 +16567,9 @@ void syncPseudoElementsForNode(int node, const ActiveRulePlan &plan)
 		if (pseudoNode < 0) continue;
 		if (NodeRareData *rd = rareDataFor(pseudoNode)) rd->customProperties.clear();
 		clearCustomPropertyLookupCache();
-		int16_t staleRareStyle = treeState().nodes[pseudoNode].style.rare_style;
+		int16_t staleRareStyle = treeState().nodes[pseudoNode].computedStyle().rare_style;
 		Tree::instance().resetStyleForClassRecompute(pseudoNode);
-		if (staleRareStyle >= 0 && treeState().nodes[pseudoNode].style.rare_style != staleRareStyle)
+		if (staleRareStyle >= 0 && treeState().nodes[pseudoNode].computedStyle().rare_style != staleRareStyle)
 			releaseRareStyle(staleRareStyle);
 		applyInheritedStyleDefaults(pseudoNode);
 		applyDefaultStyleOverrides(pseudoNode);
@@ -16369,7 +16585,7 @@ void recomputeNodeClassStyles(int node)
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 
-	const ComputedStyle beforeStyle = state.nodes[node].style;
+	const ComputedStyle beforeStyle = state.nodes[node].computedStyle();
 #if GEA_CSS_FIRST_LINE
 	const FirstLineBackground beforeFirstLine = rareDataFor(node)
 	    ? rareDataFor(node)->firstLineBackground : FirstLineBackground{};
@@ -16380,9 +16596,17 @@ void recomputeNodeClassStyles(int node)
 	// Record this node's custom-property dependencies fresh (lookupCustomProperty
 	// appends into g_nodeRefs[g_recordingNode] for every var() resolved here,
 	// including the node's pseudo-elements via syncPseudoElementsForNode below).
+#if GEA_CSS_CUSTOM_PROPERTIES
 	const int prevRecordingNode = g_recordingNode;
 	g_recordingNode = node;
+#endif
+#if GEA_CSS_CUSTOM_PROPERTIES
 	if (node >= 0 && node < kMaxNodes) g_nodeRefs[node].clearForRecompute();
+#elif GEA_EMBEDDED_SHARED_STYLES
+	state.nodes[node].class_style_tracked = true;
+#else
+	g_nodeStyleTracked[node] = true;
+#endif
 #if GEA_RECPROF
 	g_profNodes++;
 	int64_t _t = recNow();
@@ -16439,7 +16663,7 @@ void recomputeNodeClassStyles(int node)
 #endif
 	state.styleInvalidationSuppressionDepth--;
 	markClassRecomputeStyleDiff(node, beforeStyle, beforeImageId, firstLineChanged);
-	if (staleRareStyle >= 0 && state.nodes[node].style.rare_style != staleRareStyle)
+	if (staleRareStyle >= 0 && state.nodes[node].computedStyle().rare_style != staleRareStyle)
 		releaseRareStyle(staleRareStyle);
 #if GEA_RECPROF
 	g_profMiscUs += recNow() - _t;
@@ -16453,7 +16677,10 @@ void recomputeNodeClassStyles(int node)
 #if GEA_RECPROF
 	g_profPseudoUs += recNow() - _t;
 #endif
+	state.nodes[node].internComputedStyle();
+#if GEA_CSS_CUSTOM_PROPERTIES
 	g_recordingNode = prevRecordingNode;
+#endif
 }
 
 // When set (during the initial app mount), per-op class-style recomputes are
@@ -16508,10 +16735,26 @@ struct ParentStyleSnapshot {
 #endif
 	std::int16_t font_id;
 	decltype(ComputedStyle::font_size) font_size;
+#if GEA_CSS_FONT_WEIGHT
 	std::int16_t font_weight;
+#else
+	static constexpr std::int16_t font_weight = 400;
+#endif
+#if GEA_CSS_LINE_HEIGHT
 	decltype(ComputedStyle::line_height) line_height;
+#else
+	static constexpr std::int16_t line_height = 0;
+#endif
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	std::int32_t line_height_multiplier;
+#else
+	static constexpr std::int32_t line_height_multiplier = -1;
+#endif
+#if GEA_CSS_TEXT_ALIGN
 	std::uint8_t text_align;
+#else
+	static constexpr std::uint8_t text_align = 0;
+#endif
 	std::uint8_t text_align_last;
 	std::uint8_t text_emphasis;
 	style_color_t text_emphasis_color;
@@ -16520,7 +16763,11 @@ struct ParentStyleSnapshot {
 #else
 	static constexpr std::uint8_t text_transform = 0;
 #endif
+#if GEA_CSS_WHITE_SPACE
 	std::uint8_t white_space;
+#else
+	static constexpr std::uint8_t white_space = 0;
+#endif
 #if GEA_CSS_VISIBILITY
 	std::uint8_t visibility;
 #else
@@ -16529,7 +16776,7 @@ struct ParentStyleSnapshot {
 #if GEA_CSS_SIDE_BORDERS
 	std::array<int, 4> border_widths;
 #else
-	std::array<decltype(ComputedStyle::border_width), 1> border_widths;
+	std::array<std::remove_cv_t<decltype(ComputedStyle::border_width)>, 1> border_widths;
 #endif
 };
 
@@ -16542,17 +16789,27 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 #endif
 	out.font_id = s.font_id;
 	out.font_size = s.font_size;
+#if GEA_CSS_FONT_WEIGHT
 	out.font_weight = s.font_weight;
+#endif
+#if GEA_CSS_LINE_HEIGHT
 	out.line_height = s.line_height;
+#endif
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	out.line_height_multiplier = s.line_height_multiplier;
+#endif
+#if GEA_CSS_TEXT_ALIGN
 	out.text_align = s.text_align;
+#endif
 	out.text_align_last = s.text_align_last;
 	out.text_emphasis = s.text_emphasis;
 	out.text_emphasis_color = s.text_emphasis_color;
 #if GEA_CSS_TEXT_TRANSFORM
 	out.text_transform = s.text_transform;
 #endif
+#if GEA_CSS_WHITE_SPACE
 	out.white_space = s.white_space;
+#endif
 #if GEA_CSS_VISIBILITY
 	out.visibility = s.visibility;
 #endif
@@ -16815,9 +17072,18 @@ void recomputeNodeIncremental(int node, const CssAtomSmallList &changedAbove, bo
 	if (node < 0 || node >= state.nodeCount) return;
 	if (isGeneratedPseudoNode(state.nodes[node])) return;
 
+#if GEA_CSS_CUSTOM_PROPERTIES
 	const NodeCustomPropRefs &refs = g_nodeRefs[node];
 	const bool tracked = refs.tracked;
 	const bool referencesChanged = refs.touches(changedAbove);
+#else
+#if GEA_EMBEDDED_SHARED_STYLES
+	const bool tracked = state.nodes[node].class_style_tracked;
+#else
+	const bool tracked = g_nodeStyleTracked[node];
+#endif
+	constexpr bool referencesChanged = false;
+#endif
 	const bool directlyChanged = pending.contains(node);
 	// A never-recorded node (e.g. freshly created this batch) must recompute — we
 	// have no dependency info to justify skipping it.
@@ -16837,15 +17103,15 @@ void recomputeNodeIncremental(int node, const CssAtomSmallList &changedAbove, bo
 #if GEA_INCREMENTAL_VERIFY
 		g_incrRecomputedNodes.insert(node);
 #endif
-		const ParentStyleSnapshot before = snapshotParentStyle(state.nodes[node].style);
+		const ParentStyleSnapshot before = snapshotParentStyle(state.nodes[node].computedStyle());
 		CustomPropertySnapshot beforeCustom;
 		snapshotCustomProperties(rareDataFor(node), beforeCustom);
 		recomputeNodeClassStyles(node);
-		inheritablesChanged = parentStylesDiffer(before, snapshotParentStyle(state.nodes[node].style));
+		inheritablesChanged = parentStylesDiffer(before, snapshotParentStyle(state.nodes[node].computedStyle()));
 		// Reconcile the cascaded custom-property set for descendants: a (re)defined
 		// property whose value changed is now changed for them; one whose value is
 		// unchanged shadows any same-named change from above; a removed one un-shadows.
-		static const std::vector<NodeCustomProperty> kNoCustomProps;
+		static const NodeCustomPropertyStore::Values kNoCustomProps;
 		const NodeRareData *rdCustomAfter = rareDataFor(node);
 		const auto &afterCustom = rdCustomAfter ? rdCustomAfter->customProperties.values : kNoCustomProps;
 		for (const auto &kv : afterCustom) {
@@ -16887,7 +17153,7 @@ void collectSubtreeStyles(int node, std::vector<int> &ids, std::vector<ComputedS
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	ids.push_back(node);
-	styles.push_back(state.nodes[node].style);
+	styles.push_back(state.nodes[node].computedStyle());
 	imageIds.push_back(state.nodes[node].image_id);
 	for (int child = state.nodes[node].first_child; child >= 0; child = state.nodes[child].next_sibling)
 		collectSubtreeStyles(child, ids, styles, imageIds);
@@ -16906,9 +17172,17 @@ void syncNodeClassAttribute(int node)
 void recomputeAllClassStyles()
 {
 	auto &state = treeState();
+#if GEA_CSS_CUSTOM_PROPERTIES
 	g_nodeRefOverflow.clear();
+#endif
 	clearCustomPropertyLookupCache();
+#if GEA_CSS_CUSTOM_PROPERTIES
 	for (auto &refs : g_nodeRefs) refs.reset();
+#elif GEA_EMBEDDED_SHARED_STYLES
+	for (auto &node : treeState().nodes) node.class_style_tracked = false;
+#else
+	std::fill(std::begin(g_nodeStyleTracked), std::end(g_nodeStyleTracked), false);
+#endif
 	for (int i = 0; i < state.nodeCount; i++) {
 		if (state.nodes[i].parent < 0) recomputeSubtreeClassStyles(i);
 	}
@@ -17257,52 +17531,52 @@ double currentStyleValue(const Node &node, Property property)
 {
 	switch (property) {
 #if GEA_CSS_TRANSFORMS
-	case Property::TransformRotate: return static_cast<double>(rstyle(node.style).transform_rotate) / 10.0;
-	case Property::TransformRotateX: return static_cast<double>(rstyle(node.style).transform_rotate_x) / 10.0;
-	case Property::TransformRotateY: return static_cast<double>(rstyle(node.style).transform_rotate_y) / 10.0;
-	case Property::TransformTranslateOuterAxes: return rstyle(node.style).transform_translate_outer_axes;
-	case Property::RotateAngle: return static_cast<double>(rstyle(node.style).rotate_angle) / 10.0;
-	case Property::RotateAxisX: return rstyle(node.style).rotate_axis_x;
-	case Property::RotateAxisY: return rstyle(node.style).rotate_axis_y;
-	case Property::RotateAxisZ: return rstyle(node.style).rotate_axis_z;
-	case Property::ScaleX: return rstyle(node.style).scale_x;
-	case Property::ScaleY: return rstyle(node.style).scale_y;
-	case Property::ScaleZ: return rstyle(node.style).scale_z;
-	case Property::RotatePresent: return rstyle(node.style).rotate_present;
-	case Property::ScalePresent: return rstyle(node.style).scale_present;
-	case Property::TranslatePresent: return rstyle(node.style).translate_present;
-	case Property::TranslateX: return rstyle(node.style).translate_x;
-	case Property::TranslateY: return rstyle(node.style).translate_y;
-	case Property::TranslateZ: return rstyle(node.style).translate_z;
-	case Property::TranslateXPercent: return rstyle(node.style).translate_x_percent;
-	case Property::TranslateYPercent: return rstyle(node.style).translate_y_percent;
-	case Property::TransformTranslateX: return rstyle(node.style).transform_translate_x;
-	case Property::TransformTranslateY: return rstyle(node.style).transform_translate_y;
-	case Property::TransformTranslateZ: return rstyle(node.style).transform_translate_z;
-	case Property::TransformTranslateXPercent: return rstyle(node.style).transform_translate_x_percent;
-	case Property::TransformTranslateYPercent: return rstyle(node.style).transform_translate_y_percent;
-	case Property::TransformScaleX: return rstyle(node.style).transform_scale_x;
-	case Property::TransformScaleY: return rstyle(node.style).transform_scale_y;
-	case Property::TransformScaleZ: return rstyle(node.style).transform_scale_z;
+	case Property::TransformRotate: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate) / 10.0;
+	case Property::TransformRotateX: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate_x) / 10.0;
+	case Property::TransformRotateY: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate_y) / 10.0;
+	case Property::TransformTranslateOuterAxes: return rstyle(node.computedStyle()).transform_translate_outer_axes;
+	case Property::RotateAngle: return static_cast<double>(rstyle(node.computedStyle()).rotate_angle) / 10.0;
+	case Property::RotateAxisX: return rstyle(node.computedStyle()).rotate_axis_x;
+	case Property::RotateAxisY: return rstyle(node.computedStyle()).rotate_axis_y;
+	case Property::RotateAxisZ: return rstyle(node.computedStyle()).rotate_axis_z;
+	case Property::ScaleX: return rstyle(node.computedStyle()).scale_x;
+	case Property::ScaleY: return rstyle(node.computedStyle()).scale_y;
+	case Property::ScaleZ: return rstyle(node.computedStyle()).scale_z;
+	case Property::RotatePresent: return rstyle(node.computedStyle()).rotate_present;
+	case Property::ScalePresent: return rstyle(node.computedStyle()).scale_present;
+	case Property::TranslatePresent: return rstyle(node.computedStyle()).translate_present;
+	case Property::TranslateX: return rstyle(node.computedStyle()).translate_x;
+	case Property::TranslateY: return rstyle(node.computedStyle()).translate_y;
+	case Property::TranslateZ: return rstyle(node.computedStyle()).translate_z;
+	case Property::TranslateXPercent: return rstyle(node.computedStyle()).translate_x_percent;
+	case Property::TranslateYPercent: return rstyle(node.computedStyle()).translate_y_percent;
+	case Property::TransformTranslateX: return rstyle(node.computedStyle()).transform_translate_x;
+	case Property::TransformTranslateY: return rstyle(node.computedStyle()).transform_translate_y;
+	case Property::TransformTranslateZ: return rstyle(node.computedStyle()).transform_translate_z;
+	case Property::TransformTranslateXPercent: return rstyle(node.computedStyle()).transform_translate_x_percent;
+	case Property::TransformTranslateYPercent: return rstyle(node.computedStyle()).transform_translate_y_percent;
+	case Property::TransformScaleX: return rstyle(node.computedStyle()).transform_scale_x;
+	case Property::TransformScaleY: return rstyle(node.computedStyle()).transform_scale_y;
+	case Property::TransformScaleZ: return rstyle(node.computedStyle()).transform_scale_z;
 #endif
-	case Property::FilterBlur: return (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0);
-	case Property::Opacity: return node.style.opacity;
-	case Property::Width: return node.style.width;
-	case Property::Height: return node.style.height;
-	case Property::WidthPercent: return node.style.width_percent == kUnset ? 0 : node.style.width_percent;
-	case Property::HeightPercent: return node.style.height_percent == kUnset ? 0 : node.style.height_percent;
-	case Property::LineHeight: return node.style.line_height;
-	case Property::FontWeight: return node.style.font_weight;
-	case Property::Top: return GEA_CSS_POSITION_PX_0(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PX_0(node.style);
-	case Property::Right: return GEA_CSS_POSITION_PX_1(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PX_1(node.style);
-	case Property::Bottom: return GEA_CSS_POSITION_PX_2(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PX_2(node.style);
-	case Property::Left: return GEA_CSS_POSITION_PX_3(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PX_3(node.style);
-	case Property::TopPercent: return GEA_CSS_POSITION_PERCENT_0(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_0(node.style);
-	case Property::RightPercent: return GEA_CSS_POSITION_PERCENT_1(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_1(node.style);
-	case Property::BottomPercent: return GEA_CSS_POSITION_PERCENT_2(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_2(node.style);
-	case Property::LeftPercent: return GEA_CSS_POSITION_PERCENT_3(node.style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_3(node.style);
-	case Property::BackgroundColor: return node.style.bg_color;
-	case Property::Color: return node.style.text_color;
+	case Property::FilterBlur: return (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
+	case Property::Opacity: return node.computedStyle().opacity;
+	case Property::Width: return node.computedStyle().width;
+	case Property::Height: return node.computedStyle().height;
+	case Property::WidthPercent: return node.computedStyle().width_percent == kUnset ? 0 : node.computedStyle().width_percent;
+	case Property::HeightPercent: return node.computedStyle().height_percent == kUnset ? 0 : node.computedStyle().height_percent;
+	case Property::LineHeight: return node.computedStyle().line_height;
+	case Property::FontWeight: return node.computedStyle().font_weight;
+	case Property::Top: return GEA_CSS_POSITION_PX_0(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_0(node.computedStyle());
+	case Property::Right: return GEA_CSS_POSITION_PX_1(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_1(node.computedStyle());
+	case Property::Bottom: return GEA_CSS_POSITION_PX_2(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_2(node.computedStyle());
+	case Property::Left: return GEA_CSS_POSITION_PX_3(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_3(node.computedStyle());
+	case Property::TopPercent: return GEA_CSS_POSITION_PERCENT_0(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_0(node.computedStyle());
+	case Property::RightPercent: return GEA_CSS_POSITION_PERCENT_1(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_1(node.computedStyle());
+	case Property::BottomPercent: return GEA_CSS_POSITION_PERCENT_2(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_2(node.computedStyle());
+	case Property::LeftPercent: return GEA_CSS_POSITION_PERCENT_3(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_3(node.computedStyle());
+	case Property::BackgroundColor: return node.computedStyle().bg_color;
+	case Property::Color: return node.computedStyle().text_color;
 	default: return 0;
 	}
 }
@@ -17858,8 +18132,8 @@ BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style,
 		}
 		if (out.origin != 0) {
 			int inset[4];
-			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->style, i) +
-			    (out.origin == 2 ? std::max<int>(0, node->style.padding[i]) : 0);
+			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->computedStyle(), i) +
+			    (out.origin == 2 ? std::max<int>(0, node->computedStyle().padding[i]) : 0);
 			x += inset[3]; y += inset[0]; width -= inset[1]+inset[3]; height -= inset[0]+inset[2];
 		}
 	}
@@ -17971,14 +18245,18 @@ void endStyleMountBatch()
 		const int id = vIds[i];
 		// Field-wise compare (ComputedStyle has padding, so memcmp gives false diffs).
 		// styleEqualExceptTextPaint covers every field but text_color, which we add.
-		const bool equal = styleEqualExceptTextPaint(vStyles[i], state.nodes[id].style) &&
-		                   vStyles[i].text_color == state.nodes[id].style.text_color &&
+		const bool equal = styleEqualExceptTextPaint(vStyles[i], state.nodes[id].computedStyle()) &&
+		                   vStyles[i].text_color == state.nodes[id].computedStyle().text_color &&
 		                   vImg[i] == state.nodes[id].image_id;
 		if (!equal) {
 			mismatches++;
 			if (logged < 8) {
 				const bool recomputed = g_incrRecomputedNodes.count(id) > 0;
+#if GEA_CSS_CUSTOM_PROPERTIES
 				const std::string refs = (id >= 0 && id < kMaxNodes) ? g_nodeRefs[id].debugString() : std::string();
+#else
+				const std::string refs;
+#endif
 				GEA_STYLE_LOGW("gea.recincr", "  mismatch node=%d tag=%s class=[%s] incrRecomputed=%d refs=[%s]", id,
 				               tagFromId(state.nodes[id].tag_id), state.classLists[id].value().c_str(), recomputed ? 1 : 0,
 				               refs.c_str());
@@ -18086,9 +18364,17 @@ void StyleSheet::clear()
 #endif
 	invalidateRuleIndex();
 	clearSelectorPartsCache();
+#if GEA_CSS_CUSTOM_PROPERTIES
 	g_nodeRefOverflow.clear();
+#endif
 	clearCustomPropertyLookupCache();
-	for (auto &refs : g_nodeRefs) refs.reset();  // stale per-node custom-prop dependencies from the previous app
+#if GEA_CSS_CUSTOM_PROPERTIES
+	for (auto &refs : g_nodeRefs) refs.reset();
+#elif GEA_EMBEDDED_SHARED_STYLES
+	for (auto &node : treeState().nodes) node.class_style_tracked = false;
+#else
+	std::fill(std::begin(g_nodeStyleTracked), std::end(g_nodeStyleTracked), false);
+#endif
 	g_pendingRecomputeMark.clear();
 	g_forceFullSubtreeMark.clear();
 	recomputeAllClassStyles();
@@ -18744,7 +19030,7 @@ void StyleSheet::startCssAnimations(std::uint32_t nowMs) const
 	if (g_ruleIndex.animationRules.empty()) return;
 	auto &state = treeState();
 	for (int node = 0; node < state.nodeCount; ++node) {
-		if (isDisplayNone(state.nodes[node].style)) continue;
+		if (isDisplayNone(state.nodes[node].computedStyle())) continue;
 		const CssAnimationSpec spec = animationSpecForNode(node);
 		startAnimationForNode(node, spec, nowMs);
 	}

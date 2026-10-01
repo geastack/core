@@ -85,17 +85,17 @@ void InputRenderer::layout(int id, int)
 	if (n.type != NodeType::View) return;
 	if (std::strcmp(tagFromId(n.tag_id), "input") != 0) return;
 
-	const char *content = inputContentText(id, nullptr, n.style.text_color);
+	const char *content = inputContentText(id, nullptr, n.computedStyle().text_color);
 	const char *measureText = inputMeasureText(id);
-	int width = TextRenderer::measureWidth(content, n.style.font_id, n.style.font_size, n.style.text_transform) + boxInset(n.style, 1) + boxInset(n.style, 3);
-	int height = TextRenderer::measureHeight(measureText, n.style.font_id, n.style.font_size, n.style.text_transform, n.style.line_height) + boxInset(n.style, 0) + boxInset(n.style, 2);
+	int width = TextRenderer::measureWidth(content, n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform) + boxInset(n.computedStyle(), 1) + boxInset(n.computedStyle(), 3);
+	int height = TextRenderer::measureHeight(measureText, n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform, n.computedStyle().line_height) + boxInset(n.computedStyle(), 0) + boxInset(n.computedStyle(), 2);
 
-	if (n.style.width != kUnset) width = contentSizeToBorderSize(n.style, n.style.width, true);
-	else if ((n.style.width_percent != kUnset || n.style.width_expression >= 0) && n.layout.width > 0) width = n.layout.width;
-	if (n.style.height != kUnset) height = contentSizeToBorderSize(n.style, n.style.height, false);
-	else if ((n.style.height_percent != kUnset || n.style.height_expression >= 0) && n.layout.height > 0) height = n.layout.height;
-	n.layout.width = clampBorderBoxSize(n.style, width, true);
-	n.layout.height = clampBorderBoxSize(n.style, height, false);
+	if (n.computedStyle().width != kUnset) width = contentSizeToBorderSize(n.computedStyle(), n.computedStyle().width, true);
+	else if ((n.computedStyle().width_percent != kUnset || n.computedStyle().width_expression >= 0) && n.layout.width > 0) width = n.layout.width;
+	if (n.computedStyle().height != kUnset) height = contentSizeToBorderSize(n.computedStyle(), n.computedStyle().height, false);
+	else if ((n.computedStyle().height_percent != kUnset || n.computedStyle().height_expression >= 0) && n.layout.height > 0) height = n.layout.height;
+	n.layout.width = clampBorderBoxSize(n.computedStyle(), width, true);
+	n.layout.height = clampBorderBoxSize(n.computedStyle(), height, false);
 #if GEA_CSS_SCROLLING
 	n.layout.scroll_content_height = n.layout.height;
 	n.layout.scroll_y = 0;
@@ -111,17 +111,17 @@ void InputRenderer::record(int id)
 	if (n.type != NodeType::View) return;
 	if (std::strcmp(tagFromId(n.tag_id), "input") != 0) return;
 
-	std::uint16_t color = n.style.text_color;
-	const char *content = inputContentText(id, &color, n.style.text_color);
+	std::uint16_t color = n.computedStyle().text_color;
+	const char *content = inputContentText(id, &color, n.computedStyle().text_color);
 
 	const int x = n.layout.x;
 	const int y = n.layout.y;
 	const int w = n.layout.width;
 	const int h = n.layout.height;
-	const int padLeft = boxInset(n.style, 3);
-	const int padRight = boxInset(n.style, 1);
-	const int padTop = boxInset(n.style, 0);
-	const int padBottom = boxInset(n.style, 2);
+	const int padLeft = boxInset(n.computedStyle(), 3);
+	const int padRight = boxInset(n.computedStyle(), 1);
+	const int padTop = boxInset(n.computedStyle(), 0);
+	const int padBottom = boxInset(n.computedStyle(), 2);
 	const int contentX = x + padLeft;
 	const int contentY = y + padTop;
 	int contentW = w - padLeft - padRight;
@@ -136,8 +136,8 @@ void InputRenderer::record(int id)
 		// system rasterizes at font_size directly — but it still needs to
 		// be non-zero to keep the bitmap path's math consistent for callers
 		// without `font-family` set.
-		const float textScale = n.style.font_size > 0
-		                            ? static_cast<float>(n.style.font_size) / 16.0f
+		const float textScale = n.computedStyle().font_size > 0
+		                            ? static_cast<float>(n.computedStyle().font_size) / 16.0f
 		                            : 1.0f;
 
 		DisplayCommand *cmd = DisplayList::instance().append();
@@ -154,21 +154,21 @@ void InputRenderer::record(int id)
 			// inputs are conventionally one line and the framework's text
 			// renderer would otherwise top-align.
 			// 16 = BitmapFont8x16::kHeight (default when no font_size set).
-			const int fontSize = n.style.font_size > 0 ? n.style.font_size : 16;
+			const int fontSize = n.computedStyle().font_size > 0 ? n.computedStyle().font_size : 16;
 			const int yCenter = contentY + (contentH - fontSize) / 2;
 			cmd->text.y = yCenter > contentY ? yCenter : contentY;
 			cmd->text.maxWidth = contentW;
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
 			cmd->text.align = static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
-			cmd->text.textTransform = n.style.text_transform;
-			cmd->text.lineHeight = n.style.line_height;
+			cmd->text.textTransform = n.computedStyle().text_transform;
+			cmd->text.lineHeight = n.computedStyle().line_height;
 			cmd->text.containerWidth = contentW;
-			cmd->text.fontId = n.style.font_id;
+			cmd->text.fontId = n.computedStyle().font_id;
 			// append() hands back uninitialized scratch — set these explicitly so
 			// the deferred draw doesn't read stale white-space/text-overflow.
-			cmd->text.whiteSpace = n.style.white_space;
-			cmd->text.textOverflow = n.style.text_overflow;
+			cmd->text.whiteSpace = n.computedStyle().white_space;
+			cmd->text.textOverflow = n.computedStyle().text_overflow;
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
 			cmd->text.alignLast = -1;
@@ -198,14 +198,14 @@ void InputRenderer::record(int id)
 		const bool hasValue = valueAttr && valueAttr[0];
 		int caretX = contentX;
 		if (hasValue) {
-			const int textWidth = TextRenderer::measureWidth(valueAttr, n.style.font_id, n.style.font_size, n.style.text_transform);
+			const int textWidth = TextRenderer::measureWidth(valueAttr, n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform);
 			caretX += textWidth < contentW ? textWidth : contentW - kInputCaretWidth;
 			if (caretX < contentX) caretX = contentX;
 		}
 		const int caretY = contentY + kInputCaretInsetY;
 		int caretH = contentH - kInputCaretInsetY * 2;
 		if (caretH < 4) caretH = contentH > 4 ? contentH - 2 : contentH;
-		const std::uint16_t caretColor = n.style.text_color ? n.style.text_color : 0xFFFF;
+		const std::uint16_t caretColor = n.computedStyle().text_color ? n.computedStyle().text_color : 0xFFFF;
 
 		DisplayCommand *cmd = DisplayList::instance().append();
 		if (cmd) {

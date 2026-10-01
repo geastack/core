@@ -274,7 +274,7 @@ int gLastScrollUiFrame = -1000;
 			constexpr int kTransformedGradientLutBanks = (GEA_EMBEDDED_RENDERER_TRANSFORMS && GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS) ? GEA_EMBEDDED_TRANSFORMED_GRADIENT_LUT_BANKS : 1;
 			static_assert(kTransformedGradientLutBanks > 0);
 			constexpr bool kTransformedGradientA5Mirror = GEA_EMBEDDED_TRANSFORMED_GRADIENT_A5_MIRROR != 0;
-		static_assert(kTransformedGradientA5Mirror || GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER == 0,
+		static_assert(kTransformedGradientA5Mirror || !GEA_EMBEDDED_RENDERER_TRANSFORMS || !GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER == 0,
 		              "GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER requires the transformed-gradient a5 mirror");
 		constexpr int kProjectedTextCacheBanks = GEA_EMBEDDED_RENDERER_TRANSFORMS ? GEA_EMBEDDED_PROJECTED_TEXT_CACHE_BANKS : 1;
 		static_assert(kProjectedTextCacheBanks > 0);
@@ -850,7 +850,7 @@ int gLastScrollUiFrame = -1000;
 
 		uint8_t rightFadeMaskAlphaForChild(const Node &parent, const Node &child)
 		{
-			const int fade = parent.style.mask_right_fade_width;
+			const int fade = parent.computedStyle().mask_right_fade_width;
 			if (fade <= 0 || parent.layout.width <= 0)
 				return 255;
 			if (child.layout.width <= 0 || child.layout.height <= 0)
@@ -1347,9 +1347,9 @@ int gLastScrollUiFrame = -1000;
 		{
 			return node.first_child < 0 &&
 						 node.type == NodeType::View &&
-						 node.style.has_bg &&
-						 !styleHasBackgroundImage(node.style) && rstyle(node.style).bg_clip == 0 &&
-						 !hasAnyBorder(node.style);
+						 node.computedStyle().has_bg &&
+						 !styleHasBackgroundImage(node.computedStyle()) && rstyle(node.computedStyle()).bg_clip == 0 &&
+						 !hasAnyBorder(node.computedStyle());
 		}
 
 		bool isFullyRoundedFilterShape(const Node &node)
@@ -1357,10 +1357,10 @@ int gLastScrollUiFrame = -1000;
 			const int halfMin = std::min(node.layout.width, node.layout.height) / 2;
 			const int minRadius = std::max(1, halfMin - 1);
 			return halfMin > 0 &&
-						 node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)] >= minRadius &&
-						 node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)] >= minRadius &&
-						 node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)] >= minRadius &&
-						 node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)] >= minRadius;
+						 node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)] >= minRadius &&
+						 node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)] >= minRadius &&
+						 node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)] >= minRadius &&
+						 node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)] >= minRadius;
 		}
 
 		bool screenToNodeRectHomography(const Node &node, double out[8])
@@ -1668,8 +1668,8 @@ int gLastScrollUiFrame = -1000;
 			const std::int64_t t0 = refreshPerfNowUs();
 			gea::platform::display::Display::fillCircle(cx, cy, radius, color);
 			auto &perf = refreshPerfStatsMutable();
-			perf.treeReplayCircleCommands++;
-			perf.treeReplayCircleUs += refreshPerfNowUs() - t0;
+			GEA_REFRESH_PERF(perf.treeReplayCircleCommands++);
+			GEA_REFRESH_PERF(perf.treeReplayCircleUs += refreshPerfNowUs() - t0);
 			return true;
 		}
 
@@ -2260,8 +2260,8 @@ int gLastScrollUiFrame = -1000;
 				return nx * nx + ny * ny <= 1.0;
 			}
 
-			const double radius = static_cast<double>(std::min(std::min(node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)], node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)]),
-																												 std::min(node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)], node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)])));
+			const double radius = static_cast<double>(std::min(std::min(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)], node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)]),
+																												 std::min(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)], node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)])));
 			const double r = std::max(0.0, std::min(radius, std::min(w, h) * 0.5));
 			if (r <= 0.0)
 				return true;
@@ -2375,7 +2375,7 @@ int gLastScrollUiFrame = -1000;
 			const double ry = h * 0.5;
 			if (rx <= 0.0 || ry <= 0.0)
 				return 0;
-			const double blur = std::max(1.0, static_cast<double>((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0)));
+			const double blur = std::max(1.0, static_cast<double>((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0)));
 			const double dx = std::fabs(sx - (x + rx));
 			const double dy = std::fabs(sy - (y + ry));
 			const double alphaX = 1.0 - smoothStep(rx, rx + blur * 2.0, dx);
@@ -2469,7 +2469,7 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					const int index = row * screenW + col;
 					cache.alpha[index] = static_cast<std::uint8_t>(alpha);
-					cache.pixels[index] = node.style.bg_color;
+					cache.pixels[index] = node.computedStyle().bg_color;
 				}
 			}
 
@@ -2592,7 +2592,7 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					const int index = row * w + col;
 					cache.alpha[index] = static_cast<std::uint8_t>((coverage * sourceAlpha + 127) / 255);
-					cache.pixels[index] = node.style.bg_color;
+					cache.pixels[index] = node.computedStyle().bg_color;
 				}
 			}
 
@@ -3047,9 +3047,9 @@ int gLastScrollUiFrame = -1000;
 				const int ttf = command.projectedText.textTransform;
 				const int needBytes = srcW * srcH;
 				auto &perf = refreshPerfStatsMutable();
-				perf.projectedTextCacheCalls++;
-				if (needBytes > perf.projectedTextCacheMaxEntryBytes)
-					perf.projectedTextCacheMaxEntryBytes = needBytes;
+				GEA_REFRESH_PERF(perf.projectedTextCacheCalls++);
+				if (GEA_EMBEDDED_UI_REFRESH_PERF && needBytes > perf.projectedTextCacheMaxEntryBytes)
+					GEA_REFRESH_PERF(perf.projectedTextCacheMaxEntryBytes = needBytes);
 				CoverageCacheEntry *hit = nullptr;
 				for (auto &e : cache)
 				{
@@ -3062,7 +3062,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (!hit)
 				{
-					perf.projectedTextCacheMisses++;
+					GEA_REFRESH_PERF(perf.projectedTextCacheMisses++);
 					// Prefer an empty slot (8 slots > the handful of distinct labels in a
 					// scene), else evict the hash-mapped slot.
 					int evict = textHash & 7;
@@ -3118,8 +3118,9 @@ int gLastScrollUiFrame = -1000;
 				}
 				else
 				{
-					perf.projectedTextCacheHits++;
+					GEA_REFRESH_PERF(perf.projectedTextCacheHits++);
 				}
+#if GEA_EMBEDDED_UI_REFRESH_PERF
 				int cachedBytes = 0;
 				int sramBytes = 0;
 				for (const auto &e : cache)
@@ -3130,17 +3131,18 @@ int gLastScrollUiFrame = -1000;
 							sramBytes += e.bytes;
 					}
 				if (cachedBytes > perf.projectedTextCacheBytes)
-					perf.projectedTextCacheBytes = cachedBytes;
+					GEA_REFRESH_PERF(perf.projectedTextCacheBytes = cachedBytes);
 				if (sramBytes > perf.projectedTextCacheSramBytes)
-					perf.projectedTextCacheSramBytes = sramBytes;
+					GEA_REFRESH_PERF(perf.projectedTextCacheSramBytes = sramBytes);
+#endif
 				if (hit->inSram)
 				{
-					perf.projectedTextCacheSramUses++;
+					GEA_REFRESH_PERF(perf.projectedTextCacheSramUses++);
 					cb = hit->sramBuf;
 				}
 				else
 				{
-					perf.projectedTextCachePsramUses++;
+					GEA_REFRESH_PERF(perf.projectedTextCachePsramUses++);
 					cb = hit->buf.data();
 				}
 				// A label with no ink at all draws nothing — skip the projected loop.
@@ -3168,7 +3170,7 @@ int gLastScrollUiFrame = -1000;
 			else
 #endif
 			{
-				refreshPerfStatsMutable().projectedTextCacheFallbacks++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().projectedTextCacheFallbacks++);
 			}
 			const float srcXf = static_cast<float>(command.projectedText.srcX);
 			const float srcYf = static_cast<float>(command.projectedText.srcY);
@@ -3803,7 +3805,7 @@ int gLastScrollUiFrame = -1000;
 				std::memcpy(slot->keyA, keyA, sizeof keyA);
 				slot->valid = true;
 			}
-			const bool slotIsConstAlpha = slotConstAlpha[slot - slots] != 0;
+			[[maybe_unused]] const bool slotIsConstAlpha = slotConstAlpha[slot - slots] != 0;
 #if GEA_EMBEDDED_TRANSFORMED_GRADIENT_LUT_LOCK
 			unlockSlots();
 #endif
@@ -3946,7 +3948,9 @@ int gLastScrollUiFrame = -1000;
 #if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
 				const bool rgb565LutBlendAvail = kTransformedGradientA5Mirror && gea_rgb565_lut_blend_available();
 				const bool rgb565LutBlendConstAlphaAvail = gea_rgb565_lut_blend_const_alpha_available();
-#if GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER
+#if GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER && GEA_EMBEDDED_RENDERER_TRANSFORMS && GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS
+				// An unused transformed-gradient path must not reserve its 4 KiB SIMD
+				// scratch. The cache-free scalar fallback below preserves rendering.
 				// SIMD-blend scratch for the aligned middle of each span: gathered LUT colors
 				// (panel->normal) + per-pixel alpha. PER-CORE: with the 2-core coarse split the
 				// worker fills the bottom band concurrently with this core's top band, so a
@@ -4099,7 +4103,7 @@ int gLastScrollUiFrame = -1000;
 								row[x] = gea::framework::graphics::pixel::fromRgb565(rn);
 							};
 							int x = xL;
-#if GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER
+#if GEA_EMBEDDED_PIE_BLEND_SPAN8_GATHER && GEA_EMBEDDED_RENDERER_TRANSFORMS && GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS
 							// The PIE kernel uses 16-byte-aligned vector load/store, so &row[aStart]
 							// must be 16-byte (8-px) aligned at its ABSOLUTE framebuffer address — not
 							// just at a row-local multiple of 8. The framebuffer stride is packed
@@ -4991,7 +4995,7 @@ int gLastScrollUiFrame = -1000;
 
 		bool hasRetainedTransformState(const Node &node)
 		{
-			const RareStyle &rs = rstyle(node.style); // one pool lookup, not 11
+			const RareStyle &rs = rstyle(node.computedStyle()); // one pool lookup, not 11
 			const bool currentTransformable = ViewRenderer::isTransformableBox(node);
 			return (currentTransformable && hasIndividualLinearTransform(rs)) ||
 			       (node.render.previous_transformable_box && hadIndividualLinearTransform(node.render)) ||
@@ -5045,7 +5049,7 @@ int gLastScrollUiFrame = -1000;
 			struct Key { int phase, level; };
 			static bool effectGroup(const Node &node)
 			{
-				const auto &s = node.style;
+				const auto &s = node.computedStyle();
 				const auto &rs = rstyle(s);
 				const bool transformable = ViewRenderer::isTransformableBox(node);
 				return s.opacity < 255 || s.mask_right_fade_width > 0 || rs.filter_present || rs.filter_blur_radius ||
@@ -5059,10 +5063,10 @@ int gLastScrollUiFrame = -1000;
 			{
 				const Node *nodes = Tree::instance().nodes();
 				const Node &n = nodes[id];
-				const auto &s = n.style;
+				const auto &s = n.computedStyle();
 				const bool positioned = s.position != 0;
 				const bool item = n.parent >= 0 && !isOutOfFlowPosition(s.position) &&
-				    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+				    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
 				const int level = !s.z_index_auto && (positioned || item) ? s.z_index : 0;
 				if (level < 0) return {0, level};
 				if (level > 0) return {5, level};
@@ -5081,7 +5085,7 @@ int gLastScrollUiFrame = -1000;
 			static bool participatesIn3DContext(int node, int contextRoot)
 			{
 				const Node *nodes = Tree::instance().nodes();
-				if (contextRoot < 0 || !ViewRenderer::isTransformableBox(nodes[contextRoot]) || !preserves3D(nodes[contextRoot].style))
+				if (contextRoot < 0 || !ViewRenderer::isTransformableBox(nodes[contextRoot]) || !preserves3D(nodes[contextRoot].computedStyle()))
 					return false;
 				// A 3D rendering context follows DOM ancestry, not containing-block
 				// ancestry. Every parent between a participant and the context root
@@ -5089,7 +5093,7 @@ int gLastScrollUiFrame = -1000;
 				// single plane and prevents abs/fixed descendants from being hoisted
 				// into this context.
 				for (int parent = nodes[node].parent; parent >= 0 && parent != contextRoot; parent = nodes[parent].parent)
-					if (!ViewRenderer::isTransformableBox(nodes[parent]) || !preserves3D(nodes[parent].style))
+					if (!ViewRenderer::isTransformableBox(nodes[parent]) || !preserves3D(nodes[parent].computedStyle()))
 						return false;
 				for (int parent = nodes[node].parent; parent >= 0; parent = nodes[parent].parent)
 					if (parent == contextRoot)
@@ -5151,7 +5155,7 @@ int gLastScrollUiFrame = -1000;
 				// each node costs 5 double-precision projections, so this avoids it
 				// entirely for 2D trees.
 				const bool transforms = contextRoot >= 0 && ViewRenderer::isTransformableBox(Tree::instance().nodes()[contextRoot]) &&
-				                        preserves3D(Tree::instance().nodes()[contextRoot].style) &&
+				                        preserves3D(Tree::instance().nodes()[contextRoot].computedStyle()) &&
 				                        ViewRenderer::anyTransformActive();
 				if (!transforms)
 				{
@@ -5209,8 +5213,8 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::PushClip: {
 					const int id = c->clip.nodeId;
 					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
-					const int clipDx = !owner || overflowX(owner->style) ? dx : 0;
-					const int clipDy = !owner || overflowY(owner->style) ? dy : 0;
+					const int clipDx = !owner || overflowX(owner->computedStyle()) ? dx : 0;
+					const int clipDy = !owner || overflowY(owner->computedStyle()) ? dy : 0;
 					c->clip.x += clipDx;
 					c->bx -= dx - clipDx;
 					c->clip.y += clipDy;
@@ -6709,10 +6713,10 @@ int gLastScrollUiFrame = -1000;
 				auto &tree = Tree::instance();
 				if (id < 0 || id >= tree.nodeCount()) return;
 				const auto &node = tree.nodes()[id];
-				if (node.style.display == 1 || (id != owner && isOutOfFlowPosition(node.style.position))) return;
-				opaque = opaque && node.style.opacity == 255;
-				if (state.hasNodeScratchFor(id) && node.style.visibility == 0) {
-					const bool hidesBackground = opaque && node.type == NodeType::Text && node.style.text_alpha == 255;
+				if (node.computedStyle().display == 1 || (id != owner && isOutOfFlowPosition(node.computedStyle().position))) return;
+				opaque = opaque && node.computedStyle().opacity == 255;
+				if (state.hasNodeScratchFor(id) && node.computedStyle().visibility == 0) {
+					const bool hidesBackground = opaque && node.type == NodeType::Text && node.computedStyle().text_alpha == 255;
 					const int begin = state.nodeDrawStart[id] + copyOffset, end = state.nodeDrawEnd[id] + copyOffset;
 					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
 						const auto &c = state.commands[ci];
@@ -6855,23 +6859,23 @@ int gLastScrollUiFrame = -1000;
 				switch (c.type)
 				{
 				case DisplayCommandType::FillRect:
-					perf.treeReplayFillRectCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayFillRectCommands++);
 					break;
 				case DisplayCommandType::FillCircle:
-					perf.treeReplayCircleCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayCircleCommands++);
 					break;
 				case DisplayCommandType::FillRoundedRect:
-					perf.treeReplayRoundedRectCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayRoundedRectCommands++);
 					break;
 				case DisplayCommandType::FillTransformedRoundedRect:
-					perf.treeReplayTransformedRoundedRectCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayTransformedRoundedRectCommands++);
 					break;
 				case DisplayCommandType::DrawText:
 				case DisplayCommandType::DrawProjectedText:
-					perf.treeReplayTextCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayTextCommands++);
 					break;
 				default:
-					perf.treeReplayOtherCommands++;
+					GEA_REFRESH_PERF(perf.treeReplayOtherCommands++);
 					break;
 				}
 			}
@@ -7041,26 +7045,26 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::FillRoundedRect:
 				case DisplayCommandType::FillQuad:
 				case DisplayCommandType::FillTransformedRoundedRect:
-					__perf.treeReplayFillUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayFillUs += __replayDt);
 					break;
 				case DisplayCommandType::FillCircle:
-					__perf.treeReplayCircleUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayCircleUs += __replayDt);
 					break;
 				case DisplayCommandType::DrawText:
 				case DisplayCommandType::DrawProjectedText:
-					__perf.treeReplayTextUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayTextUs += __replayDt);
 					break;
 				case DisplayCommandType::FillLinearGradient:
 				case DisplayCommandType::FillTransformedLinearGradient:
 				case DisplayCommandType::FillRadialGradient:
-					__perf.treeReplayGradientUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayGradientUs += __replayDt);
 					break;
 				case DisplayCommandType::BlitImage:
 				case DisplayCommandType::BlitImageScaled:
-					__perf.treeReplayImageUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayImageUs += __replayDt);
 					break;
 				default:
-					__perf.treeReplayOtherUs += __replayDt;
+					GEA_REFRESH_PERF(__perf.treeReplayOtherUs += __replayDt);
 					break;
 				}
 			}
@@ -7112,22 +7116,22 @@ int gLastScrollUiFrame = -1000;
 			{
 				const bool simpleBackgroundLeaf = node.first_child < 0 &&
 																					node.type == NodeType::View &&
-																					node.style.has_bg &&
-																					!styleHasBackgroundImage(node.style) && rstyle(node.style).bg_clip == 0 &&
-																					!hasAnyBorder(node.style);
+																					node.computedStyle().has_bg &&
+																					!styleHasBackgroundImage(node.computedStyle()) && rstyle(node.computedStyle()).bg_clip == 0 &&
+																					!hasAnyBorder(node.computedStyle());
 				if (!simpleBackgroundLeaf)
 					return -1;
-				return (static_cast<int>(parentAlpha) * static_cast<int>(node.style.bg_alpha) + 127) / 255;
+				return (static_cast<int>(parentAlpha) * static_cast<int>(node.computedStyle().bg_alpha) + 127) / 255;
 			}
 
 			static void recordFilterBlur(int id, const Node &node, DisplayCommandType type, uint8_t parentAlpha)
 			{
-				if ((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0) <= 0)
+				if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) <= 0)
 					return;
 				if (node.layout.width <= 0 || node.layout.height <= 0)
 					return;
 				const bool sourceLayerBlur = filterBlurSourceAlphaCap(node, parentAlpha) >= 0;
-				const int localSpread = sourceLayerBlur ? std::max(0, static_cast<int>((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0))) * kFilterBlurPasses : 0;
+				const int localSpread = sourceLayerBlur ? std::max(0, static_cast<int>((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0))) * kFilterBlurPasses : 0;
 				int16_t xs[4] = {};
 				int16_t ys[4] = {};
 				ViewRenderer::transformedRectCorners(node, false,
@@ -7153,9 +7157,9 @@ int gLastScrollUiFrame = -1000;
 				}
 				if (x0 > x1 || y0 > y1)
 					return;
-				int radiusX = (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0);
-				int radiusY = (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0);
-				filterBlurScreenRadii(node, (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0), &radiusX, &radiusY);
+				int radiusX = (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
+				int radiusY = (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
+				filterBlurScreenRadii(node, (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0), &radiusX, &radiusY);
 				const int spreadX = sourceLayerBlur ? 0 : std::max(0, radiusX) * kFilterBlurPasses;
 				const int spreadY = sourceLayerBlur ? 0 : std::max(0, radiusY) * kFilterBlurPasses;
 				x0 -= spreadX;
@@ -7171,7 +7175,7 @@ int gLastScrollUiFrame = -1000;
 				cmd->bw = static_cast<int16_t>(clampInt(x1 - x0 + 1, 0, 32767));
 				cmd->bh = static_cast<int16_t>(clampInt(y1 - y0 + 1, 0, 32767));
 				cmd->filterBlur.nodeId = static_cast<int16_t>(id);
-				cmd->filterBlur.radius = (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0);
+				cmd->filterBlur.radius = (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
 				cmd->filterBlur.radiusX = static_cast<int16_t>(clampInt(radiusX, 0, 32767));
 				cmd->filterBlur.radiusY = static_cast<int16_t>(clampInt(radiusY, 0, 32767));
 				cmd->filterBlur.sourceAlphaCap = static_cast<int16_t>(filterBlurSourceAlphaCap(node, parentAlpha));
@@ -7206,7 +7210,7 @@ int gLastScrollUiFrame = -1000;
 				DisplayCommand *cmd = list.append();
 				if (!cmd)
 					return false;
-				const int top = n.layout.y + boxInset(n.style, 0);
+				const int top = n.layout.y + boxInset(n.computedStyle(), 0);
 				const int y0 = k == 0 ? -16384 : top;
 				const int y1 = k == columns.used - 1 && !columns.discard ? 16383 : top + columns.height;
 				cmd->type = DisplayCommandType::PushClip;
@@ -7236,7 +7240,7 @@ int gLastScrollUiFrame = -1000;
 			static void replicateColumns(DisplayList &list, const Node &n, const MulticolLayout &columns, int begin, int end)
 			{
 				const bool rtl = LayoutEngine::rightToLeftDirection(n);
-				const int contentWidth = n.layout.width - boxInset(n.style, 1) - boxInset(n.style, 3);
+				const int contentWidth = n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
 				const int step = rtl ? -(columns.width + columns.gap) : columns.width + columns.gap;
 				const int start = rtl ? contentWidth - columns.width : 0;
 				if (start != 0)
@@ -7276,12 +7280,12 @@ int gLastScrollUiFrame = -1000;
 					return;
 				}
 				Node *n = &Tree::instance().nodes()[id];
-				if (n->style.display == 1 || (n->layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
+				if (n->computedStyle().display == 1 || (n->layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
 					return;
 				}
-				if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+				if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 				{
 					state.clearNodeRange(id);
 					return;
@@ -7299,17 +7303,17 @@ int gLastScrollUiFrame = -1000;
 				// dirty rect — same semantics as display:none, without forcing app
 				// code to choose between the two patterns.
 				bool contributesTextMask = false;
-				if (n->style.opacity == 0) {
+				if (n->computedStyle().opacity == 0) {
 					const auto *nodes = Tree::instance().nodes();
 					for (int ancestor = id; ancestor >= 0; ancestor = nodes[ancestor].parent) {
-						if (isOutOfFlowPosition(nodes[ancestor].style.position)) break;
+						if (isOutOfFlowPosition(nodes[ancestor].computedStyle().position)) break;
 						const int parent = nodes[ancestor].parent;
-						if (parent >= 0 && StyleValues::hasTextBackgroundClip(nodes[parent].style)) {
+						if (parent >= 0 && StyleValues::hasTextBackgroundClip(nodes[parent].computedStyle())) {
 							contributesTextMask = true; break;
 						}
 					}
 				}
-				if (n->style.opacity == 0 && !contributesTextMask)
+				if (n->computedStyle().opacity == 0 && !contributesTextMask)
 				{
 					state.clearNodeRange(id);
 					return;
@@ -7325,7 +7329,7 @@ int gLastScrollUiFrame = -1000;
 					cy1 = (canvas ? canvas->height() : treeState().mountedHeight) - 1;
 				}
 				int overlaps_clip = isDocumentCanvasRoot(*n) || ClipMath::nodeOverlapsClip(*n, cx0, cy0, cx1, cy1);
-				if (!overlaps_clip && (!isViewLikeNodeType(n->type) || (overflowX(n->style) && overflowY(n->style))) &&
+				if (!overlaps_clip && (!isViewLikeNodeType(n->type) || (overflowX(n->computedStyle()) && overflowY(n->computedStyle()))) &&
 				    !LayoutEngine::containsViewportFixed(id))
 				{
 					state.clearNodeRange(id);
@@ -7345,9 +7349,9 @@ int gLastScrollUiFrame = -1000;
 				uint8_t cur_alpha = parent_alpha;
 				const Node *active_mask = mask_node;
 
-				if (n->style.opacity < 255)
+				if (n->computedStyle().opacity < 255)
 				{
-					cur_alpha = (parent_alpha * n->style.opacity) / 255;
+					cur_alpha = (parent_alpha * n->computedStyle().opacity) / 255;
 					DisplayCommand *cmd = list.append();
 					if (cmd)
 					{
@@ -7362,16 +7366,16 @@ int gLastScrollUiFrame = -1000;
 					}
 				}
 
-				if (n->style.mask_right_fade_width > 0)
+				if (n->computedStyle().mask_right_fade_width > 0)
 					active_mask = n;
 
 				int draw_start = state.commandCount;
-				const bool paintsOwnBox = overlaps_clip && n->style.visibility == 0;
+				const bool paintsOwnBox = overlaps_clip && n->computedStyle().visibility == 0;
 				const bool nativeTextInput = isNativeTextInputView(*n);
-				const bool filtered = overlaps_clip && (GEA_CSS_FILTERS ? rstyle(n->style).filter_blur_radius : 0) > 0;
+				const bool filtered = overlaps_clip && (GEA_CSS_FILTERS ? rstyle(n->computedStyle()).filter_blur_radius : 0) > 0;
 				uint8_t draw_alpha = cur_alpha;
 				bool pushed_mask_alpha = false;
-				if (active_mask && active_mask->style.mask_right_fade_width > 0)
+				if (active_mask && active_mask->computedStyle().mask_right_fade_width > 0)
 				{
 					draw_alpha = multiplyAlpha(cur_alpha, rightFadeMaskAlphaForChild(*active_mask, *n));
 					if (draw_alpha != cur_alpha)
@@ -7459,7 +7463,7 @@ int gLastScrollUiFrame = -1000;
 					bool dirty = insideDirty || n->render.dirty;
 					for (int p = nodes[child].parent; p >= 0 && p != id; p = nodes[p].parent) {
 						dirty |= nodes[p].render.dirty;
-						if (nodes[p].style.overflow != 0) ancestors.push_back(p);
+						if (nodes[p].computedStyle().overflow != 0) ancestors.push_back(p);
 					}
 					std::vector<RecordClipFrame> frames;
 					frames.reserve(ancestors.size());
@@ -7489,7 +7493,7 @@ int gLastScrollUiFrame = -1000;
 				if (filtered && !nativeTextInput)
 					recordFilterBlur(id, *n, DisplayCommandType::ApplyFilterBlur, cur_alpha);
 
-				if (n->style.opacity < 255)
+				if (n->computedStyle().opacity < 255)
 				{
 					DisplayCommand *cmd = list.append();
 					if (cmd)
@@ -7554,9 +7558,9 @@ int gLastScrollUiFrame = -1000;
 					const std::int64_t t0 = refreshPerfNowUs();
 					gea::platform::display::Display::fillRoundedRectBoxesRgb565(xs, ys, count, w, h, tl, tr, br, bl, colors);
 					auto &perf = refreshPerfStatsMutable();
-					perf.treeReplayFillUs += refreshPerfNowUs() - t0;
-					perf.treeReplayRoundedRectCommands += roundedCount;
-					perf.treeReplayTransformedRoundedRectCommands += transformedRoundedCount;
+					GEA_REFRESH_PERF(perf.treeReplayFillUs += refreshPerfNowUs() - t0);
+					GEA_REFRESH_PERF(perf.treeReplayRoundedRectCommands += roundedCount);
+					GEA_REFRESH_PERF(perf.treeReplayTransformedRoundedRectCommands += transformedRoundedCount);
 					count = 0;
 					roundedCount = 0;
 					transformedRoundedCount = 0;
@@ -7920,7 +7924,7 @@ int gLastScrollUiFrame = -1000;
 					if (region.x0 <= region.x1 && region.y0 <= region.y1)
 						restoreRetainedBackgroundInRegion(region.x0, region.y0, region.x1, region.y1);
 				}
-				refreshPerfStatsMutable().treeReplayBgRestoreUs += refreshPerfNowUs() - t0;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayBgRestoreUs += refreshPerfNowUs() - t0);
 			}
 
 			struct ReplayNodeWalkTimer
@@ -7928,7 +7932,7 @@ int gLastScrollUiFrame = -1000;
 				std::int64_t start = refreshPerfNowUs();
 				~ReplayNodeWalkTimer()
 				{
-					refreshPerfStatsMutable().treeReplayNodeWalkUs += refreshPerfNowUs() - start;
+					GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayNodeWalkUs += refreshPerfNowUs() - start);
 				}
 			};
 
@@ -8037,7 +8041,7 @@ int gLastScrollUiFrame = -1000;
 					{
 						DisplayCommand *c = &state.commands[ci];
 						auto &perf = refreshPerfStatsMutable();
-						perf.treeReplayCommandChecks++;
+						GEA_REFRESH_PERF(perf.treeReplayCommandChecks++);
 						if (commandMayPaintRegion(*c, x0, y0, x1, y1))
 							return true;
 					}
@@ -8073,7 +8077,7 @@ int gLastScrollUiFrame = -1000;
 				if (node_id < 0 || node_id >= nodeCount)
 					return false;
 				const Node &node = nodes[node_id];
-				if (!isViewLikeNodeType(node.type) || node.style.overflow == 0)
+				if (!isViewLikeNodeType(node.type) || node.computedStyle().overflow == 0)
 					return false;
 				if (node.first_child < 0)
 					return false;
@@ -8094,7 +8098,7 @@ int gLastScrollUiFrame = -1000;
 				int alpha = 255;
 				for (int i = count - 1; i >= 0; i--)
 				{
-					alpha = (alpha * static_cast<int>(nodes[chain[i]].style.opacity)) / 255;
+					alpha = (alpha * static_cast<int>(nodes[chain[i]].computedStyle().opacity)) / 255;
 				}
 				if (alpha < 0)
 					return 0;
@@ -8137,7 +8141,7 @@ int gLastScrollUiFrame = -1000;
 					{
 						DisplayCommand *c = &state.commands[ci];
 						auto &perf = refreshPerfStatsMutable();
-						perf.treeReplayCommandChecks++;
+						GEA_REFRESH_PERF(perf.treeReplayCommandChecks++);
 						// SetAlpha is a stateful scope command: it sets the alpha for the
 						// following draws in this node's range and is restored by a matching
 						// SetAlpha at the end of the range. It must be applied regardless of
@@ -8153,8 +8157,8 @@ int gLastScrollUiFrame = -1000;
 						}
 						const std::int64_t filterStartUs = refreshPerfNowUs();
 						const bool mayPaint = commandMayPaintRegion(*c, x0, y0, x1, y1);
-						perf.treeReplayCommandFilterUs += refreshPerfNowUs() - filterStartUs;
-						perf.treeReplayCommandFilterCalls++;
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - filterStartUs);
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterCalls++);
 						if (!mayPaint)
 							continue;
 						if (retainedBackgroundCommandCanBeSkippedInRegion(*c, x0, y0, x1, y1))
@@ -8177,7 +8181,7 @@ int gLastScrollUiFrame = -1000;
 				for (int ci = start; ci < end; ci++)
 				{
 					DisplayCommand *c = &state.commands[ci];
-					refreshPerfStatsMutable().treeReplayCommandChecks++;
+					GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayCommandChecks++);
 					if (c->type == DisplayCommandType::PushClip || c->type == DisplayCommandType::PopClip)
 						continue;
 					if (!commandOverlapsAnyRegion(*c, regions, count))
@@ -8248,11 +8252,11 @@ int gLastScrollUiFrame = -1000;
 				for (int i = 0; i < nodeCount; i++)
 				{
 					const Node &node = nodes[i];
-					if ((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0) > 0)
+					if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0)
 						{ SRDBG("blur node", i); return false; }
-					if (node.style.opacity != 255 && node.style.opacity != 0)
+					if (node.computedStyle().opacity != 255 && node.computedStyle().opacity != 0)
 						{ SRDBG("opacity node", i); return false; }
-					if (node.style.mask_right_fade_width > 0)
+					if (node.computedStyle().mask_right_fade_width > 0)
 						{ SRDBG("mask node", i); return false; }
 					if (hasRetainedTransformState(node))
 						{ SRDBG("transform node", i); return false; }
@@ -8301,9 +8305,9 @@ int gLastScrollUiFrame = -1000;
 					if (retainedBackgroundNodeCanBeSkippedInRegions(node_id, regions, count))
 						continue;
 					const Node &node = nodes[node_id];
-					if (node.style.display == 1)
+					if (node.computedStyle().display == 1)
 						continue;
-					if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+					if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 						continue;
 					const int start = state.nodeDrawStart[node_id];
 					const int end = state.nodeDrawEnd[node_id];
@@ -8341,9 +8345,9 @@ int gLastScrollUiFrame = -1000;
 			if (node_id < 0 || node_id >= nodeCount)
 				return;
 			const Node &node = nodes[node_id];
-			if (node.style.display == 1)
+			if (node.computedStyle().display == 1)
 				return;
-			if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+			if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 				return;
 
 			if (requireLayoutOverlap)
@@ -8407,9 +8411,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= nodeCount)
 						continue;
 					const Node &node = nodes[node_id];
-					if (node.style.display == 1)
+					if (node.computedStyle().display == 1)
 						continue;
-					if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+					if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 						continue;
 
 					const int start = state.nodeDrawStart[node_id];
@@ -8442,9 +8446,9 @@ int gLastScrollUiFrame = -1000;
 				roundedRects.flush();
 				__rasterUs += refreshPerfNowUs() - __r1;
 				auto &perf = refreshPerfStatsMutable();
-				perf.treeReplaySplitRasterUs += __rasterUs;
-				perf.treeReplaySplitDynUs += __dynUs;
-				perf.treeReplaySplitBgUs += (refreshPerfNowUs() - __fastStart) - __rasterUs - __dynUs;
+				GEA_REFRESH_PERF(perf.treeReplaySplitRasterUs += __rasterUs);
+				GEA_REFRESH_PERF(perf.treeReplaySplitDynUs += __dynUs);
+				GEA_REFRESH_PERF(perf.treeReplaySplitBgUs += (refreshPerfNowUs() - __fastStart) - __rasterUs - __dynUs);
 			}
 
 		static bool simpleReplayNodeInAncestorChain(int node_id, const int *chain, int chainLen)
@@ -8478,9 +8482,9 @@ int gLastScrollUiFrame = -1000;
 				if (simpleReplayNodeInAncestorChain(node_id, chain, chainLen))
 					continue;
 				const Node &node = nodes[node_id];
-				if (node.style.display == 1)
+				if (node.computedStyle().display == 1)
 					continue;
-				if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+				if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 					continue;
 				const int start = state.nodeDrawStart[node_id];
 				const int end = state.nodeDrawEnd[node_id];
@@ -8492,7 +8496,7 @@ int gLastScrollUiFrame = -1000;
 
 		static void replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1, bool allowSplit = true)
 		{
-			refreshPerfStatsMutable().treeReplaySimpleRegionCalls++;
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySimpleRegionCalls++);
 			// Coarse 2-core band split, mirroring replayDirectDirtyRegion's: the
 			// per-origin simple replay is the path a single full-screen dirty rect
 			// takes every frame (e.g. the bouncing-balls field on a small panel),
@@ -8522,10 +8526,10 @@ int gLastScrollUiFrame = -1000;
 						const Band *b = static_cast<const Band *>(p);
 						replaySimpleClippedDirtyRegion(b->x0, by0, b->x1, by1, b->origin, /*allowSplit=*/false);
 					};
-					refreshPerfStatsMutable().treeReplayParallelAttempts++;
+					GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelAttempts++);
 					if (gea_render_parallel_submit(run, &band, mid + 1, y1))
 					{
-						refreshPerfStatsMutable().treeReplayParallelSuccesses++;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelSuccesses++);
 						replaySimpleClippedDirtyRegion(x0, y0, x1, mid, origin, /*allowSplit=*/false); // top band, this core
 						gea_render_parallel_wait();
 						gea_render_parallel_merge_dirty();
@@ -8564,17 +8568,17 @@ int gLastScrollUiFrame = -1000;
 						const std::int64_t __bgStart = refreshPerfNowUs();
 						for (int i = chainLen - 1; i >= 0; --i)
 							replaySimpleNodeCommandsInRect(chain[i], x0, y0, x1, y1, roundedRects, false);
-						refreshPerfStatsMutable().treeReplaySplitBgUs += refreshPerfNowUs() - __bgStart;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitBgUs += refreshPerfNowUs() - __bgStart);
 						const std::int64_t __dynStart = refreshPerfNowUs();
 						if (originOrder >= 0)
 						{
 							for (int oi = originOrder + 1; oi < state.drawNodeOrderCount; ++oi)
 								replaySimpleNodeCommandsInRect(state.drawNodeOrder[oi], x0, y0, x1, y1, roundedRects, true);
 						}
-						refreshPerfStatsMutable().treeReplaySplitDynUs += refreshPerfNowUs() - __dynStart;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitDynUs += refreshPerfNowUs() - __dynStart);
 						const std::int64_t __rasterStart = refreshPerfNowUs();
 						roundedRects.flush();
-						refreshPerfStatsMutable().treeReplaySplitRasterUs += refreshPerfNowUs() - __rasterStart;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplaySplitRasterUs += refreshPerfNowUs() - __rasterStart);
 						return;
 					}
 				}
@@ -8595,9 +8599,9 @@ int gLastScrollUiFrame = -1000;
 					if (retainedBackgroundNodeCanBeSkippedInRegion(node_id, x0, y0, x1, y1))
 						continue;
 					const Node &node = nodes[node_id];
-					if (node.style.display == 1)
+					if (node.computedStyle().display == 1)
 						continue;
-					if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+					if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 						continue;
 
 					const int nx0 = node.layout.x;
@@ -8615,13 +8619,13 @@ int gLastScrollUiFrame = -1000;
 					{
 						DisplayCommand *c = &state.commands[ci];
 						auto &perf = refreshPerfStatsMutable();
-						perf.treeReplayCommandChecks++;
+						GEA_REFRESH_PERF(perf.treeReplayCommandChecks++);
 						if (c->type == DisplayCommandType::PushClip || c->type == DisplayCommandType::PopClip)
 							continue;
 						const std::int64_t filterStartUs = refreshPerfNowUs();
 						const bool mayPaint = commandMayPaintRegion(*c, x0, y0, x1, y1);
-						perf.treeReplayCommandFilterUs += refreshPerfNowUs() - filterStartUs;
-						perf.treeReplayCommandFilterCalls++;
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - filterStartUs);
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterCalls++);
 						if (!mayPaint)
 							continue;
 						if (retainedBackgroundCommandCanBeSkippedInRegion(*c, x0, y0, x1, y1))
@@ -8718,9 +8722,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= tree.nodeCount())
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					const int start = state.nodeDrawStart[node_id];
 					const int end = state.nodeDrawEnd[node_id];
@@ -8774,9 +8778,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= tree.nodeCount())
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					// Skip only nodes whose pixels the backdrop blit actually covers (baked at
 					// bake time). Dirty nodes and bake-EXCLUDED nodes (recently-changed ticker
@@ -8839,9 +8843,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= tree.nodeCount())
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					if (nodeOrAncestorRenderDirty(node_id, nodes, tree.nodeCount()))
 						continue; // dynamic — not baked
@@ -8870,7 +8874,7 @@ int gLastScrollUiFrame = -1000;
 
 			static void GEA_RENDER_HOT_SRAM replayDirectDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1, bool allowSplit = true)
 			{
-				refreshPerfStatsMutable().treeReplayDirectRegionCalls++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayDirectRegionCalls++);
 				// Coarse 2-core split (ONE dispatch/frame). The worker core replays the bottom
 				// row-band into its own band-canvas (private clip + dirty over the SAME
 				// framebuffer — all DisplayBackend draw methods route through replayCanvas() so
@@ -8898,11 +8902,11 @@ int gLastScrollUiFrame = -1000;
 						const Band *b = static_cast<const Band *>(p);
 						replayDirectDirtyRegion(b->x0, by0, b->x1, by1, b->origin, /*allowSplit=*/false);
 					};
-					refreshPerfStatsMutable().treeReplayParallelAttempts++;
+					GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelAttempts++);
 					const bool __submitOk = gea_render_parallel_submit(run, &band, mid + 1, y1);
 					if (__submitOk)
 					{
-						refreshPerfStatsMutable().treeReplayParallelSuccesses++;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelSuccesses++);
 						replayDirectDirtyRegion(x0, y0, x1, mid, origin, /*allowSplit=*/false); // top band, this core
 						gea_render_parallel_wait();
 						gea_render_parallel_merge_dirty();
@@ -8961,9 +8965,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= nodeCount)
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					if (!state.hasNodeScratchFor(node_id))
 						continue;
@@ -9045,11 +9049,6 @@ int gLastScrollUiFrame = -1000;
 					const int node_id = state.drawNodeOrder[oi];
 					if (node_id < 0 || node_id >= nodeCount)
 						continue;
-					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
-						continue;
-					if (n->style.blink_interval_ms > 0)
-						continue;
 					if (!state.hasNodeScratchFor(node_id))
 						continue;
 					const int start = state.nodeDrawStart[node_id];
@@ -9071,6 +9070,12 @@ int gLastScrollUiFrame = -1000;
 					// The recorded paint bbox must also cover the region (guards against
 					// any recording that paints less than the command rect suggests).
 					if (c.bx > x0 || c.by > y0 || c.bx + c.bw - 1 < x1 || c.by + c.bh - 1 < y1)
+						continue;
+					// Read node state only for a command large enough to cover the region.
+					Node *n = &nodes[node_id];
+					if (n->computedStyle().display == 1)
+						continue;
+					if (n->computedStyle().blink_interval_ms > 0)
 						continue;
 					if (effectiveAlphaForNode(node_id, nodes, nodeCount) != 255)
 						continue;
@@ -9124,9 +9129,9 @@ int gLastScrollUiFrame = -1000;
 					if (node_id < 0 || node_id >= tree.nodeCount())
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					// Skip only nodes whose pixels the backdrop blit actually covers (baked at
 					// bake time). Dirty nodes and bake-EXCLUDED nodes (recently-changed ticker
@@ -9163,16 +9168,16 @@ int gLastScrollUiFrame = -1000;
 			{
 				const std::int64_t t0 = refreshPerfNowUs();
 				auto &perf = refreshPerfStatsMutable();
-				perf.treeReplayCommandFilterCalls++;
+				GEA_REFRESH_PERF(perf.treeReplayCommandFilterCalls++);
 				for (int ri = 0; ri < count; ri++)
 				{
 					if (commandOverlapsRegion(c, regions[ri]))
 					{
-						perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0;
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0);
 						return true;
 					}
 				}
-				perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0;
+				GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0);
 				return false;
 			}
 
@@ -9180,16 +9185,16 @@ int gLastScrollUiFrame = -1000;
 			{
 				const std::int64_t t0 = refreshPerfNowUs();
 				auto &perf = refreshPerfStatsMutable();
-				perf.treeReplayCommandFilterCalls++;
+				GEA_REFRESH_PERF(perf.treeReplayCommandFilterCalls++);
 				for (int ri = 0; ri < count; ri++)
 				{
 					if (commandContainedInRegion(c, regions[ri]))
 					{
-						perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0;
+						GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0);
 						return true;
 					}
 				}
-				perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0;
+				GEA_REFRESH_PERF(perf.treeReplayCommandFilterUs += refreshPerfNowUs() - t0);
 				return false;
 			}
 
@@ -9212,7 +9217,7 @@ int gLastScrollUiFrame = -1000;
 					y1 = region.y1;
 				if (x0 > x1 || y0 > y1)
 					return true;
-				refreshPerfStatsMutable().treeReplayFillRectCommands++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayFillRectCommands++);
 				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, c.fill.color);
 				return true;
 			}
@@ -9224,7 +9229,7 @@ int gLastScrollUiFrame = -1000;
 					return false;
 				if (!regionInsideRetainedBackground(c, x0, y0, x1, y1))
 					return false;
-				refreshPerfStatsMutable().treeReplayRoundedRectCommands++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayRoundedRectCommands++);
 				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, c.fillRoundedRect.color);
 				return true;
 			}
@@ -9233,32 +9238,32 @@ int gLastScrollUiFrame = -1000;
 			{
 				const std::int64_t t0 = refreshPerfNowUs();
 				auto &perf = refreshPerfStatsMutable();
-				perf.treeReplayCommandClipCalls++;
+				GEA_REFRESH_PERF(perf.treeReplayCommandClipCalls++);
 				if (!commandOverlapsRegion(c, region))
 				{
-					perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0;
+					GEA_REFRESH_PERF(perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0);
 					return;
 				}
 				if (retainedBackgroundCommandCanBeSkippedInRegion(c, region.x0, region.y0, region.x1, region.y1))
 				{
-					perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0;
+					GEA_REFRESH_PERF(perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0);
 					return;
 				}
 				if (replayFillRectInRegion(c, region))
 				{
-					perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0;
+					GEA_REFRESH_PERF(perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0);
 					return;
 				}
 				if (replayContainedRoundedRectFillInRegion(c, region.x0, region.y0, region.x1, region.y1))
 				{
-					perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0;
+					GEA_REFRESH_PERF(perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0);
 					return;
 				}
 				gea::platform::display::Display::pushClip(region.x0, region.y0,
 																									region.x1 - region.x0 + 1, region.y1 - region.y0 + 1);
 				DisplayCommandDrawer::replay(c);
 				gea::platform::display::Display::popClip();
-				perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0;
+				GEA_REFRESH_PERF(perf.treeReplayCommandClipUs += refreshPerfNowUs() - t0);
 			}
 
 			static bool commandRangeOverlapsAnyRegion(int start, int end, const DisplayReplayRegion *regions, int count)
@@ -9311,7 +9316,7 @@ int gLastScrollUiFrame = -1000;
 				for (int ci = start; ci < end; ci++)
 				{
 					DisplayCommand *c = &state.commands[ci];
-					refreshPerfStatsMutable().treeReplayCommandChecks++;
+					GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayCommandChecks++);
 					if (c->type == DisplayCommandType::SetAlpha)
 					{
 						roundedRects.flush();
@@ -9346,7 +9351,7 @@ int gLastScrollUiFrame = -1000;
 
 			static void GEA_RENDER_HOT_SRAM replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count, bool allowSplit = true)
 			{
-				refreshPerfStatsMutable().treeReplayDirectRegionsCalls++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayDirectRegionsCalls++);
 				if (!regions || count <= 0)
 					return;
 				auto *canvas = gea::platform::display::Display::canvas();
@@ -9442,10 +9447,10 @@ int gLastScrollUiFrame = -1000;
 							const Ctx *c = static_cast<const Ctx *>(p);
 							replayDirectDirtyRegions(c->regions, c->count, /*allowSplit=*/false);
 						};
-						refreshPerfStatsMutable().treeReplayParallelAttempts++;
+						GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelAttempts++);
 						if (gea_render_parallel_submit(run, &ctx, mid + 1, maxY))
 						{
-							refreshPerfStatsMutable().treeReplayParallelSuccesses++;
+							GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayParallelSuccesses++);
 							replayDirectDirtyRegions(topR, count, /*allowSplit=*/false); // top band, this core
 							gea_render_parallel_wait();
 							gea_render_parallel_merge_dirty();
@@ -9491,9 +9496,9 @@ int gLastScrollUiFrame = -1000;
 					if (!useBackdrop && retainedBackgroundNodeCanBeSkippedInRegions(node_id, regions, count))
 						continue;
 					Node *n = &nodes[node_id];
-					if (n->style.display == 1)
+					if (n->computedStyle().display == 1)
 						continue;
-					if (n->style.blink_interval_ms > 0 && !n->style.blink_visible)
+					if (n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible)
 						continue;
 					// Skip only nodes whose pixels the backdrop blit actually covers (baked at
 					// bake time). Dirty nodes and bake-EXCLUDED nodes (recently-changed ticker
@@ -9703,12 +9708,12 @@ int gLastScrollUiFrame = -1000;
 	{
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
-		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.style.position) &&
-		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.computedStyle().position) &&
+		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
 		// A multicol container paints its whole flow thread, positioned content
 		// included, so every column box can repeat it.
-		return n.parent < 0 || n.style.position == kPositionFixed || ChildZSorter::effectGroup(n) ||
-		    (!n.style.z_index_auto && (n.style.position != 0 || item)) || LayoutEngine::multicolContainer(n);
+		return n.parent < 0 || n.computedStyle().position == kPositionFixed || ChildZSorter::effectGroup(n) ||
+		    (!n.computedStyle().z_index_auto && (n.computedStyle().position != 0 || item)) || LayoutEngine::multicolContainer(n);
 	}
 
 	bool PaintOrder::isGroup(int id)
@@ -9716,10 +9721,10 @@ int gLastScrollUiFrame = -1000;
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
 		const bool item = n.parent >= 0 &&
-		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
 		// An inline-block, inline-flex or inline-grid paints atomically, like a
 		// float (CSS 2.2 Appendix E).
-		return isContext(id) || n.style.position != 0 || n.style.float_side || item || isAtomicInline(n.style);
+		return isContext(id) || n.computedStyle().position != 0 || n.computedStyle().float_side || item || isAtomicInline(n.computedStyle());
 	}
 
 	std::vector<int> PaintOrder::collectChildren(int root, bool groupRoot, bool includePositioned)
@@ -9735,18 +9740,18 @@ int gLastScrollUiFrame = -1000;
 		auto walk = [&](auto &&self, int parent, bool withinGroup) -> void {
 			std::vector<int> children;
 			for (int child = nodes[parent].first_child; child >= 0; child = nodes[child].next_sibling)
-				if (!isDisplayNone(nodes[child].style)) children.push_back(child);
-			if (nodes[parent].style.display == kDisplayFlex || isDisplayGrid(nodes[parent].style)) {
+				if (!isDisplayNone(nodes[child].computedStyle())) children.push_back(child);
+			if (nodes[parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[parent].computedStyle())) {
 				std::stable_sort(children.begin(), children.end(), [&](int a, int b) {
-					const int oa = isOutOfFlowPosition(nodes[a].style.position) ? 0 : nodes[a].style.order;
-					const int ob = isOutOfFlowPosition(nodes[b].style.position) ? 0 : nodes[b].style.order;
+					const int oa = isOutOfFlowPosition(nodes[a].computedStyle().position) ? 0 : nodes[a].computedStyle().order;
+					const int ob = isOutOfFlowPosition(nodes[b].computedStyle().position) ? 0 : nodes[b].computedStyle().order;
 					return oa < ob;
 				});
 			}
 			for (int child : children) {
 				const auto &n = nodes[child];
-				if (n.style.blink_interval_ms > 0 && !n.style.blink_visible) continue;
-				const bool context = isContext(child), positioned = n.style.position != 0 || context;
+				if (n.computedStyle().blink_interval_ms > 0 && !n.computedStyle().blink_visible) continue;
+				const bool context = isContext(child), positioned = n.computedStyle().position != 0 || context;
 				const bool group = isGroup(child);
 				if (positioned) {
 					if (includePositioned) result.push_back(child);
@@ -10139,7 +10144,7 @@ int gLastScrollUiFrame = -1000;
 		for (int i = 0; i < state.drawNodeOrderCount; ++i)
 			if (state.drawNodeOrder[i] < 0 || state.drawNodeOrder[i] >= nodeCount) return false;
 		for (int id = 0; id < nodeCount; ++id) {
-			if (!nodes[id].style.backface_hidden || !ViewRenderer::isTransformableBox(nodes[id]) || preserves3D(nodes[id].style)) continue;
+			if (!nodes[id].computedStyle().backface_hidden || !ViewRenderer::isTransformableBox(nodes[id]) || preserves3D(nodes[id].computedStyle())) continue;
 			const bool wasRecorded = state.nodeDrawStart[id] >= 0;
 			if (wasRecorded == ViewRenderer::backfaceSubtreeHidden(nodes[id])) return false;
 		}
@@ -10500,9 +10505,9 @@ int gLastScrollUiFrame = -1000;
 
 		for (int i = 0; i < tree.nodeCount(); i++)
 		{
-			if ((GEA_CSS_FILTERS ? rstyle(nodes[i].style).filter_blur_radius : 0) > 0)
+			if ((GEA_CSS_FILTERS ? rstyle(nodes[i].computedStyle()).filter_blur_radius : 0) > 0)
 				return false;
-			if (nodes[i].style.overflow == 2)
+			if (nodes[i].computedStyle().overflow == 2)
 				return false;
 			// Multicol content paints as copies no node range describes.
 			if (LayoutEngine::multicolContainer(nodes[i]))
@@ -10627,12 +10632,18 @@ int gLastScrollUiFrame = -1000;
 			for (int ci = start; ci < end; ci++)
 				DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
 		}
+		// recordClipBegin never emits a scope for a leaf. Avoid scanning the
+		// entire command list for every independently moving leaf.
+		if (Tree::instance().nodes()[node].first_child < 0) return;
 		// PushClip/PopClip wrap the node's descendants, so recordNode deliberately
 		// emits them outside [nodeDrawStart,nodeDrawEnd]. Move those retained scope
 		// commands explicitly; otherwise a translated overflow:hidden subtree is
 		// intersected with the clip at its old position.
 		for (int ci = 0; ci < state.commandCount; ci++)
 		{
+#if GEA_EMBEDDED_UI_REFRESH_PERF
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeTranslateClipChecks++);
+#endif
 			DisplayCommand &command = state.commands[ci];
 			if ((command.type == DisplayCommandType::PushClip || command.type == DisplayCommandType::PopClip) &&
 					command.clip.nodeId == node)
@@ -10760,7 +10771,7 @@ int gLastScrollUiFrame = -1000;
 			for (int a = LayoutEngine::isViewportFixed(nodes[id]) ? -1 : nodes[id].parent; a >= 0 && a < nodeCount; a = nodes[a].parent)
 			{
 				const Node &ancestor = nodes[a];
-				if (!isViewLikeNodeType(ancestor.type) || ancestor.style.overflow == 0 || ancestor.first_child < 0)
+				if (!isViewLikeNodeType(ancestor.type) || ancestor.computedStyle().overflow == 0 || ancestor.first_child < 0)
 				{
 					if (LayoutEngine::isViewportFixed(ancestor)) break;
 					continue;
@@ -10826,8 +10837,8 @@ int gLastScrollUiFrame = -1000;
 					continue;
 				const Node &probe = nodes[id];
 				const bool paintsBox =
-						(probe.style.has_bg && (probe.style.bg_alpha > 0 || styleHasBackgroundImage(probe.style))) ||
-						(GEA_CSS_BOX_SHADOW ? rstyle(probe.style).box_shadow_alpha : 0) > 0;
+						(probe.computedStyle().has_bg && (probe.computedStyle().bg_alpha > 0 || styleHasBackgroundImage(probe.computedStyle()))) ||
+						(GEA_CSS_BOX_SHADOW ? rstyle(probe.computedStyle()).box_shadow_alpha : 0) > 0;
 				if (!paintsBox)
 					continue;
 			}
@@ -10853,8 +10864,8 @@ int gLastScrollUiFrame = -1000;
 			for (int cursor = id; cursor >= 0 && cursor < tree.nodeCount(); cursor = nodes[cursor].parent)
 			{
 				const Node &a = nodes[cursor];
-				if (a.style.display == 1 || a.style.opacity == 0 ||
-						(a.style.blink_interval_ms > 0 && !a.style.blink_visible))
+				if (a.computedStyle().display == 1 || a.computedStyle().opacity == 0 ||
+						(a.computedStyle().blink_interval_ms > 0 && !a.computedStyle().blink_visible))
 				{
 					hiddenOrOutside = true;
 					break;
@@ -11022,9 +11033,9 @@ int gLastScrollUiFrame = -1000;
 				if (paintNode < 0 || paintNode >= nodeCount)
 					continue;
 				const Node &paint = nodes[paintNode];
-				if (paint.style.display == 1)
+				if (paint.computedStyle().display == 1)
 					continue;
-				if (paint.style.blink_interval_ms > 0 && !paint.style.blink_visible)
+				if (paint.computedStyle().blink_interval_ms > 0 && !paint.computedStyle().blink_visible)
 					continue;
 				DisplayCommandReplayer::replayNodeCommandRangeInRegions(paintNode, &region, 1, roundedRects);
 			}
@@ -11847,9 +11858,9 @@ int gLastScrollUiFrame = -1000;
 				if (nodeId < 0 || nodeId >= tree.nodeCount())
 					continue;
 				const Node &node = nodes[nodeId];
-				if (node.style.display == 1)
+				if (node.computedStyle().display == 1)
 					continue;
-				if (node.style.blink_interval_ms > 0 && !node.style.blink_visible)
+				if (node.computedStyle().blink_interval_ms > 0 && !node.computedStyle().blink_visible)
 					continue;
 				if (!state.hasNodeScratchFor(nodeId))
 					continue;
@@ -12542,9 +12553,9 @@ int gLastScrollUiFrame = -1000;
 			const int dirtyY0 = dMain.y0;
 			const int dirtyX1 = dMain.x1;
 			const int dirtyY1 = dMain.y1;
-			refreshPerfStatsMutable().treeBgRecolorFastPixels += dMain.fastPixels;
-			refreshPerfStatsMutable().treeBgRecolorFillUs += dMain.fillUs;
-			refreshPerfStatsMutable().treeBgRecolorEdgeUs += dMain.edgeUs;
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeBgRecolorFastPixels += dMain.fastPixels);
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeBgRecolorFillUs += dMain.fillUs);
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeBgRecolorEdgeUs += dMain.edgeUs);
 			if (dirtyX0 > dirtyX1 || dirtyY0 > dirtyY1)
 				return false;
 			canvas->markDirty(dirtyX0, dirtyY0, dirtyX1, dirtyY1);
@@ -12557,9 +12568,9 @@ int gLastScrollUiFrame = -1000;
 				if (!replayLaterOverlappingCommands(node, region))
 					return false;
 				replayUs = refreshPerfNowUs() - replayStartUs;
-				refreshPerfStatsMutable().treeBgRecolorReplayUs += replayUs;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeBgRecolorReplayUs += replayUs);
 			}
-			refreshPerfStatsMutable().treeBgRecolorUs += refreshPerfNowUs() - totalStartUs;
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeBgRecolorUs += refreshPerfNowUs() - totalStartUs);
 			if (outX0)
 				*outX0 = dirtyX0;
 			if (outY0)
@@ -12863,9 +12874,9 @@ int gLastScrollUiFrame = -1000;
 			if (nodeId < 0 || nodeId >= tree.nodeCount())
 				continue;
 			const Node &n = nodes[nodeId];
-			if (n.style.display == 1)
+			if (n.computedStyle().display == 1)
 				continue;
-			if (n.style.blink_interval_ms > 0 && !n.style.blink_visible)
+			if (n.computedStyle().blink_interval_ms > 0 && !n.computedStyle().blink_visible)
 				continue;
 			if (!state.hasNodeScratchFor(nodeId))
 				continue;
@@ -12962,10 +12973,10 @@ int gLastScrollUiFrame = -1000;
 		// an empty range, which `old_len == 0 && tmp_len > 0` below (correctly) refuses
 		// to splice — and the refusal cost the whole frame its retained display list.
 		const bool outsideRecordClip = !isDocumentCanvasRoot(*n) && nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
-		if (!outsideRecordClip && n->style.visibility == 0 && !(n->layout.line_clamp_hidden & 1) && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
-				n->style.display != 1 &&
-				n->style.opacity != 0 &&
-				!(n->style.blink_interval_ms > 0 && !n->style.blink_visible) &&
+		if (!outsideRecordClip && n->computedStyle().visibility == 0 && !(n->layout.line_clamp_hidden & 1) && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
+				n->computedStyle().display != 1 &&
+				n->computedStyle().opacity != 0 &&
+				!(n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible) &&
 				!isNativeTextInputView(*n))
 		{
 			ViewRenderer::recordBox(*n);
@@ -13033,7 +13044,7 @@ int gLastScrollUiFrame = -1000;
 
 		// Mirror of ViewRenderer::recordScrollbar's geometry. Cases where no
 		// thumb is ever recorded are a successful no-op, not a failure.
-		if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->style)))
+		if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->computedStyle())))
 			return true;
 		if (n->layout.height <= 0 || n->layout.scroll_content_height <= n->layout.height)
 			return true;
@@ -13103,7 +13114,10 @@ int gLastScrollUiFrame = -1000;
 		const int root = tree.mountedRoot();
 		if (root >= 0 && root < tree.nodeCount() && isDocumentCanvasRoot(tree.nodes()[root]))
 			DisplayCommandReplayer::restoreClearBaseInRegion(x0, y0, x1, y1);
-		DisplayCommandReplayer::replaySimpleClippedDirtyRegion(x0, y0, x1, y1, origin);
+		// The caller owns the active clip and may have rebound the canvas onto a DMA
+		// chunk. The worker canvas has neither that binding nor the clip, so this
+		// already-clipped entry must stay on the submitting canvas.
+		DisplayCommandReplayer::replaySimpleClippedDirtyRegion(x0, y0, x1, y1, origin, /*allowSplit=*/false);
 	}
 
 	void DisplayList::maybeBakeStaticBackdrop(int width, int height, bool stableThisFrame, bool directReplay,

@@ -4,6 +4,12 @@
 #include "pixel.h"
 
 #include <cstring>
+#include <cstdlib>
+#include <new>
+#include <utility>
+#if defined(ESP_PLATFORM)
+#include "esp_heap_caps.h"
+#endif
 
 namespace gea::embedded::ui {
 
@@ -14,14 +20,24 @@ constexpr ComputedStyle makeDefaultStyle()
 {
 	ComputedStyle style{};
 	style.display = kDisplayBlock;
+#if GEA_CSS_DISPLAY_EXPLICIT
 	style.display_explicit = 0;
+#endif
+#if GEA_CSS_FLEX_DIRECTION
 	style.flex_direction = 0;
+#endif
+#if GEA_CSS_FLEX_DIRECTION
 	style.flex_direction_explicit = 0;
+#endif
 #if GEA_CSS_FLEX_WRAP
 	style.flex_wrap = 0;
 #endif
+#if GEA_CSS_JUSTIFY_CONTENT
 	style.justify_content = 0;
+#endif
+#if GEA_CSS_ALIGN_ITEMS
 	style.align_items = 0;
+#endif
 #if GEA_CSS_JUSTIFY_ITEMS
 	style.justify_items = 0;
 #endif
@@ -31,11 +47,15 @@ constexpr ComputedStyle makeDefaultStyle()
 #if GEA_CSS_ALIGN_SELF
 	style.align_self = -1;
 #endif
+#if GEA_CSS_GAP
 	style.gap = 0;
+#endif
 #if GEA_CSS_ORDER
 	style.order = 0;
 #endif
+#if GEA_CSS_BOX_SIZING
 	style.box_sizing = 0;
+#endif
 #if GEA_CSS_FLOATS
 	style.float_side = 0;
 	style.clear_side = 0;
@@ -44,7 +64,9 @@ constexpr ComputedStyle makeDefaultStyle()
 	style.writing_mode = -1;
 	style.direction = -1;
 #endif
+#if GEA_CSS_MARGIN_AUTO
 	style.margin_auto = 0;
+#endif
 #if GEA_CSS_AXIS_GAP
 	style.row_gap = style.column_gap = kUnset;
 #endif
@@ -53,30 +75,48 @@ constexpr ComputedStyle makeDefaultStyle()
 #endif
 	// Grid tracks moved to RareStyle (default 0 for a node with no rare_style),
 	// so a fresh node needs no explicit reset here.
+#if GEA_CSS_WIDTH_EXPRESSIONS
 	style.width_expression = -1;
+#endif
 #if GEA_CSS_HEIGHT_EXPRESSIONS
 	style.height_expression = -1;
 #endif
 	style.width = kUnset;
 	style.height = kUnset;
+#if GEA_CSS_WIDTH_PERCENT
 	style.width_percent = kUnset;
+#endif
+#if GEA_CSS_HEIGHT_PERCENT
 	style.height_percent = kUnset;
+#endif
 #if GEA_CSS_MIN_WIDTH
 	style.min_width = kUnset;
 #endif
+#if GEA_CSS_MIN_HEIGHT
 	style.min_height = kUnset;
+#endif
+#if GEA_CSS_MAX_WIDTH
 	style.max_width = kUnset;
+#endif
 #if GEA_CSS_MAX_HEIGHT
 	style.max_height = kUnset;
 #endif
+#if GEA_CSS_FLEX_FACTORS
 	style.flex = 0;
+#endif
+#if GEA_CSS_FLEX_FACTORS
 	style.flex_shrink = 1;
+#endif
 #if GEA_CSS_FLEX_BASIS
 	style.flex_basis = kUnset;
 #endif
 	for (int i = 0; i < 4; i++) {
+#if GEA_CSS_PADDING
 		style.padding[i] = 0;
+#endif
+#if GEA_CSS_MARGINS
 		style.margin[i] = 0;
+#endif
 		// per-side border width/color/alpha moved to RareStyle (defaults there).
 		style.border_radius[GEA_CSS_RADIUS_INDEX(i)] = 0;
 #if GEA_CSS_PERCENT_RADIUS
@@ -119,8 +159,12 @@ constexpr ComputedStyle makeDefaultStyle()
 	style.bg_fill = 0;
 #endif
 	// gradients + background-grid moved to RareStyle (defaults there).
+#if GEA_CSS_ACTIVE_BACKGROUND
 	style.active_bg_color = 0;
+#endif
+#if GEA_CSS_ACTIVE_BACKGROUND
 	style.has_active_bg = 0;
+#endif
 	style.text_color = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
 #if GEA_CSS_TEXT_ALPHA
 	style.text_alpha = 255;
@@ -133,9 +177,15 @@ constexpr ComputedStyle makeDefaultStyle()
 	style.blink_started_ms = 0;
 	style.blink_visible = 1;
 #endif
+#if GEA_CSS_BORDER_COLORS
 	style.border_color_flags = 0;
+#endif
+#if GEA_CSS_BORDER_WIDTHS
 	style.border_width = 0;
+#endif
+#if GEA_CSS_BORDER_COLORS
 	style.border_color = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+#endif
 #if GEA_CSS_BORDER_ALPHA
 	style.border_alpha = 255;
 #endif
@@ -143,10 +193,18 @@ constexpr ComputedStyle makeDefaultStyle()
 	// node (rare_style = -1) reads their correct defaults from the zero entry.
 	style.font_id = -1;
 	style.font_size = 0;
+#if GEA_CSS_FONT_WEIGHT
 	style.font_weight = 400;
+#endif
+#if GEA_CSS_LINE_HEIGHT
 	style.line_height = 0;
+#endif
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	style.line_height_multiplier = -1;
+#endif
+#if GEA_CSS_TEXT_ALIGN
 	style.text_align = 0;
+#endif
 	style.text_align_last = 0;
 	style.text_emphasis = 0;
 	style.text_emphasis_color = 0;
@@ -157,8 +215,12 @@ constexpr ComputedStyle makeDefaultStyle()
 #if GEA_CSS_TEXT_TRANSFORM
 	style.text_transform = 0;
 #endif
+#if GEA_CSS_WHITE_SPACE
 	style.white_space = 0;
+#endif
+#if GEA_CSS_TEXT_OVERFLOW
 	style.text_overflow = 0;
+#endif
 	style.overflow = 0;
 #if GEA_CSS_OVERFLOW_AXES
 	style.overflow_x = 0;
@@ -192,10 +254,110 @@ void NodeLifecycle::resetStyle(ComputedStyle &style)
 	style = kDefaultStyle;
 }
 
+#if GEA_EMBEDDED_SHARED_STYLES
+namespace {
+SharedStyleRecord *g_sharedStyleHead = nullptr;
+std::size_t g_sharedStyleRecords = 0;
+SharedStyleRecord &defaultStyleRecord()
+{
+	static SharedStyleRecord record{kDefaultStyle, 0, nullptr};
+	return record;
+}
+void retainStyle(SharedStyleRecord *record)
+{
+	if (record != &defaultStyleRecord()) ++record->references;
+}
+void releaseStyle(SharedStyleRecord *record)
+{
+	if (record == &defaultStyleRecord() || --record->references != 0) return;
+	// Reclamation is cold; keep no backward link in every style record.
+	// The per-frame read/write path still uses the same direct record pointer.
+	auto **link = &g_sharedStyleHead;
+	while (*link && *link != record) link = &(*link)->next;
+	if (!*link) std::abort();
+	*link = record->next;
+	record->~SharedStyleRecord();
+#if defined(ESP_PLATFORM)
+	heap_caps_free(record);
+#else
+	std::free(record);
+#endif
+	--g_sharedStyleRecords;
+}
+SharedStyleRecord *copyStyle(const ComputedStyle &value)
+{
+#if defined(ESP_PLATFORM)
+	void *storage = heap_caps_malloc(sizeof(SharedStyleRecord), MALLOC_CAP_SPIRAM);
+#else
+	void *storage = std::malloc(sizeof(SharedStyleRecord));
+#endif
+	if (!storage) std::abort();
+	auto *record = new (storage) SharedStyleRecord{value, 1, g_sharedStyleHead};
+	g_sharedStyleHead = record;
+	++g_sharedStyleRecords;
+	return record;
+}
+}
+NodeStyleStorage::NodeStyleStorage() : record_(&defaultStyleRecord()) {}
+NodeStyleStorage::~NodeStyleStorage() { releaseStyle(record_); }
+NodeStyleStorage::NodeStyleStorage(const NodeStyleStorage &other) : record_(other.record_) { retainStyle(record_); }
+NodeStyleStorage &NodeStyleStorage::operator=(const NodeStyleStorage &other)
+{
+	if (this != &other) { retainStyle(other.record_); releaseStyle(record_); record_ = other.record_; }
+	return *this;
+}
+NodeStyleStorage::NodeStyleStorage(NodeStyleStorage &&other) noexcept
+	: record_(std::exchange(other.record_, &defaultStyleRecord())) {}
+NodeStyleStorage &NodeStyleStorage::operator=(NodeStyleStorage &&other) noexcept
+{
+	if (this != &other) { releaseStyle(record_); record_ = std::exchange(other.record_, &defaultStyleRecord()); }
+	return *this;
+}
+ComputedStyle &NodeStyleStorage::detach()
+{
+	auto *copy = copyStyle(record_->value);
+	releaseStyle(record_);
+	record_ = copy;
+	return record_->value;
+}
+void NodeStyleStorage::reset() { releaseStyle(record_); record_ = &defaultStyleRecord(); }
+void NodeStyleStorage::intern()
+{
+	if (record_ == &defaultStyleRecord() || record_->value.rare_style >= 0) return;
+	// Called at the end of CSS recomputation, never in the per-frame read path.
+	for (auto *other = g_sharedStyleHead; other; other = other->next) {
+		if (other == record_ || !(other->value == record_->value)) continue;
+		retainStyle(other);
+		releaseStyle(record_);
+		record_ = other;
+		return;
+	}
+}
+std::size_t NodeStyleStorage::allocatedBytes() { return g_sharedStyleRecords * sizeof(SharedStyleRecord); }
+std::size_t NodeStyleStorage::allocatedRecords() { return g_sharedStyleRecords; }
+std::size_t NodeStyleStorage::allocatedHeapBytes()
+{
+#if defined(ESP_PLATFORM)
+    std::size_t bytes = 0;
+    for (auto *record = g_sharedStyleHead; record; record = record->next)
+        bytes += heap_caps_get_allocated_size(record);
+    return bytes;
+#else
+    return allocatedBytes();
+#endif
+}
+
+#else
+void Node::resetComputedStyle() { NodeLifecycle::resetStyle(style); }
+#endif
+
 void NodeLifecycle::init(Node *n, NodeType type)
 {
 	n->type = type;
-	resetStyle(n->style);
+#if GEA_EMBEDDED_SHARED_STYLES && !GEA_CSS_CUSTOM_PROPERTIES
+	n->class_style_tracked = false;
+#endif
+	n->resetComputedStyle();
 	n->text.clear();
 #if GEA_UI_IMAGE_NODES
 	n->image_id = -1;
@@ -213,6 +375,10 @@ void NodeLifecycle::init(Node *n, NodeType type)
 	n->layout.inline_indent = 0;
 	n->layout.line_clamp_hidden = 0;
 	n->layout.line_clamp_lines = 0;
+#if !GEA_EMBEDDED_SHARED_STYLES
+	n->layout.memo_avail_w = n->layout.memo_avail_h = 0;
+	n->layout.memo_pass = 0;
+#endif
 #if GEA_CSS_SCROLLING
 	n->layout.scroll_x = 0;
 	n->layout.scroll_y = 0;

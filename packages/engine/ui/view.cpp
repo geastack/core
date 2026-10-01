@@ -61,11 +61,11 @@ uint8_t combineAlpha(uint8_t parentAlpha, uint8_t localAlpha)
 
 bool borderIsSameOpaqueSolidBackground(const Node &node, uint8_t parentAlpha)
 {
-	return !hasBorderRelief(node.style) && node.style.has_bg &&
-	       StyleValues::backgroundClip(node.style, rstyle(node.style).bg_image_layer_count - 1) == 0 &&
-	       !styleHasBackgroundImage(node.style) &&
-	       node.style.bg_color == borderPaintColor(node.style, 0) &&
-	       combineAlpha(parentAlpha, node.style.bg_alpha) == combineAlpha(parentAlpha, borderPaintAlpha(node.style, 0));
+	return !hasBorderRelief(node.computedStyle()) && node.computedStyle().has_bg &&
+	       StyleValues::backgroundClip(node.computedStyle(), rstyle(node.computedStyle()).bg_image_layer_count - 1) == 0 &&
+	       !styleHasBackgroundImage(node.computedStyle()) &&
+	       node.computedStyle().bg_color == borderPaintColor(node.computedStyle(), 0) &&
+	       combineAlpha(parentAlpha, node.computedStyle().bg_alpha) == combineAlpha(parentAlpha, borderPaintAlpha(node.computedStyle(), 0));
 }
 
 // Display commands carry int16 rects. A box past that range (see
@@ -142,7 +142,7 @@ int clampPermille(int value)
 
 int gradientToStop(const Node &node)
 {
-	const int toStop = rstyle(node.style).bg_gradient_to_stop > 0 ? rstyle(node.style).bg_gradient_to_stop : 1000;
+	const int toStop = rstyle(node.computedStyle()).bg_gradient_to_stop > 0 ? rstyle(node.computedStyle()).bg_gradient_to_stop : 1000;
 	return std::max(1, toStop);
 }
 
@@ -159,24 +159,24 @@ uint16_t gradientColorAt(const Node &node, int permille)
 {
 	permille = clampPermille(permille);
 	const int toStop = gradientToStop(node);
-	if (rstyle(node.style).bg_gradient_has_mid && rstyle(node.style).bg_gradient_mid_stop > 0 && rstyle(node.style).bg_gradient_mid_stop < toStop) {
-		const int stop = rstyle(node.style).bg_gradient_mid_stop;
+	if (rstyle(node.computedStyle()).bg_gradient_has_mid && rstyle(node.computedStyle()).bg_gradient_mid_stop > 0 && rstyle(node.computedStyle()).bg_gradient_mid_stop < toStop) {
+		const int stop = rstyle(node.computedStyle()).bg_gradient_mid_stop;
 		if (permille <= stop)
-			return interpolatePremultipliedColor(rstyle(node.style).bg_gradient_from_color,
-			                                     rstyle(node.style).bg_gradient_from_alpha,
-			                                     rstyle(node.style).bg_gradient_mid_color,
-			                                     rstyle(node.style).bg_gradient_mid_alpha,
+			return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_from_color,
+			                                     rstyle(node.computedStyle()).bg_gradient_from_alpha,
+			                                     rstyle(node.computedStyle()).bg_gradient_mid_color,
+			                                     rstyle(node.computedStyle()).bg_gradient_mid_alpha,
 			                                     stopRangePermille(permille, 0, stop));
-		return interpolatePremultipliedColor(rstyle(node.style).bg_gradient_mid_color,
-		                                     rstyle(node.style).bg_gradient_mid_alpha,
-		                                     rstyle(node.style).bg_gradient_to_color,
-		                                     rstyle(node.style).bg_gradient_to_alpha,
+		return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_mid_color,
+		                                     rstyle(node.computedStyle()).bg_gradient_mid_alpha,
+		                                     rstyle(node.computedStyle()).bg_gradient_to_color,
+		                                     rstyle(node.computedStyle()).bg_gradient_to_alpha,
 		                                     stopRangePermille(permille, stop, toStop));
 	}
-	return interpolatePremultipliedColor(rstyle(node.style).bg_gradient_from_color,
-	                                     rstyle(node.style).bg_gradient_from_alpha,
-	                                     rstyle(node.style).bg_gradient_to_color,
-	                                     rstyle(node.style).bg_gradient_to_alpha,
+	return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_from_color,
+	                                     rstyle(node.computedStyle()).bg_gradient_from_alpha,
+	                                     rstyle(node.computedStyle()).bg_gradient_to_color,
+	                                     rstyle(node.computedStyle()).bg_gradient_to_alpha,
 	                                     stopRangePermille(permille, 0, toStop));
 }
 
@@ -184,17 +184,17 @@ uint8_t gradientAlphaAt(const Node &node, int permille)
 {
 	permille = clampPermille(permille);
 	const int toStop = gradientToStop(node);
-	if (rstyle(node.style).bg_gradient_has_mid && rstyle(node.style).bg_gradient_mid_stop > 0 && rstyle(node.style).bg_gradient_mid_stop < toStop) {
-		const int stop = rstyle(node.style).bg_gradient_mid_stop;
+	if (rstyle(node.computedStyle()).bg_gradient_has_mid && rstyle(node.computedStyle()).bg_gradient_mid_stop > 0 && rstyle(node.computedStyle()).bg_gradient_mid_stop < toStop) {
+		const int stop = rstyle(node.computedStyle()).bg_gradient_mid_stop;
 		if (permille <= stop)
-			return interpolateAlpha(rstyle(node.style).bg_gradient_from_alpha,
-			                        rstyle(node.style).bg_gradient_mid_alpha,
+			return interpolateAlpha(rstyle(node.computedStyle()).bg_gradient_from_alpha,
+			                        rstyle(node.computedStyle()).bg_gradient_mid_alpha,
 			                        stopRangePermille(permille, 0, stop));
-		return interpolateAlpha(rstyle(node.style).bg_gradient_mid_alpha,
-		                        rstyle(node.style).bg_gradient_to_alpha,
+		return interpolateAlpha(rstyle(node.computedStyle()).bg_gradient_mid_alpha,
+		                        rstyle(node.computedStyle()).bg_gradient_to_alpha,
 		                        stopRangePermille(permille, stop, toStop));
 	}
-	return interpolateAlpha(rstyle(node.style).bg_gradient_from_alpha, rstyle(node.style).bg_gradient_to_alpha, stopRangePermille(permille, 0, toStop));
+	return interpolateAlpha(rstyle(node.computedStyle()).bg_gradient_from_alpha, rstyle(node.computedStyle()).bg_gradient_to_alpha, stopRangePermille(permille, 0, toStop));
 }
 
 void appendFillRectWithAlpha(int x, int y, int w, int h, uint16_t color, uint8_t alpha, uint8_t parentAlpha, int bx, int by, int bw, int bh)
@@ -305,11 +305,11 @@ void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, i
 // lower layer) has a transparent backdrop and paints normally.
 uint8_t backgroundLayerBlend(const Node &node, int layer)
 {
-	const int mode = StyleValues::backgroundBlendMode(node.style, layer);
+	const int mode = StyleValues::backgroundBlendMode(node.computedStyle(), layer);
 	if (!mode) return 0;
-	const auto &r = rstyle(node.style);
-	const bool backdrop = (node.style.has_bg && node.style.bg_alpha > 0) ||
-	    (node.style.bg_fill == 1 && r.bg_gradient_layer > layer) ||
+	const auto &r = rstyle(node.computedStyle());
+	const bool backdrop = (node.computedStyle().has_bg && node.computedStyle().bg_alpha > 0) ||
+	    (node.computedStyle().bg_fill == 1 && r.bg_gradient_layer > layer) ||
 	    (r.bg_overlay_gradient && r.bg_overlay_gradient_layer > layer) ||
 	    (r.bg_radial_gradient && r.bg_radial_gradient_layer > layer);
 	return backdrop ? static_cast<uint8_t>(mode) : 0;
@@ -331,10 +331,10 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->gradient.y = y;
 	cmd->gradient.w = w;
 	cmd->gradient.h = h;
-	cmd->gradient.tl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
-	cmd->gradient.tr = node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
-	cmd->gradient.br = node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
-	cmd->gradient.bl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
+	cmd->gradient.tl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+	cmd->gradient.tr = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+	cmd->gradient.br = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+	cmd->gradient.bl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
 	cmd->gradient.fromColor = fromColor;
 	cmd->gradient.midColor = midColor;
 	cmd->gradient.toColor = toColor;
@@ -356,17 +356,17 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	                            y,
 	                            w,
 	                            h,
-	                            rstyle(node.style).bg_gradient_from_color,
-	                            rstyle(node.style).bg_gradient_mid_color,
-	                            rstyle(node.style).bg_gradient_to_color,
-	                            rstyle(node.style).bg_gradient_mid_stop,
-	                            rstyle(node.style).bg_gradient_to_stop,
-	                            rstyle(node.style).bg_gradient_angle,
-	                            rstyle(node.style).bg_gradient_from_alpha,
-	                            rstyle(node.style).bg_gradient_mid_alpha,
-	                            rstyle(node.style).bg_gradient_to_alpha,
-	                            rstyle(node.style).bg_gradient_has_mid,
-	                            backgroundLayerBlend(node, rstyle(node.style).bg_gradient_layer));
+	                            rstyle(node.computedStyle()).bg_gradient_from_color,
+	                            rstyle(node.computedStyle()).bg_gradient_mid_color,
+	                            rstyle(node.computedStyle()).bg_gradient_to_color,
+	                            rstyle(node.computedStyle()).bg_gradient_mid_stop,
+	                            rstyle(node.computedStyle()).bg_gradient_to_stop,
+	                            rstyle(node.computedStyle()).bg_gradient_angle,
+	                            rstyle(node.computedStyle()).bg_gradient_from_alpha,
+	                            rstyle(node.computedStyle()).bg_gradient_mid_alpha,
+	                            rstyle(node.computedStyle()).bg_gradient_to_alpha,
+	                            rstyle(node.computedStyle()).bg_gradient_has_mid,
+	                            backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_gradient_layer));
 }
 
 DisplayCommand *appendRadialGradientRectRaw(const Node &node, int x, int y, int w, int h)
@@ -382,20 +382,20 @@ DisplayCommand *appendRadialGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->radialGradient.y = y;
 	cmd->radialGradient.w = w;
 	cmd->radialGradient.h = h;
-	cmd->radialGradient.tl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
-	cmd->radialGradient.tr = node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
-	cmd->radialGradient.br = node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
-	cmd->radialGradient.bl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
-	cmd->radialGradient.cxPermille = rstyle(node.style).bg_radial_gradient_cx;
-	cmd->radialGradient.cyPermille = rstyle(node.style).bg_radial_gradient_cy;
-	cmd->radialGradient.rxPermille = rstyle(node.style).bg_radial_gradient_rx;
-	cmd->radialGradient.ryPermille = rstyle(node.style).bg_radial_gradient_ry;
-	cmd->radialGradient.fromColor = rstyle(node.style).bg_radial_gradient_from_color;
-	cmd->radialGradient.toColor = rstyle(node.style).bg_radial_gradient_to_color;
-	cmd->radialGradient.stopPermille = rstyle(node.style).bg_radial_gradient_stop;
-	cmd->radialGradient.fromAlpha = rstyle(node.style).bg_radial_gradient_from_alpha;
-	cmd->radialGradient.toAlpha = rstyle(node.style).bg_radial_gradient_to_alpha;
-	cmd->radialGradient.blend = backgroundLayerBlend(node, rstyle(node.style).bg_radial_gradient_layer);
+	cmd->radialGradient.tl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+	cmd->radialGradient.tr = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+	cmd->radialGradient.br = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+	cmd->radialGradient.bl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
+	cmd->radialGradient.cxPermille = rstyle(node.computedStyle()).bg_radial_gradient_cx;
+	cmd->radialGradient.cyPermille = rstyle(node.computedStyle()).bg_radial_gradient_cy;
+	cmd->radialGradient.rxPermille = rstyle(node.computedStyle()).bg_radial_gradient_rx;
+	cmd->radialGradient.ryPermille = rstyle(node.computedStyle()).bg_radial_gradient_ry;
+	cmd->radialGradient.fromColor = rstyle(node.computedStyle()).bg_radial_gradient_from_color;
+	cmd->radialGradient.toColor = rstyle(node.computedStyle()).bg_radial_gradient_to_color;
+	cmd->radialGradient.stopPermille = rstyle(node.computedStyle()).bg_radial_gradient_stop;
+	cmd->radialGradient.fromAlpha = rstyle(node.computedStyle()).bg_radial_gradient_from_alpha;
+	cmd->radialGradient.toAlpha = rstyle(node.computedStyle()).bg_radial_gradient_to_alpha;
+	cmd->radialGradient.blend = backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_radial_gradient_layer);
 	return cmd;
 }
 
@@ -461,31 +461,31 @@ void appendStrokeSegmentBandRaw(float x0, float y0, float x1, float y1, float wi
 
 bool gradientAlphaNearlyConstant(const Node &node)
 {
-	uint8_t minAlpha = std::min(rstyle(node.style).bg_gradient_from_alpha, rstyle(node.style).bg_gradient_to_alpha);
-	uint8_t maxAlpha = std::max(rstyle(node.style).bg_gradient_from_alpha, rstyle(node.style).bg_gradient_to_alpha);
-	if (rstyle(node.style).bg_gradient_has_mid) {
-		minAlpha = std::min(minAlpha, rstyle(node.style).bg_gradient_mid_alpha);
-		maxAlpha = std::max(maxAlpha, rstyle(node.style).bg_gradient_mid_alpha);
+	uint8_t minAlpha = std::min(rstyle(node.computedStyle()).bg_gradient_from_alpha, rstyle(node.computedStyle()).bg_gradient_to_alpha);
+	uint8_t maxAlpha = std::max(rstyle(node.computedStyle()).bg_gradient_from_alpha, rstyle(node.computedStyle()).bg_gradient_to_alpha);
+	if (rstyle(node.computedStyle()).bg_gradient_has_mid) {
+		minAlpha = std::min(minAlpha, rstyle(node.computedStyle()).bg_gradient_mid_alpha);
+		maxAlpha = std::max(maxAlpha, rstyle(node.computedStyle()).bg_gradient_mid_alpha);
 	}
 	return maxAlpha - minAlpha <= 8;
 }
 
 bool hasAnyRadius(const Node &node)
 {
-	return node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)] || node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)] ||
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)] || node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)] ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(0)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(1)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(2)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(3)] != kUnset;
+	return node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)] || node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)] ||
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)] || node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)] ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(0)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(1)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(2)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(3)] != kUnset;
 }
 
 bool hasAnyPercentRadius(const Node &node)
 {
-	return node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(0)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(1)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(2)] != kUnset ||
-	       node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(3)] != kUnset;
+	return node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(0)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(1)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(2)] != kUnset ||
+	       node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(3)] != kUnset;
 }
 
 int integerSqrt(int n)
@@ -509,10 +509,10 @@ int normalizedRadius(int radius, int maxRadius)
 void roundedNodeRowSpan(const Node &node, int y, int *x0, int *x1)
 {
 	const int maxRadius = std::min(node.layout.width / 2, node.layout.height / 2);
-	const int tl = normalizedRadius(node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)], maxRadius);
-	const int tr = normalizedRadius(node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)], maxRadius);
-	const int br = normalizedRadius(node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)], maxRadius);
-	const int bl = normalizedRadius(node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)], maxRadius);
+	const int tl = normalizedRadius(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)], maxRadius);
+	const int tr = normalizedRadius(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)], maxRadius);
+	const int br = normalizedRadius(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)], maxRadius);
+	const int bl = normalizedRadius(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)], maxRadius);
 	if ((tl | tr | br | bl) == 0) return;
 
 	const int left = node.layout.x;
@@ -554,10 +554,10 @@ bool isFullyRoundedShape(const Node &node)
 	const int halfMin = std::min(node.layout.width, node.layout.height) / 2;
 	if (halfMin <= 0) return false;
 	const int minRadius = std::max(1, halfMin - 1);
-	return node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)] >= minRadius &&
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)] >= minRadius &&
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)] >= minRadius &&
-	       node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)] >= minRadius;
+	return node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)] >= minRadius &&
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)] >= minRadius &&
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)] >= minRadius &&
+	       node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)] >= minRadius;
 }
 
 void resolvedBorderRadii8(const Node &node, int16_t rx8[4], int16_t ry8[4])
@@ -568,14 +568,14 @@ void resolvedBorderRadii8(const Node &node, int16_t rx8[4], int16_t ry8[4])
 	double ry[4]{};
 	for (int i = 0; i < 4; i++) {
 #if GEA_CSS_PERCENT_RADIUS
-		if (node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(i)] != kUnset) {
-			const double p = static_cast<double>(node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(i)]) / 1000.0;
+		if (node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(i)] != kUnset) {
+			const double p = static_cast<double>(node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(i)]) / 1000.0;
 			rx[i] = std::max(0.0, width * p);
 			ry[i] = std::max(0.0, height * p);
 		} else
 #endif
 		{
-			const double r = static_cast<double>(std::max(0, static_cast<int>(node.style.border_radius[GEA_CSS_RADIUS_INDEX(i)])));
+			const double r = static_cast<double>(std::max(0, static_cast<int>(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(i)])));
 			rx[i] = r;
 			ry[i] = r;
 		}
@@ -612,15 +612,15 @@ bool resolvedCircularBorderRadii(const Node &node, int radii[4])
 
 void appendFillRoundedRectWithAlpha(const Node &node, uint8_t parentAlpha, const int *resolvedRadii = nullptr)
 {
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.style.bg_alpha);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.computedStyle().bg_alpha);
 	if (effectiveAlpha != parentAlpha)
 		appendAlphaCommand(effectiveAlpha, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (cmd) {
-		const int tl = resolvedRadii ? resolvedRadii[0] : node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
-		const int tr = resolvedRadii ? resolvedRadii[1] : node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
-		const int br = resolvedRadii ? resolvedRadii[2] : node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
-		const int bl = resolvedRadii ? resolvedRadii[3] : node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
+		const int tl = resolvedRadii ? resolvedRadii[0] : node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+		const int tr = resolvedRadii ? resolvedRadii[1] : node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+		const int br = resolvedRadii ? resolvedRadii[2] : node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+		const int bl = resolvedRadii ? resolvedRadii[3] : node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
 		cmd->type = DisplayCommandType::FillRoundedRect;
 		cmd->bx = node.layout.x; cmd->by = node.layout.y; cmd->bw = node.layout.width; cmd->bh = node.layout.height;
 		cmd->fillRoundedRect.x = node.layout.x; cmd->fillRoundedRect.y = node.layout.y;
@@ -629,7 +629,7 @@ void appendFillRoundedRectWithAlpha(const Node &node, uint8_t parentAlpha, const
 		cmd->fillRoundedRect.tr = tr;
 		cmd->fillRoundedRect.br = br;
 		cmd->fillRoundedRect.bl = bl;
-		cmd->fillRoundedRect.color = node.style.bg_color;
+		cmd->fillRoundedRect.color = node.computedStyle().bg_color;
 	}
 	if (effectiveAlpha != parentAlpha)
 		appendAlphaCommand(parentAlpha, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
@@ -722,17 +722,17 @@ void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha, uint16_t color
 		// Canvas::strokeRect is deliberately the fast one-pixel primitive. Route
 		// wider square CSS borders through the width-aware rounded-rect rasterizer
 		// with zero radii instead of silently collapsing border-width to 1px.
-		if (hasAnyRadius(node) || node.style.border_width > 1) {
+		if (hasAnyRadius(node) || node.computedStyle().border_width > 1) {
 			cmd->type = DisplayCommandType::StrokeRoundedRect;
 			cmd->strokeRoundedRect = {};
 			cmd->bx = node.layout.x; cmd->by = node.layout.y; cmd->bw = node.layout.width; cmd->bh = node.layout.height;
 			cmd->strokeRoundedRect.x = node.layout.x; cmd->strokeRoundedRect.y = node.layout.y;
 			cmd->strokeRoundedRect.w = node.layout.width; cmd->strokeRoundedRect.h = node.layout.height;
-			cmd->strokeRoundedRect.tl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
-			cmd->strokeRoundedRect.tr = node.style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
-			cmd->strokeRoundedRect.br = node.style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
-			cmd->strokeRoundedRect.bl = node.style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
-			cmd->strokeRoundedRect.lineWidth = node.style.border_width;
+			cmd->strokeRoundedRect.tl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+			cmd->strokeRoundedRect.tr = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+			cmd->strokeRoundedRect.br = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+			cmd->strokeRoundedRect.bl = node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
+			cmd->strokeRoundedRect.lineWidth = node.computedStyle().border_width;
 			resolvedBorderRadii8(node, cmd->strokeRoundedRect.rx8, cmd->strokeRoundedRect.ry8);
 			cmd->strokeRoundedRect.cssRadii = hasAnyPercentRadius(node);
 			for (int i = 0; i < 4; ++i)
@@ -755,7 +755,7 @@ void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha, uint16_t color
 
 void appendStrokeWithAlpha(const Node &node, uint8_t parentAlpha)
 {
-	appendStrokeWithAlpha(node, parentAlpha, borderPaintColor(node.style, 0), borderPaintAlpha(node.style, 0));
+	appendStrokeWithAlpha(node, parentAlpha, borderPaintColor(node.computedStyle(), 0), borderPaintAlpha(node.computedStyle(), 0));
 }
 
 void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, int *x1, int *y1)
@@ -795,7 +795,7 @@ public:
 	// wrappers and text nodes.
 	static bool hasTransformableBox(const Node &node)
 	{
-		if (node.style.display == kDisplayNone) return false;
+		if (node.computedStyle().display == kDisplayNone) return false;
 		if (node.type == NodeType::Text) return false;
 		if (node.type == NodeType::Image) return true;
 		return !LayoutEngine::isCssInlineLevelBox(node);
@@ -805,7 +805,7 @@ public:
 	{
 		if (!GEA_CSS_TRANSFORMS) return false;
 		if (usePrevious ? !node.render.previous_transformable_box : !hasTransformableBox(node)) return false;
-		const RareStyle &rs = rstyle(node.style); // one pool lookup, not 10
+		const RareStyle &rs = rstyle(node.computedStyle()); // one pool lookup, not 10
 		const int rotate = usePrevious ? node.render.previous_transform_rotate : rs.transform_rotate;
 		const int rotateX = usePrevious ? node.render.previous_transform_rotate_x : rs.transform_rotate_x;
 		const int rotateY = usePrevious ? node.render.previous_transform_rotate_y : rs.transform_rotate_y;
@@ -854,7 +854,7 @@ public:
 		for (int i = 0; i < state.nodeCount; i++) {
 			const Node &n = state.nodes[i];
 			if (nodeHasLocalTransform(n, false) || nodeHasLocalTransform(n, true) ||
-			    (hasTransformableBox(n) && rstyle(n.style).perspective > 0) ||
+			    (hasTransformableBox(n) && rstyle(n.computedStyle()).perspective > 0) ||
 			    (n.render.previous_transformable_box && n.render.previous_perspective > 0)) {
 				present = true;
 				break;
@@ -876,7 +876,7 @@ public:
 		for (int id = nodeIndex(node); id >= 0 && id < state.nodeCount; id = state.nodes[id].parent) {
 			if (nodeHasLocalTransform(state.nodes[id], usePrevious)) return true;
 			if (usePrevious ? !state.nodes[id].render.previous_transformable_box : !hasTransformableBox(state.nodes[id])) continue;
-			const int perspective = usePrevious ? state.nodes[id].render.previous_perspective : rstyle(state.nodes[id].style).perspective;
+			const int perspective = usePrevious ? state.nodes[id].render.previous_perspective : rstyle(state.nodes[id].computedStyle()).perspective;
 			if (perspective > 0) return true;
 		}
 		return false;
@@ -1049,7 +1049,7 @@ public:
 
 	static void fillNodeTransform(NodeTransformCache &e, const Node &node, int id)
 	{
-		const RareStyle &r = rstyle(node.style);
+		const RareStyle &r = rstyle(node.computedStyle());
 		e.x = node.layout.x; e.y = node.layout.y; e.w = node.layout.width; e.h = node.layout.height;
 		e.ox = e.x + e.w * r.transform_origin_x * kInv1000f;
 		e.oy = e.y + e.h * r.transform_origin_y * kInv1000f;
@@ -1205,13 +1205,13 @@ public:
 			id = state.nodes[id].parent;
 			if (id < 0 || id >= state.nodeCount) break;
 			const auto &parent = state.nodes[id];
-			const auto &rare = rstyle(parent.style);
+			const auto &rare = rstyle(parent.computedStyle());
 			if (hasTransformableBox(parent) && rare.perspective > 0) {
 				const float ox = parent.layout.x + parent.layout.width * rare.perspective_origin_x * 0.001f;
 				const float oy = parent.layout.y + parent.layout.height * rare.perspective_origin_y * 0.001f;
 				normal.z += (offset + normal.x * ox + normal.y * oy) / rare.perspective;
 			}
-			if (!hasTransformableBox(parent) || !preserves3D(parent.style)) break;
+			if (!hasTransformableBox(parent) || !preserves3D(parent.computedStyle())) break;
 		}
 		return normal.z < -0.00001f;
 #else
@@ -1292,7 +1292,7 @@ public:
 		auto &state = treeState();
 		for (int id = nodeIndex(node); id >= 0 && id < state.nodeCount; id = state.nodes[id].parent) {
 			if (usePrevious ? !state.nodes[id].render.previous_transformable_box : !hasTransformableBox(state.nodes[id])) continue;
-			const int perspective = usePrevious ? state.nodes[id].render.previous_perspective : rstyle(state.nodes[id].style).perspective;
+			const int perspective = usePrevious ? state.nodes[id].render.previous_perspective : rstyle(state.nodes[id].computedStyle()).perspective;
 			if (perspective > 0) return id;
 		}
 		return -1;
@@ -1306,7 +1306,7 @@ public:
 		const int y = usePrevious ? node.layout.previous_y : node.layout.y;
 		const int w = usePrevious ? node.layout.previous_width : node.layout.width;
 		const int h = usePrevious ? node.layout.previous_height : node.layout.height;
-		const RareStyle &rs = rstyle(node.style); // one pool lookup, not 3
+		const RareStyle &rs = rstyle(node.computedStyle()); // one pool lookup, not 3
 		const int perspective = usePrevious ? node.render.previous_perspective : rs.perspective;
 		const int originX = usePrevious ? node.render.previous_perspective_origin_x : rs.perspective_origin_x;
 		const int originY = usePrevious ? node.render.previous_perspective_origin_y : rs.perspective_origin_y;
@@ -1572,13 +1572,13 @@ void appendReliefBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 	if (w <= 0 || h <= 0) return;
 	int widths[4];
 	for (int side = 0; side < 4; ++side)
-		widths[side] = std::min(computedBorderWidth(node.style, side), side % 2 ? w / 2 : h / 2);
+		widths[side] = std::min(computedBorderWidth(node.computedStyle(), side), side % 2 ? w / 2 : h / 2);
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
 	for (int side = 0; side < 4; ++side) {
 		if (widths[side] <= 0) continue;
-		const int relief = rstyle(node.style).border_relief[side] & ~kBorderStyleNone;
+		const int relief = rstyle(node.computedStyle()).border_relief[side] & ~kBorderStyleNone;
 		const int bands = relief == 1 || relief == 2 ? 2 : 1;
-		const auto color = borderPaintColor(node.style, side);
+		const auto color = borderPaintColor(node.computedStyle(), side);
 		int r, g, b; pixel::unpackRgb565(color, &r, &g, &b);
 		r = pixel::expand5To8(r); g = pixel::expand6To8(g); b = pixel::expand5To8(b);
 		// CSS permits UA-defined relief shades. Mixing with white keeps even a
@@ -1605,7 +1605,7 @@ void appendReliefBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 			const bool shadedDark = (side == 0 || side == 3) == inset;
 			int bx0, by0, bx1, by1; boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
 			appendFillQuadWithAlpha(xs, ys, relief == 0 ? color : shadedDark ? dark : light,
-			                        borderPaintAlpha(node.style, side), parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
+			                        borderPaintAlpha(node.computedStyle(), side), parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 		}
 	}
 }
@@ -1616,7 +1616,7 @@ void appendBorderSideWithAlpha(const Node &node, int side, uint16_t color, uint8
 	const int y = node.layout.y;
 	const int w = node.layout.width;
 	const int h = node.layout.height;
-	const int borderWidth = computedBorderWidth(node.style, side);
+	const int borderWidth = computedBorderWidth(node.computedStyle(), side);
 	if (borderWidth <= 0) return;
 	int sx = x;
 	int sy = y;
@@ -1636,8 +1636,8 @@ void appendBorderSideWithAlpha(const Node &node, int side, uint16_t color, uint8
 	// Horizontal edges own the corners. Avoid compositing a translucent
 	// asymmetric border twice where two side rectangles would overlap.
 	if (side == 1 || side == 3) {
-		const int top = std::min<int>(computedBorderWidth(node.style, 0), h);
-		const int bottom = std::min<int>(computedBorderWidth(node.style, 2), h - top);
+		const int top = std::min<int>(computedBorderWidth(node.computedStyle(), 0), h);
+		const int bottom = std::min<int>(computedBorderWidth(node.computedStyle(), 2), h - top);
 		sy += top;
 		sh -= top + bottom;
 	}
@@ -1680,14 +1680,14 @@ void appendSideBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 {
 	const int w = node.layout.width;
 	const int h = node.layout.height;
-	if (hasBorderRelief(node.style)) { appendReliefBordersWithAlpha(node, parentAlpha); return; }
-	const bool textClippedTransform = StyleValues::hasTextBackgroundClip(node.style) &&
+	if (hasBorderRelief(node.computedStyle())) { appendReliefBordersWithAlpha(node, parentAlpha); return; }
+	const bool textClippedTransform = StyleValues::hasTextBackgroundClip(node.computedStyle()) &&
 	    ViewGeometry::hasTransformChain(node, false) && !isFullyRoundedShape(node);
-	if (w <= 0 || h <= 0 || (!hasSideBorder(node.style) && !borderColorsDiffer(node.style) && !textClippedTransform)) return;
+	if (w <= 0 || h <= 0 || (!hasSideBorder(node.computedStyle()) && !borderColorsDiffer(node.computedStyle()) && !textClippedTransform)) return;
 
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
 	for (int side = 0; side < 4; ++side)
-		appendBorderSideWithAlpha(node, side, borderPaintColor(node.style, side), borderPaintAlpha(node.style, side), parentAlpha, transformed);
+		appendBorderSideWithAlpha(node, side, borderPaintColor(node.computedStyle(), side), borderPaintAlpha(node.computedStyle(), side), parentAlpha, transformed);
 }
 
 // background-clip: border-area paints the background only where the border
@@ -1696,19 +1696,19 @@ void appendSideBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 void recordBorderAreaFill(const Node &node, uint8_t parentAlpha)
 {
 	const bool transformed = ViewGeometry::hasTransformChain(node, false);
-	if (node.style.border_width > 0 && !hasSideBorder(node.style) && !transformed) {
-		appendStrokeWithAlpha(node, parentAlpha, node.style.bg_color, node.style.bg_alpha);
+	if (node.computedStyle().border_width > 0 && !hasSideBorder(node.computedStyle()) && !transformed) {
+		appendStrokeWithAlpha(node, parentAlpha, node.computedStyle().bg_color, node.computedStyle().bg_alpha);
 		return;
 	}
 	for (int side = 0; side < 4; ++side)
-		appendBorderSideWithAlpha(node, side, node.style.bg_color, node.style.bg_alpha, parentAlpha, transformed);
+		appendBorderSideWithAlpha(node, side, node.computedStyle().bg_color, node.computedStyle().bg_alpha, parentAlpha, transformed);
 }
 
 // A transformed linear-gradient face paints a uniform border as its edge frame.
 bool gradientEdgeCarriesBorder(const Node &node)
 {
-	return !StyleValues::hasTextBackgroundClip(node.style) && node.style.border_width > 0 && !hasBorderRelief(node.style) &&
-	       !hasSideBorder(node.style) && !borderColorsDiffer(node.style) && borderPaintAlpha(node.style, 0) > 0 &&
+	return !StyleValues::hasTextBackgroundClip(node.computedStyle()) && node.computedStyle().border_width > 0 && !hasBorderRelief(node.computedStyle()) &&
+	       !hasSideBorder(node.computedStyle()) && !borderColorsDiffer(node.computedStyle()) && borderPaintAlpha(node.computedStyle(), 0) > 0 &&
 	       !isFullyRoundedShape(node);
 }
 
@@ -1754,25 +1754,25 @@ void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 	g.ly = static_cast<int16_t>(y);
 	g.lw = static_cast<int16_t>(w);
 	g.lh = static_cast<int16_t>(h);
-	g.fromColor = rstyle(node.style).bg_gradient_from_color;
-	g.midColor = rstyle(node.style).bg_gradient_mid_color;
-	g.toColor = rstyle(node.style).bg_gradient_to_color;
-	g.midStop = static_cast<uint16_t>(rstyle(node.style).bg_gradient_mid_stop);
+	g.fromColor = rstyle(node.computedStyle()).bg_gradient_from_color;
+	g.midColor = rstyle(node.computedStyle()).bg_gradient_mid_color;
+	g.toColor = rstyle(node.computedStyle()).bg_gradient_to_color;
+	g.midStop = static_cast<uint16_t>(rstyle(node.computedStyle()).bg_gradient_mid_stop);
 	g.toStop = static_cast<uint16_t>(gradientToStop(node));
-	g.angle = static_cast<int16_t>(rstyle(node.style).bg_gradient_angle);
-	g.fromAlpha = rstyle(node.style).bg_gradient_from_alpha;
-	g.midAlpha = rstyle(node.style).bg_gradient_mid_alpha;
-	g.toAlpha = rstyle(node.style).bg_gradient_to_alpha;
-	g.hasMid = rstyle(node.style).bg_gradient_has_mid ? 1 : 0;
-	g.backfaceHidden = node.style.backface_hidden ? 1 : 0;
+	g.angle = static_cast<int16_t>(rstyle(node.computedStyle()).bg_gradient_angle);
+	g.fromAlpha = rstyle(node.computedStyle()).bg_gradient_from_alpha;
+	g.midAlpha = rstyle(node.computedStyle()).bg_gradient_mid_alpha;
+	g.toAlpha = rstyle(node.computedStyle()).bg_gradient_to_alpha;
+	g.hasMid = rstyle(node.computedStyle()).bg_gradient_has_mid ? 1 : 0;
+	g.backfaceHidden = node.computedStyle().backface_hidden ? 1 : 0;
 	// Transformed rectangular borders ride this command as an edge frame (the
 	// span rasterizer paints the first/last edgeWidth px of every span, tracing
 	// the quad outline). Emitting projected stroke quads instead would disarm
 	// the transform-reproject fast path every frame.
 	if (gradientEdgeCarriesBorder(node)) {
-		g.edgeColor = borderPaintColor(node.style, 0);
-		g.edgeAlpha = borderPaintAlpha(node.style, 0);
-		const int ew = node.style.border_width < 1 ? 1 : node.style.border_width;
+		g.edgeColor = borderPaintColor(node.computedStyle(), 0);
+		g.edgeAlpha = borderPaintAlpha(node.computedStyle(), 0);
+		const int ew = node.computedStyle().border_width < 1 ? 1 : node.computedStyle().border_width;
 		g.edgeWidth = static_cast<uint8_t>(ew > 8 ? 8 : ew);
 	} else {
 		g.edgeColor = 0;
@@ -1783,7 +1783,7 @@ void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 
 void recordRadialGradientBackground(const Node &node)
 {
-	if (!rstyle(node.style).bg_radial_gradient) return;
+	if (!rstyle(node.computedStyle()).bg_radial_gradient) return;
 	const int x = node.layout.x;
 	const int y = node.layout.y;
 	const int w = node.layout.width;
@@ -1795,7 +1795,7 @@ void recordRadialGradientBackground(const Node &node)
 
 void recordOverlayLinearGradientBackground(const Node &node)
 {
-	if (!rstyle(node.style).bg_overlay_gradient) return;
+	if (!rstyle(node.computedStyle()).bg_overlay_gradient) return;
 	const int x = node.layout.x;
 	const int y = node.layout.y;
 	const int w = node.layout.width;
@@ -1807,45 +1807,45 @@ void recordOverlayLinearGradientBackground(const Node &node)
 	                            y,
 	                            w,
 	                            h,
-	                            rstyle(node.style).bg_overlay_gradient_from_color,
-	                            rstyle(node.style).bg_overlay_gradient_mid_color,
-	                            rstyle(node.style).bg_overlay_gradient_to_color,
-	                            rstyle(node.style).bg_overlay_gradient_mid_stop,
-	                            rstyle(node.style).bg_overlay_gradient_to_stop,
-	                            rstyle(node.style).bg_overlay_gradient_angle,
-	                            rstyle(node.style).bg_overlay_gradient_from_alpha,
-	                            rstyle(node.style).bg_overlay_gradient_mid_alpha,
-	                            rstyle(node.style).bg_overlay_gradient_to_alpha,
-	                            rstyle(node.style).bg_overlay_gradient_has_mid,
-	                            backgroundLayerBlend(node, rstyle(node.style).bg_overlay_gradient_layer));
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_from_color,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_mid_color,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_to_color,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_mid_stop,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_to_stop,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_angle,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_from_alpha,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_mid_alpha,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_to_alpha,
+	                            rstyle(node.computedStyle()).bg_overlay_gradient_has_mid,
+	                            backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_overlay_gradient_layer));
 }
 
 // Background positioning and painting areas are distinct. In particular, the
 // document canvas paints beyond the root box without stretching its images.
 bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canvas)
 {
-	const auto &r = rstyle(source.style);
+	const auto &r = rstyle(source.computedStyle());
 	if (!canvas && r.bg_size_list < 0 && r.bg_position_list < 0 && r.bg_repeat_list < 0 &&
 	    r.bg_attachment_list < 0 && r.bg_origin_list < 0) return false;
 	if (ViewGeometry::hasTransformChain(geometry, false)) return false;
 	const int nodeId = ViewGeometry::nodeIndex(geometry);
 	for (int layer = r.bg_image_layer_count-1; layer >= 0; --layer) {
-		const bool linear = source.style.bg_fill == 1 && layer == r.bg_gradient_layer;
+		const bool linear = source.computedStyle().bg_fill == 1 && layer == r.bg_gradient_layer;
 		const bool overlay = r.bg_overlay_gradient && layer == r.bg_overlay_gradient_layer;
 		const bool radial = r.bg_radial_gradient && layer == r.bg_radial_gradient_layer;
 		if (!linear && !overlay && !radial) continue;
-		const auto p = StyleValues::backgroundPlacement(source.style, nodeId, layer,
+		const auto p = StyleValues::backgroundPlacement(source.computedStyle(), nodeId, layer,
 		    geometry.layout.x, geometry.layout.y, geometry.layout.width, geometry.layout.height);
 		if (p.width <= 0 || p.height <= 0) continue;
 		int x = canvas ? 0 : geometry.layout.x, y = canvas ? 0 : geometry.layout.y;
 		int w = canvas ? treeState().mountedWidth : geometry.layout.width;
 		int h = canvas ? treeState().mountedHeight : geometry.layout.height;
-		const int clip = canvas ? 0 : StyleValues::backgroundClip(source.style, layer);
+		const int clip = canvas ? 0 : StyleValues::backgroundClip(source.computedStyle(), layer);
 		TextBackgroundClipScope textClip(source, clip);
 		if (clip == 1 || clip == 2) {
 			int inset[4];
-			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(geometry.style, i) +
-			    (clip == 2 ? std::max<int>(0, geometry.style.padding[i]) : 0);
+			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(geometry.computedStyle(), i) +
+			    (clip == 2 ? std::max<int>(0, geometry.computedStyle().padding[i]) : 0);
 			x += inset[3]; y += inset[0]; w -= inset[1]+inset[3]; h -= inset[0]+inset[2];
 		}
 		if (w <= 0 || h <= 0) continue;
@@ -1903,7 +1903,7 @@ void recordTransformedEllipseFill(const Node &node, uint8_t parentAlpha)
 
 	int bx0, by0, bx1, by1;
 	ViewRenderer::transformedBounds(node, false, &bx0, &by0, &bx1, &by1);
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.style.bg_alpha);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.computedStyle().bg_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 
 	const double cx = static_cast<double>(x) + static_cast<double>(w) * 0.5;
@@ -1929,7 +1929,7 @@ void recordTransformedEllipseFill(const Node &node, uint8_t parentAlpha)
 		ViewGeometry::transformRectCorners(node, false, sx, sy, sw, sh, xs, ys);
 		int qx0, qy0, qx1, qy1;
 		boundsFromCorners(xs, ys, &qx0, &qy0, &qx1, &qy1);
-		appendFillQuadRaw(xs, ys, node.style.bg_color, qx0, qy0, qx1 - qx0 + 1, qy1 - qy0 + 1,
+		appendFillQuadRaw(xs, ys, node.computedStyle().bg_color, qx0, qy0, qx1 - qx0 + 1, qy1 - qy0 + 1,
 		                  sx, sy, sw, sh, true);
 	}
 
@@ -1941,8 +1941,8 @@ void recordTransformedRoundedRectFill(const Node &node, uint8_t parentAlpha, int
 	int inset[4]{};
 	if (backgroundClip > 0)
 		for (int i = 0; i < 4; ++i)
-			inset[i] = computedBorderWidth(node.style, i) +
-			    (backgroundClip == 2 ? std::max<int>(0, node.style.padding[i]) : 0);
+			inset[i] = computedBorderWidth(node.computedStyle(), i) +
+			    (backgroundClip == 2 ? std::max<int>(0, node.computedStyle().padding[i]) : 0);
 	const int x = node.layout.x + inset[3];
 	const int y = node.layout.y + inset[0];
 	const int w = node.layout.width - inset[3] - inset[1];
@@ -1953,7 +1953,7 @@ void recordTransformedRoundedRectFill(const Node &node, uint8_t parentAlpha, int
 	ViewGeometry::transformRectCorners(node, false, x, y, w, h, xs, ys);
 	int bx0, by0, bx1, by1;
 	boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.style.bg_alpha);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, node.computedStyle().bg_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 	int16_t rx8[4]{};
 	int16_t ry8[4]{};
@@ -1982,8 +1982,8 @@ void recordTransformedRoundedRectFill(const Node &node, uint8_t parentAlpha, int
 		r.trRx8 = rx8[1]; r.trRy8 = ry8[1];
 		r.brRx8 = rx8[2]; r.brRy8 = ry8[2];
 		r.blRx8 = rx8[3]; r.blRy8 = ry8[3];
-		r.color = node.style.bg_color;
-		r.backfaceHidden = node.style.backface_hidden ? 1 : 0;
+		r.color = node.computedStyle().bg_color;
+		r.backfaceHidden = node.computedStyle().backface_hidden ? 1 : 0;
 		r.ring[0] = r.ring[1] = r.ring[2] = r.ring[3] = 0;
 	}
 
@@ -2004,10 +2004,10 @@ void recordTransformedBorderRing(const Node &node, uint8_t parentAlpha)
 	// its sides as transformed quads instead, with square corners.
 	int ring = 0;
 	for (int side = 0; side < 4; ++side)
-		ring = std::max<int>({ring, node.style.border_width, rstyle(node.style).border_side_width[side]});
+		ring = std::max<int>({ring, node.computedStyle().border_width, rstyle(node.computedStyle()).border_side_width[side]});
 	if (w > 32767 || h > 32767 || ring > 255) {
 		for (int side = 0; side < 4; ++side)
-			appendBorderSideWithAlpha(node, side, borderPaintColor(node.style, side), borderPaintAlpha(node.style, side), parentAlpha, true);
+			appendBorderSideWithAlpha(node, side, borderPaintColor(node.computedStyle(), side), borderPaintAlpha(node.computedStyle(), side), parentAlpha, true);
 		return;
 	}
 
@@ -2015,7 +2015,7 @@ void recordTransformedBorderRing(const Node &node, uint8_t parentAlpha)
 	ViewGeometry::transformRectCorners(node, false, x, y, w, h, xs, ys);
 	int bx0, by0, bx1, by1;
 	boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.style, 0));
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.computedStyle(), 0));
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 	int16_t rx8[4]{};
 	int16_t ry8[4]{};
@@ -2040,10 +2040,10 @@ void recordTransformedBorderRing(const Node &node, uint8_t parentAlpha)
 		r.trRx8 = rx8[1]; r.trRy8 = ry8[1];
 		r.brRx8 = rx8[2]; r.brRy8 = ry8[2];
 		r.blRx8 = rx8[3]; r.blRy8 = ry8[3];
-		r.color = borderPaintColor(node.style, 0);
-		r.backfaceHidden = node.style.backface_hidden ? 1 : 0;
+		r.color = borderPaintColor(node.computedStyle(), 0);
+		r.backfaceHidden = node.computedStyle().backface_hidden ? 1 : 0;
 		for (int i = 0; i < 4; ++i)
-			r.ring[i] = static_cast<uint8_t>(std::clamp<int>(computedBorderWidth(node.style, i), 1, 255));
+			r.ring[i] = static_cast<uint8_t>(std::clamp<int>(computedBorderWidth(node.computedStyle(), i), 1, 255));
 	}
 
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
@@ -2055,16 +2055,16 @@ void recordTransformedEllipseStroke(const Node &node, uint8_t parentAlpha)
 	const int y = node.layout.y;
 	const int w = node.layout.width;
 	const int h = node.layout.height;
-	if (w <= 0 || h <= 0 || node.style.border_width <= 0) return;
+	if (w <= 0 || h <= 0 || node.computedStyle().border_width <= 0) return;
 
 	int bx0, by0, bx1, by1;
 	ViewRenderer::transformedBounds(node, false, &bx0, &by0, &bx1, &by1);
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.style, 0));
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, borderPaintAlpha(node.computedStyle(), 0));
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 
 	const float cx = static_cast<float>(x) + static_cast<float>(w) * 0.5f;
 	const float cy = static_cast<float>(y) + static_cast<float>(h) * 0.5f;
-	const float stroke = static_cast<float>(node.style.border_width < 1 ? 1 : node.style.border_width);
+	const float stroke = static_cast<float>(node.computedStyle().border_width < 1 ? 1 : node.computedStyle().border_width);
 	const float screenStroke = std::max(1.6f, stroke * 1.2f);
 	const float rx = std::max(0.0f, static_cast<float>(w) * 0.5f - stroke * 0.5f);
 	const float ry = std::max(0.0f, static_cast<float>(h) * 0.5f - stroke * 0.5f);
@@ -2087,7 +2087,7 @@ void recordTransformedEllipseStroke(const Node &node, uint8_t parentAlpha)
 		int16_t px, py;
 		ViewGeometry::projectPoint(projector, localX, localY, 0.0f, &px, &py);
 		if (i > 0)
-			appendStrokeSegmentBandRaw(prevX, prevY, px, py, screenStroke, borderPaintColor(node.style, 0),
+			appendStrokeSegmentBandRaw(prevX, prevY, px, py, screenStroke, borderPaintColor(node.computedStyle(), 0),
 			                           prevLocalX, prevLocalY, localX, localY, true);
 		prevX = px;
 		prevY = py;
@@ -2114,11 +2114,11 @@ void appendBackgroundGridRectRaw(const Node &node, int x, int y, int w, int h)
 		if (xs[2] - xs[3] < 1) xs[2] = xs[3] + 1; // bottom edge width (BR right of BL)
 		int bx0, by0, bx1, by1;
 		boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
-		appendFillQuadRaw(xs, ys, rstyle(node.style).bg_grid_color, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1,
+		appendFillQuadRaw(xs, ys, rstyle(node.computedStyle()).bg_grid_color, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1,
 		                  x, y, w, h, 3);
 	} else {
 		if (!hasAnyRadius(node)) {
-			appendFillRectRaw(x, y, w, h, rstyle(node.style).bg_grid_color, x, y, w, h);
+			appendFillRectRaw(x, y, w, h, rstyle(node.computedStyle()).bg_grid_color, x, y, w, h);
 			return;
 		}
 		int runX0 = 0;
@@ -2127,7 +2127,7 @@ void appendBackgroundGridRectRaw(const Node &node, int x, int y, int w, int h)
 		int runH = 0;
 		auto flushRun = [&]() {
 			if (runH > 0 && runX0 <= runX1)
-				appendFillRectRaw(runX0, runY, runX1 - runX0 + 1, runH, rstyle(node.style).bg_grid_color, runX0, runY, runX1 - runX0 + 1, runH);
+				appendFillRectRaw(runX0, runY, runX1 - runX0 + 1, runH, rstyle(node.computedStyle()).bg_grid_color, runX0, runY, runX1 - runX0 + 1, runH);
 			runH = 0;
 		};
 		for (int py = y; py < y + h; ++py) {
@@ -2154,8 +2154,8 @@ void appendBackgroundGridRectRaw(const Node &node, int x, int y, int w, int h)
 
 void recordBackgroundGrid(const Node &node, uint8_t parentAlpha)
 {
-	if (rstyle(node.style).bg_grid_axes == 0) return;
-	const auto placement = StyleValues::backgroundPlacement(node.style, ViewGeometry::nodeIndex(node), 0, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
+	if (rstyle(node.computedStyle()).bg_grid_axes == 0) return;
+	const auto placement = StyleValues::backgroundPlacement(node.computedStyle(), ViewGeometry::nodeIndex(node), 0, node.layout.x, node.layout.y, node.layout.width, node.layout.height);
 	const int x0 = node.layout.x;
 	const int y0 = node.layout.y;
 	const int x1 = node.layout.x + node.layout.width;
@@ -2165,23 +2165,23 @@ void recordBackgroundGrid(const Node &node, uint8_t parentAlpha)
 	int bx0 = x0, by0 = y0, bx1 = x1 - 1, by1 = y1 - 1;
 	if (ViewGeometry::hasTransformChain(node, false))
 		ViewRenderer::transformedBounds(node, false, &bx0, &by0, &bx1, &by1);
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, rstyle(node.style).bg_grid_alpha);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, rstyle(node.computedStyle()).bg_grid_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1);
 
-	if ((rstyle(node.style).bg_grid_axes & 1) != 0 && rstyle(node.style).bg_grid_line_x > 0) {
-		const int step = rstyle(node.style).bg_size_list >= 0 ? placement.width : rstyle(node.style).bg_grid_step_x > 0 ? rstyle(node.style).bg_grid_step_x : rstyle(node.style).bg_grid_line_x;
+	if ((rstyle(node.computedStyle()).bg_grid_axes & 1) != 0 && rstyle(node.computedStyle()).bg_grid_line_x > 0) {
+		const int step = rstyle(node.computedStyle()).bg_size_list >= 0 ? placement.width : rstyle(node.computedStyle()).bg_grid_step_x > 0 ? rstyle(node.computedStyle()).bg_grid_step_x : rstyle(node.computedStyle()).bg_grid_line_x;
 		if (step > 0) {
 			for (int x = x0; x < x1; x += step) {
-				const int w = std::min<int>(rstyle(node.style).bg_grid_line_x, x1 - x);
+				const int w = std::min<int>(rstyle(node.computedStyle()).bg_grid_line_x, x1 - x);
 				appendBackgroundGridRectRaw(node, x, y0, w, y1 - y0);
 			}
 		}
 	}
-	if ((rstyle(node.style).bg_grid_axes & 2) != 0 && rstyle(node.style).bg_grid_line_y > 0) {
-		const int step = rstyle(node.style).bg_size_list >= 0 ? placement.height : rstyle(node.style).bg_grid_step_y > 0 ? rstyle(node.style).bg_grid_step_y : rstyle(node.style).bg_grid_line_y;
+	if ((rstyle(node.computedStyle()).bg_grid_axes & 2) != 0 && rstyle(node.computedStyle()).bg_grid_line_y > 0) {
+		const int step = rstyle(node.computedStyle()).bg_size_list >= 0 ? placement.height : rstyle(node.computedStyle()).bg_grid_step_y > 0 ? rstyle(node.computedStyle()).bg_grid_step_y : rstyle(node.computedStyle()).bg_grid_line_y;
 		if (step > 0) {
 			for (int y = y0; y < y1; y += step) {
-				const int h = std::min<int>(rstyle(node.style).bg_grid_line_y, y1 - y);
+				const int h = std::min<int>(rstyle(node.computedStyle()).bg_grid_line_y, y1 - y);
 				appendBackgroundGridRectRaw(node, x0, y, x1 - x0, h);
 			}
 		}
@@ -2215,7 +2215,7 @@ void appendInsetShadowBand(const Node &node, uint8_t parentAlpha, int x, int y, 
 		boundsFromCorners(xs, ys, &bx0, &by0, &bx1, &by1);
 		appendFillQuadWithAlpha(xs,
 		                        ys,
-		                        (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0),
+		                        (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0),
 		                        alpha,
 		                        parentAlpha,
 		                        bx0,
@@ -2230,7 +2230,7 @@ void appendInsetShadowBand(const Node &node, uint8_t parentAlpha, int x, int y, 
 		return;
 	}
 	if (!hasAnyRadius(node)) {
-		appendFillRectWithAlpha(x, y, w, h, (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0), alpha, parentAlpha, x, y, w, h);
+		appendFillRectWithAlpha(x, y, w, h, (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0), alpha, parentAlpha, x, y, w, h);
 		return;
 	}
 	int runX0 = 0;
@@ -2243,7 +2243,7 @@ void appendInsetShadowBand(const Node &node, uint8_t parentAlpha, int x, int y, 
 			                        runY,
 			                        runX1 - runX0 + 1,
 			                        runH,
-			                        (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0),
+			                        (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0),
 			                        alpha,
 			                        parentAlpha,
 			                        runX0,
@@ -2297,7 +2297,7 @@ void constrainShadowRadii(ShadowContour &shape)
 ShadowContour insetShadowClip(const Node &node)
 {
 	int border[4];
-	for (int i = 0; i < 4; ++i) border[i] = computedBorderWidth(node.style, i);
+	for (int i = 0; i < 4; ++i) border[i] = computedBorderWidth(node.computedStyle(), i);
 	ShadowContour shape{float(node.layout.x + border[3]), float(node.layout.y + border[0]),
 	                    float(std::max(0, node.layout.width - border[3] - border[1])),
 	                    float(std::max(0, node.layout.height - border[0] - border[2]))};
@@ -2355,7 +2355,7 @@ bool shadowContourRow(const ShadowContour &shape, int y, int &left, int &right)
 void appendShadowRect(const Node &node, uint8_t parentAlpha, uint8_t alpha, int x, int y, int w, int h)
 {
 	if (w <= 0 || h <= 0) return;
-	const auto color = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0);
+	const auto color = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0);
 	if (!ViewGeometry::hasTransformChain(node, false)) {
 		appendFillRectWithAlpha(x, y, w, h, color, alpha, parentAlpha, x, y, w, h);
 		return;
@@ -2376,7 +2376,7 @@ void recordSharpInsetShadow(const Node &node, uint8_t parentAlpha, const ShadowC
 	bool circular = true;
 	for (int i = 0; i < 4; ++i) circular &= clip.rx[i] == clip.ry[i] && clip.rx[i] == std::floor(clip.rx[i]) && clip.rx[i] <= std::min(clip.w, clip.h) * 0.5f;
 	if (ox == 0 && oy == 0 && spread > 0 && hole.w > 0 && hole.h > 0 && circular &&
-	    combineAlpha(parentAlpha, (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0)) == 255 &&
+	    combineAlpha(parentAlpha, (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0)) == 255 &&
 	    !ViewGeometry::hasTransformChain(node, false)) {
 		DisplayCommand *cmd = DisplayList::instance().append();
 		if (cmd) {
@@ -2391,13 +2391,13 @@ void recordSharpInsetShadow(const Node &node, uint8_t parentAlpha, const ShadowC
 			cmd->strokeRoundedRect.br = static_cast<int16_t>(clip.rx[2]);
 			cmd->strokeRoundedRect.bl = static_cast<int16_t>(clip.rx[3]);
 			cmd->strokeRoundedRect.lineWidth = spread;
-			cmd->strokeRoundedRect.color = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_color : 0);
+			cmd->strokeRoundedRect.color = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_color : 0);
 		}
 		return;
 	}
 	struct Run { int left = 0, right = -1, y = 0, height = 0; } runs[2];
 	auto flush = [&](Run &run) {
-		if (run.height > 0) appendShadowRect(node, parentAlpha, rstyle(node.style).box_shadow_alpha, run.left, run.y, run.right - run.left + 1, run.height);
+		if (run.height > 0) appendShadowRect(node, parentAlpha, rstyle(node.computedStyle()).box_shadow_alpha, run.left, run.y, run.right - run.left + 1, run.height);
 		run.height = 0;
 	};
 	for (int y = static_cast<int>(clip.y); y < clip.y + clip.h; ++y) {
@@ -2506,7 +2506,7 @@ void appendShadowSpans(const Node &node, uint8_t parentAlpha, uint8_t alpha, con
 		if (run.height <= 0) return;
 		const int w = run.right - run.left + 1;
 		if (transformed) appendShadowRect(node, parentAlpha, alpha, run.left, run.y, w, run.height);
-		else appendFillRectRaw(run.left, run.y, w, run.height, rstyle(node.style).box_shadow_color, run.left, run.y, w, run.height);
+		else appendFillRectRaw(run.left, run.y, w, run.height, rstyle(node.computedStyle()).box_shadow_color, run.left, run.y, w, run.height);
 		run.height = 0;
 	};
 	auto cut = [](int (*spans)[2], int &count, int left, int right) {
@@ -2561,13 +2561,13 @@ void appendShadowRoundedRect(const Node &node, uint8_t parentAlpha, uint8_t alph
 			ring.tl = radii[0]; ring.tr = radii[1]; ring.br = radii[2]; ring.bl = radii[3];
 			for (int i = 0; i < 4; ++i) ring.rx8[i] = ring.ry8[i] = static_cast<int16_t>(radii[i] * 8);
 			ring.lineWidth = lineWidth;
-			ring.color = rstyle(node.style).box_shadow_color;
+			ring.color = rstyle(node.computedStyle()).box_shadow_color;
 		} else {
 			cmd->type = DisplayCommandType::FillRoundedRect;
 			auto &fill = cmd->fillRoundedRect;
 			fill.x = x; fill.y = y; fill.w = w; fill.h = h;
 			fill.tl = radii[0]; fill.tr = radii[1]; fill.br = radii[2]; fill.bl = radii[3];
-			fill.color = rstyle(node.style).box_shadow_color;
+			fill.color = rstyle(node.computedStyle()).box_shadow_color;
 		}
 	}
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, x, y, w, h);
@@ -2596,8 +2596,8 @@ bool shadowContourInside(const ShadowContour &inner, const ShadowContour &outer)
 // the box, so the knockout can be skipped in favour of native rounded fills.
 bool outerShadowKnockoutHidden(const Node &node, uint8_t parentAlpha)
 {
-	if (!node.style.has_bg || combineAlpha(parentAlpha, node.style.bg_alpha) != 255) return false;
-	if (StyleValues::backgroundClip(node.style, rstyle(node.style).bg_image_layer_count - 1) != 0) return false;
+	if (!node.computedStyle().has_bg || combineAlpha(parentAlpha, node.computedStyle().bg_alpha) != 255) return false;
+	if (StyleValues::backgroundClip(node.computedStyle(), rstyle(node.computedStyle()).bg_image_layer_count - 1) != 0) return false;
 	if (ViewGeometry::hasTransformChain(node, false) || isDocumentCanvasRoot(node)) return false;
 	const int canvasSource = ViewRenderer::canvasBackgroundSource();
 	return canvasSource < 0 || &treeState().nodes[canvasSource] != &node;
@@ -2608,7 +2608,7 @@ bool outerShadowKnockoutHidden(const Node &node, uint8_t parentAlpha)
 // across [-blur, blur] around the shape edge.
 void recordOuterBoxShadow(const Node &node, uint8_t parentAlpha)
 {
-	const auto &r = rstyle(node.style);
+	const auto &r = rstyle(node.computedStyle());
 	if (r.box_shadow_inset || r.box_shadow_alpha == 0) return;
 	if (node.layout.width <= 0 || node.layout.height <= 0) return;
 	const ShadowContour box = borderBoxShadowContour(node);
@@ -2643,23 +2643,23 @@ void recordOuterBoxShadow(const Node &node, uint8_t parentAlpha)
 
 void recordInsetBoxShadow(const Node &node, uint8_t parentAlpha)
 {
-	if (!(GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_inset : 0) || (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) == 0) return;
+	if (!(GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_inset : 0) || (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) == 0) return;
 	const int x = node.layout.x;
 	const int y = node.layout.y;
 	const int w = node.layout.width;
 	const int h = node.layout.height;
 	if (w <= 0 || h <= 0) return;
 
-	const int blur = std::max<int>(0, (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_blur_radius : 0));
+	const int blur = std::max<int>(0, (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_blur_radius : 0));
 	if (blur == 0) {
-		recordSharpInsetShadow(node, parentAlpha, insetShadowClip(node), (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_spread : 0),
-		                       (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_offset_x : 0), (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_offset_y : 0));
+		recordSharpInsetShadow(node, parentAlpha, insetShadowClip(node), (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_spread : 0),
+		                       (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_offset_x : 0), (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_offset_y : 0));
 		return;
 	}
-	const int spread = std::max<int>(0, (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_spread : 0));
-	const int ox = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_offset_x : 0);
-	const int oy = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_offset_y : 0);
-	const uint8_t baseAlpha = (GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0);
+	const int spread = std::max<int>(0, (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_spread : 0));
+	const int ox = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_offset_x : 0);
+	const int oy = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_offset_y : 0);
+	const uint8_t baseAlpha = (GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0);
 
 	const int leftSolid = spread + std::max(0, ox);
 	const int rightSolid = spread + std::max(0, -ox);
@@ -2700,7 +2700,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_bounds") ViewRenderer:
 	// exactly the layout box. In a transformed tree we must still walk ancestors:
 	// otherwise plain children (for example a face label <span>) ignore their
 	// transformed parent plane and paint as axis-aligned overlay text.
-	if (!use_prev && n->style.rare_style < 0 && !ViewGeometry::anyTransformPresent()) {
+	if (!use_prev && n->computedStyle().rare_style < 0 && !ViewGeometry::anyTransformPresent()) {
 		*x0 = x;
 		*y0 = y;
 		*x1 = x + w - 1;
@@ -2708,16 +2708,16 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_bounds") ViewRenderer:
 		return;
 	}
 
-	int rotate = use_prev ? n->render.previous_transform_rotate : rstyle(n->style).transform_rotate;
+	int rotate = use_prev ? n->render.previous_transform_rotate : rstyle(n->computedStyle()).transform_rotate;
 
 	auto expandForBlur = [&]() {
 		// An outer box-shadow paints beyond the box as well.
-		const int shadow = use_prev ? n->render.previous_box_shadow_extent : boxShadowExtent(n->style);
+		const int shadow = use_prev ? n->render.previous_box_shadow_extent : boxShadowExtent(n->computedStyle());
 		*x0 -= shadow;
 		*y0 -= shadow;
 		*x1 += shadow;
 		*y1 += shadow;
-		const int radius = use_prev ? n->render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(n->style).filter_blur_radius : 0);
+		const int radius = use_prev ? n->render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(n->computedStyle()).filter_blur_radius : 0);
 		if (radius <= 0) return;
 		const int extentX = std::max(1, radius) * 5;
 		const int extentY = std::max(1, radius) * 5;
@@ -2764,8 +2764,8 @@ bool ViewRenderer::backfaceSubtreeHidden(const Node &node)
 	const auto &state = treeState();
 	for (int id = ViewGeometry::nodeIndex(node); id >= 0 && id < state.nodeCount; id = state.nodes[id].parent) {
 		const auto &ancestor = state.nodes[id];
-		if (ViewGeometry::hasTransformableBox(ancestor) && ancestor.style.backface_hidden &&
-		    !preserves3D(ancestor.style) && ViewGeometry::backFacing(ancestor))
+		if (ViewGeometry::hasTransformableBox(ancestor) && ancestor.computedStyle().backface_hidden &&
+		    !preserves3D(ancestor.computedStyle()) && ViewGeometry::backFacing(ancestor))
 			return true;
 	}
 	return false;
@@ -2803,7 +2803,7 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 	if (!transformed) saturateRect16(x, y, w, h);
 	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
 	// The padding edge is rounded with the outer radii less the border widths.
-	const auto &s = node.style;
+	const auto &s = node.computedStyle();
 	const int border[4] = {boxInset(s, 0) - s.padding[0], boxInset(s, 1) - s.padding[1],
 	                       boxInset(s, 2) - s.padding[2], boxInset(s, 3) - s.padding[3]};
 	int16_t rx8[4]{};
@@ -2846,7 +2846,7 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 bool ViewRenderer::recordClipBegin(const Node &node)
 {
 	const Node *n = &node;
-	if (!isViewLikeNodeType(n->type) || n->style.overflow == 0) return 0;
+	if (!isViewLikeNodeType(n->type) || n->computedStyle().overflow == 0) return 0;
 	if (n->first_child < 0) return 0;
 
 	OverflowClipShape shape;
@@ -2920,10 +2920,10 @@ int ViewRenderer::canvasBackgroundSource()
 	const Node &html = state.nodes[root];
 	// CSS Backgrounds: a transparent root with no images takes the first
 	// direct body's background. Its used background is then transparent.
-	if (!(GEA_CSS_CONTAINMENT ? rstyle(html.style).containment : 0) && (!html.style.has_bg || html.style.bg_alpha == 0) && !styleHasBackgroundImage(html.style)) {
+	if (!(GEA_CSS_CONTAINMENT ? rstyle(html.computedStyle()).containment : 0) && (!html.computedStyle().has_bg || html.computedStyle().bg_alpha == 0) && !styleHasBackgroundImage(html.computedStyle())) {
 		for (int child = html.first_child; child >= 0; child = state.nodes[child].next_sibling)
 			if (std::string_view(tagFromId(state.nodes[child].tag_id)) == "body")
-				return (GEA_CSS_CONTAINMENT ? rstyle(state.nodes[child].style).containment : 0) ? root : child;
+				return (GEA_CSS_CONTAINMENT ? rstyle(state.nodes[child].computedStyle()).containment : 0) ? root : child;
 	}
 	return root;
 }
@@ -2938,19 +2938,19 @@ bool recordInlineParts(const Node &node, uint8_t parentAlpha)
 	for (const auto &part : rare->inlineParts) {
 		const int x = node.layout.x + part.x, y = node.layout.y + part.y, w = part.width, h = part.height;
 		if (w <= 0 || h <= 0) continue;
-		if (node.style.has_bg && node.style.bg_alpha > 0)
-			appendFillRectWithAlpha(x, y, w, h, node.style.bg_color, node.style.bg_alpha, parentAlpha, x, y, w, h);
+		if (node.computedStyle().has_bg && node.computedStyle().bg_alpha > 0)
+			appendFillRectWithAlpha(x, y, w, h, node.computedStyle().bg_color, node.computedStyle().bg_alpha, parentAlpha, x, y, w, h);
 		// Horizontal edges own the corners, as for an unsplit box.
-		const int top = part.sides & 1 ? std::min(computedBorderWidth(node.style, 0), h) : 0;
-		const int bottom = part.sides & 4 ? std::min(computedBorderWidth(node.style, 2), h - top) : 0;
+		const int top = part.sides & 1 ? std::min(computedBorderWidth(node.computedStyle(), 0), h) : 0;
+		const int bottom = part.sides & 4 ? std::min(computedBorderWidth(node.computedStyle(), 2), h - top) : 0;
 		for (int side = 0; side < 4; ++side) {
-			const int width = computedBorderWidth(node.style, side);
-			if (!(part.sides & (1 << side)) || width <= 0 || borderPaintAlpha(node.style, side) == 0) continue;
+			const int width = computedBorderWidth(node.computedStyle(), side);
+			if (!(part.sides & (1 << side)) || width <= 0 || borderPaintAlpha(node.computedStyle(), side) == 0) continue;
 			int sx = x, sy = y + top, sw = std::min(width, w), sh = h - top - bottom;
 			if (side == 0 || side == 2) { sx = x; sw = w; sy = side ? y + h - bottom : y; sh = side ? bottom : top; }
 			else if (side == 1) sx = x + w - sw;
 			if (sw > 0 && sh > 0)
-				appendFillRectWithAlpha(sx, sy, sw, sh, borderPaintColor(node.style, side), borderPaintAlpha(node.style, side), parentAlpha, sx, sy, sw, sh);
+				appendFillRectWithAlpha(sx, sy, sw, sh, borderPaintColor(node.computedStyle(), side), borderPaintAlpha(node.computedStyle(), side), parentAlpha, sx, sy, sw, sh);
 		}
 	}
 	return true;
@@ -2962,15 +2962,15 @@ bool recordInlineParts(const Node &node, uint8_t parentAlpha)
 // tile, clipped to the tile.
 bool recordBorderImage(const Node &node)
 {
-	const auto *source = StyleValues::borderImageSource(node.style);
+	const auto *source = StyleValues::borderImageSource(node.computedStyle());
 	if (!source || ViewGeometry::hasTransformChain(node, false)) return false;
-	const auto slice = StyleValues::borderImageSides(node.style, 0);
-	const auto widths = StyleValues::borderImageSides(node.style, 1);
-	const auto outset = StyleValues::borderImageSides(node.style, 2);
-	const int repeat = rstyle(node.style).border_image_repeat;
+	const auto slice = StyleValues::borderImageSides(node.computedStyle(), 0);
+	const auto widths = StyleValues::borderImageSides(node.computedStyle(), 1);
+	const auto outset = StyleValues::borderImageSides(node.computedStyle(), 2);
+	const int repeat = rstyle(node.computedStyle()).border_image_repeat;
 	double border[4], out[4];
 	for (int i = 0; i < 4; ++i) {
-		border[i] = computedBorderWidth(node.style, i);
+		border[i] = computedBorderWidth(node.computedStyle(), i);
 		out[i] = outset.kind[i] == 1 ? outset.value[i] : outset.value[i] * border[i];
 	}
 	const double ax = node.layout.x - out[3], ay = node.layout.y - out[0];
@@ -3059,7 +3059,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 	const bool canvasRoot = isDocumentCanvasRoot(node);
 	if (canvasRoot && canvasSource >= 0) {
 		const auto &state = treeState();
-		const auto &source = state.nodes[canvasSource].style;
+		const auto &source = state.nodes[canvasSource].computedStyle();
 		if (source.display != 1 && source.has_bg && source.bg_alpha > 0)
 			appendFillRectWithAlpha(0, 0, state.mountedWidth, state.mountedHeight,
 			    source.bg_color, source.bg_alpha, parentAlpha, 0, 0, state.mountedWidth, state.mountedHeight);
@@ -3079,11 +3079,11 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 #endif
 	bool borderOnGradientEdge = false;
 
-	if (n->style.has_bg) {
+	if (n->computedStyle().has_bg) {
 		// The color is the bottom layer; image longhands never replace it.
-		if (n->style.bg_alpha > 0 && !canvasRoot &&
+		if (n->computedStyle().bg_alpha > 0 && !canvasRoot &&
 		    (canvasSource < 0 || &treeState().nodes[canvasSource] != n)) {
-			const int clip = StyleValues::backgroundClip(n->style, rstyle(n->style).bg_image_layer_count - 1);
+			const int clip = StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_image_layer_count - 1);
 			TextBackgroundClipScope textClip(*n, clip);
 			if (clip == 1 || clip == 2) {
 				recordTransformedRoundedRectFill(*n, parentAlpha, clip);
@@ -3097,7 +3097,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 					recordTransformedRoundedRectFill(*n, parentAlpha);
 				} else {
 					ViewGeometry::transformCorners(*n, false, xs, ys);
-					appendFillQuadWithAlpha(xs, ys, n->style.bg_color, n->style.bg_alpha, parentAlpha,
+					appendFillQuadWithAlpha(xs, ys, n->computedStyle().bg_color, n->computedStyle().bg_alpha, parentAlpha,
 					                        bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1,
 					                        x, y, w, h, true);
 				}
@@ -3106,23 +3106,23 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 					if (!appendResolvedCircularRoundedRectWithAlpha(*n, parentAlpha))
 						recordTransformedRoundedRectFill(*n, parentAlpha);
 				} else {
-					appendFillRectWithAlpha(x, y, w, h, n->style.bg_color, n->style.bg_alpha, parentAlpha, x, y, w, h);
+					appendFillRectWithAlpha(x, y, w, h, n->computedStyle().bg_color, n->computedStyle().bg_alpha, parentAlpha, x, y, w, h);
 				}
 			}
 		}
 		if (!canvasRoot && (canvasSource < 0 || &treeState().nodes[canvasSource] != n)) {
 			if (!recordPlacedBackgrounds(*n, *n, false)) {
-				if (n->style.bg_fill == 1) {
-					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->style, rstyle(n->style).bg_gradient_layer));
+				if (n->computedStyle().bg_fill == 1) {
+					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_gradient_layer));
 					recordLinearGradientBackground(*n, parentAlpha);
 					borderOnGradientEdge = ViewGeometry::hasTransformChain(*n, false) && gradientEdgeCarriesBorder(*n);
 				}
 				{
-					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->style, rstyle(n->style).bg_radial_gradient_layer));
+					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_radial_gradient_layer));
 					recordRadialGradientBackground(*n);
 				}
 				{
-					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->style, rstyle(n->style).bg_overlay_gradient_layer));
+					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_overlay_gradient_layer));
 					recordOverlayLinearGradientBackground(*n);
 				}
 			}
@@ -3136,7 +3136,7 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 	// A painted border image replaces the border styles.
 	if (recordBorderImage(*n)) return;
 
-	if (n->style.border_width > 0 && !hasBorderRelief(n->style) && !hasSideBorder(n->style) && !borderColorsDiffer(n->style) && !borderIsSameOpaqueSolidBackground(*n, parentAlpha)) {
+	if (n->computedStyle().border_width > 0 && !hasBorderRelief(n->computedStyle()) && !hasSideBorder(n->computedStyle()) && !borderColorsDiffer(n->computedStyle()) && !borderIsSameOpaqueSolidBackground(*n, parentAlpha)) {
 		if (ViewGeometry::hasTransformChain(*n, false)) {
 			if (isFullyRoundedShape(*n)) recordTransformedEllipseStroke(*n, parentAlpha);
 			else if (!borderOnGradientEdge) recordTransformedBorderRing(*n, parentAlpha);
@@ -3151,7 +3151,7 @@ void ViewRenderer::recordScrollbar(const Node &node)
 {
 #if GEA_CSS_SCROLLING
 	const Node *n = &node;
-	if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->style))) return;
+	if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->computedStyle()))) return;
 	if (n->layout.height <= 0 || n->layout.scroll_content_height <= n->layout.height) return;
 
 	int track_h = n->layout.height - 12;

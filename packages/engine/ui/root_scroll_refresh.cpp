@@ -34,30 +34,30 @@ namespace {
 
 bool hasTransformState(const Node &node)
 {
-	return hasIndividualLinearTransform(rstyle(node.style)) || hadIndividualLinearTransform(node.render) ||
-	       rstyle(node.style).transform_rotate != 0 ||
+	return hasIndividualLinearTransform(rstyle(node.computedStyle())) || hadIndividualLinearTransform(node.render) ||
+	       rstyle(node.computedStyle()).transform_rotate != 0 ||
 	       node.render.previous_transform_rotate != 0 ||
-	       rstyle(node.style).transform_rotate_x != 0 ||
+	       rstyle(node.computedStyle()).transform_rotate_x != 0 ||
 	       node.render.previous_transform_rotate_x != 0 ||
-	       rstyle(node.style).transform_rotate_y != 0 ||
+	       rstyle(node.computedStyle()).transform_rotate_y != 0 ||
 	       node.render.previous_transform_rotate_y != 0 ||
-	       composedTranslateX(rstyle(node.style)) != 0 ||
+	       composedTranslateX(rstyle(node.computedStyle())) != 0 ||
 	       node.render.previous_transform_translate_x != 0 ||
-	       composedTranslateY(rstyle(node.style)) != 0 ||
+	       composedTranslateY(rstyle(node.computedStyle())) != 0 ||
 	       node.render.previous_transform_translate_y != 0 ||
-	       composedTranslateZ(rstyle(node.style)) != 0 ||
+	       composedTranslateZ(rstyle(node.computedStyle())) != 0 ||
 	       node.render.previous_transform_translate_z != 0 ||
-	       composedTranslateXPercent(rstyle(node.style)) != 0 ||
+	       composedTranslateXPercent(rstyle(node.computedStyle())) != 0 ||
 	       node.render.previous_transform_translate_x_percent != 0 ||
-	       composedTranslateYPercent(rstyle(node.style)) != 0 ||
+	       composedTranslateYPercent(rstyle(node.computedStyle())) != 0 ||
 	       node.render.previous_transform_translate_y_percent != 0 ||
-	       rstyle(node.style).transform_scale_x != 1000 ||
+	       rstyle(node.computedStyle()).transform_scale_x != 1000 ||
 	       node.render.previous_transform_scale_x != 1000 ||
-	       rstyle(node.style).transform_scale_y != 1000 ||
-	       rstyle(node.style).transform_scale_z != 1000 ||
+	       rstyle(node.computedStyle()).transform_scale_y != 1000 ||
+	       rstyle(node.computedStyle()).transform_scale_z != 1000 ||
 	       node.render.previous_transform_scale_y != 1000 ||
 	       node.render.previous_transform_scale_z != 1000 ||
-	       rstyle(node.style).perspective > 0 ||
+	       rstyle(node.computedStyle()).perspective > 0 ||
 	       node.render.previous_perspective > 0;
 }
 
@@ -83,7 +83,7 @@ bool isDescendantOf(const TreeState &state, int node, int ancestor)
 bool hasRightFadeMask(const TreeState &state, int node)
 {
 	for (int cursor = node; cursor >= 0; cursor = state.nodes[cursor].parent) {
-		if (state.nodes[cursor].style.mask_right_fade_width > 0) return true;
+		if (state.nodes[cursor].computedStyle().mask_right_fade_width > 0) return true;
 	}
 	return false;
 }
@@ -103,13 +103,13 @@ bool isSlotRepositionCandidate(const TreeState &state, int node, int scrollNode)
 	if (state.nodes[scrollNode].type != NodeType::VirtualList) return false;
 	// The list is the slot's containing block only when it is itself positioned
 	// (matches containingBlockForAbsoluteNode in the layout engine).
-	const auto parentPosition = state.nodes[scrollNode].style.position;
+	const auto parentPosition = state.nodes[scrollNode].computedStyle().position;
 	if (parentPosition != 1 && parentPosition != 2) return false;
-	if (n.style.position != 1) return false;
+	if (n.computedStyle().position != 1) return false;
 	// Anchored via top/bottom (the windowed axis); refresh() recomputes y from
 	// these offsets directly.
-	if (GEA_CSS_POSITION_PX_0(n.style) == kUnset && GEA_CSS_POSITION_PERCENT_0(n.style) == kUnset &&
-	    GEA_CSS_POSITION_PX_2(n.style) == kUnset && GEA_CSS_POSITION_PERCENT_2(n.style) == kUnset)
+	if (GEA_CSS_POSITION_PX_0(n.computedStyle()) == kUnset && GEA_CSS_POSITION_PERCENT_0(n.computedStyle()) == kUnset &&
+	    GEA_CSS_POSITION_PX_2(n.computedStyle()) == kUnset && GEA_CSS_POSITION_PERCENT_2(n.computedStyle()) == kUnset)
 		return false;
 	if (hasTransformState(n)) return false;
 	// The reconcile translates the slot box; a pending size change needs layout.
@@ -121,8 +121,8 @@ bool isSlotRepositionCandidate(const TreeState &state, int node, int scrollNode)
 template <int side>
 int resolvedSlotOffset(const Node &slot, int basis)
 {
-	int offset = GEA_CSS_POSITION_PX(slot.style, side) != kUnset ? GEA_CSS_POSITION_PX(slot.style, side) : 0;
-	const int percent = GEA_CSS_POSITION_PERCENT(slot.style, side);
+	int offset = GEA_CSS_POSITION_PX(slot.computedStyle(), side) != kUnset ? GEA_CSS_POSITION_PX(slot.computedStyle(), side) : 0;
+	const int percent = GEA_CSS_POSITION_PERCENT(slot.computedStyle(), side);
 	if (percent != kUnset) {
 		const int numerator = basis * percent;
 		offset += (numerator + (numerator >= 0 ? 500 : -500)) / 1000;
@@ -168,12 +168,12 @@ bool nonVirtualListScrollbarThumbBounds(const Node &n, int scrollTop, int *thumb
 // inline formatting), and stacks them as a column otherwise.
 bool flowsChildrenAsRow(const TreeState &state, const Node &p)
 {
-	if (usesRowLayout(p.style)) return true;
-	if (p.style.flex_direction_explicit || p.style.display != kDisplayBlock) return false;
+	if (usesRowLayout(p.computedStyle())) return true;
+	if (p.computedStyle().flex_direction_explicit || p.computedStyle().display != kDisplayBlock) return false;
 	bool anyInFlow = false;
 	for (int c = p.first_child; c >= 0; c = state.nodes[c].next_sibling) {
 		const Node &child = state.nodes[c];
-		if (child.style.display == kDisplayNone || isOutOfFlowPosition(child.style.position)) continue;
+		if (child.computedStyle().display == kDisplayNone || isOutOfFlowPosition(child.computedStyle().position)) continue;
 		if (!LayoutEngine::isInlineLevelNode(child)) return false;
 		anyInFlow = true;
 	}
@@ -196,20 +196,20 @@ void shiftSiblingsForRemeasuredText(TreeState &state, int id, int oldWidth, int 
 {
 	const Node &n = state.nodes[id];
 	const Node &p = state.nodes[n.parent];
-	if (p.style.flex_wrap || p.style.justify_content != 0) return;
+	if (p.computedStyle().flex_wrap || p.computedStyle().justify_content != 0) return;
 	const bool row = flowsChildrenAsRow(state, p);
 	const int delta = row ? n.layout.width - oldWidth : n.layout.height - oldHeight;
 	if (delta == 0) return;
 	int totalFlex = 0;
 	for (int c = p.first_child; c >= 0; c = state.nodes[c].next_sibling) {
 		const Node &child = state.nodes[c];
-		if (child.style.display == kDisplayNone || isOutOfFlowPosition(child.style.position)) continue;
-		totalFlex += child.style.flex;
+		if (child.computedStyle().display == kDisplayNone || isOutOfFlowPosition(child.computedStyle().position)) continue;
+		totalFlex += child.computedStyle().flex;
 	}
 	if (totalFlex > 0) return;
 	for (int c = n.next_sibling; c >= 0; c = state.nodes[c].next_sibling) {
 		Node &sib = state.nodes[c];
-		if (sib.style.display == kDisplayNone || isOutOfFlowPosition(sib.style.position)) continue;
+		if (sib.computedStyle().display == kDisplayNone || isOutOfFlowPosition(sib.computedStyle().position)) continue;
 		if (row) sib.layout.x += delta;
 		else sib.layout.y += delta;
 		translateSlotDescendants(state, c, row ? delta : 0, row ? 0 : delta);
@@ -251,15 +251,15 @@ void remeasureDirtyTextInPlace(TreeState &state, int id, bool siblingsCoveredByR
 		// shift the following stacked siblings by any height delta. Hugged
 		// (non-stretch / explicit-width) boxes re-measure naturally and keep
 		// their left anchor — the cross axis never right-flushes by default.
-		const int align = n.style.align_self >= 0 ? n.style.align_self : p.style.align_items;
-		const bool stretched = align == 0 && n.style.width == kUnset && n.style.width_percent == kUnset;
+		const int align = n.computedStyle().align_self >= 0 ? n.computedStyle().align_self : p.computedStyle().align_items;
+		const bool stretched = align == 0 && n.computedStyle().width == kUnset && n.computedStyle().width_percent == kUnset;
 		if (!TextRenderer::remeasureContentBox(id, stretched)) return;
 		if (siblingsCoveredByReplay) shiftSiblingsForRemeasuredText(state, id, oldWidth, oldHeight);
 		return;
 	}
 	if (!TextRenderer::remeasureContentBox(id)) return;
-	const int oldRight = n.layout.x + oldWidth + n.style.margin[1];
-	const int parentRight = p.layout.x + p.layout.width - p.style.padding[1];
+	const int oldRight = n.layout.x + oldWidth + n.computedStyle().margin[1];
+	const int parentRight = p.layout.x + p.layout.width - p.computedStyle().padding[1];
 	if (oldRight == parentRight) {
 		n.layout.x += oldWidth - n.layout.width;
 		return;
@@ -319,25 +319,25 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 
 		if (n->render.scroll_dirty && !n->render.non_scroll_dirty) {
 			if (foundNode >= 0) return -1;
-			if (!isViewLikeNodeType(n->type) || n->style.display == 1) return -1;
+			if (!isViewLikeNodeType(n->type) || n->computedStyle().display == 1) return -1;
 			// Accept a pure scroll on exactly one axis the node overflows. The
 			// horizontal case mirrors the vertical fast path (see refresh()): a
 			// virtual-list is vertical-only. Rejecting a both-axes change keeps the
 			// single-axis scrollRect blit unambiguous.
 			const bool changedY = n->layout.scroll_y != n->layout.previous_scroll_y;
 			const bool changedX = n->layout.scroll_x != n->layout.previous_scroll_x;
-			const bool canScrollYAxis = n->type == NodeType::VirtualList || scrollsOverflowY(n->style);
-			const bool canScrollXAxis = n->type != NodeType::VirtualList && scrollsOverflowX(n->style);
+			const bool canScrollYAxis = n->type == NodeType::VirtualList || scrollsOverflowY(n->computedStyle());
+			const bool canScrollXAxis = n->type != NodeType::VirtualList && scrollsOverflowX(n->computedStyle());
 			const bool vertical = changedY && !changedX && canScrollYAxis;
 			const bool horizontal = changedX && !changedY && canScrollXAxis;
 			if (!vertical && !horizontal) return -1;
 			if (!layoutUnchanged(*n)) return -1;
 			if (hasTransformState(*n)) return -1;
-			if (n->style.opacity != 255 || hasAnyBorder(n->style)) return -1;
+			if (n->computedStyle().opacity != 255 || hasAnyBorder(n->computedStyle())) return -1;
 			for (int r = 0; r < 4; r++) {
-				if (n->style.border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0) return -1;
+				if (n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0) return -1;
 #if GEA_CSS_PERCENT_RADIUS
-				if (n->style.border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset) return -1;
+				if (n->computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset) return -1;
 #endif
 			}
 			foundNode = i;
@@ -364,7 +364,7 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 		for (int i = 0; i < state.nodeCount; i++) {
 			if (i == foundNode) continue;
 			const Node &o = state.nodes[i];
-			if (o.style.display == 1 || o.style.opacity == 0) continue;
+			if (o.computedStyle().display == 1 || o.computedStyle().opacity == 0) continue;
 			if (o.layout.width <= 0 || o.layout.height <= 0) continue;
 			// Skip the scroll node's own subtree and its ancestor chain — and any
 			// node inside a display:none subtree: a hidden ancestor removes the
@@ -376,7 +376,7 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 			bool hidden = false;
 			for (int a = i; a >= 0; a = state.nodes[a].parent) {
 				if (a == foundNode) { related = true; break; }
-				if (state.nodes[a].style.display == 1) { hidden = true; break; }
+				if (state.nodes[a].computedStyle().display == 1) { hidden = true; break; }
 			}
 			if (related || hidden) continue;
 			for (int a = foundNode; a >= 0; a = state.nodes[a].parent) {
@@ -442,8 +442,8 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 		// Consult the pending flag, not just the two laid-out boxes; the sibling
 		// fast path already screens on exactly this pair (`absolute_leaf_refresh.cpp`).
 		if (n->render.layout_dirty &&
-		    ((n->style.height != kUnset && n->style.height != n->layout.height) ||
-		     (n->style.width != kUnset && n->style.width != n->layout.width))) {
+		    ((n->computedStyle().height != kUnset && n->computedStyle().height != n->layout.height) ||
+		     (n->computedStyle().width != kUnset && n->computedStyle().width != n->layout.width))) {
 			return -1;
 		}
 		if (!layoutUnchanged(*n)) {
@@ -489,10 +489,10 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 {
 	auto &state = treeState();
 	auto &perf = refreshPerfStatsMutable();
-	perf.rootScrollCalls++;
+	GEA_REFRESH_PERF(perf.rootScrollCalls++);
 	// Shifting content by the scroll delta would drag sticky boxes along.
 	if (state.stickyPresent) {
-		perf.rootScrollRejected++;
+		GEA_REFRESH_PERF(perf.rootScrollRejected++);
 		return 0;
 	}
 	DirtyNode extraDirtyNodes[kMaxExtraDirtyNodes];
@@ -501,13 +501,13 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	int slotCount = 0;
 	const std::int64_t scanStartUs = refreshPerfNowUs();
 	int scroll_node = refreshNode(root, extraDirtyNodes, &extraDirtyCount, slotNodes, &slotCount, width, height);
-	perf.rootScrollScanUs += refreshPerfNowUs() - scanStartUs;
+	GEA_REFRESH_PERF(perf.rootScrollScanUs += refreshPerfNowUs() - scanStartUs);
 	if (scroll_node < 0) {
-		perf.rootScrollRejected++;
+		GEA_REFRESH_PERF(perf.rootScrollRejected++);
 		return 0;
 	}
-	perf.rootScrollAccepted++;
-	perf.rootScrollExtraDirtyNodes += extraDirtyCount;
+	GEA_REFRESH_PERF(perf.rootScrollAccepted++);
+	GEA_REFRESH_PERF(perf.rootScrollExtraDirtyNodes += extraDirtyCount);
 
 	Node *n = &state.nodes[scroll_node];
 	// refreshNode accepted a pure single-axis scroll; derive which axis moved.
@@ -544,19 +544,19 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		damage.oldX1 = slot.layout.x + slot.layout.width - 1;
 		damage.oldY1 = slot.layout.y + slot.layout.height - 1;
 		damage.moved = false;
-		if (slot.style.display == 1) continue;  // display:none — erase old rect only
+		if (slot.computedStyle().display == 1) continue;  // display:none — erase old rect only
 
 		int newX = slot.layout.x;
-		if (GEA_CSS_POSITION_PX_3(slot.style) != kUnset || GEA_CSS_POSITION_PERCENT_3(slot.style) != kUnset)
+		if (GEA_CSS_POSITION_PX_3(slot.computedStyle()) != kUnset || GEA_CSS_POSITION_PERCENT_3(slot.computedStyle()) != kUnset)
 			newX = n->layout.x + resolvedSlotOffset<3>(slot, n->layout.width);
-		else if (GEA_CSS_POSITION_PX_1(slot.style) != kUnset || GEA_CSS_POSITION_PERCENT_1(slot.style) != kUnset)
+		else if (GEA_CSS_POSITION_PX_1(slot.computedStyle()) != kUnset || GEA_CSS_POSITION_PERCENT_1(slot.computedStyle()) != kUnset)
 			newX = n->layout.x + n->layout.width - slot.layout.width -
 			       resolvedSlotOffset<1>(slot, n->layout.width);
 
 		int newY = slot.layout.y;
-		if (GEA_CSS_POSITION_PX_0(slot.style) != kUnset || GEA_CSS_POSITION_PERCENT_0(slot.style) != kUnset)
+		if (GEA_CSS_POSITION_PX_0(slot.computedStyle()) != kUnset || GEA_CSS_POSITION_PERCENT_0(slot.computedStyle()) != kUnset)
 			newY = n->layout.y - n->layout.scroll_y + resolvedSlotOffset<0>(slot, n->layout.height);
-		else if (GEA_CSS_POSITION_PX_2(slot.style) != kUnset || GEA_CSS_POSITION_PERCENT_2(slot.style) != kUnset)
+		else if (GEA_CSS_POSITION_PX_2(slot.computedStyle()) != kUnset || GEA_CSS_POSITION_PERCENT_2(slot.computedStyle()) != kUnset)
 			newY = n->layout.y - n->layout.scroll_y + n->layout.height - slot.layout.height -
 			       resolvedSlotOffset<2>(slot, n->layout.height);
 
@@ -579,7 +579,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	if (!ViewportRegion::clipRect(width, height, &vx, &vy, &vw, &vh)) {
 		const std::int64_t snapshotStartUs = refreshPerfNowUs();
 		LayoutSnapshot::capture();
-		perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs;
+		GEA_REFRESH_PERF(perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs);
 		return 1;
 	}
 
@@ -683,12 +683,12 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 			state.displayListDirty = false;
 			coverageRoot = -1;
 		}
-		perf.rootScrollRebuildUs += refreshPerfNowUs() - rebuildStartUs;
+		GEA_REFRESH_PERF(perf.rootScrollRebuildUs += refreshPerfNowUs() - rebuildStartUs);
 	}
-	perf.rootScrollMovePx += abs_move;
-	perf.rootScrollViewportPx += vw * vh;
-	perf.rootScrollStripPx += horizontal ? (vh * (abs_move < vw ? abs_move : vw))
-	                                     : (vw * (abs_move < vh ? abs_move : vh));
+	GEA_REFRESH_PERF(perf.rootScrollMovePx += abs_move);
+	GEA_REFRESH_PERF(perf.rootScrollViewportPx += vw * vh);
+	GEA_REFRESH_PERF(perf.rootScrollStripPx += horizontal ? (vh * (abs_move < vw ? abs_move : vw))
+	                                     : (vw * (abs_move < vh ? abs_move : vh)));
 
 	gea::platform::display::Display::resetClip();
 	gea::platform::display::Display::setAlpha(255);
@@ -732,7 +732,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	if (!contentHasRightFadeMask && abs_move > 0 && abs_move < viewportExtent) {
 		const std::int64_t scrollRectStartUs = refreshPerfNowUs();
 		gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
-		perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs;
+		GEA_REFRESH_PERF(perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs);
 
 		const std::int64_t stripReplayStartUs = refreshPerfNowUs();
 		if (horizontal) {
@@ -744,7 +744,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		} else {
 			replayScrollNodeRegion(vx, vy, vw, abs_move);
 		}
-		perf.rootScrollStripReplayUs += refreshPerfNowUs() - stripReplayStartUs;
+		GEA_REFRESH_PERF(perf.rootScrollStripReplayUs += refreshPerfNowUs() - stripReplayStartUs);
 
 		// Scrollbar damage is vertical-only: the horizontal forecast/rail rows use
 		// scrollbar-width:none and draw no thumb, so a horizontal scroll skips it.
@@ -780,12 +780,12 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 			} else {
 				replayScrollbarDamage(n->layout.y, n->layout.height);
 			}
-			perf.rootScrollScrollbarReplayUs += refreshPerfNowUs() - scrollbarReplayStartUs;
+			GEA_REFRESH_PERF(perf.rootScrollScrollbarReplayUs += refreshPerfNowUs() - scrollbarReplayStartUs);
 		}
 	} else {
 		const std::int64_t fullReplayStartUs = refreshPerfNowUs();
 		replayScrollNodeRegion(vx, vy, vw, vh);
-		perf.rootScrollFullReplayUs += refreshPerfNowUs() - fullReplayStartUs;
+		GEA_REFRESH_PERF(perf.rootScrollFullReplayUs += refreshPerfNowUs() - fullReplayStartUs);
 	}
 
 	// Repaint repositioned slots: the vacated box (now showing whatever sits
@@ -812,7 +812,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 				replaySlotRect(damage.newX0, damage.newY0, damage.newX1, damage.newY1);
 		}
 	}
-	perf.rootScrollStripReplayUs += refreshPerfNowUs() - slotReplayStartUs;
+	GEA_REFRESH_PERF(perf.rootScrollStripReplayUs += refreshPerfNowUs() - slotReplayStartUs);
 
 	const std::int64_t extraReplayStartUs = refreshPerfNowUs();
 	for (int i = 0; i < extraDirtyCount; i++) {
@@ -834,7 +834,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		DisplayList::instance().replay();
 		gea::platform::display::Display::popClip();
 	}
-	perf.rootScrollExtraReplayUs += refreshPerfNowUs() - extraReplayStartUs;
+	GEA_REFRESH_PERF(perf.rootScrollExtraReplayUs += refreshPerfNowUs() - extraReplayStartUs);
 
 	const std::int64_t flushStartUs = refreshPerfNowUs();
 	if (kSelfFlushingScroll && !damageOverflow) {
@@ -843,11 +843,11 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	} else {
 		gea::platform::display::Display::flush();
 	}
-	perf.rootScrollFlushUs += refreshPerfNowUs() - flushStartUs;
+	GEA_REFRESH_PERF(perf.rootScrollFlushUs += refreshPerfNowUs() - flushStartUs);
 
 	const std::int64_t snapshotStartUs = refreshPerfNowUs();
 	LayoutSnapshot::capture();
-	perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs;
+	GEA_REFRESH_PERF(perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs);
 
 	return 1;
 }

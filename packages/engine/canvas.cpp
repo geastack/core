@@ -6,10 +6,12 @@
 #include "pixel.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 // For the compile-gated GEA_EMBEDDED_TEXT_SPRITE_DIAG counters (see the diag
@@ -49,6 +51,7 @@
 namespace gea::framework::graphics {
 
 namespace {
+#if GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION
 // Per-scanline coverage bitmask for fillTrianglesOpaqueOccluded. Bit x set = a
 // nearer triangle already owns pixel x on that chunk-local row. Two banks so two
 // Canvases on different cores can occlude concurrently (cross-core band raster).
@@ -69,6 +72,7 @@ inline int occlCoreBank()
 	return 0;
 #endif
 }
+#endif
 }  // namespace
 
 constexpr int kBitmapFontWidth = BitmapFont8x16::kWidth;
@@ -240,14 +244,18 @@ void adoptHotTextSprite(const TextSprite &s)
 }
 #endif  // GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES > 0
 
-std::uint32_t hashTextContent(const char *s)
+TextSprite &textSpriteFor(const char *text, const RasterizedFont &font)
 {
-	std::uint32_t h = 2166136261u;  // FNV-1a
-	for (; *s; ++s) {
-		h ^= static_cast<std::uint8_t>(*s);
-		h *= 16777619u;
+	// Search all four slots: a direct-mapped hash makes alternating labels
+	// such as "FPS: 59" and "FPS: 60" evict each other. Hits stay read-only;
+	// a four-byte replacement cursor advances only for a new cache key.
+	for (TextSprite &candidate : gTextSprites) {
+		if (candidate.fontData == font.data() && candidate.sizePx == font.sizePx() &&
+		    std::strcmp(candidate.text, text) == 0)
+			return candidate;
 	}
-	return h;
+	static std::atomic<unsigned> nextSlot{0};
+	return gTextSprites[nextSlot.fetch_add(1, std::memory_order_relaxed) % kTextSpriteSlots];
 }
 
 // Rasterize `text` into `sprite`'s coverage buffer in text-relative coordinates
@@ -845,15 +853,30 @@ public:
 #define GEA_EMBEDDED_CANVAS_CIRCLE_BOX_SPAN_SLOTS 16
 #endif
 
-	static constexpr int kCircleSpanMax = 32;
+#ifndef GEA_EMBEDDED_CANVAS_CIRCLE_SPAN_MAX
+#define GEA_EMBEDDED_CANVAS_CIRCLE_SPAN_MAX 32
+#endif
+	static constexpr int kCircleSpanMax = GEA_EMBEDDED_CANVAS_CIRCLE_SPAN_MAX;
 	static constexpr int kCircleSpanSlotCount = (kCircleSpanMax / 2) + 1;
 	static constexpr int kCircleRadiusMax = GEA_EMBEDDED_CANVAS_CIRCLE_RADIUS_MAX;
-	static constexpr int kCircleRadiusSpanRows = (kCircleRadiusMax * 2) + 1;
+	// Tables are concatenated at their actual heights, not at the maximum
+	// height for every radius. Even-size slot s uses 2*s rows; radius r uses
+	// 2*r+1 rows. Their starts are s*(s-1) and r*r respectively.
+	static constexpr int kCircleSpanRows = kCircleSpanSlotCount * (kCircleSpanSlotCount - 1);
+	static constexpr int kCircleRadiusRows = (kCircleRadiusMax + 1) * (kCircleRadiusMax + 1);
 	static constexpr int kCircleBoxSpanMax = GEA_EMBEDDED_CANVAS_CIRCLE_BOX_SPAN_MAX;
 	static constexpr int kCircleBoxSpanSlots = GEA_EMBEDDED_CANVAS_CIRCLE_BOX_SPAN_SLOTS;
+	static_assert(kCircleSpanMax > 0 && kCircleSpanMax <= 32 && (kCircleSpanMax % 2) == 0);
 	static_assert(kCircleRadiusMax > 0 && kCircleRadiusMax < 64);
 	static_assert(kCircleBoxSpanMax > 0 && kCircleBoxSpanMax <= 255);
 	static_assert(kCircleBoxSpanSlots > 0);
+
+	using CircleSpanReady = std::conditional_t<(kCircleSpanSlotCount <= 8), std::uint8_t,
+	    std::conditional_t<(kCircleSpanSlotCount <= 16), std::uint16_t, std::uint32_t>>;
+	using CircleRadiusReady = std::conditional_t<(kCircleRadiusMax < 8), std::uint8_t,
+	    std::conditional_t<(kCircleRadiusMax < 16), std::uint16_t,
+	    std::conditional_t<(kCircleRadiusMax < 32), std::uint32_t, std::uint64_t>>>;
+	using CircleBoxSlot = std::conditional_t<(kCircleBoxSpanSlots <= 256), std::uint8_t, std::uint32_t>;
 
 #endif
 	static int min(int a, int b) { return a < b ? a : b; }
@@ -874,19 +897,20 @@ public:
 	{
 #if GEA_EMBEDDED_RENDERER_CIRCLES
 		if (size <= 0 || size > kCircleSpanMax || (size & 1)) return nullptr;
-		int slot = size / 2;
-		std::uint32_t bit = 1u << slot;
+		const int slot = size / 2;
+		auto *spans = instance().circleSpanCache_ + slot * (slot - 1);
+		const CircleSpanReady bit = static_cast<CircleSpanReady>(CircleSpanReady{1} << slot);
 		if (!(instance().circleSpanCacheReady_ & bit)) {
 			int radius2 = size * size;
 			for (int row = 0; row < size; row++) {
 				int dy2 = row * 2 + 1 - size;
 				int dx2 = integerSqrt(radius2 - dy2 * dy2);
-				instance().circleSpanCache_[slot][row][0] = (std::uint8_t)((size - dx2) / 2);
-				instance().circleSpanCache_[slot][row][1] = (std::uint8_t)((size + dx2 - 1) / 2);
+				spans[row][0] = (std::uint8_t)((size - dx2) / 2);
+				spans[row][1] = (std::uint8_t)((size + dx2 - 1) / 2);
 			}
 			instance().circleSpanCacheReady_ |= bit;
 		}
-		return instance().circleSpanCache_[slot];
+		return spans;
 #else
 		(void)size;
 		return nullptr;
@@ -928,19 +952,20 @@ public:
 	{
 #if GEA_EMBEDDED_RENDERER_CIRCLES
 		if (radius <= 0 || radius > kCircleRadiusMax) return nullptr;
-		std::uint64_t bit = 1ull << radius;
+		const int rr = radius * radius;
+		auto *spans = instance().circleRadiusSpanCache_ + rr;
+		const CircleRadiusReady bit = static_cast<CircleRadiusReady>(CircleRadiusReady{1} << radius);
 		if (!(instance().circleRadiusSpanCacheReady_ & bit)) {
 			const int diameter = radius * 2 + 1;
-			const int rr = radius * radius;
 			for (int row = 0; row < diameter; row++) {
 				const int dy = row - radius;
 				const int dx = integerSqrt(rr - dy * dy);
-				instance().circleRadiusSpanCache_[radius][row][0] = (std::uint8_t)(radius - dx);
-				instance().circleRadiusSpanCache_[radius][row][1] = (std::uint8_t)(radius + dx);
+				spans[row][0] = (std::uint8_t)(radius - dx);
+				spans[row][1] = (std::uint8_t)(radius + dx);
 			}
 			instance().circleRadiusSpanCacheReady_ |= bit;
 		}
-		return instance().circleRadiusSpanCache_[radius];
+		return spans;
 #else
 		(void)radius;
 		return nullptr;
@@ -955,13 +980,13 @@ public:
 	}
 
 private:
-	std::uint8_t circleSpanCache_[kCircleSpanSlotCount][kCircleSpanMax][2]{};
-	std::uint32_t circleSpanCacheReady_ = 0;
-	std::uint8_t circleRadiusSpanCache_[kCircleRadiusMax + 1][kCircleRadiusSpanRows][2]{};
-	std::uint64_t circleRadiusSpanCacheReady_ = 0;
+	std::uint8_t circleSpanCache_[kCircleSpanRows][2]{};
+	CircleSpanReady circleSpanCacheReady_ = 0;
+	std::uint8_t circleRadiusSpanCache_[kCircleRadiusRows][2]{};
+	CircleRadiusReady circleRadiusSpanCacheReady_ = 0;
 	std::uint8_t circleBoxSpanCache_[kCircleBoxSpanSlots][kCircleBoxSpanMax][2]{};
 	std::uint8_t circleBoxSpanSize_[kCircleBoxSpanSlots]{};
-	int circleBoxSpanNext_ = 0;
+	CircleBoxSlot circleBoxSpanNext_ = 0;
 #endif
 };
 
@@ -2120,6 +2145,15 @@ void Canvas::fillTriangleOpaque(int x0, int y0, int x1, int y1, int x2, int y2, 
 void Canvas::fillTrianglesOpaqueOccluded(const TriangleEntry *tris, int count, int ox, int oy)
 {
 	if (!pixels_ || count <= 0) return;
+#if !GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION
+	// Same painter's-order fallback used for chunks larger than the scratch.
+	// Unused optimizations reserve no storage, but native commands still draw.
+	for (int i = 0; i < count; ++i) {
+		const TriangleEntry &t = tris[i];
+		fillTriangleOpaque(t.x0 - ox, t.y0 - oy, t.x1 - ox, t.y1 - oy,
+		                   t.x2 - ox, t.y2 - oy, t.color);
+	}
+#else
 	const int rows = height_;
 	// Fall back to painter's back-to-front when the chunk exceeds the coverage
 	// scratch (only gea3d's small half-res chunks take the occluded path).
@@ -2232,6 +2266,7 @@ void Canvas::fillTrianglesOpaqueOccluded(const TriangleEntry *tris, int count, i
 		}
 	}
 	if (dirty_x1 >= dirty_x0 && dirty_y1 >= dirty_y0) markDirty(dirty_x0, dirty_y0, dirty_x1, dirty_y1);
+#endif
 }
 
 void Canvas::drawText(const char *text, int x, int y, pixel::native_t color, float scale)
@@ -2636,7 +2671,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 		if (len == 0 || len > static_cast<std::size_t>(kTextSpriteMaxLen)) gTsDiag.tooLong++;
 #endif
 		if (len > 0 && len <= static_cast<std::size_t>(kTextSpriteMaxLen)) {
-			TextSprite &slot = gTextSprites[hashTextContent(text) % kTextSpriteSlots];
+			TextSprite &slot = textSpriteFor(text, font);
 			const bool idMatch = slot.fontData == font.data() &&
 			                     slot.sizePx == font.sizePx() &&
 			                     std::strcmp(slot.text, text) == 0;

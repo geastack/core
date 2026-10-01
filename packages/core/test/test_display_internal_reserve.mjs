@@ -76,3 +76,11 @@ assert.match(
   /void releaseDisplayReserves\(void \*runtimeReserve\)[\s\S]*releaseInternalDma\(runtimeReserve\);[\s\S]*releaseInternalDma\(g_appDisplayReserve\);[\s\S]*g_appDisplayReserve = nullptr;/,
   'the app reserve has to be freed with the runtime one and the handle cleared'
 )
+
+// The synchronous Wi-Fi loan must last through app/task allocation, but must
+// not pin a running animated app to the two-row radio-startup floor forever.
+const stagingRelease = runtime.indexOf('gea::platform::display::Display::reserveInternal(0);')
+assert.ok(stagingRelease > runtime.indexOf('services::FrameScheduler::start(eventQueue);'),
+  'release Wi-Fi staging only after startup allocations are owned')
+assert.ok(stagingRelease > runtime.indexOf('services::AppRunner::initApplication(options.width, options.height)'),
+  'the native application must allocate before display staging can regrow')

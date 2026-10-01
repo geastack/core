@@ -468,6 +468,28 @@ void rootScrollImageHoldTick();
 		// (LayoutBox::memo_pass). Must be called before each root layoutNode()
 		// so memo hits never leak across passes/frames.
 		void beginLayoutPass();
+		void endLayoutPass();
+		void invalidateMemo(int id);
+		void resetNodeLayoutState(int id);
+		void releasePersistentLayoutStorage();
+		static std::size_t persistentLayoutStorageBytes();
+		static std::size_t persistentLayoutHeapBytes();
+		static std::size_t persistentLayoutAllocationCount();
+		static std::size_t persistentLayoutPeakBytes();
+		static std::size_t persistentLayoutPeakAllocations();
+		static std::size_t persistentLayoutStaticBytes();
+		static std::size_t memoStorageBytes();
+		// ESP: allocator usable bytes, including slack; host: requested payload.
+		static std::size_t memoPeakHeapBytes();
+		class Pass {
+		public:
+			explicit Pass(bool active = true) : active_(active) { if (active_) instance().beginLayoutPass(); }
+			~Pass() { if (active_) instance().endLayoutPass(); }
+			Pass(const Pass &) = delete;
+			Pass &operator=(const Pass &) = delete;
+		private:
+			bool active_;
+		};
 		void layoutNode(int id, int availableWidth, int availableHeight, bool intrinsicBoxEdges = false);
 		// Scoped relayout: re-lays ONLY `scope`'s subtree using the available box
 		// remembered from its last layout, then resolves the subtree's absolute

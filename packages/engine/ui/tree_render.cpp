@@ -178,13 +178,13 @@ namespace gea::embedded::ui
 					node.layout.scroll_y = static_cast<int32_t>(y);
 					continue;
 				}
-				if (node.style.overflow != 2)
+				if (node.computedStyle().overflow != 2)
 				{
 					node.layout.scroll_x = 0;
 					node.layout.scroll_y = 0;
 					continue;
 				}
-				if (scrollsOverflowX(node.style))
+				if (scrollsOverflowX(node.computedStyle()))
 				{
 					int x = offsets[i].x;
 					const int maxX = ViewRenderer::scrollMaxX(node);
@@ -199,7 +199,7 @@ namespace gea::embedded::ui
 					node.layout.scroll_x = 0;
 				}
 
-				if (scrollsOverflowY(node.style))
+				if (scrollsOverflowY(node.computedStyle()))
 				{
 					int y = offsets[i].y;
 					const int maxY = ViewRenderer::scrollMaxY(node);
@@ -261,15 +261,15 @@ namespace gea::embedded::ui
 
 		bool dirtyRectNeedsRasterGuard(const Node &node)
 		{
-			if (hasAnyBorder(node.style))
+			if (hasAnyBorder(node.computedStyle()))
 				return true;
-			if ((GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0) > 0 || node.render.previous_filter_blur_radius > 0)
+			if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0 || node.render.previous_filter_blur_radius > 0)
 				return true;
-			if (node.style.mask_right_fade_width > 0)
+			if (node.computedStyle().mask_right_fade_width > 0)
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 || rstyle(node.style).border_image_source)
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 || rstyle(node.computedStyle()).border_image_source)
 				return true;
-			return node.style.has_bg && (styleHasRoundedRasterEdge(node.style) || node.style.bg_alpha < 255);
+			return node.computedStyle().has_bg && (styleHasRoundedRasterEdge(node.computedStyle()) || node.computedStyle().bg_alpha < 255);
 		}
 
 		constexpr int kRetainedMoveDirtyGuardPx = GEA_EMBEDDED_RETAINED_MOVE_DIRTY_GUARD_PX;
@@ -291,8 +291,8 @@ namespace gea::embedded::ui
 				return rect;
 			// border-image-outset and an outer box-shadow paint outside the border box;
 			// the previous shadow extent covers pixels a moved or shrunk shadow left.
-			const int shadow = std::max(boxShadowExtent(node.style), static_cast<int>(node.render.previous_box_shadow_extent));
-			return expandDirtyRect(rect, 1 + std::max(StyleValues::borderImageOutsetExtent(node.style), shadow));
+			const int shadow = std::max(boxShadowExtent(node.computedStyle()), static_cast<int>(node.render.previous_box_shadow_extent));
+			return expandDirtyRect(rect, 1 + std::max(StyleValues::borderImageOutsetExtent(node.computedStyle()), shadow));
 		}
 
 		DirtyRegions::Rect dirtyRectWithRetainedMoveGuard(DirtyRegions::Rect rect)
@@ -412,12 +412,12 @@ namespace gea::embedded::ui
 
 		int nodeBoxRotation(const Node &node, bool usePrevious)
 		{
-			return usePrevious ? node.render.previous_transform_rotate : rstyle(node.style).transform_rotate;
+			return usePrevious ? node.render.previous_transform_rotate : rstyle(node.computedStyle()).transform_rotate;
 		}
 
 		bool hasTransformState(const Node &node)
 		{
-			const RareStyle &rs = rstyle(node.style); // one pool lookup, not 11
+			const RareStyle &rs = rstyle(node.computedStyle()); // one pool lookup, not 11
 			return hasIndividualLinearTransform(rs) || hadIndividualLinearTransform(node.render) ||
 	       rs.transform_rotate != 0 ||
 						 node.render.previous_transform_rotate != 0 ||
@@ -447,17 +447,17 @@ namespace gea::embedded::ui
 
 		bool hasThreeDimensionalTransformState(const Node &node)
 		{
-			const auto &r = rstyle(node.style);
+			const auto &r = rstyle(node.computedStyle());
 			return ((r.rotate_angle % 3600) && (r.rotate_axis_x || r.rotate_axis_y)) ||
 			    ((node.render.previous_rotate_angle % 3600) && (node.render.previous_rotate_axis_x || node.render.previous_rotate_axis_y)) ||
 			    r.scale_z != 1000 || node.render.previous_scale_z != 1000 ||
-			    rstyle(node.style).transform_rotate_x != 0 ||
+			    rstyle(node.computedStyle()).transform_rotate_x != 0 ||
 						 node.render.previous_transform_rotate_x != 0 ||
-						 rstyle(node.style).transform_rotate_y != 0 ||
+						 rstyle(node.computedStyle()).transform_rotate_y != 0 ||
 						 node.render.previous_transform_rotate_y != 0 ||
-						 composedTranslateZ(rstyle(node.style)) != 0 ||
+						 composedTranslateZ(rstyle(node.computedStyle())) != 0 ||
 						 node.render.previous_transform_translate_z != 0 ||
-						 rstyle(node.style).perspective > 0 ||
+						 rstyle(node.computedStyle()).perspective > 0 ||
 						 node.render.previous_perspective > 0;
 		}
 
@@ -521,16 +521,16 @@ namespace gea::embedded::ui
 			for (int i = 0; i < 4; ++i)
 			{
 #if GEA_CSS_PERCENT_RADIUS
-				if (node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(i)] != kUnset)
+				if (node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(i)] != kUnset)
 				{
-					const double p = static_cast<double>(node.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(i)]) / 1000.0;
+					const double p = static_cast<double>(node.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(i)]) / 1000.0;
 					rx[i] = std::max(0.0, width * p);
 					ry[i] = std::max(0.0, height * p);
 				}
 				else
 #endif
 				{
-					const double r = static_cast<double>(std::max(0, static_cast<int>(node.style.border_radius[GEA_CSS_RADIUS_INDEX(i)])));
+					const double r = static_cast<double>(std::max(0, static_cast<int>(node.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(i)])));
 					rx[i] = r;
 					ry[i] = r;
 				}
@@ -635,9 +635,9 @@ namespace gea::embedded::ui
 		{
 			return isViewLikeNodeType(node.type) &&
 						 node.first_child < 0 &&
-						 node.style.display != 1 &&
-						 node.style.has_bg &&
-						 !hasAnyBorder(node.style) &&
+						 node.computedStyle().display != 1 &&
+						 node.computedStyle().has_bg &&
+						 !hasAnyBorder(node.computedStyle()) &&
 						 hasTransformState(node);
 		}
 
@@ -656,11 +656,11 @@ namespace gea::embedded::ui
 					node.type == NodeType::Image ||
 					node.type == NodeType::Canvas)
 				return true;
-			if (node.style.has_bg || hasAnyBorder(node.style))
+			if (node.computedStyle().has_bg || hasAnyBorder(node.computedStyle()))
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0) > 0)
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) > 0 || (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0)
 				return true;
-			if (node.style.mask_right_fade_width > 0)
+			if (node.computedStyle().mask_right_fade_width > 0)
 				return true;
 			return false;
 		}
@@ -872,7 +872,7 @@ namespace gea::embedded::ui
 			if (node < 0 || node >= state.nodeCount)
 				return;
 			Node &n = state.nodes[node];
-			if (n.style.display != 1 && n.layout.width > 0 && n.layout.height > 0)
+			if (n.computedStyle().display != 1 && n.layout.width > 0 && n.layout.height > 0)
 			{
 				int nx0, ny0, nx1, ny1;
 				ViewRenderer::transformedBounds(n, usePrevious, &nx0, &ny0, &nx1, &ny1);
@@ -917,7 +917,7 @@ namespace gea::embedded::ui
 
 		int filterBlurRadiusForNode(const Node &node, bool usePrevious)
 		{
-			return usePrevious ? node.render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(node.style).filter_blur_radius : 0);
+			return usePrevious ? node.render.previous_filter_blur_radius : (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
 		}
 
 		DirtyRegions::Rect filterBlurBoundsRect(const Node &node, bool usePrevious, int origin)
@@ -940,7 +940,7 @@ namespace gea::embedded::ui
 			for (int i = 0; i < state.nodeCount; i++)
 			{
 				const Node &node = state.nodes[i];
-				if (node.style.display == 1)
+				if (node.computedStyle().display == 1)
 					continue;
 				for (int pass = 0; pass < 2; pass++)
 				{
@@ -1177,18 +1177,18 @@ namespace gea::embedded::ui
 
 		bool panNodeHasTransform(const Node &n)
 		{
-			return hasIndividualLinearTransform(rstyle(n.style)) || hadIndividualLinearTransform(n.render) ||
-	       rstyle(n.style).transform_rotate != 0 || n.render.previous_transform_rotate != 0 ||
-						 rstyle(n.style).transform_rotate_x != 0 || n.render.previous_transform_rotate_x != 0 ||
-						 rstyle(n.style).transform_rotate_y != 0 || n.render.previous_transform_rotate_y != 0 ||
-						 composedTranslateX(rstyle(n.style)) != 0 || n.render.previous_transform_translate_x != 0 ||
-						 composedTranslateY(rstyle(n.style)) != 0 || n.render.previous_transform_translate_y != 0 ||
-						 composedTranslateZ(rstyle(n.style)) != 0 || n.render.previous_transform_translate_z != 0 ||
-						 composedTranslateXPercent(rstyle(n.style)) != 0 || n.render.previous_transform_translate_x_percent != 0 ||
-						 composedTranslateYPercent(rstyle(n.style)) != 0 || n.render.previous_transform_translate_y_percent != 0 ||
-						 rstyle(n.style).transform_scale_x != 1000 || n.render.previous_transform_scale_x != 1000 ||
-						 rstyle(n.style).transform_scale_y != 1000 || rstyle(n.style).transform_scale_z != 1000 || n.render.previous_transform_scale_y != 1000 || n.render.previous_transform_scale_z != 1000 ||
-						 rstyle(n.style).perspective > 0 || n.render.previous_perspective > 0;
+			return hasIndividualLinearTransform(rstyle(n.computedStyle())) || hadIndividualLinearTransform(n.render) ||
+	       rstyle(n.computedStyle()).transform_rotate != 0 || n.render.previous_transform_rotate != 0 ||
+						 rstyle(n.computedStyle()).transform_rotate_x != 0 || n.render.previous_transform_rotate_x != 0 ||
+						 rstyle(n.computedStyle()).transform_rotate_y != 0 || n.render.previous_transform_rotate_y != 0 ||
+						 composedTranslateX(rstyle(n.computedStyle())) != 0 || n.render.previous_transform_translate_x != 0 ||
+						 composedTranslateY(rstyle(n.computedStyle())) != 0 || n.render.previous_transform_translate_y != 0 ||
+						 composedTranslateZ(rstyle(n.computedStyle())) != 0 || n.render.previous_transform_translate_z != 0 ||
+						 composedTranslateXPercent(rstyle(n.computedStyle())) != 0 || n.render.previous_transform_translate_x_percent != 0 ||
+						 composedTranslateYPercent(rstyle(n.computedStyle())) != 0 || n.render.previous_transform_translate_y_percent != 0 ||
+						 rstyle(n.computedStyle()).transform_scale_x != 1000 || n.render.previous_transform_scale_x != 1000 ||
+						 rstyle(n.computedStyle()).transform_scale_y != 1000 || rstyle(n.computedStyle()).transform_scale_z != 1000 || n.render.previous_transform_scale_y != 1000 || n.render.previous_transform_scale_z != 1000 ||
+						 rstyle(n.computedStyle()).perspective > 0 || n.render.previous_perspective > 0;
 		}
 
 		bool panIsDescendantOf(int node, int ancestor)
@@ -1211,43 +1211,43 @@ namespace gea::embedded::ui
 		{
 			if (n.type != NodeType::View)
 				return false;
-			if (n.style.opacity != 255)
+			if (n.computedStyle().opacity != 255)
 				return false;
-			if (hasAnyBorder(n.style))
+			if (hasAnyBorder(n.computedStyle()))
 				return false;
 			for (int r = 0; r < 4; r++)
 			{
-				if (n.style.border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0)
+				if (n.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0)
 					return false;
 #if GEA_CSS_PERCENT_RADIUS
-				if (n.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset && n.style.border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != 0)
+				if (n.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset && n.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != 0)
 					return false;
 #endif
 			}
-			if ((GEA_CSS_FILTERS ? rstyle(n.style).filter_blur_radius : 0) > 0)
+			if ((GEA_CSS_FILTERS ? rstyle(n.computedStyle()).filter_blur_radius : 0) > 0)
 				return false;
-			if (n.style.mask_right_fade_width > 0)
+			if (n.computedStyle().mask_right_fade_width > 0)
 				return false;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(n.style).box_shadow_alpha : 0) > 0 &&
-					((GEA_CSS_BOX_SHADOW ? rstyle(n.style).box_shadow_offset_x : 0) != 0 || (GEA_CSS_BOX_SHADOW ? rstyle(n.style).box_shadow_offset_y : 0) != 0 ||
-					 (GEA_CSS_BOX_SHADOW ? rstyle(n.style).box_shadow_blur_radius : 0) != 0 || (GEA_CSS_BOX_SHADOW ? rstyle(n.style).box_shadow_spread : 0) != 0))
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(n.computedStyle()).box_shadow_alpha : 0) > 0 &&
+					((GEA_CSS_BOX_SHADOW ? rstyle(n.computedStyle()).box_shadow_offset_x : 0) != 0 || (GEA_CSS_BOX_SHADOW ? rstyle(n.computedStyle()).box_shadow_offset_y : 0) != 0 ||
+					 (GEA_CSS_BOX_SHADOW ? rstyle(n.computedStyle()).box_shadow_blur_radius : 0) != 0 || (GEA_CSS_BOX_SHADOW ? rstyle(n.computedStyle()).box_shadow_spread : 0) != 0))
 				return false;
-			if (n.style.has_bg)
+			if (n.computedStyle().has_bg)
 			{
 				// A narrow solid rectangle still has horizontal edges: scrolling
 				// it creates a ghost just like scrolling text or a rounded control.
-				if (n.style.bg_alpha != 255 || panNodeHasTransform(n) ||
+				if (n.computedStyle().bg_alpha != 255 || panNodeHasTransform(n) ||
 				    n.layout.x > viewportX || n.layout.x + n.layout.width < viewportX + viewportWidth)
 					return false;
 				for (int parent = n.parent; parent >= 0; parent = treeState().nodes[parent].parent) {
 					const Node &clip = treeState().nodes[parent];
-					if (panNodeHasTransform(clip) || (clip.style.overflow &&
+					if (panNodeHasTransform(clip) || (clip.computedStyle().overflow &&
 					    (clip.layout.x > viewportX || clip.layout.x + clip.layout.width < viewportX + viewportWidth)))
 						return false;
 				}
-				if (styleHasBackgroundImage(n.style))
+				if (styleHasBackgroundImage(n.computedStyle()))
 					return false; // gradient fill (linear/radial/overlay)
-				if (rstyle(n.style).bg_grid_axes != 0)
+				if (rstyle(n.computedStyle()).bg_grid_axes != 0)
 					return false; // grid overlay
 			}
 			return true;
@@ -1262,7 +1262,7 @@ namespace gea::embedded::ui
 			gea::platform::display::Display::resetClip();
 			gea::platform::display::Display::setAlpha(255);
 			DisplayList::instance().replayDirectDirtyRegion(rx, ry, rx + rw - 1, ry + rh - 1, origin);
-			refreshPerfStatsMutable().treePanRepaintArea += rw * rh;
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treePanRepaintArea += rw * rh);
 			return true;
 		}
 
@@ -1326,14 +1326,14 @@ namespace gea::embedded::ui
 				Node *n = &state.nodes[i];
 				if (!n->render.dirty)
 					continue;
-				if (n->style.display == kDisplayNone)
+				if (n->computedStyle().display == kDisplayNone)
 					continue;
 				if (n->first_child < 0)
 					continue;
 				if (n->parent < 0)
 					continue;
 				Node *p = &state.nodes[n->parent];
-				if (p->style.overflow != 1)
+				if (p->computedStyle().overflow != 1)
 					continue; // parent must clip (overflow:hidden)
 				const int dx = n->layout.x - n->layout.previous_x;
 				const int dy = n->layout.y - n->layout.previous_y;
@@ -1345,7 +1345,7 @@ namespace gea::embedded::ui
 					continue;
 				if (n->layout.previous_width <= 0 || n->layout.previous_height <= 0)
 					continue;
-				if (n->style.opacity != 255)
+				if (n->computedStyle().opacity != 255)
 					continue;
 				if (panNodeHasTransform(*n))
 					continue;
@@ -1464,7 +1464,7 @@ namespace gea::embedded::ui
 				panCoverageWrapperX = W->layout.x;
 				panCoveragePadding = kPanRecordPadding;
 				panCoverageSerial = DisplayList::instance().recordSerial();
-				refreshPerfStatsMutable().treeRecordNodeUs += refreshPerfNowUs() - rebuildStartUs;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeRecordNodeUs += refreshPerfNowUs() - rebuildStartUs);
 			}
 
 			// ---- Commit: shift the framebuffer and repaint only what the shift can't. ----
@@ -1494,7 +1494,7 @@ namespace gea::embedded::ui
 			for (int i = 0; i < state.nodeCount; i++)
 			{
 				Node *n = &state.nodes[i];
-				if (n->style.display == kDisplayNone)
+				if (n->computedStyle().display == kDisplayNone)
 					continue;
 				if (i == wrapper || panIsDescendantOf(i, wrapper))
 					continue;
@@ -1555,9 +1555,9 @@ namespace gea::embedded::ui
 			state.canvases.forEach([](CanvasSurfaceState &surface)
 														 {
 		if (auto *canvas = surface.canvas()) canvas->resetDirty(); });
-			refreshPerfStatsMutable().treePanReplayCalls++;
+			GEA_REFRESH_PERF(refreshPerfStatsMutable().treePanReplayCalls++);
 			if (directRegions > 0)
-				refreshPerfStatsMutable().treeDirectReplayCalls++;
+				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeDirectReplayCalls++);
 			return true;
 		}
 
@@ -1660,10 +1660,12 @@ namespace gea::embedded::ui
 		gea::platform::display::Display::resetClip();
 		gea::platform::display::Display::setAlpha(255);
 
-		LayoutEngine::instance().beginLayoutPass();
-		LayoutEngine::instance().layoutNode(root, width, height);
-		applyPendingScrollIntoView();
-		LayoutEngine::instance().resolveAbsoluteCoords(root, 0, 0);
+		{
+			LayoutEngine::Pass layoutPass;
+			LayoutEngine::instance().layoutNode(root, width, height);
+			applyPendingScrollIntoView();
+			LayoutEngine::instance().resolveAbsoluteCoords(root, 0, 0);
+		}
 		noteLaidOutViewport(root, width, height);
 		state.refreshSerial++;
 		if (state.refreshSerial == 0)
@@ -1734,7 +1736,7 @@ namespace gea::embedded::ui
 			PreservedScrollOffset scrollOffsets[kMaxNodes];
 			preserveScrollOffsets(scrollOffsets, kMaxNodes);
 #endif
-			LayoutEngine::instance().beginLayoutPass();
+			LayoutEngine::Pass layoutPass;
 		LayoutEngine::instance().layoutNode(root, width, height);
 #if GEA_CSS_SCROLLING
 			restoreScrollOffsetsAfterLayout(scrollOffsets, kMaxNodes);
@@ -1840,7 +1842,7 @@ namespace gea::embedded::ui
 				const bool dimsStable = a.layout.width == a.layout.previous_width &&
 																a.layout.height == a.layout.previous_height &&
 																a.layout.width > 0 && a.layout.height > 0;
-				if (dimsStable && a.style.display != kDisplayNone)
+				if (dimsStable && a.computedStyle().display != kDisplayNone)
 					return scope;
 			}
 			return -1;
@@ -1866,7 +1868,7 @@ namespace gea::embedded::ui
 		// moves content, so native renderers must re-sync.
 		state.refreshSerial++;
 		auto &perf = refreshPerfStatsMutable();
-		perf.treeRefreshCalls++;
+		GEA_REFRESH_PERF(perf.treeRefreshCalls++);
 		DisplayList::instance().clearRetainedBackgroundRecolors();
 
 		const bool textClipDependencies = DisplayList::instance().hasTextClippedBackgrounds();
@@ -1924,7 +1926,7 @@ namespace gea::embedded::ui
 		const bool framebuffer_was_dirty = false;
 #endif
 		int layout_mode = AbsoluteLeafRefresh::mode();
-		perf.treeLayoutModeUs += refreshPerfNowUs() - layoutModeStartUs;
+		GEA_REFRESH_PERF(perf.treeLayoutModeUs += refreshPerfNowUs() - layoutModeStartUs);
 		if (layout_mode < 0)
 		{
 			if (!framebuffer_was_dirty && !state.displayListDirty && state.pendingScrollIntoViewNode < 0)
@@ -1975,13 +1977,13 @@ namespace gea::embedded::ui
 				if (scope >= 0)
 					scope = stableScopeAt(state, scope, root);
 				if (scope < 0)
-					perf.treeScopedRejectReason = 1;
+					GEA_REFRESH_PERF(perf.treeScopedRejectReason = 1);
 				for (int attempt = 0; scope >= 0 && attempt < 2; attempt++)
 				{
 					scoped = LayoutEngine::instance().layoutNodeScoped(scope, root);
 					if (scoped)
 					{
-						perf.treeScopedLayouts++;
+						GEA_REFRESH_PERF(perf.treeScopedLayouts++);
 						break;
 					}
 					// Most rejects mean the scope autosized to the new content —
@@ -1990,9 +1992,9 @@ namespace gea::embedded::ui
 					scope = stableScopeAt(state, state.nodes[scope].parent, root);
 				}
 			}
+			LayoutEngine::Pass layoutPass(!scoped);
 			if (!scoped)
 			{
-				LayoutEngine::instance().beginLayoutPass();
 				LayoutEngine::instance().layoutNode(root, width, height);
 			}
 #if GEA_CSS_SCROLLING
@@ -2017,7 +2019,7 @@ namespace gea::embedded::ui
 					continue;
 				if (n.parent < 0 && i != root)
 					continue;
-				if (n.style.display == kDisplayNone)
+				if (n.computedStyle().display == kDisplayNone)
 					continue;
 				if (n.layout.previous_width <= 0 && n.layout.previous_height <= 0 &&
 						n.layout.width <= 0 && n.layout.height <= 0)
@@ -2051,7 +2053,7 @@ namespace gea::embedded::ui
 		state.refreshSerial++;
 		if (state.refreshSerial == 0)
 			state.refreshSerial = 1;
-		perf.treeLayoutUs += refreshPerfNowUs() - layoutStartUs;
+		GEA_REFRESH_PERF(perf.treeLayoutUs += refreshPerfNowUs() - layoutStartUs);
 
 		const std::int64_t displayListStartUs = refreshPerfNowUs();
 		const bool display_list_was_dirty = state.displayListDirty;
@@ -2316,10 +2318,10 @@ namespace gea::embedded::ui
 				}
 				state.displayListDirty = false;
 				displayListFullRecord = !reprojected;
-				perf.treeRecordNodeUs += refreshPerfNowUs() - recordNodeStartUs;
-				perf.treeRecordCalls++;
-				perf.treeRecordedNodes += state.nodeCount;
-				perf.treeRecordedCommands += DisplayList::instance().commandCount();
+				GEA_REFRESH_PERF(perf.treeRecordNodeUs += refreshPerfNowUs() - recordNodeStartUs);
+				GEA_REFRESH_PERF(perf.treeRecordCalls++);
+				GEA_REFRESH_PERF(perf.treeRecordedNodes += state.nodeCount);
+				GEA_REFRESH_PERF(perf.treeRecordedCommands += DisplayList::instance().commandCount());
 			}
 			else if (!can_keep_display_list)
 			{
@@ -2339,16 +2341,16 @@ namespace gea::embedded::ui
 			DisplayList::instance().recordNode(root, 255);
 			DisplayList::instance().weldTransformedFaces();
 			state.displayListDirty = false;
-			perf.treeRecordNodeUs += refreshPerfNowUs() - recordNodeStartUs;
-			perf.treeRecordCalls++;
-			perf.treeRecordedNodes += state.nodeCount;
-			perf.treeRecordedCommands += DisplayList::instance().commandCount();
+			GEA_REFRESH_PERF(perf.treeRecordNodeUs += refreshPerfNowUs() - recordNodeStartUs);
+			GEA_REFRESH_PERF(perf.treeRecordCalls++);
+			GEA_REFRESH_PERF(perf.treeRecordedNodes += state.nodeCount);
+			GEA_REFRESH_PERF(perf.treeRecordedCommands += DisplayList::instance().commandCount());
 		}
 		if (displayListFullRecord)
-			perf.treeFullRecords++;
+			GEA_REFRESH_PERF(perf.treeFullRecords++);
 		if (reprojected)
-			perf.treeReprojects++;
-		perf.treeDisplayListUs += refreshPerfNowUs() - displayListStartUs;
+			GEA_REFRESH_PERF(perf.treeReprojects++);
+		GEA_REFRESH_PERF(perf.treeDisplayListUs += refreshPerfNowUs() - displayListStartUs);
 
 		// Horizontal-pan fast path: when a camera/world wrapper translated the viewport
 		// this frame (and nothing structural changed), memcpy-shift the viewport instead
@@ -2446,10 +2448,10 @@ namespace gea::embedded::ui
 					direct_replay &&
 					n->render.bg_recolor_pending &&
 					n->first_child < 0 &&
-					!hasAnyBorder(n->style) &&
-					n->style.opacity == 255 &&
-					(GEA_CSS_FILTERS ? rstyle(n->style).filter_blur_radius : 0) <= 0 &&
-					(GEA_CSS_BOX_SHADOW ? rstyle(n->style).box_shadow_blur_radius : 0) <= 0 &&
+					!hasAnyBorder(n->computedStyle()) &&
+					n->computedStyle().opacity == 255 &&
+					(GEA_CSS_FILTERS ? rstyle(n->computedStyle()).filter_blur_radius : 0) <= 0 &&
+					(GEA_CSS_BOX_SHADOW ? rstyle(n->computedStyle()).box_shadow_blur_radius : 0) <= 0 &&
 					n->layout.x == n->layout.previous_x &&
 					n->layout.y == n->layout.previous_y &&
 					n->layout.width == n->layout.previous_width &&
@@ -2462,7 +2464,7 @@ namespace gea::embedded::ui
 				int recolorY1 = -1;
 				if (DisplayList::instance().recolorRetainedSolidBackground(i,
 																																	 n->render.bg_recolor_from,
-																																	 n->style.bg_color,
+																																	 n->computedStyle().bg_color,
 																																	 &recolorX0,
 																																	 &recolorY0,
 																																	 &recolorX1,
@@ -2508,8 +2510,8 @@ namespace gea::embedded::ui
 								addDirtyRegion(flush_rects, &flush_rect_count, repair, width, height);
 						}
 					}
-					perf.treeBgRecolorCalls++;
-					perf.treeBgRecolorPixels += recolorPixels;
+					GEA_REFRESH_PERF(perf.treeBgRecolorCalls++);
+					GEA_REFRESH_PERF(perf.treeBgRecolorPixels += recolorPixels);
 					n->render.dirty = 0;
 					n->render.layout_dirty = 0;
 #if GEA_CSS_SCROLLING
@@ -2728,7 +2730,7 @@ namespace gea::embedded::ui
 		// replay the full filtered source/output bounds so the cache never mixes
 		// retained pixels with the current frame.
 		expandDirtyRegionsForFilterBlur(rects, &rect_count, flush_rects, &flush_rect_count, unifiedRectPath, width, height);
-		perf.treeDirtyCollectUs += refreshPerfNowUs() - dirtyCollectStartUs;
+		GEA_REFRESH_PERF(perf.treeDirtyCollectUs += refreshPerfNowUs() - dirtyCollectStartUs);
 			// Done collecting (and the structural/framebuffer/filter adds above); clear the
 		// broad-bbox flag so it can't leak into any later addDirtyRegion path.
 		g_broadDirtyBbox = false;
@@ -2788,28 +2790,30 @@ namespace gea::embedded::ui
 				coalesceHighCoverageDirtyRegions(flush_rects, &flush_rect_count, width, height);
 #endif
 		}
-		perf.treeDirtyCoalesceUs += refreshPerfNowUs() - dirtyCoalesceStartUs;
+		GEA_REFRESH_PERF(perf.treeDirtyCoalesceUs += refreshPerfNowUs() - dirtyCoalesceStartUs);
 
 		gea::platform::display::DisplayFlushRect flushRects[DirtyRegions::kMaxRects];
 		int flushRectCount = 0;
+#if GEA_EMBEDDED_UI_REFRESH_PERF
 		if (rect_count > 0)
 		{
-			perf.treeReplayRegions += rect_count;
+			GEA_REFRESH_PERF(perf.treeReplayRegions += rect_count);
 			for (int i = 0; i < rect_count; i++)
 			{
 				if (rects[i].origin >= 0)
-					perf.treeReplayOriginRegions++;
+					GEA_REFRESH_PERF(perf.treeReplayOriginRegions++);
 				if (perf.treeReplayRegionSampleCount < gea::embedded::ui::RefreshPerfStats::kMaxTreeReplayRegionSamples)
 				{
 					const int sample = perf.treeReplayRegionSampleCount++;
-					perf.treeReplayRegionX0[sample] = static_cast<std::int16_t>(rects[i].x0);
-					perf.treeReplayRegionY0[sample] = static_cast<std::int16_t>(rects[i].y0);
-					perf.treeReplayRegionX1[sample] = static_cast<std::int16_t>(rects[i].x1);
-					perf.treeReplayRegionY1[sample] = static_cast<std::int16_t>(rects[i].y1);
-					perf.treeReplayRegionOrigin[sample] = static_cast<std::int16_t>(rects[i].origin);
+					GEA_REFRESH_PERF(perf.treeReplayRegionX0[sample] = static_cast<std::int16_t>(rects[i].x0));
+					GEA_REFRESH_PERF(perf.treeReplayRegionY0[sample] = static_cast<std::int16_t>(rects[i].y0));
+					GEA_REFRESH_PERF(perf.treeReplayRegionX1[sample] = static_cast<std::int16_t>(rects[i].x1));
+					GEA_REFRESH_PERF(perf.treeReplayRegionY1[sample] = static_cast<std::int16_t>(rects[i].y1));
+					GEA_REFRESH_PERF(perf.treeReplayRegionOrigin[sample] = static_cast<std::int16_t>(rects[i].origin));
 				}
 			}
 		}
+#endif
 		const bool hasFlushOnlyRecolorRegions = preserveFlushOnlyRecolorRegions && flush_rect_count > 0;
 		const bool simpleDirtyReplayAvailable =
 				direct_replay && unifiedRectPath && DisplayList::instance().canReplaySimpleDirtyRegions(width, height);
@@ -2828,7 +2832,7 @@ namespace gea::embedded::ui
 #endif
 		if (simpleUnifiedReplay)
 		{
-			perf.treeDirectReplayCalls++;
+			GEA_REFRESH_PERF(perf.treeDirectReplayCalls++);
 #if GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_FLUSH
 			// Fused: skip the separate replay-into-framebuffer pass entirely. Hand the
 			// coalesced dirty windows to the flush, which chunks them and calls
@@ -2854,7 +2858,7 @@ namespace gea::embedded::ui
 					gea::platform::display::Display::flushRectsRasterized(sparseRects, sparseCount, fusedReplayRaster, &fctx, /*allowPerChunkDrain=*/false);
 					gea::platform::display::Display::rebindCanvasToFramebuffer();
 				}
-				perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs;
+				GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 			}
 #else
 			// A single wide flush of the dirty union avoids the per-window overhead and
@@ -2908,7 +2912,7 @@ namespace gea::embedded::ui
 							gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
 							const std::int64_t replayStartUs = refreshPerfNowUs();
 							DisplayList::instance().replaySimpleClippedDirtyRegion(r->x0, r->y0, r->x1, r->y1, r->origin);
-							perf.treeReplayUs += refreshPerfNowUs() - replayStartUs;
+							GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 							gea::platform::display::Display::popClip();
 						}
 					}
@@ -2924,7 +2928,7 @@ namespace gea::embedded::ui
 							regions[i] = DisplayReplayRegion{r->x0, r->y0, r->x1, r->y1, r->origin};
 						}
 						DisplayList::instance().replayDirectDirtyRegions(regions, rect_count);
-						perf.treeReplayUs += refreshPerfNowUs() - replayStartUs;
+						GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 					}
 				}
 				else
@@ -2937,7 +2941,7 @@ namespace gea::embedded::ui
 						gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
 						const std::int64_t replayStartUs = refreshPerfNowUs();
 						DisplayList::instance().replaySimpleClippedDirtyRegion(r->x0, r->y0, r->x1, r->y1, r->origin);
-						perf.treeReplayUs += refreshPerfNowUs() - replayStartUs;
+						GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 						gea::platform::display::Display::popClip();
 					}
 				}
@@ -2972,12 +2976,12 @@ namespace gea::embedded::ui
 				if (sparseCount > 0)
 					gea::platform::display::Display::flushRects(sparseRects, sparseCount);
 			}
-			perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs;
+			GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 #endif
 		}
 		else if (interleavedUnifiedFlush)
 		{
-			perf.treeDirectReplayCalls++;
+			GEA_REFRESH_PERF(perf.treeDirectReplayCalls++);
 #if GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_FLUSH && GEA_EMBEDDED_DISPLAY_FUSE_INTERLEAVED_REPLAY_FLUSH
 			FusedReplayRasterCtx fctx{width, height};
 			gea::platform::display::DisplayFlushRect sparseRects[DirtyRegions::kMaxRects];
@@ -2996,7 +3000,7 @@ namespace gea::embedded::ui
 				gea::platform::display::Display::flushRectsRasterized(sparseRects, sparseCount, fusedDirectReplayRaster, &fctx, /*allowPerChunkDrain=*/false);
 				gea::platform::display::Display::rebindCanvasToFramebuffer();
 			}
-			perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs;
+			GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 #else
 			for (int i = 0; i < rect_count; i++)
 			{
@@ -3007,11 +3011,11 @@ namespace gea::embedded::ui
 				const std::int64_t replayStartUs = refreshPerfNowUs();
 				const DisplayReplayRegion region{r->x0, r->y0, r->x1, r->y1, r->origin};
 				DisplayList::instance().replayDirectDirtyRegions(&region, 1);
-				perf.treeReplayUs += refreshPerfNowUs() - replayStartUs;
+				GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 				gea::platform::display::Display::popClip();
 				const std::int64_t flushStartUs = refreshPerfNowUs();
 				gea::platform::display::Display::flush();
-				perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs;
+				GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 			}
 #endif
 		}
@@ -3020,7 +3024,7 @@ namespace gea::embedded::ui
 			const std::int64_t replayStartUs = refreshPerfNowUs();
 			if (direct_replay && rect_count > 0)
 			{
-				perf.treeDirectReplayCalls++;
+				GEA_REFRESH_PERF(perf.treeDirectReplayCalls++);
 				gea::platform::display::Display::resetClip();
 				gea::platform::display::Display::setAlpha(255);
 				DisplayReplayRegion regions[DirtyRegions::kMaxRects];
@@ -3044,7 +3048,7 @@ namespace gea::embedded::ui
 					gea::platform::display::Display::popClip();
 				}
 			}
-			perf.treeReplayUs += refreshPerfNowUs() - replayStartUs;
+			GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 		}
 
 		// Static-backdrop cache: once the static scene (bg + stage) has been stable for a
@@ -3099,7 +3103,7 @@ namespace gea::embedded::ui
 			}
 			if (flushRectCount > 0)
 				gea::platform::display::Display::flushRects(flushRects, flushRectCount);
-			perf.treeFlushRectsUs += refreshPerfNowUs() - flushRectsStartUs;
+			GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushRectsStartUs);
 		}
 		const std::int64_t snapshotStartUs = refreshPerfNowUs();
 		LayoutSnapshot::capture();
@@ -3114,7 +3118,7 @@ namespace gea::embedded::ui
 		if (displayCanvas)
 			displayCanvas->resetDirty();
 #endif
-		perf.treeSnapshotUs += refreshPerfNowUs() - snapshotStartUs;
+		GEA_REFRESH_PERF(perf.treeSnapshotUs += refreshPerfNowUs() - snapshotStartUs);
 	}
 
 	void Tree::frame(int timestamp_ms)
@@ -3140,11 +3144,11 @@ namespace gea::embedded::ui
 		for (int i = 0; i < state.nodeCount; i++)
 		{
 			Node *n = &state.nodes[i];
-			if (n->style.blink_interval_ms <= 0)
+			if (n->computedStyle().blink_interval_ms <= 0)
 			{
-				if (!n->style.blink_visible)
+				if (!n->computedStyle().blink_visible)
 				{
-					n->style.blink_visible = 1;
+					n->mutableStyle().blink_visible = 1;
 					n->render.dirty = 1;
 					n->render.layout_dirty = 1;
 #if GEA_CSS_SCROLLING
@@ -3155,13 +3159,13 @@ namespace gea::embedded::ui
 				continue;
 			}
 
-			int elapsed = timestamp_ms - n->style.blink_started_ms;
+			int elapsed = timestamp_ms - n->computedStyle().blink_started_ms;
 			if (elapsed < 0)
 				elapsed = 0;
-			int visible = ((elapsed / n->style.blink_interval_ms) % 2) == 0;
-			if (n->style.blink_visible == visible)
+			int visible = ((elapsed / n->computedStyle().blink_interval_ms) % 2) == 0;
+			if (n->computedStyle().blink_visible == visible)
 				continue;
-			n->style.blink_visible = visible;
+			n->mutableStyle().blink_visible = visible;
 			n->render.dirty = 1;
 			n->render.layout_dirty = 1;
 #if GEA_CSS_SCROLLING
@@ -3188,7 +3192,7 @@ namespace gea::embedded::ui
 				Node *n = &state.nodes[i];
 				if (n->type != NodeType::Camera)
 					continue;
-				if (n->style.display == kDisplayNone)
+				if (n->computedStyle().display == kDisplayNone)
 					continue;
 				hasVisibleCamera = true;
 				if (nativeOverlay)

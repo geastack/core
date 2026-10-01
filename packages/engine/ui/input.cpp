@@ -128,12 +128,12 @@ public:
 
 		Node &node = tree.nodes()[activeNodeId];
 		activeTouchNode_ = activeNodeId;
-		savedBackgroundColor_ = node.style.bg_color;
-		savedHasBackground_ = node.style.has_bg;
-		node.style.bg_color = node.style.has_active_bg ? node.style.active_bg_color : lightenRgb565(node.style.bg_color);
-		node.style.has_bg = 1;
-		activeBackgroundColor_ = node.style.bg_color;
-		activeHasBackground_ = node.style.has_bg;
+		savedBackgroundColor_ = node.computedStyle().bg_color;
+		savedHasBackground_ = node.computedStyle().has_bg;
+		node.mutableStyle().bg_color = node.mutableStyle().has_active_bg ? node.mutableStyle().active_bg_color : lightenRgb565(node.mutableStyle().bg_color);
+		node.mutableStyle().has_bg = 1;
+		activeBackgroundColor_ = node.computedStyle().bg_color;
+		activeHasBackground_ = node.computedStyle().has_bg;
 		node.render.dirty = 1;  // paint-only: press highlight recolors in place
 #if GEA_CSS_SCROLLING
 		node.render.non_scroll_dirty = 1;
@@ -281,7 +281,7 @@ public:
 		const int count = tree.nodeCount();
 		for (int id = 0; id < count; ++id) {
 			Node &node = tree.nodes()[id];
-			if (node.style.display == 1) continue;  // display:none
+			if (node.computedStyle().display == 1) continue;  // display:none
 			if (!nodeCanScrollY(id, node)) continue;
 			const int cur = scrollTop(id);
 			int next = cur + dy;
@@ -443,20 +443,20 @@ private:
 	int hitTestNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.style.display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
+		if (node.computedStyle().display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
 		// CSS `pointer-events: none` — this node and its subtree are never the
 		// target of a pointer event, so the hit-test falls through to whatever is
 		// painted behind it. Without this, a decorative overlay image positioned
 		// over interactive controls (e.g. the weather hero art over the city rail)
 		// swallows their clicks. Matches the browser/DOM build, which honors it.
-		if (node.style.pointer_events == 1) return -1;
+		if (node.computedStyle().pointer_events == 1) return -1;
 
 		const bool inside = pointInsideNodeHitArea(node, x, y);
 		if (LayoutEngine::isViewportFixed(node)) clipped = false;
 		int clipX, clipY, clipW, clipH;
 		overflowClipBounds(node, clipX, clipY, clipW, clipH);
 		const bool outsideClip = x < clipX || y < clipY || x >= clipX + clipW || y >= clipY + clipH;
-		const bool childClipped = clipped || (outsideClip && node.style.overflow != 0);
+		const bool childClipped = clipped || (outsideClip && node.computedStyle().overflow != 0);
 		if (childClipped && (!inside || clipped) && !LayoutEngine::containsViewportFixed(id)) return -1;
 
 		const auto children = PaintOrder::collectChildren(id, groupRoot, includePositioned);
@@ -465,31 +465,31 @@ private:
 			const Node *nodes = Tree::instance().nodes();
 			for (int p = nodes[*child].parent; p >= 0 && p != id; p = nodes[p].parent) {
 				const auto &ancestor = nodes[p];
-				if (ancestor.style.pointer_events == 1) ignored = true;
+				if (ancestor.computedStyle().pointer_events == 1) ignored = true;
 				int ax, ay, aw, ah;
 				overflowClipBounds(ancestor, ax, ay, aw, ah);
-				if (ancestor.style.overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
+				if (ancestor.computedStyle().overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
 			}
 			if (ignored) continue;
 			const int result = hitTestNodeId(*child, x, y, inheritedClip, PaintOrder::isGroup(*child), PaintOrder::isContext(*child));
 			if (result >= 0) return result;
 		}
 
-		if (!inside || clipped || node.style.visibility != 0) return -1;
+		if (!inside || clipped || node.computedStyle().visibility != 0) return -1;
 		return id;
 	}
 
 	int findScrollNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.style.display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
+		if (node.computedStyle().display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
 
 		const bool inside = pointInsideNodeHitArea(node, x, y);
 		if (LayoutEngine::isViewportFixed(node)) clipped = false;
 		int clipX, clipY, clipW, clipH;
 		overflowClipBounds(node, clipX, clipY, clipW, clipH);
 		const bool outsideClip = x < clipX || y < clipY || x >= clipX + clipW || y >= clipY + clipH;
-		const bool childClipped = clipped || (outsideClip && node.style.overflow != 0);
+		const bool childClipped = clipped || (outsideClip && node.computedStyle().overflow != 0);
 		if (childClipped && (!inside || clipped) && !LayoutEngine::containsViewportFixed(id)) return -1;
 
 		const auto children = PaintOrder::collectChildren(id, groupRoot, includePositioned);
@@ -501,14 +501,14 @@ private:
 
 				int ax, ay, aw, ah;
 				overflowClipBounds(ancestor, ax, ay, aw, ah);
-				if (ancestor.style.overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
+				if (ancestor.computedStyle().overflow && (x < ax || y < ay || x >= ax + aw || y >= ay + ah)) inheritedClip = true;
 			}
 			if (ignored) continue;
 			const int result = findScrollNodeId(*child, x, y, inheritedClip, PaintOrder::isGroup(*child), PaintOrder::isContext(*child));
 			if (result >= 0) return result;
 		}
 
-		if (!inside || clipped || node.style.visibility != 0) return -1;
+		if (!inside || clipped || node.computedStyle().visibility != 0) return -1;
 		const bool scrollableVirtualList = node.type == NodeType::VirtualList && VirtualListRenderer::scrollMaxY(id) > 0;
 		const bool scrollableView = node.type != NodeType::VirtualList && isViewLikeNodeType(node.type) &&
 		                            (nodeCanScrollX(id, node) || nodeCanScrollY(id, node));
@@ -543,13 +543,13 @@ private:
 	static bool nodeCanScrollX(int nodeId, const Node &node)
 	{
 		(void)nodeId;
-		return node.type != NodeType::VirtualList && scrollsOverflowX(node.style) && ViewRenderer::scrollMaxX(node) > 0;
+		return node.type != NodeType::VirtualList && scrollsOverflowX(node.computedStyle()) && ViewRenderer::scrollMaxX(node) > 0;
 	}
 
 	static bool nodeCanScrollY(int nodeId, const Node &node)
 	{
 		if (node.type == NodeType::VirtualList) return VirtualListRenderer::scrollMaxY(nodeId) > 0;
-		return scrollsOverflowY(node.style) && ViewRenderer::scrollMaxY(node) > 0;
+		return scrollsOverflowY(node.computedStyle()) && ViewRenderer::scrollMaxY(node) > 0;
 	}
 
 	static bool nodeCanScrollAxis(int nodeId, const Node &node, ScrollAxis axis)
@@ -618,7 +618,7 @@ private:
 		Tree &tree = Tree::instance();
 		for (int current = nodeId; current >= 0 && current < tree.nodeCount(); current = tree.node(current).parent) {
 			const Node &node = tree.node(current);
-			if (node.style.has_active_bg || (node.style.has_bg && isNativeButtonNodeType(node.type))) return current;
+			if (node.computedStyle().has_active_bg || (node.computedStyle().has_bg && isNativeButtonNodeType(node.type))) return current;
 		}
 		return -1;
 	}
@@ -654,11 +654,11 @@ private:
 
 		Node &node = Tree::instance().node(activeTouchNode_);
 		const bool ownsActiveBackground =
-		    node.style.bg_color == activeBackgroundColor_ &&
-		    node.style.has_bg == activeHasBackground_;
+		    node.computedStyle().bg_color == activeBackgroundColor_ &&
+		    node.computedStyle().has_bg == activeHasBackground_;
 		if (ownsActiveBackground) {
-			node.style.bg_color = savedBackgroundColor_;
-			node.style.has_bg = savedHasBackground_;
+			node.mutableStyle().bg_color = savedBackgroundColor_;
+			node.mutableStyle().has_bg = savedHasBackground_;
 			node.render.dirty = 1;  // paint-only: press highlight restore
 #if GEA_CSS_SCROLLING
 			node.render.non_scroll_dirty = 1;

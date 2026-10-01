@@ -32,12 +32,14 @@ export function addNodeFeatures(file: string, text: string, features: Set<string
       if (/<(?:img|image|input|textarea|select)\b/i.test(node.text)) unknown()
     }
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) name(node.tagName.getText(source).split(':').at(-1)!)
+    // Display controls the panel/canvas; importing it cannot create native
+    // image or input nodes. Calls that actually create nodes are still scanned.
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) &&
         /^(?:gea-embedded|@geastack\/(?:core|engine)|@geajs\/core)(?:\/|$)/.test(node.moduleSpecifier.text) &&
         node.importClause && !node.importClause.isTypeOnly) {
       const bindings = node.importClause.namedBindings
       if (node.importClause.name || !bindings || !ts.isNamedImports(bindings) ||
-          bindings.elements.some(item => !item.isTypeOnly && !/^(?:Component|Store|mount)$/.test((item.propertyName ?? item.name).text))) unknown()
+          bindings.elements.some(item => !item.isTypeOnly && !/^(?:Component|Store|mount|Display)$/.test((item.propertyName ?? item.name).text))) unknown()
     }
     // Mutation/markup helpers can create descendants whose tags are not present
     // as JSX. Known literal factories are covered by their tag strings above.

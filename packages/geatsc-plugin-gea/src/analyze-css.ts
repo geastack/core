@@ -2,8 +2,12 @@ import type ts from 'typescript'
 import { colorAlphaObserver } from './analyze-alpha.js'
 import { colorVariableAnalysis, type StyleUsageObserver } from './analyze-renderer.js'
 
-export const cssAnalysisVersion = 'css-analysis-v15'
-export const cssFeatures = ['css-pseudo-elements', 'css-text-alpha', 'css-border-alpha', 'css-animations', 'css-transforms', 'css-grid', 'css-floats', 'css-writing-mode', 'css-border-relief', 'css-blink', 'css-order', 'css-percent-radius', 'css-percent-gap', 'css-opacity', 'css-text-decoration', 'css-text-transform', 'css-visibility', 'css-pointer-events', 'css-mask', 'css-image-fit', 'css-filters', 'css-box-shadow', 'css-flex-wrap', 'css-justify-items', 'css-align-content', 'css-align-self', 'css-min-width', 'css-height-expressions', 'css-z-index', 'css-aspect-ratio', 'css-margin-trim', 'css-containment', 'css-justify-self', 'css-flex-line-count', 'css-box-expressions', 'css-axis-gap', 'css-corner-radius', 'css-first-line', 'css-side-borders', 'css-background-layers', 'css-line-height-expressions', 'css-scrolling', 'css-flex-basis-expressions', 'css-custom-property-lengths', 'css-max-height', 'css-flex-basis', 'css-overflow-axes', 'css-position-top', 'css-position-top-percent', 'css-position-right', 'css-position-right-percent', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent'] as const
+export const cssAnalysisVersion = 'css-analysis-v19'
+export const baseStyleFeatures = ['css-flex-direction', 'css-justify-content', 'css-align-items', 'css-box-sizing', 'css-margin-auto', 'css-line-height-multiplier', 'css-width-expressions', 'css-min-height', 'css-max-width', 'css-active-background'] as const
+export const defaultStyleFeatures = ['css-margins', 'css-padding', 'css-flex-factors', 'css-gap', 'css-border-widths', 'css-border-colors', 'css-font-weight', 'css-text-align', 'css-white-space', 'css-text-overflow'] as const
+export const sizePercentFeatures = ['css-width-percent', 'css-height-percent'] as const
+export const compactStyleFeatures = ['css-line-height', 'css-display-explicit'] as const
+export const cssFeatures = [...compactStyleFeatures, ...sizePercentFeatures, 'css-custom-properties', ...defaultStyleFeatures, ...baseStyleFeatures, 'css-pseudo-elements', 'css-text-alpha', 'css-border-alpha', 'css-animations', 'css-transforms', 'css-grid', 'css-floats', 'css-writing-mode', 'css-border-relief', 'css-blink', 'css-order', 'css-percent-radius', 'css-percent-gap', 'css-opacity', 'css-text-decoration', 'css-text-transform', 'css-visibility', 'css-pointer-events', 'css-mask', 'css-image-fit', 'css-filters', 'css-box-shadow', 'css-flex-wrap', 'css-justify-items', 'css-align-content', 'css-align-self', 'css-min-width', 'css-height-expressions', 'css-z-index', 'css-aspect-ratio', 'css-margin-trim', 'css-containment', 'css-justify-self', 'css-flex-line-count', 'css-box-expressions', 'css-axis-gap', 'css-corner-radius', 'css-first-line', 'css-side-borders', 'css-background-layers', 'css-line-height-expressions', 'css-scrolling', 'css-flex-basis-expressions', 'css-custom-property-lengths', 'css-max-height', 'css-flex-basis', 'css-overflow-axes', 'css-position-top', 'css-position-top-percent', 'css-position-right', 'css-position-right-percent', 'css-position-bottom', 'css-position-bottom-percent', 'css-position-left', 'css-position-left-percent'] as const
 
 export function addUnknownCssFeatures(features: Set<string>): void {
   for (const feature of cssFeatures) features.add(feature)
@@ -12,13 +16,15 @@ export function addUnknownCssFeatures(features: Set<string>): void {
 // These are build facts, not application options. Unknown values retain the
 // entire affected family; unknown property names retain all CSS semantics.
 // In particular, a dynamic width does not enable transforms or grid layout.
-export function cssUsageObserver(features: Set<string>, resolve?: (node: ts.Expression) => string[] | undefined): StyleUsageObserver & { finish(): void } {
+export function cssUsageObserver(features: Set<string>, resolve?: ((node: ts.Expression) => string[] | undefined) & { isNumeric?(node: ts.Expression): boolean }): StyleUsageObserver & { finish(): void; unknownDefaults(): void } {
   const colors = colorVariableAnalysis()
   const alpha = colorAlphaObserver(features, resolve)
   const deferredColors: Array<[string, string | undefined]> = []
   return {
     unknown: () => { colors.unknown(); addUnknownCssFeatures(features) },
+    unknownDefaults: () => { for (const feature of [...compactStyleFeatures, ...sizePercentFeatures, 'css-custom-properties', ...baseStyleFeatures, ...defaultStyleFeatures]) features.add(feature) },
     finish() {
+      features.add('css-storage-v1')
       alpha.finish()
       for (const [feature, value] of deferredColors) if (!colors.isColor(value)) features.add(feature)
     },
@@ -31,17 +37,65 @@ export function cssUsageObserver(features: Set<string>, resolve?: (node: ts.Expr
       alpha.property(name, value, expression)
       colors.property(name, value)
       if (!name) { addUnknownCssFeatures(features); return }
+      if (value !== undefined && /\bvar\s*\(/i.test(value)) features.add('css-custom-properties')
       if (name === 'content') features.add('css-pseudo-elements')
       if (name.startsWith('--')) {
+        features.add('css-custom-properties')
         // Quoted CSS strings remain raw text; the length parser never unquotes
         // them. Unknown values still keep the length cache automatically.
         const quoted = value !== undefined && /^(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*')(?:\s*!important)?$/i.test(value.trim())
         if (!quoted) deferredColors.push(['css-custom-property-lengths', value])
         return
       }
+      if (name === 'display') features.add('css-display-explicit')
+      if (name === 'font' || name === 'line-height' || name === 'lineHeight') features.add('css-line-height')
       const originalValue = value
       name = name.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`).toLowerCase()
       value = value?.trim().toLowerCase()
+      // Viewport/font/physical units are lengths, not parent percentages.
+      // Functions, variables, opaque values and logical axes retain support
+      // unless every authored value is a literal non-percentage length/default.
+      const sizeAxes = name === 'width' ? ['width'] : name === 'height' ? ['height']
+        : /^(?:inline|block)-size$/.test(name) ? ['width', 'height'] : []
+      const numericValue = value === undefined && expression !== undefined && resolve?.isNumeric?.(expression) === true
+      const nonPercentSize = numericValue || value !== undefined && /^(?:(?:auto|initial|inherit|unset|revert|revert-layer|min-content|max-content|fit-content)|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|ex|ch|cap|ic|lh|rlh|vw|vh|vmin|vmax|svw|svh|lvw|lvh|dvw|dvh|cm|mm|q|in|pt|pc)?)(?:\s*!important)?$/.test(value)
+      if (!nonPercentSize) for (const axis of sizeAxes) features.add(`css-${axis}-percent`)
+      // Unauthored default fields need no instance storage. Shorthands and
+      // logical declarations retain every physical representation they can set.
+      if (/^margin(?:-|$)/.test(name) && name !== 'margin-trim') features.add('css-margins')
+      if (/^padding(?:-|$)/.test(name)) features.add('css-padding')
+      if (/^flex(?:-grow|-shrink)?$/.test(name)) features.add('css-flex-factors')
+      if (/^(?:grid-)?(?:(?:row|column)-)?gap$/.test(name)) features.add('css-gap')
+      if (/^border(?:-|$)/.test(name) && !name.endsWith('radius')) {
+        // Shorthand/style can establish the default border width and color;
+        // individual colors and widths retain only their own common family.
+        if (!name.endsWith('color')) features.add('css-border-widths')
+        if (!name.endsWith('width')) features.add('css-border-colors')
+      }
+      if (name === 'font' || name === 'font-weight') features.add('css-font-weight')
+      if (/^text-align(?:-|$)/.test(name)) features.add('css-text-align')
+      if (/^(?:white-space(?:-|$)|text-wrap(?:-|$))/.test(name)) features.add('css-white-space')
+      if (name === 'text-overflow') features.add('css-text-overflow')
+      // Independent common fields: their initial values need no per-node storage
+      // unless some authored declaration can change them. Logical dimensions
+      // may select either physical axis, so they retain both representations.
+      if (name === 'flex-direction' || name === 'flex-flow') features.add('css-flex-direction')
+      if (name === 'justify-content' || name === 'place-content') features.add('css-justify-content')
+      if (name === 'align-items' || name === 'place-items') features.add('css-align-items')
+      if (name === 'box-sizing') features.add('css-box-sizing')
+      if (/^active-background(?:-color)?$/.test(name)) features.add('css-active-background')
+      if (/^min-(?:height|inline-size|block-size)$/.test(name)) features.add('css-min-height')
+      if (/^max-(?:width|inline-size|block-size)$/.test(name)) features.add('css-max-width')
+      if (name === 'block-size' || name === 'inline-size' ||
+          (name === 'width' && (value === undefined || !/^(?:(?:auto|initial|inherit|unset|revert|revert-layer)|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|%)?)(?:\s*!important)?$/.test(value)))) features.add('css-width-expressions')
+      // Any line-height/font authoring may carry an inherited unitless number
+      // through variables or shorthand parsing. Font-size alone cannot do so.
+      if (name === 'line-height' || name === 'font') features.add('css-line-height-multiplier')
+      if (/^margin(?:-|$)/.test(name) && name !== 'margin-trim') {
+        const fixed = value?.replace(/\s*!important$/, '').split(/\s+/).every(part =>
+          /^(?:(?:initial|inherit|unset|revert|revert-layer)|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|vw|vh|vmin|vmax|%)?)$/.test(part))
+        if (!fixed) features.add('css-margin-auto')
+      }
       // Only a proven literal without percentages or functions can omit these
       // alternate representations. var/calc and dynamic values retain them.
       // Equal literal edges need one stored value. Unknown functions/variables
@@ -51,8 +105,8 @@ export function cssUsageObserver(features: Set<string>, resolve?: (node: ts.Expr
       // edge; functions, percentages and unknown values retain percent storage.
       const positionSides = /^(?:top|right|bottom|left)$/.test(name) ? [name]
         : /^inset(?:-|$)/.test(name) ? ['top', 'right', 'bottom', 'left'] : []
-      const fixedPosition = !!parts?.length && parts.length <= 4 && parts.every(part =>
-        /^(?:(?:auto|initial|inherit|unset|revert|revert-layer)|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?)$/.test(part))
+      const fixedPosition = numericValue || !!parts?.length && parts.length <= 4 && parts.every(part =>
+        /^(?:(?:auto|initial|inherit|unset|revert|revert-layer)|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|ex|ch|cap|ic|lh|rlh|vw|vh|vmin|vmax|svw|svh|lvw|lvh|dvw|dvh|cm|mm|q|in|pt|pc)?)$/.test(part))
       for (const side of positionSides) {
         features.add(`css-position-${side}`)
         if (!fixedPosition) features.add(`css-position-${side}-percent`)

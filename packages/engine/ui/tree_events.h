@@ -5,6 +5,7 @@
 #include "events.h"
 #include "node_model.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -32,6 +33,7 @@ struct NodeAttributeEntry {
 };
 
 struct NodeAttributeStore {
+#if GEA_UI_NODE_ATTRIBUTES
 	int16_t pressId = -1;
 	int16_t pressValue = -1;
 	CssAtomId idAtom = kInvalidCssAtom;
@@ -51,6 +53,15 @@ struct NodeAttributeStore {
 	bool remove(const char *name);
 	const char *get(const char *name) const;
 	bool has(const char *name) const;
+#else
+	static constexpr int16_t pressId = -1, pressValue = -1;
+	static constexpr CssAtomId idAtom = kInvalidCssAtom;
+	void clear() {}
+	void set(const char *name, const char *value);
+	bool remove(const char *) { return false; }
+	const char *get(const char *) const { return ""; }
+	bool has(const char *) const { return false; }
+#endif
 };
 
 using gea::framework::events::EventListenerId;
@@ -63,8 +74,13 @@ struct NodeEventListenerEntry {
 };
 
 struct NodeEventListeners {
+#if GEA_UI_NODE_LISTENERS
 	std::vector<NodeEventListenerEntry> entries;
 	std::uint8_t types = 0;
+#else
+	inline static constexpr std::array<NodeEventListenerEntry, 0> entries{};
+	static constexpr std::uint8_t types = 0;
+#endif
 
 	void clear();
 	bool hasType(int type) const { return type >= 0 && (types & (1u << type)); }

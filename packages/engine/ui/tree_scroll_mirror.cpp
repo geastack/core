@@ -52,8 +52,8 @@ bool Mirror::nodeIsScrollable(int node) const
 	if (node < 0 || node >= state.nodeCount) return false;
 	Node *n = &state.nodes[node];
 	return isViewLikeNodeType(n->type) &&
-	       ((n->type != NodeType::VirtualList && scrollsOverflowX(n->style) && ViewRenderer::scrollMaxX(*n) > 0) ||
-	        ((n->type == NodeType::VirtualList || scrollsOverflowY(n->style)) && ViewRenderer::scrollMaxY(*n) > 0));
+	       ((n->type != NodeType::VirtualList && scrollsOverflowX(n->computedStyle()) && ViewRenderer::scrollMaxX(*n) > 0) ||
+	        ((n->type == NodeType::VirtualList || scrollsOverflowY(n->computedStyle())) && ViewRenderer::scrollMaxY(*n) > 0));
 #else
 	(void)node; return false;
 #endif
@@ -72,7 +72,7 @@ void Mirror::setScrollX(int node, int scroll_x) const
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	Node *n = &state.nodes[node];
-	if (!isViewLikeNodeType(n->type) || !scrollsOverflowX(n->style) || n->type == NodeType::VirtualList) return;
+	if (!isViewLikeNodeType(n->type) || !scrollsOverflowX(n->computedStyle()) || n->type == NodeType::VirtualList) return;
 
 	int max_x = ViewRenderer::scrollMaxX(*n);
 	if (scroll_x < 0) scroll_x = 0;
@@ -106,7 +106,7 @@ void Mirror::setScrollY(int node, int scroll_y) const
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	Node *n = &state.nodes[node];
-	if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->style))) return;
+	if (!isViewLikeNodeType(n->type) || (n->type != NodeType::VirtualList && !scrollsOverflowY(n->computedStyle()))) return;
 
 	int max_y = ViewRenderer::scrollMaxY(*n);
 	if (scroll_y < 0) scroll_y = 0;

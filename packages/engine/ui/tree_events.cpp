@@ -59,8 +59,10 @@ void applyAudioAttribute(Tree &tree, int node, const char *name, const char *val
 // setEventListener (on the empty->set transition) and NodeEventListeners::clear()
 // (which every removal path calls).
 constexpr int kEventTypeCount = 7;
+#if GEA_UI_NODE_LISTENERS
 int g_listenerTypeCounts[kEventTypeCount] = {};
 EventListenerId g_nextEventListenerId = 1;
+#endif
 
 int eventTypeIndex(const char *type)
 {
@@ -165,6 +167,55 @@ std::vector<std::unique_ptr<NodeRareData>> g_rareDataPool;
 std::vector<int16_t> g_rareDataFreeList;
 }  // namespace
 
+NodeAuxiliaryStorageUsage nodeAuxiliaryStorageUsage()
+{
+    NodeAuxiliaryStorageUsage result;
+    result.tree = treeStorageUsage();
+    result.text = NodeText::storageUsage();
+    result.dependencies = styleDependencyStorageUsage();
+    auto &usage = result.rare;
+    usage.staticBytes = sizeof(g_rareDataPool) + sizeof(g_rareDataFreeList) + sizeof(g_documentKeyDownListener) + sizeof(g_documentRotaryListener);
+#if GEA_UI_NODE_LISTENERS
+    usage.staticBytes += sizeof(g_listenerTypeCounts) + sizeof(g_nextEventListenerId);
+#endif
+    if (g_documentKeyDownListener) ++usage.untrackedOwners;
+    if (g_documentRotaryListener) ++usage.untrackedOwners;
+    usage.addVector(g_rareDataPool);
+    usage.addVector(g_rareDataFreeList);
+    for (const auto &record : g_rareDataPool) {
+        usage.addAllocation(record.get(), sizeof(NodeRareData));
+#if GEA_UI_NODE_LISTENERS
+        usage.addVector(record->listeners.entries);
+        for (const auto &listener : record->listeners.entries)
+            if (listener.listener.use_count()) ++usage.untrackedOwners;
+#endif
+#if GEA_UI_NODE_ATTRIBUTES
+        for (auto *entry = record->attributes.values.get(); entry; entry = entry->next.get())
+            usage.addAllocation(entry, sizeof(NodeAttributeEntry) + entry->nameBytes + entry->valueCapacity);
+#endif
+#if GEA_CSS_CUSTOM_PROPERTIES
+        for (const auto *properties : {&record->customProperties, &record->inlineCustomProperties}) {
+            usage.addVector(properties->values);
+            for (const auto &property : properties->values)
+                if (property.value.use_count()) ++usage.untrackedOwners;
+        }
+#endif
+        result.overrides += record->defaultStyles.storageUsage();
+        result.overrides += record->inlineStyles.storageUsage();
+#if GEA_CSS_GRID
+        if (record->gridLayout) {
+            usage.addAllocation(record->gridLayout.get(), sizeof(GridTrackLayout));
+            usage.addVector(record->gridLayout->columnStart); usage.addVector(record->gridLayout->columnEnd);
+            usage.addVector(record->gridLayout->rowStart); usage.addVector(record->gridLayout->rowEnd);
+        }
+#endif
+#if GEA_CSS_SCROLLING
+        usage.addAllocation(record->virtualList.get(), sizeof(VirtualListNodeState));
+#endif
+    }
+    return result;
+}
+
 NodeRareData &ensureRareData(int node)
 {
 	auto &state = treeState();
@@ -218,6 +269,7 @@ NodeAttributePtr NodeAttributeEntry::create(const char *name, const char *value)
 	return NodeAttributePtr(entry);
 }
 
+#if GEA_UI_NODE_ATTRIBUTES
 NodeAttributeStore::NodeAttributeStore(const NodeAttributeStore &other)
     : pressId(other.pressId), pressValue(other.pressValue), idAtom(other.idAtom), count(other.count)
 {
@@ -327,16 +379,28 @@ bool NodeAttributeStore::has(const char *name) const
 	return false;
 }
 
+#else
+void NodeAttributeStore::set(const char *name, const char *)
+{
+	if (name && *name) std::abort(); // A source proof must never discard a live attribute.
+}
+#endif
+
 void NodeEventListeners::clear()
 {
+#if GEA_UI_NODE_LISTENERS
 	for (int type = 0; type < 7; ++type)
 		if (hasType(type) && g_listenerTypeCounts[type] > 0) --g_listenerTypeCounts[type];
 	entries.clear();
 	types = 0;
+#else
+
+#endif
 }
 
 EventListenerId Tree::setEventListener(int node, const char *type, gea::framework::events::EventListener listener)
 {
+#if GEA_UI_NODE_LISTENERS
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return kInvalidEventListenerId;
 	if (!listener) return kInvalidEventListenerId;
@@ -355,10 +419,15 @@ EventListenerId Tree::setEventListener(int node, const char *type, gea::framewor
 		id, static_cast<std::uint8_t>(typeIndex),
 		std::make_shared<gea::framework::events::EventListener>(std::move(listener))});
 	return id;
+#else
+	if (node >= 0 && node < treeState().nodeCount && listener && eventTypeIndex(type) >= 0) std::abort();
+	return kInvalidEventListenerId;
+#endif
 }
 
 bool Tree::removeEventListener(int node, const char *type, EventListenerId listenerId)
 {
+#if GEA_UI_NODE_LISTENERS
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount || listenerId == kInvalidEventListenerId) return false;
 	NodeRareData *rd = rareDataFor(node);
@@ -378,6 +447,9 @@ bool Tree::removeEventListener(int node, const char *type, EventListenerId liste
 		return true;
 	}
 	return false;
+#else
+	return false;
+#endif
 }
 
 bool Tree::hasEventListener(int node) const
@@ -390,14 +462,19 @@ bool Tree::hasEventListener(int node) const
 
 bool Tree::hasListenersForType(const char *type) const
 {
+#if GEA_UI_NODE_LISTENERS
 	const int index = eventTypeIndex(type);
 	// Unknown/untracked types fall through to dispatch — never silently drop an
 	// event we don't account for.
 	return index < 0 || g_listenerTypeCounts[index] > 0;
+#else
+	return false;
+#endif
 }
 
 bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 {
+#if GEA_UI_NODE_LISTENERS
 	auto &state = treeState();
 	if (event.targetId < 0 || event.targetId >= state.nodeCount) return false;
 
@@ -450,6 +527,9 @@ bool Tree::dispatchEvent(gea::framework::events::PointerEvent &event)
 		if (event.propagationStopped || !event.bubbles) break;
 	}
 	return dispatched;
+#else
+	return false;
+#endif
 }
 
 bool Tree::containsNode(int ancestor, int node) const
@@ -572,8 +652,10 @@ void Tree::removeAttribute(int node, const char *name)
 	if (!rd) return;  // no rare-data block → no attributes to remove
 	const bool hadAttribute = rd->attributes.remove(name);
 	if (!hadAttribute) return;
+#if GEA_UI_NODE_ATTRIBUTES
 	if (sameName(name, "data-press-id")) rd->attributes.pressId = -1;
 	if (sameName(name, "data-press-value")) rd->attributes.pressValue = -1;
+#endif
 	if (attributeAffectsRendering(state.nodes[node], name)) {
 		markNodeDisplayCommandsDirty(node);
 		state.displayListDirty = true;
@@ -628,7 +710,9 @@ void Tree::setPressId(int node, int pressId)
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	auto &attrs = ensureRareData(node).attributes;
+#if GEA_UI_NODE_ATTRIBUTES
 	attrs.pressId = static_cast<int16_t>(pressId);
+#endif
 	char value[16];
 	std::snprintf(value, sizeof(value), "%d", pressId);
 	attrs.set("data-press-id", value);
@@ -647,7 +731,9 @@ void Tree::setPressValue(int node, int pressValue)
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	auto &attrs = ensureRareData(node).attributes;
+#if GEA_UI_NODE_ATTRIBUTES
 	attrs.pressValue = static_cast<int16_t>(pressValue);
+#endif
 	char value[16];
 	std::snprintf(value, sizeof(value), "%d", pressValue);
 	attrs.set("data-press-value", value);

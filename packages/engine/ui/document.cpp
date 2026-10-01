@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -268,7 +269,15 @@ int Document::preferredMountHeight() { return g_preferred_mount_h; }
 ViewElement Document::ensureAppRoot(const char *id) const
 {
 	const char *rootId = (id && id[0] != '\0') ? id : "app";
+#if GEA_UI_NODE_ATTRIBUTES
 	NodeHandle existing = findElementById(Tree::instance(), rootId);
+#else
+	// With no authored attributes or ID selectors, the framework's implicit
+	// #app is just the mounted root. Its built-in identity needs no per-node
+	// attribute owner. Authored DOM lookups retain the ordinary path above.
+	if (std::strcmp(rootId, "app") != 0) std::abort();
+	NodeHandle existing(Tree::instance().mountedRoot());
+#endif
 	ViewElement root = existing ? ViewElement(existing.id()) : createView();
 	Tree &tree = Tree::instance();
 	const int rootW = g_preferred_mount_w  > 0 ? g_preferred_mount_w
@@ -278,7 +287,9 @@ ViewElement Document::ensureAppRoot(const char *id) const
 	                : tree.mountedHeight() > 0 ? tree.mountedHeight()
 	                : gea::platform::display::kHeight;
 	if (!existing) {
+#if GEA_UI_NODE_ATTRIBUTES
 		root.setAttribute("id", rootId);
+#endif
 		root.style().width(rootW);
 		root.style().height(rootH);
 	}

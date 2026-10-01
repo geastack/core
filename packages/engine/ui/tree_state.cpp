@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <cstdlib>
 #include <deque>
 #include <new>
 #include <memory>
@@ -115,6 +116,28 @@ std::size_t NodeText::storageBytes()
 	return g_nodeTextStorageBytes;
 }
 
+StorageUsage NodeText::storageUsage()
+{
+    StorageUsage usage;
+    usage.staticBytes = sizeof(g_nodeTextStorageBytes) + sizeof(g_nodeTextPool) + sizeof(g_emptyNodeText);
+    usage.addString(g_emptyNodeText);
+    if (!g_nodeTextPool) return usage;
+    const auto &pool = *g_nodeTextPool;
+    usage.addAllocation(g_nodeTextPool, sizeof(NodeTextPool));
+    usage.addVector(pool.pages);
+    for (const auto *page : pool.pages)
+        usage.addAllocation(page, NodeTextPool::kPageEntries * sizeof(NodeTextEntry));
+    for (std::size_t index = 0; index < pool.size; ++index) {
+        bool free = false;
+        // Census only: walking the free chain avoids allocating a temporary
+        // live bitmap, and never reads a destroyed union member as a string.
+        for (auto handle = pool.freeHead; handle != UINT32_MAX; handle = g_nodeTextPool->at(handle).nextFree)
+            if (handle == index) { free = true; break; }
+        if (!free) usage.addString(g_nodeTextPool->at(index).text);
+    }
+    return usage;
+}
+
 NodeText::NodeText(const NodeText &other)
 {
 	if (!other.empty())
@@ -198,6 +221,7 @@ bool validToken(const std::string &token)
 	return true;
 }
 
+#if GEA_UI_CLASS_OVERFLOW
 std::deque<std::vector<CssAtomId>> &classListOverflowLists()
 {
 	static std::deque<std::vector<CssAtomId>> lists;
@@ -249,6 +273,9 @@ void releaseClassListOverflow(NodeClassList &list)
 	classListOverflowFreeList().push_back(list.overflowHandle);
 	list.overflowHandle = NodeClassList::kNoOverflow;
 }
+#else
+void releaseClassListOverflow(NodeClassList &) {}
+#endif
 
 bool appendClassAtom(NodeClassList &list, CssAtomId atom)
 {
@@ -257,11 +284,16 @@ bool appendClassAtom(NodeClassList &list, CssAtomId atom)
 		list.inlineTokens[list.count++] = atom;
 		return true;
 	}
+#if GEA_UI_CLASS_OVERFLOW
 	auto *overflow = ensureClassListOverflow(list);
 	if (!overflow || list.overflowHandle == NodeClassList::kNoOverflow) return false;
 	overflow->push_back(atom);
 	++list.count;
 	return true;
+#else
+	// A violated source proof must fail visibly, never truncate a class list.
+	std::abort();
+#endif
 }
 
 void eraseClassAtomAt(NodeClassList &list, std::size_t index)
@@ -271,6 +303,7 @@ void eraseClassAtomAt(NodeClassList &list, std::size_t index)
 		const std::size_t inlineEnd = std::min<std::size_t>(list.count, NodeClassList::kInlineTokenCount);
 		for (std::size_t i = index + 1; i < inlineEnd; ++i)
 			list.inlineTokens[i - 1] = list.inlineTokens[i];
+#if GEA_UI_CLASS_OVERFLOW
 		if (list.count > NodeClassList::kInlineTokenCount) {
 			auto *overflow = classListOverflow(list.overflowHandle);
 			if (overflow && !overflow->empty()) {
@@ -278,12 +311,15 @@ void eraseClassAtomAt(NodeClassList &list, std::size_t index)
 				overflow->erase(overflow->begin());
 				if (overflow->empty()) releaseClassListOverflow(list);
 			}
-		} else if (list.count > 0) {
+		} else
+#endif
+		if (list.count > 0) {
 			list.inlineTokens[list.count - 1] = kInvalidCssAtom;
 		}
 		--list.count;
 		return;
 	}
+#if GEA_UI_CLASS_OVERFLOW
 	auto *overflow = classListOverflow(list.overflowHandle);
 	if (!overflow) return;
 	const std::size_t overflowIndex = index - NodeClassList::kInlineTokenCount;
@@ -291,6 +327,7 @@ void eraseClassAtomAt(NodeClassList &list, std::size_t index)
 	overflow->erase(overflow->begin() + static_cast<std::ptrdiff_t>(overflowIndex));
 	--list.count;
 	if (overflow->empty()) releaseClassListOverflow(list);
+#endif
 }
 
 bool classListsEqual(const NodeClassList &a, const NodeClassList &b)
@@ -346,9 +383,11 @@ NodeClassList::NodeClassList(NodeClassList &&other) noexcept
 {
 	for (std::uint8_t i = 0; i < kInlineTokenCount; ++i)
 		inlineTokens[i] = other.inlineTokens[i];
+#if GEA_UI_CLASS_OVERFLOW
 	overflowHandle = other.overflowHandle;
-	count = other.count;
 	other.overflowHandle = kNoOverflow;
+#endif
+	count = other.count;
 	other.count = 0;
 	for (std::uint8_t i = 0; i < kInlineTokenCount; ++i)
 		other.inlineTokens[i] = kInvalidCssAtom;
@@ -360,9 +399,11 @@ NodeClassList &NodeClassList::operator=(NodeClassList &&other) noexcept
 	clear();
 	for (std::uint8_t i = 0; i < kInlineTokenCount; ++i)
 		inlineTokens[i] = other.inlineTokens[i];
+#if GEA_UI_CLASS_OVERFLOW
 	overflowHandle = other.overflowHandle;
-	count = other.count;
 	other.overflowHandle = kNoOverflow;
+#endif
+	count = other.count;
 	other.count = 0;
 	for (std::uint8_t i = 0; i < kInlineTokenCount; ++i)
 		other.inlineTokens[i] = kInvalidCssAtom;
@@ -449,11 +490,15 @@ CssAtomId NodeClassList::at(std::size_t index) const
 {
 	if (index >= count) return kInvalidCssAtom;
 	if (index < kInlineTokenCount) return inlineTokens[index];
+#if GEA_UI_CLASS_OVERFLOW
 	const auto *overflow = classListOverflowConst(overflowHandle);
 	if (!overflow) return kInvalidCssAtom;
 	const std::size_t overflowIndex = index - kInlineTokenCount;
 	if (overflowIndex >= overflow->size()) return kInvalidCssAtom;
 	return (*overflow)[overflowIndex];
+#else
+	return kInvalidCssAtom;
+#endif
 }
 
 std::string NodeClassList::value() const
@@ -470,7 +515,9 @@ std::string NodeClassList::value() const
 // Empty override stores own nothing. One allocation contains both metadata
 // and values; computed styles remain ordinary aligned fields in Node.
 struct NodeStyleOverrideStore::Block {
-	std::size_t count = 0, capacity = 0;
+	// Entries are unique by Property; geometric growth fits this bound.
+	static_assert(static_cast<unsigned>(Property::Count) <= 32768);
+	std::uint16_t count = 0, capacity = 0;
 	// Only CSS px overrides allocate unit metadata. Raw numeric styles keep
 	// their compact entries and do not lose precision by reverse-scaling ints.
 	std::unique_ptr<std::vector<std::pair<Property, float>>> cssPixels;
@@ -482,9 +529,11 @@ void appendStyleOverride(NodeStyleOverrideStore &store, NodeStyleOverride entry)
 {
 	auto *old = store.block;
 	if (!old || old->count == old->capacity) {
-		const std::size_t capacity = old ? old->capacity * 2 : 2;
+		// Small inline styles commonly have three entries. Grow 2 -> 3 -> 4
+		// before doubling, so they do not retain an unused fourth entry.
+		const std::size_t capacity = old ? (old->capacity < 4 ? old->capacity + 1 : old->capacity * 2) : 2;
 		auto *next = new (::operator new(sizeof(NodeStyleOverrideStore::Block) + capacity * sizeof(NodeStyleOverride))) NodeStyleOverrideStore::Block;
-		next->capacity = capacity;
+		next->capacity = static_cast<std::uint16_t>(capacity);
 		if (old) {
 			next->count = old->count;
 			next->cssPixels = std::move(old->cssPixels);
@@ -533,6 +582,18 @@ void NodeStyleOverrideStore::clear()
 	block = nullptr;
 }
 std::size_t NodeStyleOverrideStore::size() const { return block ? block->count : 0; }
+StorageUsage NodeStyleOverrideStore::storageUsage() const
+{
+    StorageUsage usage;
+    if (!block) return usage;
+    usage.addAllocation(block, sizeof(Block) + block->capacity * sizeof(NodeStyleOverride));
+    if (block->cssPixels) {
+        usage.addAllocation(block->cssPixels.get(), sizeof(*block->cssPixels));
+        usage.addVector(*block->cssPixels);
+    }
+    return usage;
+}
+
 void NodeStyleOverrideStore::set(Property property, int value)
 {
 	for (std::size_t i = 0; i < size(); ++i) {
@@ -580,6 +641,7 @@ bool NodeStyleOverrideStore::remove(Property property)
 }
 const NodeStyleOverride &NodeStyleOverrideStore::at(std::size_t index) const { return block->values()[index]; }
 
+#if GEA_CSS_CUSTOM_PROPERTIES
 void NodeCustomPropertyStore::clear()
 {
 	values.clear();
@@ -693,6 +755,8 @@ const NodeCustomProperty *NodeCustomPropertyStore::getEntry(CssAtomId nameId) co
 	return nullptr;
 }
 
+#endif
+
 // File-scope lazy pointer rather than a function-local static. On this Xtensa
 // toolchain the static-local guard is NOT inlined, so a Meyers singleton pays a
 // __cxa_guard_acquire CALL on every access — and treeState() sits on the hottest
@@ -700,6 +764,14 @@ const NodeCustomProperty *NodeCustomPropertyStore::getEntry(CssAtomId nameId) co
 // (the mount task and the frame task never run concurrently), so the guard is
 // unnecessary; a zero-initialized pointer + null check is one load and a branch.
 static TreeState *g_treeState = nullptr;
+StorageUsage treeStorageUsage()
+{
+    StorageUsage usage;
+    usage.staticBytes = sizeof(g_treeState);
+    usage.addAllocation(g_treeState, sizeof(TreeState));
+    return usage;
+}
+
 
 TreeState &treeState()
 {

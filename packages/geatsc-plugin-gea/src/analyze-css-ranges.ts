@@ -11,6 +11,7 @@ const number = /^[+]?(?:\d+(?:\.\d*)?|\.\d+)$/
 export function cssRangeObserver(features: Set<string>): StyleUsageObserver & { finish(): void } {
   const bounds = new Map<Family, Bound>(families.map(name => [name, { raw: name === 'flex' ? 1 : 0, px: name === 'font' ? 16 : 0, unknown: false }]))
   let opaque = false
+  let unknownCircle = false
   let lineMultiplier = 0
   const unknown = (...names: Family[]): void => { for (const name of names) bounds.get(name)!.unknown = true }
   const length = (name: Family, value: string | undefined, count = 1): void => {
@@ -26,6 +27,7 @@ export function cssRangeObserver(features: Set<string>): StyleUsageObserver & { 
   }
   return {
     unknown(): void { opaque = true },
+    unknownCircleBounds(): void { unknownCircle = true },
     selector(css): void { if (/@(?:-webkit-)?keyframes\b|@property\b/i.test(css)) opaque = true },
     property(name, value): void {
       if (!name) { opaque = true; return }
@@ -69,6 +71,9 @@ export function cssRangeObserver(features: Set<string>): StyleUsageObserver & { 
     },
     finish(): void {
       features.add('css-ranges-v1')
+      features.add('css-circle-cache-v1')
+      // Explicit unknown survives feature unions from separately analyzed roots.
+      if (opaque || unknownCircle || bounds.get('radius')!.unknown) features.add('css-circle-cache-unbounded')
       if (opaque) { features.add('css-ranges-unknown'); return }
       const font = bounds.get('font')!, line = bounds.get('line-height')!
       if (lineMultiplier) {

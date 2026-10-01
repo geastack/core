@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "storage_usage.h"
 #include <cstdint>
 #include <string>
 
@@ -31,6 +32,7 @@ class NodeText
 	// Pool allocation payload (including spare slots/map), excluding string
 	// character buffers and allocator metadata. Useful alongside heap census.
 	static std::size_t storageBytes();
+	static StorageUsage storageUsage();
 	void clear();
 	void assign(const char *text);
 	bool empty() const { return handle_ == kEmpty; }

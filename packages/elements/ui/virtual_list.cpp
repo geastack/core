@@ -72,7 +72,7 @@ int clampScrollTop(const Node &n, int scrollTop)
 bool canScrollY(int node, const Node &n)
 {
 	if (n.type == NodeType::VirtualList) return VirtualListRenderer::scrollMaxY(node) > 0;
-	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.style)) return false;
+	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.computedStyle())) return false;
 	return ViewRenderer::scrollMaxY(n) > 0;
 }
 
@@ -92,12 +92,12 @@ bool targetContentBoundsY(const TreeState &state, int scroller, int target, int 
 	int y = 0;
 	for (int current = target; current >= 0 && current != scroller; current = state.nodes[current].parent) {
 		const Node &node = state.nodes[current];
-		if (!state.nodeActive[current] || node.style.display == kDisplayNone) return false;
+		if (!state.nodeActive[current] || node.computedStyle().display == kDisplayNone) return false;
 		y += node.layout.y;
 
 		const int parent = node.parent;
 		if (parent < 0 || parent >= state.nodeCount) return false;
-		if (parent != scroller && state.nodes[parent].style.overflow == 2 && scrollsOverflowY(state.nodes[parent].style)) {
+		if (parent != scroller && state.nodes[parent].computedStyle().overflow == 2 && scrollsOverflowY(state.nodes[parent].computedStyle())) {
 			y -= state.nodes[parent].layout.scroll_y;
 		}
 	}
@@ -148,10 +148,10 @@ void VirtualListRenderer::init(int node)
 	// Behave like any overflow:scroll container so the generic scroll, clip and
 	// scrollbar paths drive the list. The app's CSS may also set this; forcing
 	// it here keeps a bare <virtual-list> scrollable.
-	state.nodes[node].style.overflow = 2;
+	state.nodes[node].mutableStyle().overflow = 2;
 #if GEA_CSS_OVERFLOW_AXES
-	state.nodes[node].style.overflow_x = 0;
-	state.nodes[node].style.overflow_y = 2;
+	state.nodes[node].mutableStyle().overflow_x = 0;
+	state.nodes[node].mutableStyle().overflow_y = 2;
 #endif
 #else
 	(void)node;
@@ -290,7 +290,7 @@ void Tree::setScrollLeft(int node, int scrollLeft)
 #if GEA_CSS_SCROLLING
 	if (node < 0 || node >= nodeCount()) return;
 	Node &n = treeState().nodes[node];
-	if (!isViewLikeNodeType(n.type) || !scrollsOverflowX(n.style) || n.type == NodeType::VirtualList) return;
+	if (!isViewLikeNodeType(n.type) || !scrollsOverflowX(n.computedStyle()) || n.type == NodeType::VirtualList) return;
 	const int maxX = ViewRenderer::scrollMaxX(n);
 	if (scrollLeft < 0) scrollLeft = 0;
 	if (scrollLeft > maxX) scrollLeft = maxX;
@@ -316,7 +316,7 @@ void Tree::setScrollTop(int node, int scrollTop)
 		VirtualListRenderer::setScrollTop(node, scrollTop);
 		return;
 	}
-	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.style)) return;
+	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.computedStyle())) return;
 	const int maxY = ViewRenderer::scrollMaxY(n);
 	if (scrollTop < 0) scrollTop = 0;
 	if (scrollTop > maxY) scrollTop = maxY;

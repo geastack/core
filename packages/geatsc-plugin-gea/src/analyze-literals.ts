@@ -13,6 +13,7 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
   const arrays = new Set<string>(), escapedArrays = new Set<string>()
   const calledMembers = new Set<string>()
   let opaque = initiallyOpaque
+  let numericOpaque = initiallyOpaque
   const nameOf = (node: ts.PropertyName | undefined): string | undefined =>
     node && (ts.isIdentifier(node) || ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) ? node.text : undefined
   const member = (node: ts.Expression): string | undefined => ts.isPropertyAccessExpression(node) ? node.name.text
@@ -43,11 +44,19 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
     if ((source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics?.length) opaque = true
     collect(source)
   }
+  // Native numeric aliases and the collection signature needed to type a
+  // JSX map callback. No imported implementation is trusted by this type fact.
+  const intrinsicFile = '/__gea_numeric_style_intrinsics.d.ts'
+  const intrinsic = ts.createSourceFile(intrinsicFile, `
+    type int = number; type float = number; type double = number;
+    interface Array<T> { [n: number]: T; length: number; map<U>(fn: (value: T, index: number, array: T[]) => U): U[]; }
+    interface ReadonlyArray<T> { readonly [n: number]: T; readonly length: number; map<U>(fn: (value: T, index: number, array: readonly T[]) => U): U[]; }
+  `, ts.ScriptTarget.Latest, true)
   let checker: ts.TypeChecker | undefined
   const typeChecker = (): ts.TypeChecker => {
     if (!checker) {
       const host: ts.CompilerHost = {
-        getSourceFile: file => sources.get(path.resolve(file)), getDefaultLibFileName: () => '', writeFile: () => {},
+        getSourceFile: file => file === intrinsicFile ? intrinsic : sources.get(path.resolve(file)), getDefaultLibFileName: () => '', writeFile: () => {},
         getCurrentDirectory: () => '/', getDirectories: () => [], getCanonicalFileName: file => file,
         useCaseSensitiveFileNames: () => true, getNewLine: () => '\n',
         fileExists: file => sources.has(path.resolve(file)), readFile: file => files.get(path.resolve(file)),
@@ -58,7 +67,7 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
           return resolved ? { resolvedFileName: resolved, extension: /\.tsx$/.test(resolved) ? ts.Extension.Tsx : ts.Extension.Ts } : undefined
         }),
       }
-      checker = ts.createProgram([...sources.keys()], { noLib: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.Preserve, strict: true, allowJs: true }, host).getTypeChecker()
+      checker = ts.createProgram([...sources.keys(), intrinsicFile], { noLib: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.Preserve, strict: true, allowJs: true }, host).getTypeChecker()
     }
     return checker
   }
@@ -120,8 +129,8 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
         (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) && localReceiver(node.right)) opaque = true
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node) ||
-        ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) opaque = true
-    if (ts.isIdentifier(node) && /^(?:Object|Reflect|Proxy|eval|Function)$/.test(node.text)) opaque = true
+        ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) { opaque = true; numericOpaque = true }
+    if (ts.isIdentifier(node) && /^(?:Object|Reflect|Proxy|eval|Function)$/.test(node.text)) { opaque = true; numericOpaque = true }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
       const lhs = node.left
       if (ts.isPropertyAccessExpression(lhs) || ts.isElementAccessExpression(lhs)) {
@@ -199,6 +208,14 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
   for (const source of sources.values()) index(source)
   const original = (node: ts.Expression): ts.Expression | undefined => expressions.get(`${node.getSourceFile().fileName}:${node.pos}:${node.end}`)
   return Object.assign((node: ts.Expression): string[] | undefined => resolve(original(node)), {
+    // In a statically lowered numeric slot no value can contain a CSS '%'.
+    // Ambiguous imports, assertions and any/unknown retain storage. A typed
+    // native number remains numeric when unrelated literal objects escape;
+    // unlike the colour proof, its exact value need not be known.
+    isNumeric(node: ts.Expression): boolean {
+      const at = original(node)
+      return !!at && !numericOpaque && numeric(at)
+    },
     // A user-authored method called animate is not Element.animate. Require
     // both its implementation in the scanned graph and a local receiver;
     // an opaque/DOM receiver merely cast to a class is not sufficient.

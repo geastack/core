@@ -6,8 +6,9 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { inlineJsonImports, transformGeaEmbeddedCompatSource } from './gea-embedded-compat-transform.mjs'
-import { shouldIgnoreCompatStagingDirectory } from './gea-embedded-compat-staging.mjs'
+import { normalizeEmbeddedJsxOptions, shouldIgnoreCompatStagingDirectory } from './gea-embedded-compat-staging.mjs'
 import { dotEnvDefines, inlineProcessEnv } from './dotenv-defines.mjs'
+import { resolveCompilerRuntimeEntry } from './gea-native-style-plugin.mjs'
 import {
   MODULE_HINT_SCOPE,
   applyBundledTypeHints,
@@ -75,9 +76,17 @@ const { parse } = requireFromLib('@babel/parser')
 const traverseModule = requireFromLib('@babel/traverse')
 const t = requireFromLib('@babel/types')
 const traverse = traverseModule.default || traverseModule
-const useStaticCssRules = !['0', 'false', 'no'].includes(String(process.env.GEA_STATIC_CSS_RULES ?? '1').toLowerCase())
-const useStaticCssTape = !['0', 'false', 'no'].includes(String(process.env.GEA_STATIC_CSS_TAPE ?? '1').toLowerCase())
-const staticCssTapeMinChunk = Math.max(1, Number.parseInt(process.env.GEA_STATIC_CSS_TAPE_MIN_CHUNK ?? '5', 10) || 1)
+const buildConfigPath = readOption('--build-config') ?? process.env.GEA_BUILD_CONFIG_JSON
+const nativeBuildSettings = buildConfigPath
+  ? JSON.parse(fs.readFileSync(path.resolve(buildConfigPath), 'utf8')).settings || {}
+  : {}
+const compilerSettings = nativeBuildSettings.compiler || {}
+for (const name of ['GEA_STATIC_CSS_RULES', 'GEA_STATIC_CSS_TAPE', 'GEA_STATIC_CSS_TAPE_MIN_CHUNK', 'GEA_CPP_TRANSLATION_UNITS', 'GEA_PER_FILE_UNITS', 'GEA_SKIP_STORE_RELOWER', 'GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT', 'GEA_EMBEDDED_NUMBER_F32']) {
+  if (process.env[name] !== undefined) fail(`${name} is no longer a build override; declare compiler settings in package.json and build through gea`)
+}
+const useStaticCssRules = compilerSettings.staticCssRules ?? true
+const useStaticCssTape = compilerSettings.staticCssTape ?? true
+const staticCssTapeMinChunk = compilerSettings.staticCssTapeMinChunk ?? 5
 
 function readOption(name) {
   const index = args.indexOf(name)
@@ -360,6 +369,7 @@ function stateRuntimeAliasToTypeScript(stagedAppDir, compatSrcDir, stagingRoot) 
     }
   }
   const options = config.compilerOptions ?? (config.compilerOptions = {})
+  normalizeEmbeddedJsxOptions(options)
   options.baseUrl = options.baseUrl ?? '.'
   const base = path.resolve(stagedAppDir, options.baseUrl)
   // Both specifiers, because the Vite config aliases both to the same
@@ -458,23 +468,8 @@ function writeCompatViteConfig({ configPath, compatSrcDir, appDir, entry, viteOu
   // whole reactive runtime dynamically (gea_cpp_value, ill-formed auto-vectors,
   // proxy derefs). From source, everything is typed and lowers natively, exactly
   // like three.js/hono/mongodb. The env var still wins when explicitly set;
-  // otherwise resolve the package's source entry via its node_modules symlink.
-  let compilerRuntimeEntry = process.env.GEA_COMPILER_RUNTIME_SOURCE || ''
-  if (!compilerRuntimeEntry) {
-    for (const base of [appDir, coreRoot]) {
-      try {
-        const pkgDir = fs.realpathSync(path.join(base, 'node_modules/@geajs/core'))
-        const srcIndex = path.join(pkgDir, 'src/index.ts')
-        if (fs.existsSync(srcIndex) && fs.existsSync(path.join(pkgDir, 'src/compiler-runtime.ts'))) {
-          compilerRuntimeEntry = srcIndex
-          break
-        }
-      } catch {
-        // No @geajs/core source under this base (e.g. published-only install) —
-        // fall through; the alias stays empty and the dist runtime is used.
-      }
-    }
-  }
+  // otherwise follow ordinary package resolution, including hoisted installs.
+  const compilerRuntimeEntry = process.env.GEA_COMPILER_RUNTIME_SOURCE || resolveCompilerRuntimeEntry([appDir, coreRoot])
   const compilerRuntimeAlias = compilerRuntimeEntry && fs.existsSync(compilerRuntimeEntry)
     ? `      { find: new RegExp('^@geajs/core$'), replacement: ${q(compilerRuntimeEntry)} },\n`
     : ''
@@ -4284,11 +4279,14 @@ const viteBin = path.resolve(readOption('--vite-bin') ?? path.join(path.dirname(
 const viteOutDir = path.resolve(readOption('--vite-out-dir') ?? path.join(outDir, 'dist'))
 const bundlePath = path.resolve(readOption('--bundle-out') ?? path.join(outDir, 'gea-vite-bundle.js'))
 const geaIrPath = path.resolve(readOption('--gea-ir-out') ?? path.join(viteOutDir, 'gea-ir.json'))
-const moduleGraphOutOption = readOption('--module-graph-out') ?? process.env.GEA_VITE_MODULE_GRAPH_OUT
-const moduleGraphOnly = hasFlag('--module-graph-only')
-const moduleGraphCompileRequested = hasFlag('--compile-module-graph')
-const moduleGraphCompileDisabled = hasFlag('--no-compile-module-graph')
-const geaPluginSpecifier = path.resolve(readOption('--geatsc-gea-plugin') ?? requireFromLib.resolve('@geastack/geatsc-plugin-gea'))
+const moduleGraphOutOption = readOption('--module-graph-out') ?? (compilerSettings.moduleGraph === 'only' || compilerSettings.moduleGraph === 'compile' ? path.join(outDir, 'module-graph') : undefined) ?? process.env.GEA_VITE_MODULE_GRAPH_OUT
+const moduleGraphOnly = hasFlag('--module-graph-only') || compilerSettings.moduleGraph === 'only'
+const moduleGraphCompileRequested = hasFlag('--compile-module-graph') || compilerSettings.moduleGraph === 'compile'
+const moduleGraphCompileDisabled = hasFlag('--no-compile-module-graph') || compilerSettings.moduleGraph === 'disabled'
+const geaPluginSpecifier = path.resolve(
+  readOption('--geatsc-gea-plugin') ??
+  (process.env.GEA_PLUGIN_DIR ? path.join(process.env.GEA_PLUGIN_DIR, 'dist/index.js') : undefined) ??
+  requireFromLib.resolve('@geastack/geatsc-plugin-gea'))
 const extraGeatscPlugins = readAllOptions('--extra-geatsc-plugin').map((plugin) => path.resolve(plugin))
 const appendJsFiles = readAllOptions('--append-js').map((file) => path.resolve(file))
 const entry = readOption('--entry') ?? 'index.tsx'
@@ -4577,21 +4575,17 @@ if (cppPreludeSymbol) geatscArgs.push('--plugin-option', `gea.cpp-prelude-symbol
 if (pixelPanelEndian) geatscArgs.push('--plugin-option', `gea.pixel-panel-endian=${pixelPanelEndian}`)
 if (cppBoard) geatscArgs.push('--cpp-board', cppBoard)
 if (cxxStandard) geatscArgs.push('--cxx-standard', cxxStandard)
-if (hasFlag('--allow-any')) geatscArgs.push('--allow-any')
+if (hasFlag('--allow-any') || compilerSettings.allowAny) geatscArgs.push('--allow-any')
 if (entrySymbol) geatscArgs.push('--entry-symbol', entrySymbol)
 if (hasFlag('--isolate-symbols')) geatscArgs.push('--isolate-symbols')
 // One C++ unit per source module plus a shared header, instead of one unit for
 // the whole program. Every target already reads `geatsc-sources.txt` as a LIST,
 // so nothing downstream changes; see the compiler's docs/TRANSLATION-UNITS.md
 // for what it buys (parallel and incremental C++ builds) and what it costs.
-// The env var is honored beside the flag so a target need not plumb one: every
-// build in the tree goes through this script, and the boards' CMakeLists spell
-// their geatsc command line by hand, so an env var reaches all of them at once
-// (`GEA_PER_FILE_UNITS=1 <any build>`). build-macos.sh sets the flag itself and
-// folds the variable into its freshness signature, because a layout change
-// invalidates every generated file.
-if (process.env.GEA_CPP_TRANSLATION_UNITS === 'balanced') geatscArgs.push('--translation-units', 'balanced')
-else if (hasFlag('--per-file-units') || process.env.GEA_PER_FILE_UNITS === '1') geatscArgs.push('--translation-units', 'per-file')
+const translationUnits = readOption('--translation-units') ?? compilerSettings.translationUnits
+if (translationUnits === 'balanced') geatscArgs.push('--translation-units', 'balanced')
+else if (hasFlag('--per-file-units') || translationUnits === 'per-file') geatscArgs.push('--translation-units', 'per-file')
+geatscArgs.push('--plugin-option', `gea.store-relowering=${compilerSettings.storeRelowering !== false}`)
 if (hasFlag('--gea-ir-backend') || hasFlag('--gea-replace-renderers')) {
   geatscArgs.push('--plugin-option', 'gea.replace-renderers=true')
 }

@@ -112,6 +112,11 @@ struct RefreshPerfStats {
 	int treeScopedRejectNode = -1;
 	int treeLayoutRepositionCalls = 0;
 	std::int64_t treeLayoutTextUs = 0;
+#if GEA_EMBEDDED_UI_REFRESH_PERF
+	// Deterministic work budgets for animation regressions; absent with perf off.
+	int treeIntegerPositionFastCalls = 0;
+	int treeTranslateClipChecks = 0;
+#endif
 	int treeSetStyleCalls = 0;
 	int treeSetStyleChanged = 0;
 	int treeSetStyleNoop = 0;
@@ -125,6 +130,8 @@ struct RefreshPerfStats {
 	int treeMarkDisplayListDirtyCalls = 0;
 	int treeMarkDisplayListContentDirtyCalls = 0;
 	int treeMarkNodeCommandDirtyCalls = 0;
+	int treeAbsContainingAreaCalls = 0;
+	int treeAbsContainingAreaHits = 0;
 	int treeAbsModeCalls = 0;
 	int treeAbsModeFast = 0;
 	int treeAbsModeFull = 0;
@@ -201,35 +208,30 @@ inline std::int64_t refreshPerfNowUs()
 #endif
 }
 
+// Diagnostic writes must be compiled out, not redirected to a throwaway object:
+// the latter still performs loads/stores in every style update and replay scan.
+// A statement macro preserves surrounding if/else binding and does not evaluate
+// its arguments when profiling is off.
+#define GEA_REFRESH_PERF(...) \
+	do { if constexpr (GEA_EMBEDDED_UI_REFRESH_PERF) { __VA_ARGS__; } } while (false)
+
 inline RefreshPerfStats &refreshPerfStatsMutable()
 {
-#if GEA_EMBEDDED_UI_REFRESH_PERF
 	return gRefreshPerfStats;
-#else
-	// Perf off: the timer-derived `… += refreshPerfNowUs() - start` writes already
-	// fold to `+= 0` (refreshPerfNowUs() returns 0), and the ScopedRefreshStat
-	// guards optimize away. The few remaining bare counters in tree_render/render
-	// (`treePanReplayCalls++`, `treePanRepaintArea += …`) are routed to a throwaway
-	// that nothing reads, so they never touch live state.
-#if GEA_EMBEDDED_UI_STATE_DYNAMIC_INIT
-	// On the heap, not static: the -1 sentinels make the throwaway a .data
-	// object (see state_init.h).
-	static RefreshPerfStats &discard = *new RefreshPerfStats();
-#else
-	static RefreshPerfStats discard;
-#endif
-	return discard;
-#endif
 }
 
 inline void refreshPerfStatsReset()
 {
-	gRefreshPerfStats = {};
+	GEA_REFRESH_PERF(gRefreshPerfStats = {});
 }
 
 inline RefreshPerfStats refreshPerfStatsRead()
 {
+#if GEA_EMBEDDED_UI_REFRESH_PERF
 	return gRefreshPerfStats;
+#else
+	return {};
+#endif
 }
 
 }  // namespace gea::embedded::ui

@@ -40,17 +40,18 @@ export function generateCppIrSource(
   irPath: string | null,
   modules: EmitModule[],
   microtasksNamespace = "gea::framework::app::generated",
+  directCanvas = false,
 ): string {
   const drainNamespace = cppNamespace(microtasksNamespace);
   const usesCanvas = irUsesCanvas(ir, modules);
-  const emitBoxedCanvasContext = usesCanvas && !directCanvasContextEnabled();
+  const emitBoxedCanvasContext = usesCanvas && !directCanvas;
   const lines = [
     "// @geastack/geatsc-plugin-gea consumed gea IR",
     `// ir=${irPath ?? "<inline>"}`,
     `// modules=${ir.modules.length} components=${ir.components.length} stores=${ir.stores.length}`,
     `// emitted-modules=${modules.length}`,
     "",
-    ...(directCanvasContextEnabled()
+    ...(directCanvas
       ? ['#include "direct_canvas_runtime.h"']
       : []),
     '#include "gea/embedded.h"',
@@ -78,13 +79,6 @@ export function generateCppIrSource(
     "",
   ];
   return lines.join("\n");
-}
-
-function directCanvasContextEnabled(): boolean {
-  const value = String(
-    process.env.GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT ?? "",
-  ).toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
 }
 
 export function irUsesCanvas(
@@ -179,7 +173,7 @@ function numberFormattingSource(): string[] {
 export function generateCppIrNamespaceSource(
   ir: GeaIrBundleV1,
   modules: readonly EmitModule[],
-  options: { includeDomInterop?: boolean } = {},
+  options: { includeDomInterop?: boolean; directCanvas?: boolean } = {},
 ): string {
   const components = sortedComponents(ir.components);
   const constants = collectIrConstants(ir);
@@ -229,7 +223,7 @@ export function generateCppIrNamespaceSource(
     ...(needsTemplateRuntime ? nativeDisposerSource() : []),
     "",
     ...(options.includeDomInterop
-      ? canvasInteropSource(irUsesCanvas(ir, modules))
+      ? canvasInteropSource(irUsesCanvas(ir, modules), options.directCanvas === true)
       : []),
     // Forward-declare the interface-reuse typed-item helpers before
     // `storeRuntimeSource` so the template-dependent `set_typed_field(slot, …)`
@@ -1827,8 +1821,8 @@ export function directCanvasInteropSource(
   ];
 }
 
-function canvasInteropSource(usesCanvas: boolean): string[] {
-  if (directCanvasContextEnabled())
+function canvasInteropSource(usesCanvas: boolean, directCanvas: boolean): string[] {
+  if (directCanvas)
     return [
       ...domStyleInteropSource(),
       ...directCanvasInteropSource(usesCanvas),

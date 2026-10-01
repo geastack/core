@@ -339,7 +339,7 @@ function transformModuleFirstGeneratedSource(
   if (nextSource.fileName === 'modules/gea_ir.hpp') return nextSource
   if (nextSource.fileName.endsWith('.types.hpp')) return nextSource
   let next = nextSource.source
-  next = process.env.GEA_SKIP_STORE_RELOWER ? next : replaceStoreMethodsFromIr(next, ir, collectIrConstants(ir), topLevelValueNames)
+  if (options['gea.store-relowering'] !== 'false') next = replaceStoreMethodsFromIr(next, ir, collectIrConstants(ir), topLevelValueNames)
   next = applyTypedArrayStorage(next, ir)
   next = foldCanvasColorLiteralsInCpp(next, { pixelPanelEndian: pixelPanelEndian(options) })
   const beforeRuntimeGlobals = next
@@ -376,10 +376,10 @@ function generateModuleFirstGeaIrHeader(
     '#include "../generated_support.hpp"',
     usesReactiveRuntime ? '#include "gea/reactive_runtime.h"' : '',
     generateCppIrAssetForwardDeclarations(ir),
-    generateCppIrSource(ir, irPath, context.modules, microtasksNamespace(options.pluginOptions)),
+    generateCppIrSource(ir, irPath, context.modules, microtasksNamespace(options.pluginOptions), true),
     options.includeGeaDocumentRuntime ? generateHostDocumentNodeValueDeclaration() : '',
     cppPreludeSource(options.pluginOptions),
-    generateCppIrNamespaceSource(ir, context.modules, { includeDomInterop: options.includeDomInterop }),
+    generateCppIrNamespaceSource(ir, context.modules, { includeDomInterop: options.includeDomInterop, directCanvas: true }),
   ].filter(Boolean).join('\n')
 }
 

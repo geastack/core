@@ -57,8 +57,8 @@ namespace {
 void run_app_frame(int timestampMs, void *context)
 {
 	(void)context;
-	events::TouchRuntime::poll(timestampMs);
-	services::BatteryService::poll(timestampMs);
+	// Canvas-only inference excludes input/battery consumers. These services
+	// belong to the full runtime and are not linked in the reduced source set.
 	app::Application::frame(timestampMs);
 }
 
@@ -363,6 +363,16 @@ bool Runtime::boot(const RuntimeOptions &options)
 		// correctly in PSRAM the whole time. Display::init() now claims its floor
 		// before this line, and this bring-up shrinks it the designed way.
 		services::DiagnosticsServer::print("Starting WiFi after display init\n");
+		// This synchronous boot path bypasses WifiStation::ensureBringUp(),
+		// which normally yields display staging before allocating the radio.
+		// No frame task is running yet, so apply the reservation here rather
+		// than waiting for a frame that cannot run until init() returns.
+		// Keep the already-secured minimum pipeline, yielding the rest before
+		// both radio and application audio allocations. A fixed 56 KiB shrink
+		// left a 52 KiB staging pool on this boot path and starved I2S DMA.
+		gea::platform::display::Display::reserveInternal(
+		    static_cast<std::size_t>(gea::platform::display::Display::flushBufferBytes()));
+		gea::platform::display::Display::applyPendingInternalReserve();
 		network::wifi().init();
 	}
 #endif
@@ -406,6 +416,14 @@ bool Runtime::boot(const RuntimeOptions &options)
 	services::HeapProbe::log("runtime:after_frame_start");
 	services::StackProbe::logCurrentTask("runtime:after_frame_start");
 	services::HeapTaskSummary::log("runtime:after_frame_start");
+#if GEA_EMBEDDED_WIFI_EARLY_CONNECT
+	// The early-connect loan protects radio, app, and task initialization.
+	// They now own their allocations; let the frame task grow staging into
+	// the remaining heap instead of retaining the two-row boot floor forever.
+	// Allocation still observes the DMA reserve and falls back when RAM is tight.
+	if (GEA_EMBEDDED_WIFI_SSID[0] != '\0')
+		gea::platform::display::Display::reserveInternal(0);
+#endif
 	services::RuntimeLog::appStarted(networkReady);
 #endif
 

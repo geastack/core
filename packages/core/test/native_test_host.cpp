@@ -92,7 +92,7 @@ bool isVisibleNode(int nodeId)
 {
 	auto &tree = gea::embedded::ui::Tree::instance();
 	for (int current = nodeId; current >= 0 && current < tree.nodeCount(); current = tree.node(current).parent) {
-		if (tree.node(current).style.display == 1) return false;
+		if (tree.node(current).computedStyle().display == 1) return false;
 	}
 	return true;
 }
@@ -157,16 +157,16 @@ void dumpNode(int nodeId, int indent)
 	             static_cast<int>(node.type),
 	             tree.className(nodeId).c_str(),
 	             node.text.c_str(),
-	             GEA_CSS_POSITION_PX(node.style, 3),
-	             GEA_CSS_POSITION_PX(node.style, 0),
-	             node.style.width,
-	             node.style.height,
+	             GEA_CSS_POSITION_PX(node.computedStyle(), 3),
+	             GEA_CSS_POSITION_PX(node.computedStyle(), 0),
+	             node.computedStyle().width,
+	             node.computedStyle().height,
 	             node.layout.x,
 	             node.layout.y,
 	             node.layout.width,
 	             node.layout.height,
-	             static_cast<unsigned>(node.style.opacity),
-	             static_cast<int>(node.style.display),
+	             static_cast<unsigned>(node.computedStyle().opacity),
+	             static_cast<int>(node.computedStyle().display),
 	             tree.hasEventListener(nodeId) ? 1 : 0);
 	for (int child = node.first_child; child >= 0; child = tree.node(child).next_sibling) dumpNode(child, indent + 2);
 }
@@ -292,8 +292,8 @@ std::vector<int> nodesWithBox(int width, int height)
 	for (int nodeId = 0; nodeId < tree.nodeCount(); ++nodeId) {
 		if (!isVisibleNode(nodeId)) continue;
 		const auto &node = tree.node(nodeId);
-		if ((node.style.width == width || node.layout.width == width) &&
-		    (node.style.height == height || node.layout.height == height)) {
+		if ((node.computedStyle().width == width || node.layout.width == width) &&
+		    (node.computedStyle().height == height || node.layout.height == height)) {
 			out.push_back(nodeId);
 		}
 	}

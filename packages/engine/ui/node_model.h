@@ -163,6 +163,7 @@ inline bool isNativeButtonNodeType(NodeType type)
 // or embedded inline in ComputedStyle when GEA_EMBEDDED_RARE_STYLE_INLINE is set (defined
 // BEFORE ComputedStyle so it can be a by-value member).
 struct RareStyle {
+	bool operator==(const RareStyle &) const = default;
 	// Logical edges: block-start/end, inline-start/end.
 #if GEA_CSS_MARGIN_TRIM
 	uint8_t margin_trim = 0;
@@ -524,23 +525,62 @@ inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transfor
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {
-	int8_t display;
+	bool operator==(const ComputedStyle &) const = default;
+	uint8_t display : 2;
 	// True iff the `display` property was explicitly authored (a CSS rule or
 	// inline style set it), as opposed to the kDisplayBlock default. Lets the
 	// inline-formatting heuristic distinguish an explicit `display:block` on an
 	// inline-level tag (e.g. <span style="display:block">, which is block-level
 	// and stacks) from a span's default inline behaviour. Mirrors
 	// flex_direction_explicit. Other bits: kDisplayFlowRoot, kDisplayInline.
-	int8_t display_explicit;
+#if GEA_CSS_DISPLAY_EXPLICIT
+	uint8_t display_explicit : 3;
+#else
+	static constexpr uint8_t display_explicit = 0;
+#endif
+#if GEA_CSS_TEXT_ALIGN
+	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
+#else
+	static constexpr int8_t text_align = 0;
+#endif
+	int8_t overflow : 3;
+	uint8_t position : 3;  // kPositionSticky needs the third bit
+	uint8_t has_bg : 1;
+#if GEA_CSS_Z_INDEX
+	uint8_t z_index_auto : 1;
+#else
+	static constexpr int8_t z_index_auto = 1;
+#endif
+// A proven single byte radius fills the leading text-alignment slot when
+// that field is absent. Its read remains one ordinary byte load.
+#if GEA_CSS_U8_RADIUS && GEA_CSS_RADIUS_COUNT == 1 && !GEA_CSS_TEXT_ALIGN
+	uint8_t border_radius[1];
+#endif
+#if GEA_CSS_FLEX_DIRECTION
 	int8_t flex_direction;
+#else
+	static constexpr int8_t flex_direction = 0;
+#endif
+#if GEA_CSS_FLEX_DIRECTION
 	int8_t flex_direction_explicit;
+#else
+	static constexpr int8_t flex_direction_explicit = 0;
+#endif
 #if GEA_CSS_FLEX_WRAP
 	int8_t flex_wrap;
 #else
 	static constexpr int8_t flex_wrap = 0;
 #endif // low bits: 0 nowrap, 1 wrap, 2 wrap-reverse; bit 2: balance
+#if GEA_CSS_JUSTIFY_CONTENT
 	int8_t justify_content;
+#else
+	static constexpr int8_t justify_content = 0;
+#endif
+#if GEA_CSS_ALIGN_ITEMS
 	int8_t align_items;
+#else
+	static constexpr int8_t align_items = 0;
+#endif
 #if GEA_CSS_JUSTIFY_ITEMS
 	int8_t justify_items;
 #else
@@ -556,13 +596,17 @@ struct ComputedStyle {
 #else
 	static constexpr int8_t align_self = -1;
 #endif
-#if !GEA_CSS_U8_GAP
+#if GEA_CSS_GAP && !GEA_CSS_U8_GAP
 	int16_t gap;
 #endif
 	// text-emphasis-color when text_emphasis says it is explicit. Inherited;
 	// sits in padding on 16-bit colour builds.
 	style_color_t text_emphasis_color;
+#if GEA_CSS_BOX_SIZING
 	int8_t box_sizing; // 0: content-box (CSS initial), 1: border-box
+#else
+	static constexpr int8_t box_sizing = 0;
+#endif
 #if GEA_CSS_FLOATS
 	int8_t float_side;
 #else
@@ -583,7 +627,11 @@ struct ComputedStyle {
 #else
 	static constexpr int8_t direction = 0;
 #endif // -1: inherit, 0: ltr, 1: rtl
+#if GEA_CSS_MARGIN_AUTO
 	uint8_t margin_auto; // TRBL bit mask; numeric margins remain zero for auto
+#else
+	static constexpr uint8_t margin_auto = 0;
+#endif
 #if GEA_CSS_AXIS_GAP
 	int16_t row_gap, column_gap; // kUnset falls back to native gap
 #else
@@ -598,7 +646,7 @@ struct ComputedStyle {
 	// color must not allocate a rare-style record merely for its binding flags.
 	// Bits 0..3: explicit side colors; bit 4: literal common color;
 	// bits 5..8: explicit side currentColor. Unspecified colors use currentColor.
-#if !GEA_CSS_U8_BORDER_FLAGS
+#if GEA_CSS_BORDER_COLORS && !GEA_CSS_U8_BORDER_FLAGS
 	uint16_t border_color_flags = 0;
 #endif
 #if GEA_CSS_ORDER
@@ -608,29 +656,54 @@ struct ComputedStyle {
 #endif
 	// Inherited unitless line-height number as IEEE float bits; -1 means length/normal.
 	// Keep this common inherited value out of the much larger rare-style allocation.
+#if GEA_CSS_LINE_HEIGHT_MULTIPLIER
 	int32_t line_height_multiplier;
+#else
+	static constexpr int32_t line_height_multiplier = -1;
+#endif
 
+#if GEA_CSS_WIDTH_EXPRESSIONS
 	int32_t width_expression;
+#else
+	static constexpr int32_t width_expression = -1;
+#endif
 #if GEA_CSS_HEIGHT_EXPRESSIONS
 	int32_t height_expression;
 #else
 	static constexpr int32_t height_expression = -1;
 #endif
 	int32_t width, height; // kUnset: auto; see kMaxLayoutExtent
-	int16_t width_percent, height_percent;
+#if GEA_CSS_WIDTH_PERCENT
+	int16_t width_percent;
+#else
+	static constexpr int16_t width_percent = kUnset;
+#endif
+#if GEA_CSS_HEIGHT_PERCENT
+	int16_t height_percent;
+#else
+	static constexpr int16_t height_percent = kUnset;
+#endif
 #if GEA_CSS_MIN_WIDTH
 	int16_t min_width;
 #else
 	static constexpr int16_t min_width = kUnset;
 #endif
+#if GEA_CSS_MIN_HEIGHT
 	int16_t min_height;
+#else
+	static constexpr int16_t min_height = kUnset;
+#endif
+#if GEA_CSS_MAX_WIDTH
 	int16_t max_width;
+#else
+	static constexpr int16_t max_width = kUnset;
+#endif
 #if GEA_CSS_MAX_HEIGHT
 	int16_t max_height;
 #else
 	static constexpr int16_t max_height = kUnset;
 #endif
-#if !GEA_CSS_U8_FLEX
+#if GEA_CSS_FLEX_FACTORS && !GEA_CSS_U8_FLEX
 	int16_t flex;
 	int16_t flex_shrink;
 #endif
@@ -645,17 +718,15 @@ struct ComputedStyle {
 	static constexpr int16_t flex_basis = kUnset;
 #endif
 
-#if !GEA_CSS_U8_PADDING
+#if GEA_CSS_PADDING && !GEA_CSS_U8_PADDING
 	int16_t padding[4];
 #endif
+#if GEA_CSS_MARGINS
 	int16_t margin[4];
-
-#if GEA_CSS_Z_INDEX
-	int8_t position;
-	int8_t z_index_auto;
 #else
-	static constexpr int8_t z_index_auto = 1;
+	static constexpr int16_t margin[4] = {};
 #endif
+
 #if GEA_CSS_POSITION_PX_ALL
 	int16_t pos_offsets[4];
 #else
@@ -712,14 +783,17 @@ struct ComputedStyle {
 
 	// Group byte-sized paint flags before native colours. Keep natural alignment
 	// without paying padding between each RGB565 colour and its flags.
-	int8_t has_bg;
 	uint8_t bg_alpha;
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS
 	int8_t bg_fill;
 #else
 	static constexpr int8_t bg_fill = 0;
 #endif
+#if GEA_CSS_ACTIVE_BACKGROUND
 	int8_t has_active_bg;
+#else
+	static constexpr int8_t has_active_bg = 0;
+#endif
 #if GEA_CSS_TEXT_ALPHA
 	uint8_t text_alpha;
 #else
@@ -730,10 +804,8 @@ struct ComputedStyle {
 #else
 	static constexpr uint8_t border_alpha = 255;
 #endif
-#if !GEA_CSS_Z_INDEX
-	// Without the paired stacking flag, position fills the paint-byte group
-	// instead of leaving a hole before the 16-bit offset array.
-	int8_t position;
+#if GEA_CSS_LINE_HEIGHT && GEA_CSS_U8_LINE_HEIGHT
+	uint8_t line_height;
 #endif
 	style_color_t bg_color;
 	// text-emphasis (inherited): bits 0-2 mark 0 none, 1 dot, 2 circle,
@@ -741,7 +813,11 @@ struct ComputedStyle {
 	// colour 0 currentColor, 1 text_emphasis_color, 2 transparent. In padding.
 	uint8_t text_emphasis;
 	// linear/overlay/radial gradients + background-grid moved to RareStyle (rare).
+#if GEA_CSS_ACTIVE_BACKGROUND
 	style_color_t active_bg_color;
+#else
+	static constexpr style_color_t active_bg_color = 0;
+#endif
 	// CSS `vertical-align` of an inline-level box: 0 baseline, 1 top, 2 bottom,
 	// 3 middle, 4 text-top, 5 text-bottom, 6 sub, 7 super. Sits in padding.
 	int8_t vertical_align;
@@ -764,10 +840,14 @@ struct ComputedStyle {
 	// value plus one. Inherited. Sits in padding, so ComputedStyle keeps its size.
 	int8_t text_align_last;
 
-#if !GEA_CSS_U8_BORDER
+#if GEA_CSS_BORDER_WIDTHS && !GEA_CSS_U8_BORDER
 	int16_t border_width;
 #endif
+#if GEA_CSS_BORDER_COLORS
 	style_color_t border_color;
+#else
+	static constexpr style_color_t border_color = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+#endif
 	// per-side border width/color/alpha moved to RareStyle (rare); border_radius
 	// stays here (rounded rects are common).
 #if !GEA_CSS_U8_RADIUS
@@ -785,12 +865,17 @@ struct ComputedStyle {
 #if !GEA_CSS_U8_FONT
 	int16_t font_size;
 #endif
+#if GEA_CSS_FONT_WEIGHT
 	int16_t font_weight;
-#if !GEA_CSS_U8_LINE_HEIGHT
+#else
+	static constexpr int16_t font_weight = 400;
+#endif
+#if !GEA_CSS_LINE_HEIGHT
+	static constexpr int16_t line_height = 0;
+#elif !GEA_CSS_U8_LINE_HEIGHT
 	int16_t line_height;
 #endif
-	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
-	int8_t overflow;
+
 #if GEA_CSS_OVERFLOW_AXES
 	int8_t overflow_x;
 	int8_t overflow_y;
@@ -837,38 +922,54 @@ struct ComputedStyle {
 #endif
 	// CSS `white-space`: 0 normal, 1 nowrap, 2 pre, 3 pre-wrap, 4 pre-line,
 	// 5 break-spaces. Inherited; space preservation and soft wrapping differ.
+#if GEA_CSS_WHITE_SPACE
 	int8_t white_space;
+#else
+	static constexpr int8_t white_space = 0;
+#endif
 	// CSS `text-overflow` — 0 = clip (default), 1 = ellipsis. Only consulted
 	// when the line cannot wrap (white-space: nowrap): an overflowing single
 	// line is truncated at a glyph boundary and an ASCII "..." is appended so
 	// the visible run fits within the content width. Not inherited.
+#if GEA_CSS_TEXT_OVERFLOW
 	int8_t text_overflow;
+#else
+	static constexpr int8_t text_overflow = 0;
+#endif
 	// Compiler-proven unsigned ranges need one byte load, with no unpacking.
 	// Group these bytes so narrowing does not merely create alignment holes.
-#if GEA_CSS_U8_BORDER_FLAGS
+#if GEA_CSS_BORDER_COLORS && GEA_CSS_U8_BORDER_FLAGS
 	uint8_t border_color_flags = 0;
+#elif !GEA_CSS_BORDER_COLORS
+	static constexpr uint8_t border_color_flags = 0;
 #endif
-#if GEA_CSS_U8_GAP
+#if GEA_CSS_GAP && GEA_CSS_U8_GAP
 	uint8_t gap;
+#elif !GEA_CSS_GAP
+	static constexpr int16_t gap = 0;
 #endif
-#if GEA_CSS_U8_FLEX
+#if GEA_CSS_FLEX_FACTORS && GEA_CSS_U8_FLEX
 	uint8_t flex, flex_shrink;
+#elif !GEA_CSS_FLEX_FACTORS
+	static constexpr int16_t flex = 0, flex_shrink = 1;
 #endif
-#if GEA_CSS_U8_PADDING
+#if GEA_CSS_PADDING && GEA_CSS_U8_PADDING
 	uint8_t padding[4];
+#elif !GEA_CSS_PADDING
+	static constexpr int16_t padding[4] = {};
 #endif
-#if GEA_CSS_U8_BORDER
+#if GEA_CSS_BORDER_WIDTHS && GEA_CSS_U8_BORDER
 	uint8_t border_width;
+#elif !GEA_CSS_BORDER_WIDTHS
+	static constexpr int16_t border_width = 0;
 #endif
-#if GEA_CSS_U8_RADIUS
+#if GEA_CSS_U8_RADIUS && (GEA_CSS_RADIUS_COUNT != 1 || GEA_CSS_TEXT_ALIGN)
 	uint8_t border_radius[GEA_CSS_RADIUS_COUNT];
 #endif
 #if GEA_CSS_U8_FONT
 	uint8_t font_size;
 #endif
-#if GEA_CSS_U8_LINE_HEIGHT
-	uint8_t line_height;
-#endif
+
 
 	// CSS `pointer-events` — 0 = auto (default), 1 = none. A `none` node is never
 	// the target of a pointer event and its subtree is skipped in hit-testing, so
@@ -1024,6 +1125,7 @@ inline constexpr uint8_t kBorderStyleNone = 0x80;
 
 inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, const ComputedStyle *parent)
 {
+#if GEA_CSS_BORDER_WIDTHS
 #if GEA_CSS_SIDE_BORDERS
 	int widths[4];
 	for (int i = 0; i < 4; ++i) {
@@ -1059,10 +1161,15 @@ inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, co
 	style.border_width = width;
 	return true;
 #endif
+#else
+	(void)style; (void)side; (void)value; (void)parent;
+	return false;
+#endif
 }
 
 inline bool setBorderColorBinding(ComputedStyle &style, int side, bool current)
 {
+#if GEA_CSS_BORDER_COLORS
 #if GEA_CSS_SIDE_BORDERS
 	const unsigned previous = style.border_color_flags;
 	unsigned next;
@@ -1081,6 +1188,10 @@ inline bool setBorderColorBinding(ComputedStyle &style, int side, bool current)
 	if (next == style.border_color_flags) return false;
 	style.border_color_flags = static_cast<uint16_t>(next);
 	return true;
+#endif
+#else
+	(void)style; (void)side; (void)current;
+	return false;
 #endif
 }
 
@@ -1324,6 +1435,10 @@ inline bool hasBorderRelief(const ComputedStyle &style)
 	return (r.border_relief[0] & relief) || (r.border_relief[1] & relief) || (r.border_relief[2] & relief) || (r.border_relief[3] & relief);
 }
 
+#ifndef GEA_EMBEDDED_SHARED_STYLES
+#define GEA_EMBEDDED_SHARED_STYLES 0
+#endif
+
 struct LayoutBox {
 	int16_t x, y;
 	int32_t width, height; // see kMaxLayoutExtent
@@ -1339,7 +1454,9 @@ struct LayoutBox {
 	// The hypothetical block-start margin edge of an out-of-flow child,
 	// relative to its static-position parent. Capture before relative offsets
 	// and absolute-coordinate conversion; retained refresh reuses this anchor.
+	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t static_block_start = 0;
+	#endif
 	// line-clamp: bit 0 when the box lies after an ancestor's clamp point, which
 	// hides it; bit 1 on the text run whose last painted line ends before the
 	// clamp point and carries the block ellipsis. Like line_clamp_lines below
@@ -1378,24 +1495,18 @@ struct LayoutBox {
 	// node already laid out THIS pass with the same available box. Two slots
 	// (MRU order) because flex items alternate between the parent's measure
 	// avail and their basis/grown avail — a single slot thrashes on exactly
-	// that pattern. Scoped to a single pass (serial bumped by beginLayoutPass),
-	// so no cross-frame invalidation is needed and the final
-	// absolute-coordinate resolve is unaffected.
-	// 16-bit pass tags are direct loads, not packed fields. beginLayoutPass()
-	// clears every tag before reusing serial 1 after 65,535 passes.
-	// Both slots share result_w/h. An older entry can hit only when its result
-	// equals the current dimensions, so discard it on a dimension change instead
-	// of storing a second result that can never hit. External flex resizing still
-	// compares the shared result against live dimensions before either lookup.
+	// that pattern. Both hit-validity bytes live in scratch cleared on every
+	// beginLayoutPass(), so there is no generation counter or rollover scan.
+	// Only the last available box and its validity survive the pass: scoped
+	// relayout and absolute containing blocks need them across frames. The
+	// legacy memo_pass field stores that validity (0 or 1), not a generation.
+	// Result dimensions and the second available box remain pass-local.
+	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t memo_avail_w;
 	int16_t memo_avail_h;
-	int16_t memo_result_w;
-	int16_t memo_result_h;
 	uint16_t memo_pass;
-	int16_t memo2_avail_w;
-	int16_t memo2_avail_h;
-	uint16_t memo2_pass;
 	uint8_t static_block_axis = 0;  // 0: unavailable, 1: y, 2: x
+	#endif
 };
 
 struct RenderState {
@@ -1461,14 +1572,14 @@ struct RenderState {
 	static constexpr int16_t previous_filter_blur_radius = 0;
 #endif
 
-	uint8_t dirty;
+	uint8_t dirty : 1;
 #if GEA_CSS_SCROLLING
-	uint8_t scroll_dirty;
+	uint8_t scroll_dirty : 1;
 #else
 	static constexpr uint8_t scroll_dirty = 0;
 #endif
 #if GEA_CSS_SCROLLING
-	uint8_t non_scroll_dirty;
+	uint8_t non_scroll_dirty : 1;
 #else
 	static constexpr uint8_t non_scroll_dirty = 0;
 #endif
@@ -1478,20 +1589,20 @@ struct RenderState {
 	// the refresh skip the relayout pass entirely and letting the scoped
 	// relayout compute its LCA over geometry-relevant nodes only. Cleared with
 	// `dirty`.
-	uint8_t layout_dirty;
+	uint8_t layout_dirty : 1;
 #if GEA_CSS_TRANSFORMS
-	uint8_t transform_dirty;
+	uint8_t transform_dirty : 1;
 #else
 	static constexpr uint8_t transform_dirty = 0;
 #endif
-	uint8_t bg_recolor_pending;
+	uint8_t bg_recolor_pending : 1;
 	// Tree::setText pre-measures incoming text and sets this flag when the
 	// update is safe for the retained/direct-replay path: absolute text may
 	// update its measured bbox out of flow, while in-flow text must keep the
 	// same layout box (e.g. fixed-width temperature readouts). Cleared on
 	// LayoutSnapshot::capture() so it's always either freshly set by setText
 	// in the current frame or absent.
-	uint8_t text_layout_stable;
+	uint8_t text_layout_stable : 1;
 	// Glyph-incremental text dirty (set by Tree::setText): when a content-only text
 	// change keeps the same layout box and only a middle run of glyphs differs
 	// (e.g. a ticking counter "58"->"57", a clock), the dirty collector flushes only
@@ -1499,7 +1610,7 @@ struct RenderState {
 	// box. A 26vmin badge re-render then copies just the changed digits (~one glyph)
 	// rather than ~the whole panel width, so it fits a TE-locked frame's slack.
 	// Cleared with text_layout_stable each frame (LayoutSnapshot::capture).
-	uint8_t text_partial_dirty;
+	uint8_t text_partial_dirty : 1;
 	// This box SHARES a line box with other inline content, so it was placed on
 	// that line's baseline (FlexLayoutPass::placeLineItems). TextRenderer::record
 	// then draws the run at its baseline instead of centring the string's ink in
@@ -1508,7 +1619,7 @@ struct RenderState {
 	// end up at different heights. A run that owns its line keeps the centring.
 	// Bit 1: the line layout already applied text-align to this box's line, so
 	// the run draws start-aligned in its own box.
-	uint8_t inline_baseline;
+	uint8_t inline_baseline : 2;
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {
@@ -1527,10 +1638,52 @@ inline bool hadIndividualLinearTransform(const RenderState &s)
 	       s.previous_scale_x != 1000 || s.previous_scale_y != 1000 || s.previous_scale_z != 1000;
 }
 
+// A/B experiment only; the default keeps the existing native Node.style API.
+#if GEA_EMBEDDED_SHARED_STYLES
+struct SharedStyleRecord {
+	ComputedStyle value;
+	uint32_t references;
+	SharedStyleRecord *next;
+};
+class NodeStyleStorage {
+	SharedStyleRecord *record_;
+	ComputedStyle &detach();
+public:
+	NodeStyleStorage();
+	~NodeStyleStorage();
+	NodeStyleStorage(const NodeStyleStorage &other);
+	NodeStyleStorage &operator=(const NodeStyleStorage &other);
+	NodeStyleStorage(NodeStyleStorage &&other) noexcept;
+	NodeStyleStorage &operator=(NodeStyleStorage &&other) noexcept;
+	const ComputedStyle &read() const { return record_->value; }
+	ComputedStyle &write() {
+		if (record_->references == 1) return record_->value;
+		return detach();
+	}
+	void reset();
+	void intern();
+	static std::size_t allocatedBytes();
+	static std::size_t allocatedRecords();
+	static std::size_t allocatedHeapBytes();
+};
+#endif
+
 struct Node {
-	// Keep the hot style at offset zero. Reuse only record tail padding;
-	// ordinary field reads remain naturally aligned direct loads.
+#if GEA_EMBEDDED_SHARED_STYLES
+	NodeStyleStorage sharedStyle_;
+	// Group the four-byte ownership handles before the two-byte fields.
+	NodeText text;
+	const ComputedStyle &computedStyle() const { return sharedStyle_.read(); }
+	ComputedStyle &mutableStyle() { return sharedStyle_.write(); }
+	void resetComputedStyle() { sharedStyle_.reset(); }
+	void internComputedStyle() { sharedStyle_.intern(); }
+#else
 	[[no_unique_address]] ComputedStyle style;
+	const ComputedStyle &computedStyle() const { return style; }
+	ComputedStyle &mutableStyle() { return style; }
+	void resetComputedStyle();
+	void internComputedStyle() {}
+#endif
 	// Interned tag id; zero is the empty tag. Fits in style's tail padding
 	// when the source proof removes the unused alpha fields.
 	int16_t tag_id = 0;
@@ -1542,8 +1695,10 @@ struct Node {
 	// Index into the shared pool for optional listeners/attributes/styles.
 	// -1 means absent and is restored by Node{} / node reuse.
 	int16_t rare_data = -1;
+#if !GEA_EMBEDDED_SHARED_STYLES
 	// Empty structural nodes retain only the four-byte text ownership handle.
 	NodeText text;
+#endif
 #if GEA_UI_IMAGE_NODES
 	int16_t image_id;
 #else
@@ -1551,6 +1706,11 @@ struct Node {
 #endif
 	[[no_unique_address]] LayoutBox layout;
 	NodeType type;
+#if GEA_EMBEDDED_SHARED_STYLES && !GEA_CSS_CUSTOM_PROPERTIES
+	// Occupies the alignment byte before RenderState, with direct field access.
+	// No separate per-node dependency array is needed when variables are absent.
+	bool class_style_tracked = false;
+#endif
 	RenderState render;
 };
 
@@ -1558,7 +1718,7 @@ struct Node {
 // the positive display coordinate range and remain stationary during replay.
 inline void overflowClipBounds(const Node &node, int &x, int &y, int &w, int &h)
 {
-	const auto &s = node.style;
+	const auto &s = node.computedStyle();
 	const int left = boxInset(s, 3) - s.padding[3], right = boxInset(s, 1) - s.padding[1];
 	const int top = boxInset(s, 0) - s.padding[0], bottom = boxInset(s, 2) - s.padding[2];
 	x = overflowX(s) ? node.layout.x + left : 0;

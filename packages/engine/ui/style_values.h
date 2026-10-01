@@ -50,10 +50,10 @@ public:
 	static BackgroundPlacement backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
 	                                              int x, int y, int width, int height);
 	// Convert a raw style-value colour int into this board's native pixel, applied
-	// once when the colour is written into node.style. The style-value int holds
+	// once when the colour is written into node.computedStyle(). The style-value int holds
 	// the authoring colour in the board's pre-panel form: raw (unswapped) RGB565 on
 	// 16-bit panels — swapped to panel byte order here — or the target's 8888 layout on full-colour
-	// boards (no panel concept, identity). After this, node.style colours are native
+	// boards (no panel concept, identity). After this, node.computedStyle() colours are native
 	// and nothing downstream converts.
 	static gea::framework::graphics::pixel::native_t pixelFromStyleValue(int value)
 	{

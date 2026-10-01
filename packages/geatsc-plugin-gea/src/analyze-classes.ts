@@ -23,8 +23,8 @@ function join(left: Shape[], right: Shape[]): Shape[] {
   }))))
 }
 
-// A positive proof selects inline capacity; no proof keeps the existing four
-// slots. Overflow remains supported, so capacity never truncates class names.
+// A positive proof bounds every class assignment; unknown mutation invalidates
+// it. Callers version inline-capacity tuning and overflow elimination separately.
 export function analyzeClassCapacity(files: Map<string, string>, opaque: boolean): number | undefined {
   if (opaque) return undefined
   const sources = new Map([...files].filter(([file]) => !/\.css$/i.test(file)).map(([file, text]) =>

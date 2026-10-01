@@ -151,7 +151,7 @@ function normalizeRuntimeCoreImports(ast) {
   const movedSpecs = []
 
   for (const node of ast.program.body) {
-    if (!t.isImportDeclaration(node) || node.source.value !== '@geastack/core') {
+    if (!t.isImportDeclaration(node) || !['@geastack/core', '@geajs/core'].includes(node.source.value)) {
       nextBody.push(node)
       continue
     }
@@ -213,7 +213,7 @@ function transformTopLevelStatement(stmt) {
 }
 
 export function transformGeaEmbeddedCompatSource(code, filename) {
-  if ((!code.includes('<') || !code.includes('>')) && !code.includes('@geastack/core')) return code
+  if ((!code.includes('<') || !code.includes('>')) && !code.includes('@geastack/core') && !code.includes('@geajs/core')) return code
 
   const ast = parser.parse(code, {
     sourceType: 'module',
