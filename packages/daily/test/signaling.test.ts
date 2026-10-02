@@ -283,7 +283,7 @@ test("batched presence, app messages and audio/video announcements use the wire 
   state.socket.receive({
     msgStr: "sig-batch",
     msgs: [
-      { msgStr: "sig-presence", from: "bot", msgData: { name: "Zuck" } },
+      { msgStr: "sig-presence", from: "bot", msgData: { name: "Remote participant" } },
       { tag: "x-egassem", from: "bot", msgData: { type: "bot_ready" } },
       {
         tag: "soup",

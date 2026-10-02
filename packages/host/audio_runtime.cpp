@@ -2,7 +2,6 @@
 #define GEA_AUDIO_DRIVER_INTERNAL 1
 #include "audio.h"
 #include "audio_stream.h"
-#include "host/audio_trace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -61,9 +60,6 @@ constexpr int kChunkDurationMs = (kChunkSamples * 1000) / kSampleRate;
 // clicking/stutter through a whole melody. Ride out short gaps with silence
 // instead of tearing the codec down.
 constexpr int kCloseGraceChunks = 10;
-#if GEA_AUDIO_DEBUG_PCM_TRACE
-gea::host::OpeningPcmTrace speakerTrace("speaker-input");
-#endif
 
 #ifndef GEA_AUDIO_DEBUG_TIMING
 #define GEA_AUDIO_DEBUG_TIMING 0
@@ -443,9 +439,6 @@ private:
 
       const bool streaming = streams_.active();
       if (!hasActiveTones() && !streaming) {
-#if GEA_AUDIO_DEBUG_PCM_TRACE
-        speakerTrace.reset();
-#endif
         previousWriteEnd = cadenceStart = maxSupplyGap = maxWriteUs = 0;
         cadenceFrames = emptyPulls = 0;
         if (!driverOpen_.load(std::memory_order_acquire)) {
@@ -509,9 +502,6 @@ private:
       }
 
       const int64_t writeStart = esp_timer_get_time();
-#if GEA_AUDIO_DEBUG_PCM_TRACE
-      speakerTrace.record(pcm, outputFrames * kChannels);
-#endif
       if (!cadenceStart) cadenceStart = writeStart;
       if (previousWriteEnd) maxSupplyGap = std::max(maxSupplyGap, writeStart - previousWriteEnd);
       const bool wrote = audio::OutputDriver::write(pcm, outputFrames * kChannels, kWriteTimeoutMs);

@@ -2,7 +2,7 @@
 
 Work in progress: typed room discovery, signaling, RTP/SDP negotiation, and media
 control for a native Daily WebRTC client. This package does **not yet implement a complete Daily call** and
-is not published. The Lemon Slice browser example still uses the official SDK.
+is not published. Browser applications should use the official Daily SDK.
 
 The protocol is based on the public Daily 0.92.2 call-engine behavior, inspected
 at `https://c.daily.co/call-machine/versioned/0.92.2/static/call-machine-object-bundle.js`.
@@ -15,7 +15,7 @@ are rejected on close. Closing during join also rejects the pending join.
 Credentials are never included in diagnostics. The host supplies HTTP, WebSocket,
 clock, and UUID facilities; no DOM, injected scripts, or server bridge is needed.
 
-Verified against a real hosted Zuck room: discovery, signaling acknowledgement,
+Verified against a real hosted Daily room: discovery, signaling acknowledgement,
 SFU join, receive-transport creation, audio/video track announcements, `bot_ready`,
 and `force-end` followed by a confirmed terminal hosted-session status. The
 diagnostic lasted 15 seconds and did not capture or play audio. Twelve deterministic
@@ -32,11 +32,11 @@ These are not yet verified in a live S3 call. SDP and media lifecycle tests pass
 they do not substitute for transport, A/V synchronization, or hardware testing.
 The complete native application now builds and boots on the Waveshare S3 4B.
 The previously flashed build created an audio consumer but rejected video:
-the hosted Zuck producer publishes VP8, whereas that build supported H.264. A diagnostic
+the remote video producer publishes VP8, whereas that build supported H.264. A diagnostic
 consumer using the router's full capabilities confirmed VP8 payload type 101
 and RTX type 102. The new native receive adapter implements VP8 without RTX,
-advertising only PLI feedback for that codec. The hosted `/liveai/rooms` API accepts only
-`agent_id`; it exposes no producer codec selection.
+advertising only PLI feedback for that codec. Applications must negotiate the
+codec offered by the remote producer.
 
 The shared host now has VP8 RTP reordering, payload assembly and libvpx decoding,
 covered by `bash packages/core/test/run-vp8-tests.sh` from the core repo. Those
