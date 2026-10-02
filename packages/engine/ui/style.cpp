@@ -16356,6 +16356,43 @@ struct CssAnimationSpec {
 	bool valid = false;
 };
 
+struct NodeCssAnimation {
+	int node;
+	CssAnimationSpec spec;
+	std::uint32_t startMs = 0;
+	bool started = false;
+	std::vector<int> handles;
+};
+
+// Only nodes with animation declarations occupy storage. Style recomputation
+// enrolls new nodes; the frame clock starts pending tracks once, without a
+// full-tree scan or restarting existing timelines on unrelated renders.
+std::vector<NodeCssAnimation> &nodeCssAnimations()
+{
+	static std::vector<NodeCssAnimation> animations;
+	return animations;
+}
+
+std::uint32_t g_cssAnimationNowMs = 0;
+
+bool sameAnimationSpec(const CssAnimationSpec &a, const CssAnimationSpec &b)
+{
+	return a.nameAtom == b.nameAtom && a.durationMs == b.durationMs &&
+	       a.delayMs == b.delayMs && a.iterations == b.iterations &&
+	       a.direction == b.direction && a.fill == b.fill && a.easing == b.easing;
+}
+
+void cancelNodeCssAnimation(int node)
+{
+	auto &animations = nodeCssAnimations();
+	for (auto it = animations.begin(); it != animations.end(); ++it) {
+		if (it->node != node) continue;
+		for (int handle : it->handles) gea::css::AnimationEngine::instance().cancel(handle);
+		animations.erase(it);
+		return;
+	}
+}
+
 CssAnimationSpec parseAnimationShorthand(const std::string &value)
 {
 	CssAnimationSpec spec;
@@ -17062,20 +17099,32 @@ void applyPrimedAnimationValue(const gea::css::Animation &animation, double valu
 
 void primeCssAnimationsForNode(int node, const ActiveRulePlan *activePlan)
 {
-	if (activePlan) {
-		if (!activePlan->has(kActiveAnimation)) return;
-	} else {
-		rebuildRuleIndexIfNeeded();
-		if (g_ruleIndex.animationRules.empty()) return;
-	}
 	const CssAnimationSpec spec = activePlan ? animationSpecForNodeFromActivePlan(*activePlan) : animationSpecForNode(node);
+	if (!spec.valid || isDisplayNone(treeState().nodes[node].computedStyle())) {
+		cancelNodeCssAnimation(node);
+		return;
+	}
+	auto &animations = nodeCssAnimations();
+	auto it = std::find_if(animations.begin(), animations.end(), [&](const NodeCssAnimation &entry) {
+		return entry.node == node;
+	});
+	if (it != animations.end() && !sameAnimationSpec(it->spec, spec)) {
+		cancelNodeCssAnimation(node);
+		it = animations.end();
+	}
+	if (it == animations.end()) {
+		animations.push_back({node, spec});
+		it = animations.end() - 1;
+	}
+	const double elapsed = it->started
+	    ? static_cast<double>(static_cast<std::int32_t>(g_cssAnimationNowMs - it->startMs)) : 0.0;
 	CssAnimationTrackList tracks;
 	buildAnimationTracksForNode(node, spec, tracks);
 	for (std::size_t i = 0, n = tracks.size(); i < n; ++i) {
 		const CssAnimationTrack &track = tracks.at(i);
 		if (isRotationAxisTrack(track.property)) continue;
 		const gea::css::Animation animation = animationFromTrack(node, spec, track, tracks);
-		const gea::css::Progress progress = gea::css::computeProgress(animation, 0.0);
+		const gea::css::Progress progress = gea::css::computeProgress(animation, elapsed);
 		if (!progress.active) continue;
 		if (!animation.rotationAxes.empty())
 			gea::css::applyRotationSample(animation, progress.p, [&](Property property, int value) {
@@ -17085,15 +17134,17 @@ void primeCssAnimationsForNode(int node, const ActiveRulePlan *activePlan)
 	}
 }
 
-void startAnimationForNode(int nodeId, const CssAnimationSpec &spec, std::uint32_t nowMs)
+void startAnimationForNode(NodeCssAnimation &entry, std::uint32_t nowMs)
 {
 	CssAnimationTrackList tracks;
-	buildAnimationTracksForNode(nodeId, spec, tracks);
+	buildAnimationTracksForNode(entry.node, entry.spec, tracks);
+	entry.startMs = nowMs;
+	entry.started = true;
 	for (std::size_t i = 0, n = tracks.size(); i < n; ++i) {
 		const CssAnimationTrack &track = tracks.at(i);
 		if (isRotationAxisTrack(track.property)) continue;
-		gea::css::Animation animation = animationFromTrack(nodeId, spec, track, tracks);
-		gea::css::AnimationEngine::instance().start(std::move(animation), nowMs);
+		gea::css::Animation animation = animationFromTrack(entry.node, entry.spec, track, tracks);
+		entry.handles.push_back(gea::css::AnimationEngine::instance().start(std::move(animation), nowMs));
 	}
 }
 
@@ -17346,11 +17397,23 @@ void Style::cssScale(double value) const
 	set(Property::ScaleX, scale); set(Property::ScaleY, scale); set(Property::ScaleZ, 1000);
 }
 
+void forgetNodeCssAnimations(int node)
+{
+#if GEA_CSS_ANIMATIONS
+	cancelNodeCssAnimation(node);
+	gea::css::AnimationEngine::instance().cancelNode(node);
+#else
+	(void)node;
+#endif
+}
+
 void StyleSheet::clear()
 {
 	rules().clear();
 #if GEA_CSS_ANIMATIONS
 	keyframeRules().clear();
+	nodeCssAnimations().clear();
+	g_cssAnimationNowMs = 0;
 #endif
 	g_ruleRegistrationBatchDepth = 0;
 	g_ruleRegistrationRulesChanged = false;
@@ -18024,13 +18087,9 @@ void StyleSheet::recomputeSubtree(int nodeId) const
 void StyleSheet::startCssAnimations(std::uint32_t nowMs) const
 {
 #if GEA_CSS_ANIMATIONS
-	rebuildRuleIndexIfNeeded();
-	if (g_ruleIndex.animationRules.empty()) return;
-	auto &state = treeState();
-	for (int node = 0; node < state.nodeCount; ++node) {
-		if (isDisplayNone(state.nodes[node].computedStyle())) continue;
-		const CssAnimationSpec spec = animationSpecForNode(node);
-		startAnimationForNode(node, spec, nowMs);
+	g_cssAnimationNowMs = nowMs;
+	for (auto &entry : nodeCssAnimations()) {
+		if (!entry.started) startAnimationForNode(entry, nowMs);
 	}
 #else
 	(void)nowMs;

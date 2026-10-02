@@ -430,6 +430,10 @@ bool expectGenericGradientAndAlphaPaint()
 	zFace.style.bg_alpha = 255;
 	zFace.style.bg_color = 0xf800;
 	rstyleMut(zFace.style).transform_translate_z = 80;
+	// translateZ only reorders paint inside a 3D rendering context (CSS Transforms 2):
+	// the root and the wrapper that holds the face both preserve it.
+	rstyleMut(zRoot.style).transform_preserve_3d = 1;
+	rstyleMut(zWrap.style).transform_preserve_3d = 1;
 	const int zShadowId = tree.createView();
 	tree.setParent(zShadowId, zRootId);
 	Node &zShadow = tree.node(zShadowId);

@@ -10,6 +10,7 @@ struct FakeWsRecord {
 };
 
 std::vector<FakeWsRecord> fake_ws_records;
+std::string fake_ws_protocols;
 
 void fake_ws_reset() {
   fake_ws_records.clear();
@@ -17,7 +18,8 @@ void fake_ws_reset() {
 
 namespace gea::host::websocket {
 
-void platform_open(NativeWebSocketHandle, const std::string &url) {
+void platform_open(NativeWebSocketHandle, const std::string &url, const std::string &protocols) {
+  fake_ws_protocols = protocols;
   fake_ws_records.push_back(FakeWsRecord{url, {}, false});
 }
 

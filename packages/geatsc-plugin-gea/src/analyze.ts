@@ -1,3 +1,4 @@
+import { analyzeWorkerModules } from './analyze-workers.js'
 import { inferCanvasOnly } from './analyze-runtime.js'
 import { nodeAuxVersion, addNodeAuxFeatures, addUnknownNodeAux, cssUsesNodeAttributes } from './analyze-node-aux.js'
 import { sourceLiteralResolver } from './analyze-literals.js'
@@ -43,6 +44,7 @@ export function analyzeSourceHostBindings(entry: string): HostBindingAnalysisPat
   const ranges = cssRangeObserver(features)
   const observer = {
     isSourceMethod: literals.isSourceMethod,
+    isString: literals.isString,
     isBoolean: literals.isBoolean,
     selector(value: string): void { css.selector?.(value); ranges.selector?.(value); if (cssUsesNodeAttributes(value)) features.add('node-attributes') },
     property(name: string | undefined, value: string | undefined, expression?: ts.Expression): void { css.property(name, value, expression); ranges.property(name, value); variables.property(name, value) },
@@ -60,6 +62,7 @@ export function analyzeSourceHostBindings(entry: string): HostBindingAnalysisPat
     addBindingsForEmbeddedHostNames(text, bindings)
     addBindingsForHostGlobals(text, bindings)
     addFeaturesForUrlSchemes(text, features)
+    if (analyzeWorkerModules(file, text).realms) features.add('worker-realms')
     addRendererFeatures(file, text, features, observer, variables)
     addNodeFeatures(file, text, features)
     addNodeAuxFeatures(file, text, features, literals.isNumeric)
@@ -152,6 +155,9 @@ function addBindingsForGeaEmbeddedImports(text: string, bindings: Set<string>): 
 const hostGlobalCalls: Array<[pattern: RegExp, binding: string]> = [
   [/(?<![.\w$])fetch\s*\(/, 'fetch'],
   [/(?<![.\w$])new\s+WebSocket\s*\(/, 'websocket'],
+  [/(?<![.\w$])new\s+(?:window\.|globalThis\.)?RTCPeerConnection\s*\(/, 'rtc'],
+  [/(?<![.\w$])navigator\s*\.\s*mediaDevices\s*\.\s*getUserMedia\s*\(/, 'audio'],
+  [/(?<![.\w$])new\s+(?:window\.|globalThis\.)?(?:AudioContext|PcmAudioStream)\s*\(/, 'audio'],
 ]
 
 // A file that declares its own `fetch` (a class method, or a wrapper such as
@@ -207,6 +213,15 @@ function discoverSourceFiles(entry: string): { files: string[]; unknown: boolean
       return
     }
     const text = fs.readFileSync(resolved, 'utf8')
+    if (!/\.css$/i.test(resolved)) {
+      const workers = analyzeWorkerModules(resolved, text)
+      if (workers.unknown) unknown = true
+      for (const specifier of workers.modules) {
+        const dependency = !/^[a-z]+:/i.test(specifier) && resolveRelativeModule(resolved, specifier)
+        if (dependency) visit(dependency)
+        else unknown = true
+      }
+    }
     for (const specifier of /\.css$/i.test(resolved) ? [] : moduleSpecifiers(resolved, text)) {
       // Framework host imports do not inject renderer instructions. Other
       // external code may supply styles/components we cannot inspect here.
@@ -252,10 +267,9 @@ function moduleSpecifiers(file: string, text: string): string[] {
 }
 
 function resolvePackageModule(importer: string, specifier: string): string | null {
-  // CSS package imports must be traversed just like relative stylesheets. For
-  // opaque JS packages keep the conservative feature set instead of assuming
-  // their exports cannot render anything.
-  if (!/\.css$/i.test(specifier)) return null
+  // Installed JS libraries can be the only consumers of networking and audio
+  // (e.g. livekit-client). Traverse their real source just like relative imports.
+  // Unresolved/native imports still retain the conservative renderer feature set.
   try { return createRequire(importer).resolve(specifier) } catch { return null }
 }
 

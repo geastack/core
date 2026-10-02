@@ -247,7 +247,10 @@ OscillatorNode AudioContext::createOscillator() const {
   return OscillatorNode(2.0);
 }
 
-HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : nodeId_(node.id()) {}
+struct HTMLAudioElement::State {
+  int nodeId = -1;
+};
+HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : state_(std::make_shared<State>()) { state_->nodeId = node.id(); }
 bool HTMLAudioElement::play() const { return true; }
 void HTMLAudioElement::pause() const {}
 }  // namespace gea::host

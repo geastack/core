@@ -1,5 +1,12 @@
+import { extendRtcShims } from "./rtc-shims.js";
+import { extendWorkerShims } from "./worker-shims.js";
+import { extendAudioWorkletShims } from "./audio-worklet-shims.js";
+import { fileURLToPath } from "node:url";
 import type { HostShimDefinitions } from "./types.js";
-import { geaHostExternDeclarations, geaVirtualListRowHeightEmit } from "./host-declarations.js";
+import {
+  geaHostExternDeclarations,
+  geaVirtualListRowHeightEmit,
+} from "./host-declarations.js";
 import {
   CSS_STYLE_DECLARATION_NATIVE_TYPES,
   CSS_STYLE_DECLARATION_NATIVE_MEMBER_METHODS,
@@ -261,7 +268,19 @@ const HOST_NATIVE_CALLABLE_SIDECARS: NonNullable<
 ];
 
 export function createGeaHostShims(): HostShimDefinitions {
-  return {
+  return extendAudioWorkletShims(extendWorkerShims(extendRtcShims({
+    commonJsGlobals: Object.fromEntries(
+      (["require", "exports", "module"] as const).map((global) => [
+        global,
+        {
+          global,
+          declarationName: global,
+          declarationFileName: fileURLToPath(
+            new URL("../commonjs-wrapper.d.ts", import.meta.url),
+          ),
+        },
+      ]),
+    ),
     // Gea embedded has no dynamic Symbol type: a `unique symbol` const used as a
     // property key lowers to its named string key (`__sym_<name>`) and well-known
     // symbol protocols read named members, so nothing boxes to a `gea_cpp_value`
@@ -392,6 +411,7 @@ export function createGeaHostShims(): HostShimDefinitions {
       MediaRecorderDataAvailableEvent: "gea::host::MediaRecorderDataEvent",
       GeaAudioBlob: "gea::host::GeaAudioBlob",
       HTMLAudioElement: "gea::host::HTMLAudioElement",
+      HTMLVideoElement: "gea::host::HTMLVideoElement",
       // The three ambient CONSTRUCTOR interfaces (`declare var Audio:
       // AudioConstructor`, etc.) share their instance type's own carrier
       // above: `new Audio(...)` and every `audio.play()` afterward flow
@@ -460,16 +480,12 @@ export function createGeaHostShims(): HostShimDefinitions {
     // Keyed by the CONSTRUCTOR interface's own declared name (see
     // `nativeConstructors`'s own field comment, types.ts, for why).
     nativeConstructors: {
-      // `new Audio(src?: string): HTMLAudioElement` -> `HTMLAudioElement(const
-      // std::string&)` (audio.h). One argument: the checker's own optional
-      // `src` still reaches this template as an argument slot, padded to an
-      // empty string when a call omits it (the shared `paddedArguments`
-      // machinery every other constructor carrier's trailing-optional
-      // argument goes through).
-      AudioConstructor: "gea::host::HTMLAudioElement({arg0})",
-      // `new MediaStream(): MediaStream` -> the default constructor
-      // (media.h). No arguments in either the declaration or the C++ type.
-      MediaStreamConstructor: "gea::host::MediaStream()",
+      // Creation allocates shared element state; the default native handle
+      // remains null for nullable audio-element fields.
+      AudioConstructor: "gea::host::HTMLAudioElement::create({args})",
+      // A JS stream gets a valid, independently mutable container. The C++
+      // default handle remains the null sentinel for nullable host results.
+      MediaStreamConstructor: "gea::host::media::create_media_stream({args})",
       // `new MediaRecorder(stream, options?): MediaRecorder` -> the two-
       // argument constructor (media.h's `MediaRecorder(MediaStream, const
       // Options&)` template, `Options` deduced). A call that omits `options`
@@ -484,14 +500,9 @@ export function createGeaHostShims(): HostShimDefinitions {
       // wrapping `gea::host::websocket::create_handle(const std::string&)`
       // (websocket.h). One argument, no padding needed -- the declared
       // constructor takes `url` as required.
-      WebSocketConstructor: "gea::host::WebSocket(gea::host::websocket::create_handle({arg0}))",
-      // `new RTCPeerConnection(config): RTCPeerConnection` -> the templated
-      // `gea::host::rtc::create_handle(const Config&)` overload (rtc.h),
-      // which accepts the emitted config record's own C++ type directly (its
-      // own comment: "for now we ignore the contents and fall back to the
-      // no-arg form" -- a pre-existing, already-shipped limitation this
-      // binding does not change or paper over).
-      RTCPeerConnectionConstructor: "gea::host::RTCPeerConnection(gea::host::rtc::create_handle({arg0}))",
+      WebSocketConstructor:
+        "gea::host::WebSocket(gea::host::websocket::create_handle({args}))",
+      // Standard RTC construction and object members are installed by extendRtcShims.
     },
     hostGlobalObjects: {
       navigator: "gea::host::navigator",
@@ -1075,14 +1086,14 @@ export function createGeaHostShims(): HostShimDefinitions {
         deviceFacingAt: "gea::host::Camera.deviceFacingAt",
       },
       __gea_audioContext: {
-        createOscillator: "gea::host::audioContext.createOscillator",
-        createBufferSource: "gea::host::audioContext.createBufferSource",
-        decodeAudioData: "gea::host::audioContext.decodeAudioData",
+        createOscillator: "gea::host::sharedAudioContext().createOscillator",
+        createBufferSource: "gea::host::sharedAudioContext().createBufferSource",
+        decodeAudioData: "gea::host::sharedAudioContext().decodeAudioData",
       },
       audioContext: {
-        createOscillator: "gea::host::audioContext.createOscillator",
-        createBufferSource: "gea::host::audioContext.createBufferSource",
-        decodeAudioData: "gea::host::audioContext.decodeAudioData",
+        createOscillator: "gea::host::sharedAudioContext().createOscillator",
+        createBufferSource: "gea::host::sharedAudioContext().createBufferSource",
+        decodeAudioData: "gea::host::sharedAudioContext().decodeAudioData",
       },
       __gea_Audio: {
         getVolume: "gea::host::Audio.getVolume",
@@ -1737,7 +1748,10 @@ export function createGeaHostShims(): HostShimDefinitions {
         {
           emit: "static_cast<double>(({receiver}).delta)",
           returnType: "double",
-          receiverTypes: ["gea::framework::events::PointerEvent", "RotaryEvent"],
+          receiverTypes: [
+            "gea::framework::events::PointerEvent",
+            "RotaryEvent",
+          ],
         },
       ],
       // `<virtual-list>`'s scroll geometry, read off the engine's own
@@ -2409,6 +2423,10 @@ export function createGeaHostShims(): HostShimDefinitions {
     ],
     hostExternDeclarations: geaHostExternDeclarations,
     embeddedHostFunctions: {
+      // These are declared by core/index.d.ts rather than the standard lib;
+      // btoa also has the host's existing ArrayBuffer/Uint8Array overloads.
+      atob: "gea::runtime::hostbase64::decode",
+      btoa: "gea::runtime::hostbase64::encode",
       requestAnimationFrame: "gea::host::requestAnimationFrame",
       // The WHATWG timer globals, from the same engine header and the same
       // translation unit as `requestAnimationFrame` above
@@ -2546,29 +2564,29 @@ export function createGeaHostShims(): HostShimDefinitions {
       },
       __gea_audioContext: {
         createOscillator: {
-          emit: "gea::host::audioContext.createOscillator({args})",
+          emit: "gea::host::sharedAudioContext().createOscillator({args})",
           returnType: "gea::host::OscillatorNode",
         },
         createBufferSource: {
-          emit: "gea::host::audioContext.createBufferSource({args})",
+          emit: "gea::host::sharedAudioContext().createBufferSource({args})",
           returnType: "gea::host::AudioBufferSourceNode",
         },
         decodeAudioData: {
-          emit: "gea::host::audioContext.decodeAudioData({args})",
+          emit: "gea::host::sharedAudioContext().decodeAudioData({args})",
           returnType: "gea::host::AudioBuffer",
         },
       },
       audioContext: {
         createOscillator: {
-          emit: "gea::host::audioContext.createOscillator({args})",
+          emit: "gea::host::sharedAudioContext().createOscillator({args})",
           returnType: "gea::host::OscillatorNode",
         },
         createBufferSource: {
-          emit: "gea::host::audioContext.createBufferSource({args})",
+          emit: "gea::host::sharedAudioContext().createBufferSource({args})",
           returnType: "gea::host::AudioBufferSourceNode",
         },
         decodeAudioData: {
-          emit: "gea::host::audioContext.decodeAudioData({args})",
+          emit: "gea::host::sharedAudioContext().decodeAudioData({args})",
           returnType: "gea::host::AudioBuffer",
         },
       },
@@ -3039,8 +3057,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           // which reconstructs the wrapper from a generic DOM node id and is
           // untouched.
           receiverTypes: ["gea::host::HTMLAudioElement", "HTMLAudioElement"],
-          emit: "({receiver}).play()",
-          returnType: "bool",
+          emit: "gea::runtime::hostaudio::play({receiver})",
+          returnType: "gea::Promise<void>",
         },
         {
           receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
@@ -3072,7 +3090,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           returnType: "void",
         },
       ],
-      // `GeaEmbeddedImage`'s own four methods. The struct
+      // `GeaEmbeddedImage`'s own methods. The struct
       // (`core/packages/host/include/host/image.h:19-29`) is held by value --
       // `IMAGE_RECEIVER_TYPES` is what the property getters below already read
       // it through -- so each is a direct call on the receiver, exactly like
@@ -3086,6 +3104,13 @@ export function createGeaHostShims(): HostShimDefinitions {
       // table"), which is correct of the compiler and a gap in this table: the
       // member exists in the header and in `index.d.ts`, and only the spelling
       // that joins them was missing.
+      decode: [
+        {
+          receiverTypes: IMAGE_RECEIVER_TYPES,
+          emit: "({receiver}).decode()",
+          returnType: "bool",
+        },
+      ],
       dispose: [
         {
           receiverTypes: IMAGE_RECEIVER_TYPES,
@@ -3235,11 +3260,11 @@ export function createGeaHostShims(): HostShimDefinitions {
     },
     embeddedHostConstants: {
       audioContext: {
-        emit: "gea::host::audioContext",
+        emit: "gea::host::sharedAudioContext()",
         type: "gea::host::AudioContext",
       },
       __gea_audioContext: {
-        emit: "gea::host::audioContext",
+        emit: "gea::host::sharedAudioContext()",
         type: "gea::host::AudioContext",
       },
     },
@@ -3251,12 +3276,12 @@ export function createGeaHostShims(): HostShimDefinitions {
       },
       Audio: {
         wrapper: "gea::host::HTMLAudioElement",
-        construct: "gea::host::HTMLAudioElement({args})",
+        construct: "gea::host::HTMLAudioElement::create({args})",
         allowConcrete: true,
       },
       MediaStream: {
         wrapper: "gea::host::MediaStream",
-        construct: "gea::host::MediaStream({args})",
+        construct: "gea::host::media::create_media_stream({args})",
         allowConcrete: true,
       },
       MediaRecorder: {
@@ -3273,7 +3298,7 @@ export function createGeaHostShims(): HostShimDefinitions {
         wrapper: "gea::host::RTCPeerConnection",
       },
     },
-  };
+  })));
 }
 
 export const geaHostShims: HostShimDefinitions = createGeaHostShims();

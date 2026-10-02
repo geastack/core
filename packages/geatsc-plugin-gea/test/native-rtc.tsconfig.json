@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "types": [],
+    "lib": [
+      "ES2022"
+    ],
+    "paths": {
+      "@geastack/core": [
+        "../../core/index.d.ts",
+        "../../core/runtime.ts"
+      ]
+    }
+  },
+  "files": [
+    "native-rtc.ts"
+  ]
+}

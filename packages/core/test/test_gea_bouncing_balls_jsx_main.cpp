@@ -686,7 +686,10 @@ bool gea::platform::display::Display::streamRect(int, int, int, int, DisplayStre
 namespace gea::host {
 // Audio facade stubs: domNodeValue() (always compiled) builds an HTMLAudioElement
 // from <audio> nodes, so these must resolve even though this app plays no audio.
-HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : nodeId_(node.id()) {}
+struct HTMLAudioElement::State {
+  int nodeId = -1;
+};
+HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : state_(std::make_shared<State>()) { state_->nodeId = node.id(); }
 bool HTMLAudioElement::play() const { return true; }
 void HTMLAudioElement::pause() const {}
 }  // namespace gea::host

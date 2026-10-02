@@ -31,6 +31,7 @@
 #include "host/device_control.h"
 #include "input.h"
 #include "host/audio.h"
+#include "host/video.h"
 #include "host/display.h"
 #include "host/navigator.h"
 #include "host/camera.h"

@@ -44,6 +44,7 @@ gea_native_sources() {
     "$host_root/host/fetch.cpp"
     "$host_root/host/http.cpp"
     "$host_root/host/timers.cpp"
+    "$host_root/host/worker.cpp"
     "$engine_root/rasterized_font.cpp"
     "$engine_root/touch_runtime.cpp"
     "$engine_root/ui/absolute_leaf_refresh.cpp"
@@ -301,9 +302,12 @@ gea_build_native_test() {
     ${common_cxx_flags[@]+"${common_cxx_flags[@]}"}
     ${extra_compile_flags[@]+"${extra_compile_flags[@]}"}
   )
+  # Section GC at link time: ld64 spells it -dead_strip, GNU/LLVM ld --gc-sections.
+  local link_gc=-Wl,--gc-sections
+  if [[ "$(uname -s)" == Darwin ]]; then link_gc=-Wl,-dead_strip; fi
   GEA_NATIVE_LINK_FLAGS=(
     ${extra_link_flags[@]+"${extra_link_flags[@]}"}
-    -Wl,-dead_strip
+    "$link_gc"
   )
   gea_native_compile_and_link
 }

@@ -84,18 +84,22 @@ fs.writeFileSync(path.join(appDir, 'styles.css'), `
 }
 `)
 
+// Compiler settings are declared in the resolved build config, not the environment.
+const noTapeConfig = path.join(tempRoot, 'build-config-no-tape.json')
+fs.writeFileSync(noTapeConfig, JSON.stringify({ settings: { compiler: { staticCssTape: false } } }))
+
 execFileSync(process.execPath, [
   path.join(repoRoot, 'packages/core/scripts/build-gea-vite-geatsc.mjs'),
   '--app-dir', appDir,
   '--entry', 'index.ts',
   '--out-dir', outDir,
+  '--build-config', noTapeConfig,
   '--gea-embedded-compat',
   '--gea-ir-backend',
   '--allow-any',
 ], {
   cwd: repoRoot,
   stdio: 'pipe',
-  env: { ...process.env, GEA_STATIC_CSS_TAPE: '0' },
 })
 
 const generated = fs.readFileSync(path.join(outDir, 'gea-style-registration.cppfrag'), 'utf8')

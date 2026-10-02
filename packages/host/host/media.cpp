@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "host/media.h"
+#include "host/pcm_stream.h"
 
 #include <algorithm>
 #include <atomic>
@@ -8,9 +9,12 @@
 #include <cstdio>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <stdexcept>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "platform/file_cache.h"
@@ -29,17 +33,69 @@ namespace gea::host {
 
 namespace {
 
+struct PcmCursor {
+  std::uint64_t next = 0;
+  std::uint64_t dropped = 0;
+  std::optional<std::uint64_t> end;
+};
+
+using PcmBuffer = std::deque<std::int16_t, pcm::QueueAllocator<std::int16_t>>;
+
 struct TrackState {
   std::string id;
   std::string kind = "audio";
   std::string readyState = "live";
   bool enabled = true;
-  std::deque<std::int16_t> ringBuffer;
+  PcmBuffer ringBuffer;
+  bool capture = true;
+  std::uint64_t bufferStart = 0;
+  PcmCursor transportCursor;
+  bool transportCursorActive = false;
+  std::uint64_t nextReader = 1;
+  std::unordered_map<std::uint64_t, PcmCursor> readers;
+  std::shared_ptr<const media::VideoFrame> videoFrame;
+  std::uint64_t videoSequence = 0;
 };
+
+void clearTrackPcm(TrackState &track) {
+  track.bufferStart += track.ringBuffer.size();
+  PcmBuffer().swap(track.ringBuffer);
+  track.transportCursor.next = track.bufferStart;
+  for (auto &[id, reader] : track.readers) reader.next = track.bufferStart;
+}
+
+void trimTrackPcm(TrackState &track) {
+  if (!track.transportCursorActive && track.readers.empty()) return;
+  auto consumed = track.transportCursorActive ? track.transportCursor.next : track.bufferStart + track.ringBuffer.size();
+  for (const auto &[id, reader] : track.readers) consumed = std::min(consumed, reader.next);
+  while (!track.ringBuffer.empty() && track.bufferStart < consumed) {
+    track.ringBuffer.pop_front();
+    ++track.bufferStart;
+  }
+}
+
+std::size_t readTrackPcm(TrackState &track, PcmCursor &cursor, std::int16_t *samples, std::size_t count) {
+  if (!samples || !count) return 0;
+  if (cursor.next < track.bufferStart) {
+    cursor.dropped += track.bufferStart - cursor.next;
+    cursor.next = track.bufferStart;
+  }
+  const auto offset = static_cast<std::size_t>(cursor.next - track.bufferStart);
+  if (cursor.end) {
+    if (cursor.next >= *cursor.end) return 0;
+    count = std::min(count, static_cast<std::size_t>(*cursor.end - cursor.next));
+  }
+  const auto copied = std::min(count, track.ringBuffer.size() - offset);
+  for (std::size_t i = 0; i < copied; ++i) samples[i] = track.ringBuffer[offset + i];
+  cursor.next += copied;
+  trimTrackPcm(track);
+  return copied;
+}
 
 struct StreamState {
   std::string id;
-  NativeMediaTrackHandle audioTrack = 0;
+  std::vector<NativeMediaTrackHandle> tracks;
+  NativeMediaTrackHandle ownedTrack = 0;
 };
 
 struct RecorderState {
@@ -100,7 +156,9 @@ std::string formatHandleId(const char *prefix, std::uint32_t handle) {
 }
 
 constexpr std::size_t kCaptureChunkSamples = 2048;
-constexpr std::size_t kMaxRingBufferSamples = 16 * kCaptureChunkSamples;
+// Eight seconds at the capture driver's 16 kHz. Storage grows only when a
+// consumer falls behind and uses PSRAM rather than starving I2S DMA memory.
+constexpr std::size_t kMaxRingBufferSamples = 8 * 16000;
 constexpr std::size_t kRecorderFlushSamples = kCaptureChunkSamples;
 constexpr unsigned kMaxDefaultRecordingNames = 1000;
 constexpr double kDefaultRecorderSampleRate = 16000.0;
@@ -376,52 +434,120 @@ __attribute__((weak)) void platform_attach_track(NativeMediaTrackHandle) {}
 __attribute__((weak)) void platform_detach_track(NativeMediaTrackHandle) {}
 #endif
 
-NativeMediaStreamHandle create_stream() {
+NativeMediaStreamHandle create_audio_stream(bool capture) {
   auto streamHandle = nextStreamHandle()++;
   auto trackHandle = nextTrackHandle()++;
   {
     std::lock_guard<std::mutex> lock(mediaMutex());
     trackTable()[trackHandle] = TrackState{
-        formatHandleId("track", trackHandle), "audio", "live", true, {}};
+        formatHandleId("track", trackHandle), "audio", "live", true, {}, capture};
     streamTable()[streamHandle] = StreamState{
-        formatHandleId("stream", streamHandle), trackHandle};
+        formatHandleId("stream", streamHandle), {trackHandle}, trackHandle};
   }
-  platform_attach_track(trackHandle);
+  if (capture) platform_attach_track(trackHandle);
   return streamHandle;
+}
+NativeMediaStreamHandle create_stream() { return create_audio_stream(true); }
+NativeMediaStreamHandle create_remote_stream() { return create_audio_stream(false); }
+
+NativeMediaStreamHandle create_remote_video_stream() {
+  const auto streamHandle = nextStreamHandle()++;
+  const auto trackHandle = nextTrackHandle()++;
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  trackTable()[trackHandle] = TrackState{
+      formatHandleId("track", trackHandle), "video", "live", true, {}, false};
+  streamTable()[streamHandle] = StreamState{
+      formatHandleId("stream", streamHandle), {trackHandle}, trackHandle};
+  return streamHandle;
+}
+
+bool publish_video_frame(NativeMediaTrackHandle handle, std::shared_ptr<VideoFrame> frame) {
+  if (!frame || !frame->width || !frame->height || frame->width > 1920 || frame->height > 1080 ||
+      frame->rgb565.size() != std::size_t(frame->width) * frame->height) return false;
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  auto it = trackTable().find(handle);
+  if (it == trackTable().end() || it->second.kind != "video" ||
+      !it->second.enabled || it->second.readyState != "live") return false;
+  frame->sequence = ++it->second.videoSequence;
+  it->second.videoFrame = std::move(frame);
+  return true;
+}
+
+std::shared_ptr<const VideoFrame> latest_video_frame(NativeMediaTrackHandle handle) {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  auto it = trackTable().find(handle);
+  return it == trackTable().end() ? nullptr : it->second.videoFrame;
+}
+
+NativeMediaStreamHandle create_stream_from_tracks(const std::vector<MediaStreamTrack> &tracks) {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  std::vector<NativeMediaTrackHandle> members;
+  for (const auto &track : tracks) {
+    if (trackTable().find(track.nativeHandle) == trackTable().end())
+      throw std::invalid_argument("MediaStream requires valid media tracks");
+    if (std::find(members.begin(), members.end(), track.nativeHandle) == members.end())
+      members.push_back(track.nativeHandle);
+  }
+  const auto handle = nextStreamHandle()++;
+  streamTable()[handle] = StreamState{formatHandleId("stream", handle), std::move(members), 0};
+  return handle;
 }
 
 NativeMediaTrackHandle stream_audio_track(NativeMediaStreamHandle handle) {
   std::lock_guard<std::mutex> lock(mediaMutex());
   auto it = streamTable().find(handle);
-  return it == streamTable().end() ? 0 : it->second.audioTrack;
+  if (it == streamTable().end()) return 0;
+  for (auto handle : it->second.tracks) {
+    const auto track = trackTable().find(handle);
+    if (track != trackTable().end() && track->second.kind == "audio") return handle;
+  }
+  return 0;
 }
 
 void destroy_stream(NativeMediaStreamHandle handle) {
   NativeMediaTrackHandle trackHandle = 0;
+  bool capture = false;
   {
     std::lock_guard<std::mutex> lock(mediaMutex());
     auto it = streamTable().find(handle);
     if (it == streamTable().end()) return;
-    trackHandle = it->second.audioTrack;
+    trackHandle = it->second.ownedTrack;
+    auto track = trackTable().find(trackHandle);
+    capture = track != trackTable().end() && track->second.capture && track->second.enabled && track->second.readyState != "ended";
     for (auto &entry : recorderTable()) {
       if (entry.second.track == trackHandle && entry.second.state == "recording") {
         finalizeRecorderFile(entry.second);
         entry.second.state = "inactive";
       }
     }
-    trackTable().erase(trackHandle);
+    // Destroying a container must not destroy tracks shared with another
+    // stream. The transport/capture owner ends its source, retaining ended
+    // track identity while another container still names it.
+    if (track != trackTable().end()) {
+      track->second.readyState = "ended";
+      clearTrackPcm(track->second);
+      track->second.videoFrame.reset();
+      const bool shared = std::any_of(streamTable().begin(), streamTable().end(), [&](const auto &entry) {
+        return entry.first != handle && std::find(entry.second.tracks.begin(), entry.second.tracks.end(), trackHandle) != entry.second.tracks.end();
+      });
+      if (!shared) trackTable().erase(track);
+    }
     streamTable().erase(it);
   }
-  if (trackHandle) platform_detach_track(trackHandle);
+  if (trackHandle && capture) platform_detach_track(trackHandle);
 }
 
 void track_inject_pcm(NativeMediaTrackHandle handle, const std::int16_t *samples, std::size_t count) {
+  if (!samples || !count) return;
   std::lock_guard<std::mutex> lock(mediaMutex());
   auto it = trackTable().find(handle);
-  if (it == trackTable().end() || !it->second.enabled) return;
+  if (!samples || it == trackTable().end() || it->second.kind != "audio" || !it->second.enabled || it->second.readyState == "ended") return;
   auto &buffer = it->second.ringBuffer;
   for (std::size_t i = 0; i < count; ++i) {
-    if (buffer.size() >= kMaxRingBufferSamples) buffer.pop_front();
+    if (buffer.size() >= kMaxRingBufferSamples) {
+      buffer.pop_front();
+      ++it->second.bufferStart;
+    }
     buffer.push_back(samples[i]);
   }
   for (auto &entry : recorderTable()) {
@@ -436,13 +562,97 @@ std::size_t track_read_pcm(NativeMediaTrackHandle handle, std::int16_t *samples,
   std::lock_guard<std::mutex> lock(mediaMutex());
   auto it = trackTable().find(handle);
   if (it == trackTable().end()) return 0;
-  auto &buffer = it->second.ringBuffer;
-  std::size_t copied = 0;
-  while (copied < max_samples && !buffer.empty()) {
-    samples[copied++] = buffer.front();
-    buffer.pop_front();
+  if (!it->second.transportCursorActive) {
+    it->second.transportCursorActive = true;
+    it->second.transportCursor.next = it->second.bufferStart;
   }
-  return copied;
+  return readTrackPcm(it->second, it->second.transportCursor, samples, max_samples);
+}
+
+TrackPcmReader::TrackPcmReader(NativeMediaTrackHandle track, bool includeBuffered) {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  auto it = trackTable().find(track);
+  if (it == trackTable().end() || it->second.readyState == "ended") return;
+  track_ = track;
+  reader_ = it->second.nextReader++;
+  it->second.readers.emplace(reader_, PcmCursor{it->second.bufferStart + (includeBuffered ? 0 : it->second.ringBuffer.size()), 0});
+  trimTrackPcm(it->second);
+}
+
+TrackPcmReader::~TrackPcmReader() { release(); }
+
+TrackPcmReader::TrackPcmReader(TrackPcmReader &&other) noexcept
+    : track_(std::exchange(other.track_, 0)), reader_(std::exchange(other.reader_, 0)) {}
+
+TrackPcmReader &TrackPcmReader::operator=(TrackPcmReader &&other) noexcept {
+  if (this != &other) {
+    release();
+    track_ = std::exchange(other.track_, 0);
+    reader_ = std::exchange(other.reader_, 0);
+  }
+  return *this;
+}
+
+void TrackPcmReader::release() {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  auto it = trackTable().find(track_);
+  if (it != trackTable().end()) {
+    it->second.readers.erase(reader_);
+    trimTrackPcm(it->second);
+  }
+  track_ = 0;
+  reader_ = 0;
+}
+
+std::size_t TrackPcmReader::read(std::int16_t *samples, std::size_t count) {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  auto it = trackTable().find(track_);
+  if (it == trackTable().end()) return 0;
+  auto cursor = it->second.readers.find(reader_);
+  if (cursor == it->second.readers.end()) return 0;
+  return readTrackPcm(it->second, cursor->second, samples, count);
+}
+
+std::uint64_t TrackPcmReader::droppedSamples() const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = trackTable().find(track_);
+  if (it == trackTable().end()) return 0;
+  const auto cursor = it->second.readers.find(reader_);
+  if (cursor == it->second.readers.end()) return 0;
+  return cursor->second.dropped + (cursor->second.next < it->second.bufferStart ? it->second.bufferStart - cursor->second.next : 0);
+}
+
+std::size_t TrackPcmReader::pendingSamples() const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = trackTable().find(track_);
+  if (it == trackTable().end()) return 0;
+  const auto cursor = it->second.readers.find(reader_);
+  if (cursor == it->second.readers.end()) return 0;
+  auto end = it->second.bufferStart + it->second.ringBuffer.size();
+  if (cursor->second.end) end = std::min(end, *cursor->second.end);
+  const auto next = std::max(cursor->second.next, it->second.bufferStart);
+  return end > next ? end - next : 0;
+}
+
+void TrackPcmReader::discardBuffered() {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = trackTable().find(track_);
+  if (it == trackTable().end()) return;
+  const auto cursor = it->second.readers.find(reader_);
+  if (cursor == it->second.readers.end()) return;
+  cursor->second.next = it->second.bufferStart + it->second.ringBuffer.size();
+  cursor->second.end.reset();
+  trimTrackPcm(it->second);
+}
+
+void TrackPcmReader::beginDrain() {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = trackTable().find(track_);
+  if (it == trackTable().end()) return;
+  const auto cursor = it->second.readers.find(reader_);
+  if (cursor == it->second.readers.end() || cursor->second.end) return;
+  // Snapshot once: an RTP track keeps delivering silence between replies.
+  cursor->second.end = it->second.bufferStart + it->second.ringBuffer.size();
 }
 
 NativeMediaStreamHandle get_user_media_audio() {
@@ -571,9 +781,23 @@ bool MediaStreamTrack::enabled() const {
 }
 
 void MediaStreamTrack::setEnabled(bool value) const {
-  std::lock_guard<std::mutex> lock(mediaMutex());
-  auto it = trackTable().find(nativeHandle);
-  if (it != trackTable().end()) it->second.enabled = value;
+  bool capture = false;
+  {
+    std::lock_guard<std::mutex> lock(mediaMutex());
+    auto it = trackTable().find(nativeHandle);
+    if (it == trackTable().end() || it->second.readyState == "ended" || it->second.enabled == value) return;
+    capture = it->second.capture;
+    it->second.enabled = value;
+    if (!value) {
+      clearTrackPcm(it->second);
+      it->second.videoFrame.reset();
+    }
+  }
+  // Outside the media lock: the capture task itself injects PCM under that lock.
+  if (capture) {
+    if (value) media::platform_attach_track(nativeHandle);
+    else media::platform_detach_track(nativeHandle);
+  }
 }
 
 void MediaStreamTrack::stop() const {
@@ -582,11 +806,12 @@ void MediaStreamTrack::stop() const {
     std::lock_guard<std::mutex> lock(mediaMutex());
     auto it = trackTable().find(nativeHandle);
     if (it != trackTable().end()) {
-      shouldDetach = it->second.readyState != "ended";
+      shouldDetach = it->second.capture && it->second.enabled && it->second.readyState != "ended";
       it->second.readyState = "ended";
       it->second.enabled = false;
       // The entry stays for readyState lookups; the up-to-64 KB PCM ring buffer is freed now.
-      std::deque<std::int16_t>().swap(it->second.ringBuffer);
+      clearTrackPcm(it->second);
+      it->second.videoFrame.reset();
       for (auto &entry : recorderTable()) {
         if (entry.second.track == nativeHandle && entry.second.state == "recording") {
           entry.second.state = "inactive";
@@ -606,12 +831,68 @@ std::string MediaStream::id() const {
 std::vector<MediaStreamTrack> MediaStream::getAudioTracks() const {
   std::lock_guard<std::mutex> lock(mediaMutex());
   auto it = streamTable().find(nativeHandle);
-  if (it == streamTable().end() || it->second.audioTrack == 0) return {};
-  return {MediaStreamTrack(it->second.audioTrack)};
+  std::vector<MediaStreamTrack> result;
+  if (it != streamTable().end()) for (auto handle : it->second.tracks) {
+    const auto track = trackTable().find(handle);
+    if (track != trackTable().end() && track->second.kind == "audio") result.emplace_back(handle);
+  }
+  return result;
 }
 
 std::vector<MediaStreamTrack> MediaStream::getTracks() const {
-  return getAudioTracks();
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  std::vector<MediaStreamTrack> result;
+  if (it != streamTable().end()) for (auto handle : it->second.tracks) result.emplace_back(handle);
+  return result;
+}
+
+std::vector<MediaStreamTrack> MediaStream::getVideoTracks() const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  std::vector<MediaStreamTrack> result;
+  if (it != streamTable().end()) for (auto handle : it->second.tracks) {
+    const auto track = trackTable().find(handle);
+    if (track != trackTable().end() && track->second.kind == "video") result.emplace_back(handle);
+  }
+  return result;
+}
+
+MediaStreamTrack MediaStream::getTrackById(const std::string &id) const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  if (it != streamTable().end()) for (auto handle : it->second.tracks) {
+    const auto track = trackTable().find(handle);
+    if (track != trackTable().end() && track->second.id == id) return MediaStreamTrack(handle);
+  }
+  return {};
+}
+
+bool MediaStream::active() const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  if (it != streamTable().end()) for (auto handle : it->second.tracks) {
+    const auto track = trackTable().find(handle);
+    if (track != trackTable().end() && track->second.readyState == "live") return true;
+  }
+  return false;
+}
+
+void MediaStream::addTrack(MediaStreamTrack track) const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  if (it == streamTable().end() || trackTable().find(track.nativeHandle) == trackTable().end())
+    throw std::invalid_argument("addTrack requires a valid stream and track");
+  auto &members = it->second.tracks;
+  if (std::find(members.begin(), members.end(), track.nativeHandle) == members.end()) members.push_back(track.nativeHandle);
+}
+
+void MediaStream::removeTrack(MediaStreamTrack track) const {
+  std::lock_guard<std::mutex> lock(mediaMutex());
+  const auto it = streamTable().find(nativeHandle);
+  if (it == streamTable().end()) throw std::invalid_argument("removeTrack requires a valid stream");
+  auto &members = it->second.tracks;
+  members.erase(std::remove(members.begin(), members.end(), track.nativeHandle), members.end());
 }
 
 }  // namespace gea::host

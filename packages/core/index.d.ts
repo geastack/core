@@ -270,6 +270,9 @@ export interface Style {
   bottom?: StyleLength
   zIndex?: number
   backgroundColor?: string
+  objectFit?: 'fill' | 'contain' | 'cover' | 'none' | 'scale-down'
+  /** CSS image alignment on web; embedded image fitting currently centers the image. */
+  objectPosition?: string
   color?: string
   opacity?: number
   blinkInterval?: number
@@ -655,6 +658,8 @@ export interface GeaEmbeddedImage {
   readonly height: number
   readonly frameCount: number
   readonly isAnimated: boolean
+  /** Decode deferred pixels into the shared image cache; false on failure. */
+  decode(): boolean
   play(): void
   pause(): void
   seek(frame: number): void
@@ -2156,8 +2161,9 @@ export interface PcmAudioStream {
   /** Capture and upload on the native socket worker, independently of UI callbacks. */
   pipeTo(socket: WebSocketInstance, prefix: string, suffix: string): void
   /** Decode matching PCM packets on the native receive worker; control messages still reach JS. */
-  receiveFrom(socket: WebSocketInstance, prefix: string, suffix: string): void
-  /** Read the next 40ms capture block, or an empty string if not ready. */
+  /** Startup delay defaults to 200 ms; use zero for an upstream A/V playback clock. */
+  receiveFrom(socket: WebSocketInstance, prefix: string, suffix: string, startupMs?: number): void
+  /** Read the next 20ms capture block, or an empty string if not ready. */
   readBase64(): string
   writeBase64(data: string): void
   resetPlayback(interrupted?: boolean): void

@@ -1,4 +1,4 @@
-const geaHostDeclarations = [
+export const geaHostDeclarations = [
   '#ifndef GEA_HOST_DECLARED',
   '#define GEA_HOST_DECLARED 1',
   '#include "gea/embedded.h"',
@@ -23,6 +23,7 @@ const geaDeviceInfoDeclarations = [...geaHostDeclarations, '#include "device_inf
 // beside it need nothing extra: `Tree::instance().scrollTop` IS reachable
 // through the public header.
 const geaVirtualListDeclarations = [...geaHostDeclarations, '#include "ui/internal.h"']
+const geaBase64Declarations = [...geaHostDeclarations, '#include "gea/base64-runtime.h"']
 
 /**
  * The `<virtual-list>` row-height getter's template, stated once.
@@ -115,6 +116,8 @@ const geaMemoryHostMethods = [
 ]
 
 const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntries([
+      ['gea::runtime::hostbase64::encode', geaBase64Declarations],
+      ['gea::runtime::hostbase64::decode', geaBase64Declarations],
       [geaHostHeaderDeclarationToken, geaHostDeclarations],
       ['gea::host::navigator', geaHostDeclarations],
       ['gea::host::window', geaHostDeclarations],
@@ -178,12 +181,14 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ['gea::host::RTCPeerConnection', geaHostDeclarations],
       ['gea::host::Math.random', geaHostDeclarations],
       ['gea::host::HTMLAudioElement', geaHostDeclarations],
-      ['gea::host::audioContext', geaHostDeclarations],
-      ['gea::host::audioContext.createOscillator', geaHostDeclarations],
-      ['gea::host::audioContext.createBufferSource', geaHostDeclarations],
-      ['gea::host::audioContext.decodeAudioData', geaHostDeclarations],
-      ['gea::host::audioContext.currentTime', geaHostDeclarations],
-      ['gea::host::audioContext.destination', geaHostDeclarations],
+      ['gea::host::PcmAudioStream', geaHostDeclarations],
+      ['gea::host::HTMLVideoElement', geaHostDeclarations],
+      ['gea::host::sharedAudioContext()', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().createOscillator', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().createBufferSource', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().decodeAudioData', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().currentTime', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().destination', geaHostDeclarations],
       ['gea::host::apps.launch', geaHostDeclarations],
       ['gea::host::Audio.getVolume', geaHostDeclarations],
       ['gea::host::Audio.setVolume', geaHostDeclarations],

@@ -148,10 +148,10 @@ function lowerIdentifier(context: StoreMethodLowerContext, name: string, hint: S
 function lowerMember(context: StoreMethodLowerContext, expr: Extract<GeaIrStoreExpr, { kind: 'member' }>, hint: StoreMethodHint): string | null {
   const path = exprPath(expr)
   if (path === 'Date.now') return 'gea_cpp_now_ms'
-  if (path === 'audioContext.currentTime') return 'gea::host::audioContext.currentTime'
-  if (path === '__gea_audioContext.currentTime') return 'gea::host::audioContext.currentTime'
-  if (path === 'audioContext.destination') return 'gea::host::audioContext.destination'
-  if (path === '__gea_audioContext.destination') return 'gea::host::audioContext.destination'
+  if (path === 'audioContext.currentTime') return 'gea::host::sharedAudioContext().currentTime'
+  if (path === '__gea_audioContext.currentTime') return 'gea::host::sharedAudioContext().currentTime'
+  if (path === 'audioContext.destination') return 'gea::host::sharedAudioContext().destination'
+  if (path === '__gea_audioContext.destination') return 'gea::host::sharedAudioContext().destination'
   if (path === 'Accelerometer.tiltX') return 'gea::host::Accelerometer.tiltX'
   if (path === 'Accelerometer.tiltY') return 'gea::host::Accelerometer.tiltY'
   if (path === 'Accelerometer.accelerationX') return 'gea::host::Accelerometer.accelerationX'
@@ -511,8 +511,8 @@ function lowerCall(context: StoreMethodLowerContext, expr: Extract<GeaIrStoreExp
     if (hint === 'number') return `gea::runtime::coerce::to_number(${call})`
     return call
   }
-  if (path === 'audioContext.createOscillator') return coerceForHint('gea::host::audioContext.createOscillator()', hint)
-  if (path === '__gea_audioContext.createOscillator') return coerceForHint('gea::host::audioContext.createOscillator()', hint)
+  if (path === 'audioContext.createOscillator') return coerceForHint('gea::host::sharedAudioContext().createOscillator()', hint)
+  if (path === '__gea_audioContext.createOscillator') return coerceForHint('gea::host::sharedAudioContext().createOscillator()', hint)
   if (path === 'Accelerometer.start') return coerceForHint('gea::host::Accelerometer.start()', hint)
   if (path === 'touch.read' || path === 'touch.__gea_read') {
     const sample = 'gea::host::touch.read()'

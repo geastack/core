@@ -41,6 +41,9 @@ bool expect_scaled_absolute_circle_moves_without_ghosting()
 
 	resetNativeHost();
 	setNativeDisplaySize(120, 90);
+	// resetNativeHost() pins the preferred mount size to the panel default; mount at the fixture size
+	// so refresh(root, 120, 90) below is not a viewport change that forces a full repaint.
+	Document::setPreferredMountSize(120, 90);
 	setViewportMetrics(120, 90, 1.0);
 	gea::platform::display::Display::setAA(2);
 
@@ -80,9 +83,13 @@ bool expect_scaled_absolute_circle_moves_without_ghosting()
 	const auto perf = refreshPerfStatsRead();
 	if (perf.treeDirectReplayCalls <= 0) {
 		std::fprintf(stderr,
-		             "[test_fixed_text_local_refresh] scaled absolute circle should use dirty replay, direct=%d refreshes=%d\n",
+		             "[test_fixed_text_local_refresh] scaled absolute circle should use dirty replay, direct=%d refreshes=%d fullRecords=%d reprojects=%d absReject=%d/%d\n",
 		             perf.treeDirectReplayCalls,
-		             perf.treeRefreshCalls);
+		             perf.treeRefreshCalls,
+		             perf.treeFullRecords,
+		             perf.treeReprojects,
+		             perf.treeAbsModeRejectNode,
+		             perf.treeAbsModeRejectReason);
 		return false;
 	}
 
@@ -125,6 +132,7 @@ int main()
 
 	resetNativeHost();
 	setNativeDisplaySize(220, 220);
+	Document::setPreferredMountSize(220, 220);
 	gea::embedded::ui::setViewportMetrics(220, 220, 1.0);
 
 	auto root = Document::instance().createView();
@@ -238,9 +246,13 @@ int main()
 
 	if (perf.treeDirectReplayCalls <= 0) {
 		std::fprintf(stderr,
-		             "[test_fixed_text_local_refresh] fixed-box text content changes should direct-replay dirty regions, direct=%d refreshes=%d\n",
+		             "[test_fixed_text_local_refresh] fixed-box text content changes should direct-replay dirty regions, direct=%d refreshes=%d fullRecords=%d reprojects=%d absReject=%d/%d\n",
 		             perf.treeDirectReplayCalls,
-		             perf.treeRefreshCalls);
+		             perf.treeRefreshCalls,
+		             perf.treeFullRecords,
+		             perf.treeReprojects,
+		             perf.treeAbsModeRejectNode,
+		             perf.treeAbsModeRejectReason);
 		return 1;
 	}
 

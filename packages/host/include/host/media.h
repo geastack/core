@@ -4,8 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
+#include "host/video_pixels.h"
 
 namespace gea::host {
 
@@ -53,7 +55,12 @@ class MediaStream {
 
   std::string id() const;
   std::vector<MediaStreamTrack> getAudioTracks() const;
+  std::vector<MediaStreamTrack> getVideoTracks() const;
   std::vector<MediaStreamTrack> getTracks() const;
+  MediaStreamTrack getTrackById(const std::string &id) const;
+  bool active() const;
+  void addTrack(MediaStreamTrack track) const;
+  void removeTrack(MediaStreamTrack track) const;
 };
 
 struct GeaAudioBlob {
@@ -121,11 +128,71 @@ class MediaRecorder {
 namespace media {
 
 NativeMediaStreamHandle create_stream();
+// Stream membership is independent of the capture/receiver that owns a track.
+NativeMediaStreamHandle create_stream_from_tracks(const std::vector<MediaStreamTrack> &tracks);
+inline MediaStream create_media_stream() { return MediaStream(create_stream_from_tracks({})); }
+inline MediaStream create_media_stream(const MediaStream &source) {
+  return MediaStream(create_stream_from_tracks(source.getTracks()));
+}
+template <typename Tracks>
+MediaStream create_media_stream(const Tracks &tracks) {
+  if constexpr (requires { tracks.has_value(); *tracks; }) {
+    return tracks.has_value() ? create_media_stream(*tracks) : create_media_stream();
+  } else if constexpr (requires { tracks.size(); tracks.at(0); }) {
+    std::vector<MediaStreamTrack> items;
+    items.reserve(tracks.size());
+    for (std::size_t i = 0; i < tracks.size(); ++i) items.push_back(tracks.at(i));
+    return MediaStream(create_stream_from_tracks(items));
+  } else if constexpr (requires { tracks.get(); *tracks; }) {
+    return tracks.get() ? create_media_stream(*tracks) : create_media_stream();
+  } else {
+    static_assert(sizeof(Tracks) == 0, "MediaStream initializer must be a stream or a track sequence");
+  }
+}
+// Received RTP audio must never attach to the microphone capture driver.
+NativeMediaStreamHandle create_remote_stream();
+NativeMediaStreamHandle create_remote_video_stream();
 void destroy_stream(NativeMediaStreamHandle handle);
 NativeMediaTrackHandle stream_audio_track(NativeMediaStreamHandle handle);
 
+// Decoders publish ownership once. Every sink sees the newest immutable frame;
+// a slow renderer cannot build a playback backlog or consume another sink's frame.
+// RGB565 is logical host-endian unless panelEndian is set by a decoder for
+// a matching embedded display. Other consumers normalize before conversion.
+struct VideoFrame {
+  std::uint32_t width = 0, height = 0;
+  std::uint32_t timestampMs = 0;
+  std::uint64_t sequence = 0;
+  bool panelEndian = false;
+  VideoPixels rgb565;
+};
+bool publish_video_frame(NativeMediaTrackHandle handle, std::shared_ptr<VideoFrame> frame);
+std::shared_ptr<const VideoFrame> latest_video_frame(NativeMediaTrackHandle handle);
+
 void track_inject_pcm(NativeMediaTrackHandle handle, const std::int16_t *samples, std::size_t count);
 std::size_t track_read_pcm(NativeMediaTrackHandle handle, std::int16_t *samples, std::size_t max_samples);
+
+// Each sink gets its own cursor into the bounded track buffer. A new sink
+// starts at live audio, not at samples retained for an existing consumer.
+class TrackPcmReader {
+ public:
+  explicit TrackPcmReader(NativeMediaTrackHandle track, bool includeBuffered = false);
+  ~TrackPcmReader();
+  TrackPcmReader(const TrackPcmReader &) = delete;
+  TrackPcmReader &operator=(const TrackPcmReader &) = delete;
+  TrackPcmReader(TrackPcmReader &&other) noexcept;
+  TrackPcmReader &operator=(TrackPcmReader &&other) noexcept;
+  std::size_t read(std::int16_t *samples, std::size_t count);
+  std::uint64_t droppedSamples() const;
+  std::size_t pendingSamples() const;
+  void beginDrain();
+  void discardBuffered();
+
+ private:
+  void release();
+  NativeMediaTrackHandle track_ = 0;
+  std::uint64_t reader_ = 0;
+};
 
 NativeMediaStreamHandle get_user_media_audio();
 NativeMediaRecorderHandle create_recorder(NativeMediaStreamHandle stream, const std::string &path, const std::string &mimeType);

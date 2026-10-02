@@ -125,9 +125,10 @@ void run_app_frame(int timestampMs, void *context)
 	if (!animationsScanned) {
 		animationsScanned = true;
 		gea::css::DeclarativeAnimations::scanAndStart(nowMs);
-		gea::embedded::ui::StyleSheet::instance().startCssAnimations(nowMs);
 	}
 
+	// Start CSS tracks added by later conditional mounts, retaining existing timelines.
+	gea::embedded::ui::StyleSheet::instance().startCssAnimations(nowMs);
 	gea::css::AnimationEngine::instance().tick(nowMs);
 	// Render-only while settings overlays the frozen application.
 	const bool refreshOnly = SettingsSurface::instance().active();

@@ -323,6 +323,7 @@ GeaEmbeddedImage ImageService::make(double id) const {
   return handle;
 }
 
+bool GeaEmbeddedImage::decode() const { return store().currentPixels(id) != nullptr; }
 void GeaEmbeddedImage::play() const { store().setPlaying(id, true); }
 void GeaEmbeddedImage::pause() const { store().setPlaying(id, false); }
 void GeaEmbeddedImage::seek(int frame) const { store().seek(id, frame); }

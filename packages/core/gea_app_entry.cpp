@@ -297,24 +297,31 @@ void Application::frame(int timestampMs)
 	gea::host::runAnimationFrameCallbacks(static_cast<double>(timestampMs));
 	applicationFramePhaseSet(ApplicationFramePhase::CallbackMicrotasks);
 	generated::drainMicrotasks();
+	recordFramePhase(ApplicationFramePhase::AnimationFrameCallbacks, phaseClockUs() - startUs);
 	// The build already proves whether network services are reachable. Keep their
 	// callback pumps out of offline frame loops, while still servicing local workers.
 #if !defined(GEA_EMBEDDED_NETWORK_SERVICES_DISABLED) || !GEA_EMBEDDED_NETWORK_SERVICES_DISABLED
 	applicationFramePhaseSet(ApplicationFramePhase::WebSocketCallbacks);
+	startUs = phaseClockUs();
 	gea::host::websocket::runCallbacks();
+	recordFramePhase(ApplicationFramePhase::WebSocketCallbacks, phaseClockUs() - startUs);
 	applicationFramePhaseSet(ApplicationFramePhase::RtcCallbacks);
+	startUs = phaseClockUs();
 	gea::host::rtc::runCallbacks();
+	recordFramePhase(ApplicationFramePhase::RtcCallbacks, phaseClockUs() - startUs);
 #else
 	gea::host::workers::Context::runMainPending();
 #endif
 	applicationFramePhaseSet(ApplicationFramePhase::VideoPresentation);
+	startUs = phaseClockUs();
 	gea::host::video::presentFrames();
+	recordFramePhase(ApplicationFramePhase::VideoPresentation, phaseClockUs() - startUs);
 #if !defined(GEA_EMBEDDED_NETWORK_SERVICES_DISABLED) || !GEA_EMBEDDED_NETWORK_SERVICES_DISABLED
 	applicationFramePhaseSet(ApplicationFramePhase::HttpRequests);
+	startUs = phaseClockUs();
 	gea::host::http::runRequests();
+	recordFramePhase(ApplicationFramePhase::HttpRequests, phaseClockUs() - startUs);
 #endif
-	recordFramePhase(ApplicationFramePhase::AnimationFrameCallbacks, phaseClockUs() - startUs);
-
 	// Apply the coalesced style recompute for everything changed above, so layout
 	// and render below see final styles. Measured as its own phase: a city/theme
 	// class change near the root cascades a full-subtree recompute here, and it was

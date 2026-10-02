@@ -77,6 +77,7 @@ class WebSocket {
 
   std::string url() const;
   double readyState() const;
+  double bufferedAmount() const;
   void send(const std::string &data) const;
   void close() const;
   void close(double code) const;
@@ -94,8 +95,26 @@ struct CallbackTable {
 
 std::unordered_map<NativeWebSocketHandle, CallbackTable> &callbackTable();
 
-NativeWebSocketHandle create_handle(const std::string &url);
+NativeWebSocketHandle create_handle(const std::string &url, const std::string &protocols = {});
+template <typename Protocols>
+NativeWebSocketHandle create_handle(const std::string &url, const Protocols &protocols) {
+  std::string joined;
+  for (std::size_t i = 0; i < protocols.size(); ++i) {
+    if (i) joined += ",";
+    joined += protocols.at(i);
+  }
+  return create_handle(url, joined);
+}
 void destroy_handle(NativeWebSocketHandle handle);
+
+// Native streaming sources run on the socket's sender, never on the UI loop.
+// An empty result means no packet is ready yet. The producer must not call JS.
+using TextProducer = std::function<std::string()>;
+void setTextProducer(NativeWebSocketHandle handle, TextProducer producer);
+// A native sink can consume media before JS event dispatch. Returning false
+// leaves an ordinary control message for the owner's normal onmessage handler.
+using TextConsumer = std::function<bool(const std::string&)>;
+void setTextConsumer(NativeWebSocketHandle handle, TextConsumer consumer);
 
 void runCallbacks();
 

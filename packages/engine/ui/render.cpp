@@ -5647,11 +5647,11 @@ int gLastScrollUiFrame = -1000;
 #ifndef GEA_EMBEDDED_GRADIENT_LUT_SLOTS
 #define GEA_EMBEDDED_GRADIENT_LUT_SLOTS 1
 #endif
-// GEA_EMBEDDED_LAZY_GRADIENT_LUTS=1 allocates the dither tables on first use
-// instead of as static arrays: the slots above plus the radial table below
-// otherwise sit in .bss whether or not the app ever draws a gradient.
+// Allocate dither tables on first use by default. An app that never draws a
+// gradient must not reserve these ~20 KB in internal RAM. The slot count still
+// controls caching when gradients are actually used.
 #ifndef GEA_EMBEDDED_LAZY_GRADIENT_LUTS
-#define GEA_EMBEDDED_LAZY_GRADIENT_LUTS 0
+#define GEA_EMBEDDED_LAZY_GRADIENT_LUTS 1
 #endif
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS
 				struct LutSlot

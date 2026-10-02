@@ -107,8 +107,8 @@ int main()
 			const int verticalPadding = button.style.padding[0] + button.style.padding[2];
 			if (button.style.width != gea::embedded::ui::kUnset ||
 			    button.style.height != gea::embedded::ui::kUnset ||
-			    button.style.min_width != 0 ||
-			    button.style.min_height != 0 ||
+			    (button.style.min_width != 0 && button.style.min_width != gea::embedded::ui::kUnset) ||
+			    (button.style.min_height != 0 && button.style.min_height != gea::embedded::ui::kUnset) ||
 			    horizontalPadding <= 0 ||
 			    verticalPadding <= 0) {
 				std::fprintf(stderr,
@@ -127,7 +127,8 @@ int main()
 			for (int child = button.first_child; child >= 0; child = tree.node(child).next_sibling) {
 				const auto &label = tree.node(child);
 				if (label.type != gea::embedded::ui::NodeType::Text || label.style.display == 1) continue;
-				const int expectedHeight = label.layout.height + verticalPadding;
+				// Content-box button: padding plus any border (the reset button has a 0.5px one).
+				const int expectedHeight = label.layout.height + gea::embedded::ui::boxInsets(button.computedStyle(), false);
 				if (button.layout.height != expectedHeight) {
 					std::fprintf(stderr,
 					             "[test_gea_todo_main] expected %s to keep content-sized height, button=%d label=%d buttonHeight=%d labelHeight=%d paddingY=%d expected=%d\n",

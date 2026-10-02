@@ -862,4 +862,7 @@ void applyAnimatedStyleValue(int nodeId, Property property, int value);
 void setSafeAreaInsetBottom(int inset);
 int safeAreaInsetBottom();
 
+// Drop animation timelines before a node slot can be reused.
+void forgetNodeCssAnimations(int node);
+
 }  // namespace gea::embedded::ui

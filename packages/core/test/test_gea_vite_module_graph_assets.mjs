@@ -143,6 +143,16 @@ async function testStaticAssetGraph() {
   assert.ok(assetImports.every((item) => item.resolvedId.endsWith('.geaassetmodule.js')))
   assert.equal(first.assetCount, 2, 'CSS url() assets must retain Vite CSS semantics')
 
+  // Native firmware must recognize the same content-addressed URL that
+  // Vite places in imported asset modules, not only the source-relative path.
+  const embeddedFont = path.join(appDir, 'lookup.ttf')
+  fs.writeFileSync(embeddedFont, fontContents)
+  const embeddedCpp = path.join(scratchRoot, 'embedded-assets.cpp')
+  const generate = spawnSync(process.execPath, [path.join(packageDir, 'scripts/generate-gea-embedded-assets.mjs'), '--app-dir', appDir, '--out-cpp', embeddedCpp], { encoding: 'utf8' })
+  assert.equal(generate.status, 0, generate.stderr)
+  const embeddedUrl = 'gea-asset://sha256/' + crypto.createHash('sha256').update(fontContents).digest('hex') + '/lookup.ttf'
+  assert.ok(fs.readFileSync(embeddedCpp, 'utf8').includes(JSON.stringify(embeddedUrl)), 'firmware lookup must include the module graph asset identity')
+
   const compilerCli = path.join(packageDir, 'node_modules', '@geastack', 'compiler', 'dist', 'cli.js')
   const compile = spawnSync(
     process.execPath,
@@ -313,6 +323,14 @@ async function testAppleNativeAliasGraph() {
   writeJson(path.join(missingNativeAppDir, 'package.json'), { private: true, type: 'module' })
   writeMockThreePackage(missingNodeModulesDir, 'missing-native-app')
   writeMockBrowserTroikaPackage(missingNodeModulesDir)
+  // Node resolution climbs through every ancestor node_modules, so a checkout laid
+  // out under a directory that installs @geastack/native-webgl-angle would silently
+  // satisfy the lookup. Pin the application boundary: its own scope answers first,
+  // and exports nothing, so the native subpath is unresolvable from here wherever
+  // the checkout lives.
+  const boundaryDir = path.join(missingNodeModulesDir, '@geastack', 'native-webgl-angle')
+  fs.mkdirSync(boundaryDir, { recursive: true })
+  writeJson(path.join(boundaryDir, 'package.json'), { name: '@geastack/native-webgl-angle', version: '0.0.0', exports: {} })
   const missingEntryPath = path.join(missingNativeAppDir, 'index.js')
   fs.writeFileSync(missingEntryPath, "import { Text } from 'troika-three-text'\nexport const text = new Text()\n")
   const missingViteConfigPath = path.join(sharedConfigDir, 'missing-native.vite.config.mjs')

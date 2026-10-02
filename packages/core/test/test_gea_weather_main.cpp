@@ -844,7 +844,7 @@ int main()
 	gClockMs += 16;
 	setNativeNowMs(gClockMs);
 	if (!Tree::instance().pointerMove(dragX - hourDragDelta, dragY + 48)) {
-		std::fprintf(stderr, "[test_gea_weather_main] expected horizontal forecast pointer move to be consumed\n");
+		std::fprintf(stderr, "[test_gea_weather_main] expected horizontal forecast pointer move to be consumed, rowW=%d scrollContentW=%d delta=%d drag=(%d,%d) overflowX=%d\n", hourRow.layout.width, hourRow.layout.scroll_content_width, hourDragDelta, dragX, dragY, (int)hourRow.style.overflow_x);
 		dumpTree("test_gea_weather_main");
 		return 1;
 	}

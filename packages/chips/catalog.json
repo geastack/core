@@ -622,6 +622,45 @@
           "optional": true
         }
       ]
+    },
+    "tca9554": {
+      "label": "TCA9554 I2C I/O expander",
+      "category": "expander",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [],
+      "headers": [
+        "expanders/tca9554/tca9554.h"
+      ],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/expanders/tca9554.cpp"
+          ]
+        }
+      },
+      "configuration": [
+        {
+          "path": "address",
+          "label": "7-bit I2C address",
+          "type": "integer",
+          "min": 32,
+          "max": 39,
+          "default": 32
+        },
+        {
+          "path": "initialDirections",
+          "label": "Input pin mask",
+          "type": "integer",
+          "min": 0,
+          "max": 255,
+          "default": 255
+        }
+      ]
     }
   }
 }

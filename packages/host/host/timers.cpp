@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "host/timers.h"
+#include "host/worker.h"
 
 #include "gea_perf_config.h"  // GEA_EMBEDDED_RAF_PERF (+ GEA_EMBEDDED_PERF master)
 
@@ -12,6 +13,7 @@
 #include <chrono>
 #endif
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -22,6 +24,8 @@
 namespace gea::host {
 
 namespace {
+
+std::atomic<const char *> callbackStage{"idle"};
 
 std::int64_t nowUs()
 {
@@ -275,21 +279,25 @@ private:
 
 double setTimeout(TimerCallback callback, double delayMs)
 {
+	if (workers::Context::isWorkerCurrent()) return workers::Context::current()->schedule(std::move(callback), delayMs, false);
 	return TimerScheduler::instance().schedule(std::move(callback), delayMs, false);
 }
 
 double setInterval(TimerCallback callback, double delayMs)
 {
+	if (workers::Context::isWorkerCurrent()) return workers::Context::current()->schedule(std::move(callback), delayMs, true);
 	return TimerScheduler::instance().schedule(std::move(callback), delayMs, true);
 }
 
 void clearTimeout(double id)
 {
+	if (workers::Context::isWorkerCurrent()) { workers::Context::current()->cancel(id); return; }
 	TimerScheduler::instance().clear(id);
 }
 
 void clearInterval(double id)
 {
+	if (workers::Context::isWorkerCurrent()) { workers::Context::current()->cancel(id); return; }
 	TimerScheduler::instance().clear(id);
 }
 
@@ -305,8 +313,18 @@ double requestAnimationFrame(AnimationFrameCallback callback)
 
 void runAnimationFrameCallbacks(AnimationFrameTimestamp timestampMs)
 {
+	callbackStage.store("worker_callbacks", std::memory_order_relaxed);
+	workers::Context::runMainPending();
+	callbackStage.store("timer_callbacks", std::memory_order_relaxed);
 	TimerScheduler::instance().run(static_cast<double>(timestampMs));
+	callbackStage.store("animation_callbacks", std::memory_order_relaxed);
 	AnimationFrameQueue::instance().run(timestampMs);
+	callbackStage.store("idle", std::memory_order_relaxed);
+}
+
+const char *animationFrameCallbackStage()
+{
+	return callbackStage.load(std::memory_order_relaxed);
 }
 
 void resetAnimationFrameCallbacks()

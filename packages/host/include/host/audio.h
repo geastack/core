@@ -3,6 +3,9 @@
 
 #include <audio.h>
 #include "backends.h"
+#include "host/media.h"
+#include "host/audio_worklet.h"
+#include <memory>
 
 #include <cstdint>
 #include <cstring>
@@ -30,20 +33,23 @@ inline double oscillator_type_from_name(const char *type) {
 
 struct AudioDestinationNode {
   NativeAudioHandle nativeHandle = 0;
+  std::shared_ptr<audio_worklet::ContextState> context;
 
-  constexpr AudioDestinationNode() = default;
-  explicit constexpr AudioDestinationNode(NativeAudioHandle destination) : nativeHandle(destination) {}
-  explicit constexpr AudioDestinationNode(double destination) : nativeHandle(static_cast<NativeAudioHandle>(destination)) {}
+  AudioDestinationNode() = default;
+  explicit AudioDestinationNode(NativeAudioHandle destination) : nativeHandle(destination) {}
+  explicit AudioDestinationNode(double destination) : nativeHandle(static_cast<NativeAudioHandle>(destination)) {}
 
   constexpr operator double() const { return static_cast<double>(nativeHandle); }
 };
 
 struct AudioDestinationProperty {
+  std::shared_ptr<audio_worklet::ContextState> context;
   operator AudioDestinationNode() const;
   operator double() const;
 };
 
 struct AudioContextCurrentTimeProperty {
+  std::shared_ptr<audio_worklet::ContextState> context;
   operator double() const;
 };
 
@@ -122,17 +128,54 @@ struct AudioBufferSourceNode {
 };
 
 struct AudioContext {
+ private:
+  std::shared_ptr<audio_worklet::ContextState> state_;
+ public:
+  // The default native carrier represents a missing/undefined JS handle.
+  // Actual construction is performed by createAudioContext or the rate ctor.
+  AudioContext() = default;
+  explicit AudioContext(double rate);
+  explicit operator bool() const { return static_cast<bool>(state_); }
+  bool operator==(std::nullptr_t) const { return !state_; }
+  template <typename Options>
+  explicit AudioContext(const Options& options) : AudioContext(sampleRateOption(options)) {}
+  double sampleRate = 16000;
   AudioDestinationProperty destination;
   AudioContextCurrentTimeProperty currentTime;
+  AudioWorklet audioWorklet;
+
+  std::string state() const;
+  double baseLatency() const;
+  double outputLatency() const;
+  void resume() const;
+  void suspend() const;
+  void close() const;
+  MediaStreamAudioSourceNode createMediaStreamSource(MediaStream stream) const;
+  const std::shared_ptr<audio_worklet::ContextState>& workletContext() const { return state_; }
 
   OscillatorNode createOscillator() const;
   AudioBufferSourceNode createBufferSource() const;
   AudioBuffer decodeAudioData(const std::vector<std::uint8_t> &bytes) const;
+ private:
+  template <typename Options>
+  static double sampleRateOption(const Options& options) {
+    if constexpr (requires { options.has_value(); *options; })
+      return options.has_value() ? sampleRateOption(*options) : 16000;
+    else if constexpr (requires { options.get(); *options; })
+      return options.get() ? sampleRateOption(*options) : 16000;
+    else if constexpr (requires { options.sampleRate; })
+      return sampleRateOption(options.sampleRate);
+    else if constexpr (requires { static_cast<double>(options); })
+      return static_cast<double>(options);
+    else return 16000;
+  }
 };
 
 class HTMLAudioElement {
  public:
   HTMLAudioElement() = default;
+  static HTMLAudioElement create();
+  static HTMLAudioElement create(const std::string &src);
   explicit HTMLAudioElement(const char *src);
   explicit HTMLAudioElement(const std::string &src);
   explicit HTMLAudioElement(const gea::embedded::ui::NodeHandle &node);
@@ -141,10 +184,52 @@ class HTMLAudioElement {
   void setSrc(const std::string &src);
   bool play() const;
   void pause() const;
+  void beginDrain() const;
+  void clearBufferedAudio() const;
+  bool drained() const;
+  double audioLevel() const;
+  MediaStream srcObject() const;
+  void setSrcObject(MediaStream stream) const;
+  void setSrcObject(std::nullptr_t) const { setSrcObject(MediaStream{}); }
+  bool autoplay() const;
+  void setAutoplay(bool enabled) const;
+  bool paused() const;
+  explicit operator bool() const { return static_cast<bool>(state_); }
+  bool operator==(std::nullptr_t) const { return !state_; }
+  bool operator==(const HTMLAudioElement& other) const { return state_ == other.state_; }
 
  private:
-  int nodeId_ = -1;
-  std::string src_;
+  struct State;
+  std::shared_ptr<State> state_;
+};
+
+// Streaming mono PCM transport independent of any speech provider. Wire PCM
+// uses sampleRate; capture/playback use the device's 16 kHz audio clock.
+class WebSocket;
+class PcmAudioStream {
+ public:
+  PcmAudioStream() = default;
+  static PcmAudioStream create(double sampleRate);
+  void setInput(MediaStream stream) const;
+  void pipeTo(WebSocket socket, const std::string &prefix, const std::string &suffix) const;
+  void receiveFrom(WebSocket socket, const std::string &prefix, const std::string &suffix, double startupMs = 200) const;
+  std::string readBase64() const;
+  void writeBase64(const std::string &data) const;
+  void resetPlayback(bool interrupted = false) const;
+  void close() const;
+  double queuedMs() const;
+  double playedMs() const;
+  double capturePendingMs() const;
+  double captureDroppedSamples() const;
+  double capturePackets() const;
+  double audioLevel() const;
+  bool drained() const;
+  explicit operator bool() const { return static_cast<bool>(state_); }
+  bool operator==(std::nullptr_t) const { return !state_; }
+  bool operator==(const PcmAudioStream &other) const { return state_ == other.state_; }
+ private:
+  struct State;
+  std::shared_ptr<State> state_;
 };
 
 struct AudioFacade {
@@ -152,7 +237,10 @@ struct AudioFacade {
   void setVolume(double volume) const { gea::framework::audio::AudioBackend::setVolume(volume); }
 };
 
-inline constexpr AudioContext audioContext{};
+inline const AudioContext& sharedAudioContext() {
+  static const AudioContext context(16000.0);
+  return context;
+}
 inline constexpr AudioFacade Audio{};
 
 }  // namespace gea::host

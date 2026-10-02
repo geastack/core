@@ -98,6 +98,7 @@ bool canUseDisplayFramebuffer(TreeState &state, int id, int width, int height)
 void resetNodeSlot(TreeState &state, int id)
 {
 	if (id < 0 || id >= kMaxNodes) return;
+	forgetNodeCssAnimations(id);
 	// The node's text buffer dies with the slot; retained display commands hold
 	// a raw pointer into it (see DisplayList::scrubNodeText) — neutralize them
 	// before NodeLifecycle::init frees the string, or a stale-list replay in the
@@ -152,6 +153,7 @@ void Tree::clear()
 	state.refreshSerial++;
 	if (state.refreshSerial == 0) state.refreshSerial = 1;
 	for (int i = 0; i < state.nodeCount; i++) {
+		forgetNodeCssAnimations(i);
 		releaseRareData(i);  // frees the rare-data block: attributes, listeners, custom props, styles, virtual-list
 		state.classLists[i].clear();
 	}

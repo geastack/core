@@ -634,9 +634,16 @@ public:
 			if (node_.computedStyle().display == kDisplayFlex) {
 				applyFlexBasis(child);
 				Node &item = Tree::instance().nodes()[child];
-				const int floor = automaticMinimumMainSize(item);
-				int16_t &main = isRow_ ? item.layout.width : item.layout.height;
-				if (main < floor) { main = clampInt16(floor); engine_.repositionChildren(child); }
+				// A growing item with a zero flex basis (`flex: 1`) starts from zero; its
+				// automatic minimum floors the FINAL flexed size (growFlexChildren), not the
+				// basis. Flooring the basis hands content-bearing items a head start over their
+				// siblings and unbalances equal-flex rows (a tic-tac-toe cell holding "X" grew
+				// wider than its empty neighbours).
+				if (!zeroBasisGrowItem(item)) {
+					const int floor = automaticMinimumMainSize(item);
+					int16_t &main = isRow_ ? item.layout.width : item.layout.height;
+					if (main < floor) { main = clampInt16(floor); engine_.repositionChildren(child); }
+				}
 			}
 		}
 	}
@@ -1320,7 +1327,11 @@ public:
 					Node &childNode = nodes[child];
 					if (childNode.computedStyle().flex <= 0) continue;
 					const int mainSize = isRow_ ? childNode.layout.width : childNode.layout.height;
-					if (mainSize == 0) engine_.repositionChildren(child);
+					if (mainSize == 0) {
+						const int floor = automaticMinimumMainSize(childNode);
+						if (floor > 0) (isRow_ ? childNode.layout.width : childNode.layout.height) = clampInt16(floor);
+						engine_.repositionChildren(child);
+					}
 				}
 			}
 			bool hasRatio = false;
@@ -1525,6 +1536,13 @@ private:
 		return -1;
 	}
 
+	// True when applyFlexBasis zeroed this item: it grows from nothing.
+	bool zeroBasisGrowItem(const Node &childNode) const
+	{
+		if (hasFlexBasis(childNode) || childNode.computedStyle().flex <= 0) return false;
+		return !(isRow_ ? hasExplicitWidth(childNode) : hasExplicitHeight(childNode));
+	}
+
 	void applyFlexBasis(int child)
 	{
 		Node &childNode = Tree::instance().nodes()[child];
@@ -1718,6 +1736,10 @@ private:
 		const int before = isRow_ ? childNode.layout.width : childNode.layout.height;
 		int after = before + delta;
 		after = clampFlexMainSize(childNode, after);
+		if (delta > 0 && zeroBasisGrowItem(childNode)) {
+			const int autoMin = automaticMinimumMainSize(childNode);
+			if (after < autoMin) after = autoMin;
+		}
 		if (delta < 0) {
 			// Floor the shrink at the automatic minimum size, and never let that floor
 			// GROW an item that was already smaller than its content.

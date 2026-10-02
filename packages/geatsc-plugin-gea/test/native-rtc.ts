@@ -1,0 +1,62 @@
+import type {}  from '@geastack/core'
+
+const peer = new RTCPeerConnection({ iceServers: [{ urls: ['stun:relay.invalid'], username: 'test', credential: 'test' }] })
+const channel = peer.createDataChannel('_lossy', { ordered: false, maxRetransmits: 0 })
+channel.onopen = () => { channel.send('ready') }
+const transceiver = peer.addTransceiver('audio', { direction: 'recvonly' })
+console.log(channel.label + transceiver.direction + peer.signalingState)
+const senders = peer.getSenders()
+console.log('' + senders.length)
+console.log(peer.localDescription === null ? 'no offer' : peer.localDescription.type)
+console.log(transceiver.receiver.track === null ? 'no track' : transceiver.receiver.track.kind)
+console.log(channel.id === null ? 'no id' : '' + channel.id)
+console.log(transceiver.mid === null ? 'no mid' : transceiver.mid)
+const description = new RTCSessionDescription({ type: 'offer', sdp: 'v=0\r\n' })
+console.log(description.type + description.sdp)
+const json = description.toJSON()
+json.sdp = 'changed'
+console.log(json.sdp)
+if (description.sdp !== 'v=0\r\n') throw new Error('toJSON changed the description')
+const serialized = JSON.stringify(description.toJSON())
+console.log(serialized)
+if (!serialized.includes('"sdp":"v=0\\r\\n"') || !serialized.includes('"type":"offer"'))
+  throw new Error('description JSON omitted its own fields')
+peer.setRemoteDescription(description)
+console.log(peer.remoteDescription === null ? 'no remote' : peer.remoteDescription.sdp)
+if (peer.remoteDescription === null || peer.remoteDescription.sdp !== description.sdp)
+  throw new Error('remote description did not cross the native call boundary')
+const candidate = new RTCIceCandidate({ candidate: 'candidate:842163049 1 UDP 1677729535 192.0.2.1 5000 typ srflx raddr 10.0.0.2 rport 8998', sdpMid: 'audio', usernameFragment: 'ice-user' })
+if (candidate.address !== '192.0.2.1' || candidate.protocol !== 'udp' || candidate.port !== 5000 || candidate.type !== 'srflx')
+  throw new Error('ICE candidate parsing failed')
+if (candidate.sdpMLineIndex !== null || candidate.usernameFragment !== 'ice-user')
+  throw new Error('ICE candidate init lost null or credential')
+const candidateJSON = candidate.toJSON()
+candidateJSON.candidate = 'changed'
+if (candidate.candidate === 'changed') throw new Error('ICE JSON aliases native state')
+const candidateSerialized = JSON.stringify(candidate.toJSON())
+console.log(candidateSerialized)
+if (!candidateSerialized.includes('"sdpMLineIndex":null') || !candidateSerialized.includes('"usernameFragment":"ice-user"'))
+  throw new Error('ICE JSON lost nullable fields')
+const malformedCandidate = new RTCIceCandidate({ candidate: 'invalid', sdpMLineIndex: 0 })
+if (malformedCandidate.foundation !== null || malformedCandidate.candidate !== 'invalid')
+  throw new Error('malformed ICE candidate must retain text and null derived fields')
+peer.onicecandidate = event => {
+  if (event.candidate !== null) console.log(event.candidate.protocol + event.candidate.candidate)
+}
+peer.ontrack = event => {
+  console.log(event.track.kind + event.streams.length + event.transceiver.direction)
+  console.log(event.receiver.track === null ? 'no receiver track' : event.receiver.track.kind)
+}
+peer.addIceCandidate(candidate)
+peer.close()
+const stream = new MediaStream()
+const copied = new MediaStream(stream)
+const fromTracks = new MediaStream(stream.getTracks())
+console.log(stream.id + copied.id + fromTracks.id)
+console.log('' + stream.active + stream.getVideoTracks().length)
+const found = stream.getTrackById('remote-track')
+if (found !== null) {
+  copied.addTrack(found)
+  copied.removeTrack(found)
+  console.log(found.kind)
+}

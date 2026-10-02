@@ -15,6 +15,7 @@ export function addUnknownRendererFeatures(features: Set<string>): void {
 // do not reserve shape, transform or gradient tables.
 export interface StyleUsageObserver {
   isSourceMethod?(node: ts.Expression): boolean
+  isString?(node: ts.Expression): boolean
   isBoolean?(node: ts.Expression): boolean
   selector?(css: string): void
   property(name: string | undefined, value: string | undefined, expression?: ts.Expression): void
@@ -323,7 +324,13 @@ export function addRendererFeatures(file: string, text: string, features: Set<st
       if (name === 'assign' && node.arguments[0] && isStyleTarget(node.arguments[0])) {
         for (const arg of node.arguments.slice(1)) styleObject(arg)
       }
-      if (name === 'insertRule' || name === 'replaceSync' || name === 'replace') {
+      // Classify the receiver, not the shared method name. A primitive string
+      // cannot be a stylesheet, even when its contents are not statically known.
+      // Continue visiting arguments so callbacks that mutate CSS remain visible.
+      const stringReplace = name === 'replace' &&
+        (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) &&
+        (ts.isStringLiteralLike(unwrap(node.expression.expression)) || observer?.isString?.(node.expression.expression))
+      if (name === 'insertRule' || name === 'replaceSync' || (name === 'replace' && !stringReplace)) {
         if (node.arguments[0]) styleObject(node.arguments[0])
       }
       // Unknown computed method dispatch may be a canvas operation or style API.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #define GEA_AUDIO_DRIVER_INTERNAL 1
 #include "audio.h"
+#include "audio_stream.h"
+#include "host/audio_trace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -36,6 +38,11 @@ constexpr int kQueueDepth = 16;
 // the 2.06 AMOLED rebooted every 3 seconds). The task logs its high-water
 // mark once after the driver opens so the next reader sizes it from a number.
 constexpr int kTaskStackBytes = 8192;
+// PCM feeding has a hardware deadline. The AMOLED UI runs at priority 23;
+// letting it preempt this task produced 142 ms writes for 32 ms chunks even
+// with PCM available, exceeding the 90 ms DMA ring. Mixing is bounded and
+// the I2S write blocks for pacing, so audio can safely preempt rendering.
+constexpr UBaseType_t kTaskPriority = configMAX_PRIORITIES - 1;
 constexpr int kChunkSamples = 512;
 constexpr int kAmplitude = 5200;
 constexpr int kMaxOscillators = 8;
@@ -54,6 +61,9 @@ constexpr int kChunkDurationMs = (kChunkSamples * 1000) / kSampleRate;
 // clicking/stutter through a whole melody. Ride out short gaps with silence
 // instead of tearing the codec down.
 constexpr int kCloseGraceChunks = 10;
+#if GEA_AUDIO_DEBUG_PCM_TRACE
+gea::host::OpeningPcmTrace speakerTrace("speaker-input");
+#endif
 
 #ifndef GEA_AUDIO_DEBUG_TIMING
 #define GEA_AUDIO_DEBUG_TIMING 0
@@ -176,10 +186,37 @@ public:
   }
 
   void stopPlayback() {
+    streams_.clear();
     clearTones();
     driverOpen_.store(false, std::memory_order_release);
     audio::OutputDriver::close();
   }
+
+  std::uint64_t playPcmStream(audio::PcmStreamMixer::Pull pull) {
+#if GEA_EMBEDDED_AUDIO_DISABLED
+    return 0;
+#else
+    ensureTask();
+    if (!audioTask_ || !toneQueue_) return 0;
+    // Half-duplex capture can close the speaker between replies. Revalidate
+    // its hardware state when the first playback source attaches again.
+    if (!streams_.active()) driverOpen_.store(false, std::memory_order_release);
+    auto handle = streams_.add(std::move(pull));
+    // Wake a task waiting for a tone without manufacturing an audible note.
+    Tone wake;
+    wake.wakeOnly = true;
+    xQueueSend(toneQueue_, &wake, 0);
+    return handle;
+#endif
+  }
+  void flushPlayback() {
+    // The sole output consumer cancels DMA before its next pull. A write
+    // already in progress finishes BEFORE that cancellation. Never wait for
+    // a driver/mixer lock on the microphone's audio-worklet thread.
+    flushPending_.store(true, std::memory_order_release);
+  }
+  void stopPcmStream(std::uint64_t handle) { streams_.remove(handle); }
+  bool pcmStreamSettled(std::uint64_t handle) { return streams_.settled(handle); }
 
 private:
   struct Tone {
@@ -187,6 +224,7 @@ private:
     double frequencyHz = 440.0;
     int durationMs = 0;
     int delayMs = 0;
+    bool wakeOnly = false;
   };
 
   struct OscillatorState {
@@ -316,6 +354,7 @@ private:
   }
 
   void addActiveTone(Tone tone) {
+    if (tone.wakeOnly) return;
     normalizeTone(tone);
 
     const int totalSamples = (kSampleRate * tone.durationMs) / 1000;
@@ -383,8 +422,13 @@ private:
     Tone tone;
     std::int16_t pcm[kChunkSamples * kChannels];
     int idleChunks = 0;
+    int64_t previousWriteEnd = 0, cadenceStart = 0, maxSupplyGap = 0, maxWriteUs = 0;
+    std::size_t cadenceFrames = 0, emptyPulls = 0;
 
     while (true) {
+      if (flushPending_.exchange(false, std::memory_order_acq_rel) &&
+          driverOpen_.load(std::memory_order_acquire) && !audio::OutputDriver::flush())
+        ESP_LOGW(kTag, "Unable to discard speaker DMA samples");
       if (exclusivePlayback_.load(std::memory_order_acquire)) {
         clearTones();
         idleChunks = 0;
@@ -397,7 +441,13 @@ private:
         idleChunks = 0;
       }
 
-      if (!hasActiveTones()) {
+      const bool streaming = streams_.active();
+      if (!hasActiveTones() && !streaming) {
+#if GEA_AUDIO_DEBUG_PCM_TRACE
+        speakerTrace.reset();
+#endif
+        previousWriteEnd = cadenceStart = maxSupplyGap = maxWriteUs = 0;
+        cadenceFrames = emptyPulls = 0;
         if (!driverOpen_.load(std::memory_order_acquire)) {
           if (xQueueReceive(toneQueue_, &tone, portMAX_DELAY) == pdTRUE) {
             addActiveTone(tone);
@@ -426,6 +476,8 @@ private:
         }
       }
 
+      // Open before consuming PCM, so codec initialization cannot discard
+      // the first packet of a reply when capture is still relinquishing I2S.
       if (!driverOpen_.load(std::memory_order_acquire)) {
         if (!audio::OutputDriver::open(kSampleRate, kChannels, 16)) {
           vTaskDelay(pdMS_TO_TICKS(50));
@@ -441,9 +493,44 @@ private:
         }
       }
 
-      renderChunk(pcm, kChunkSamples);
-      if (!audio::OutputDriver::write(pcm, kChunkSamples * kChannels, kWriteTimeoutMs)) {
+      const bool tones = hasActiveTones();
+      // Streaming speech has no oscillator voices to render. Avoid walking
+      // every tone slot for every sample, including the empty pulls between
+      // incoming packets, in this highest-priority task.
+      if (tones) renderChunk(pcm, kChunkSamples);
+      else std::memset(pcm, 0, sizeof(pcm));
+      const auto streamFrames = streams_.mix(pcm, kChunkSamples);
+      const auto outputFrames = tones ? std::size_t(kChunkSamples) : streamFrames;
+      if (outputFrames == 0) {
+        ++emptyPulls;
+        // Empty between RTP packets means wait for data, never end a stream.
+        vTaskDelay(pdMS_TO_TICKS(5));
+        continue;
+      }
+
+      const int64_t writeStart = esp_timer_get_time();
+#if GEA_AUDIO_DEBUG_PCM_TRACE
+      speakerTrace.record(pcm, outputFrames * kChannels);
+#endif
+      if (!cadenceStart) cadenceStart = writeStart;
+      if (previousWriteEnd) maxSupplyGap = std::max(maxSupplyGap, writeStart - previousWriteEnd);
+      const bool wrote = audio::OutputDriver::write(pcm, outputFrames * kChannels, kWriteTimeoutMs);
+      previousWriteEnd = esp_timer_get_time();
+      maxWriteUs = std::max(maxWriteUs, previousWriteEnd - writeStart);
+      cadenceFrames += outputFrames;
+      if (streaming && previousWriteEnd - cadenceStart >= 2000000) {
+        ESP_LOGI(kTag, "PCM cadence span_ms=%lld frames=%u empty_pulls=%u max_supply_gap_ms=%lld max_write_ms=%lld",
+                 static_cast<long long>((previousWriteEnd - cadenceStart) / 1000),
+                 static_cast<unsigned>(cadenceFrames), static_cast<unsigned>(emptyPulls),
+                 static_cast<long long>(maxSupplyGap / 1000), static_cast<long long>(maxWriteUs / 1000));
+        cadenceStart = previousWriteEnd;
+        cadenceFrames = emptyPulls = 0;
+        maxSupplyGap = maxWriteUs = 0;
+      }
+      streams_.didWrite(wrote);
+      if (!wrote) {
         ESP_LOGW(kTag, "PCM write failed");
+        driverOpen_.store(false, std::memory_order_release);
         vTaskDelay(pdMS_TO_TICKS(10));
       }
     }
@@ -484,7 +571,7 @@ private:
           "gea_audio",
           kTaskStackBytes,
           this,
-          6,
+          kTaskPriority,
           audioTaskStack_,
           &audioTaskStorage_);
 #if GEA_AUDIO_DEBUG_TIMING
@@ -543,6 +630,7 @@ private:
   static constexpr const char *kTag = "gea_audio";
 
   QueueHandle_t toneQueue_ = nullptr;
+  audio::PcmStreamMixer streams_;
   TaskHandle_t audioTask_ = nullptr;
   OscillatorState oscillators_[kMaxOscillators]{};
   ActiveTone activeTones_[kMaxActiveTones]{};
@@ -553,6 +641,7 @@ private:
   StaticTask_t audioTaskStorage_{};
   StackType_t audioTaskStack_[kTaskStackBytes]{};
   std::atomic<bool> exclusivePlayback_{false};
+  std::atomic<bool> flushPending_{false};
   std::atomic<bool> driverOpen_{false};
   bool audioTaskFailureLogged_ = false;
   bool stackReported_ = false;
@@ -776,6 +865,12 @@ audio::OscillatorNode audio::AudioContext::createOscillator() const {
   return audio::OscillatorNode(AudioEngine::instance().createOscillator());
 }
 
+// Drivers without a latency estimate retain the standard unknown value, zero.
+__attribute__((weak)) double audio::OutputDriver::outputLatency(int) { return 0; }
+__attribute__((weak)) bool audio::OutputDriver::flush() { return false; }
+double audio::AudioSystem::processingLatency() { return double(kChunkSamples) / kSampleRate; }
+double audio::AudioSystem::outputLatency() { return audio::OutputDriver::outputLatency(kSampleRate); }
+
 audio::AudioContext audio::AudioSystem::sharedContext() {
   return audio::AudioContext{};
 }
@@ -804,4 +899,17 @@ bool audio::AudioSystem::playPcm(const std::int16_t *samples, std::size_t sample
 
 void audio::AudioSystem::stopPlayback() {
   AudioEngine::instance().stopPlayback();
+}
+void audio::AudioSystem::flushPlayback() {
+  AudioEngine::instance().flushPlayback();
+}
+
+std::uint64_t audio::AudioSystem::playPcmStream(audio::PcmStreamMixer::Pull pull) {
+  return AudioEngine::instance().playPcmStream(std::move(pull));
+}
+void audio::AudioSystem::stopPcmStream(std::uint64_t stream) {
+  AudioEngine::instance().stopPcmStream(stream);
+}
+bool audio::AudioSystem::pcmStreamSettled(std::uint64_t stream) {
+  return AudioEngine::instance().pcmStreamSettled(stream);
 }

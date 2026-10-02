@@ -228,6 +228,23 @@ class FetchResponseBuilder {
       if (err != ESP_OK) {
         ESP_LOGE(logTag(), "perform failed for %s: %s%s", url_.c_str(), esp_err_to_name(err),
                  reuse ? " (reused connection went stale; retrying on a fresh one)" : "");
+        // An HTTP rejection is still a Fetch Response. ESP-IDF's automatic
+        // auth handler can return NOT_SUPPORTED for a Bearer 401 without a
+        // WWW-Authenticate challenge; do not turn that into opaque HTTP 0.
+        const int status = esp_http_client_get_status_code(client);
+        if (status >= 400) {
+          result.status = status;
+          readResponseHeaders(result, client);
+          if (g_body.size) result.body.assign(g_body.buffer, g_body.buffer + g_body.size);
+          // perform() delivers body bytes through HTTP_EVENT_ON_DATA without
+          // populating esp_http_client_read()'s cache. Reading that cache after
+          // an auth error dereferences raw_data=null with raw_len still set.
+          // Preserve the body already delivered to our event handler.
+          ESP_LOGW(logTag(), "HTTP rejection status=%d bytes=%u", status,
+            static_cast<unsigned>(result.body.size()));
+          dropCachedClient();
+          return result;
+        }
         dropCachedClient();
         if (reuse) {
           // The parked socket died inside the reuse window — retry exactly once

@@ -149,6 +149,13 @@ public:
     return t;
   }
 
+  bool operator==(const Easing &other) const
+  {
+    return kind_ == other.kind_ && bx1_ == other.bx1_ && by1_ == other.by1_ &&
+           bx2_ == other.bx2_ && by2_ == other.by2_ && steps_ == other.steps_ &&
+           stepPosition_ == other.stepPosition_ && custom_ == other.custom_;
+  }
+
 private:
   EasingKind kind_ = EasingKind::Linear;
   double bx1_ = 0.0, by1_ = 0.0, bx2_ = 1.0, by2_ = 1.0;

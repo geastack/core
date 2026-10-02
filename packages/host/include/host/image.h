@@ -22,6 +22,7 @@ struct GeaEmbeddedImage {
   int frameCount = 0;
   bool isAnimated = false;
 
+  bool decode() const;
   void play() const;
   void pause() const;
   void seek(int frame) const;

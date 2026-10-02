@@ -250,8 +250,12 @@ void AbsoluteLeafRefresh::refreshPositions()
 		// new extent. Percent-sized nodes keep the already-resolved layout box;
 		// the full layout pass owns recomputing them when their containing block
 		// changes.
-		if (n->computedStyle().width != kUnset) n->layout.width = n->computedStyle().width;
-		if (n->computedStyle().height != kUnset) n->layout.height = n->computedStyle().height;
+		// The style size is the content box unless box-sizing says otherwise;
+		// layout stores the border box, as the full layout pass does.
+		if (n->computedStyle().width != kUnset)
+			n->layout.width = clampBorderBoxSize(n->computedStyle(), contentSizeToBorderSize(n->computedStyle(), n->computedStyle().width, true), true);
+		if (n->computedStyle().height != kUnset)
+			n->layout.height = clampBorderBoxSize(n->computedStyle(), contentSizeToBorderSize(n->computedStyle(), n->computedStyle().height, false), false);
 		Node *p = &state.nodes[n->parent];
 		// Absolute siblings share their parent's padding box. The cache lasts
 		// only for this loop: visiting a different parent invalidates it before

@@ -1,6 +1,6 @@
 {
   "name": "@geastack/geatsc-plugin-gea",
-  "version": "0.1.13",
+  "version": "0.1.16",
   "description": "Gea IR backend plugin for geatsc.",
   "license": "Apache-2.0",
   "repository": {
@@ -33,7 +33,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "commonjs-wrapper.d.ts"
   ],
   "publishConfig": {
     "access": "public"
@@ -47,12 +49,13 @@
     "pretypecheck": "npm run architecture",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "devDependencies": {
-    "@types/node": "^22.15.3",
+  "dependencies": {
     "typescript": "^5.9.3"
   },
+  "devDependencies": {
+    "@types/node": "^22.15.3"
+  },
   "peerDependencies": {
-    "typescript": ">=5.9.3",
     "@geastack/compiler": ">=1.0.20"
   }
 }

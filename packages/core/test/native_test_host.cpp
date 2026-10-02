@@ -519,15 +519,30 @@ void OscillatorNode::connect(AudioDestinationProperty /*destination*/) const {}
 void OscillatorNode::connect(double /*destinationHandle*/) const {}
 void OscillatorNode::start(double /*when*/) const {}
 void OscillatorNode::stop(double /*when*/) const {}
+// The null host has no audio clock or worklet state; the context only carries its rate.
+AudioContext::AudioContext(double rate) : sampleRate(rate) {}
 OscillatorNode AudioContext::createOscillator() const { return OscillatorNode(2.0); }
 
 // Null HTMLAudioElement: the test host has no audio output; construction and
 // control succeed silently.
-HTMLAudioElement::HTMLAudioElement(const char *src) : src_(src ? src : "") {}
-HTMLAudioElement::HTMLAudioElement(const std::string &src) : src_(src) {}
-HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : nodeId_(node.id()) {}
-std::string HTMLAudioElement::src() const { return src_; }
-void HTMLAudioElement::setSrc(const std::string &src) { src_ = src; }
+struct HTMLAudioElement::State {
+  std::string src;
+  int nodeId = -1;
+};
+HTMLAudioElement HTMLAudioElement::create() {
+	HTMLAudioElement result;
+	result.state_ = std::make_shared<State>();
+	return result;
+}
+HTMLAudioElement HTMLAudioElement::create(const std::string &src) { return HTMLAudioElement(src); }
+HTMLAudioElement::HTMLAudioElement(const char *src) : HTMLAudioElement(std::string(src ? src : "")) {}
+HTMLAudioElement::HTMLAudioElement(const std::string &src) : state_(std::make_shared<State>()) { state_->src = src; }
+HTMLAudioElement::HTMLAudioElement(const gea::embedded::ui::NodeHandle &node) : state_(std::make_shared<State>()) { state_->nodeId = node.id(); }
+std::string HTMLAudioElement::src() const { return state_ ? state_->src : std::string{}; }
+void HTMLAudioElement::setSrc(const std::string &src) {
+  if (!state_) state_ = std::make_shared<State>();
+  state_->src = src;
+}
 bool HTMLAudioElement::play() const { return true; }
 void HTMLAudioElement::pause() const {}
 

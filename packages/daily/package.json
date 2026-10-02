@@ -1,0 +1,15 @@
+{
+  "name": "@geastack/daily",
+  "version": "0.0.1",
+  "description": "Typed Daily signaling for Gea's native WebRTC transport",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ]
+}

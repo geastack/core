@@ -20,6 +20,10 @@ for (const directory of ['.build-test', '.scratch', '.test-tmp', 'generated-outp
   assert.ok(COMPAT_STAGING_IGNORED_DIRECTORIES.includes(directory))
 }
 assert.equal(shouldIgnoreCompatStagingDirectory('components'), false)
+// CLI output can contain bundled vendor Workers with dynamic URLs. It is not
+// application source and must never reach native module discovery/staging.
+assert.equal(shouldIgnoreCompatStagingDirectory('.gea'), true)
+assert.equal(shouldIgnoreCompatStagingDirectory('.git'), true)
 
 const componentFromGeastackCore = `
 import { Component } from '@geastack/core'

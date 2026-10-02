@@ -12,6 +12,7 @@ struct FakeWsRecord {
 };
 extern std::vector<FakeWsRecord> fake_ws_records;
 extern void fake_ws_reset();
+extern std::string fake_ws_protocols;
 
 int main() {
   fake_ws_reset();
@@ -36,6 +37,10 @@ int main() {
 
   gea::host::websocket::destroy_handle(handle);
 
-  std::puts("websocket lifecycle OK");
+  const auto authenticated = gea::host::websocket::create_handle(std::string("wss://test/"),
+      std::vector<std::string>{"realtime", "example.token"});
+  assert(fake_ws_protocols == "realtime,example.token");
+  gea::host::websocket::destroy_handle(authenticated);
+  std::puts("websocket lifecycle and subprotocols OK");
   return 0;
 }

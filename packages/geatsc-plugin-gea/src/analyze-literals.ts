@@ -215,6 +215,17 @@ export function sourceLiteralResolver(files: Map<string, string>, initiallyOpaqu
   for (const source of sources.values()) index(source)
   const original = (node: ts.Expression): ts.Expression | undefined => expressions.get(`${node.getSourceFile().fileName}:${node.pos}:${node.end}`)
   return Object.assign((node: ts.Expression): string[] | undefined => resolve(original(node)), {
+    // String operations do not mutate stylesheets. Use the receiver's type
+    // rather than the finite-literal proof: parameters, mutable variables and
+    // imported return values can be strings without having known contents.
+    // Mixed string/object unions and unresolved any/unknown retain support.
+    isString(node: ts.Expression): boolean {
+      const at = original(node)
+      if (!at || initiallyOpaque) return false
+      const type = typeChecker().getTypeAtLocation(at)
+      const alternatives = type.isUnion() ? type.types : [type]
+      return alternatives.every(value => !!(value.flags & ts.TypeFlags.StringLike))
+    },
     // A boolean named animate is an application flag, never a Web Animations
     // API reference. Unknown or mixed types still retain animation support.
     isBoolean(node: ts.Expression): boolean {

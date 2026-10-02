@@ -169,5 +169,40 @@ int main()
 	if (!expectEqual(stretch.scale_y, 2000, "nonuniform y scale interpolation")) return 1;
 	if (!expectEqual(stretch.scale_z, 1500, "independent depth scale interpolation")) return 1;
 
+	// Conditional content is mounted after the application's first frame.
+	// New CSS tracks must start then, while unrelated renders preserve phase.
+	resetNativeHost(); StyleSheet::instance().clear();
+	auto &loading = StyleSheet::instance();
+	loading.registerKeyframeRule("bounce", 0, "transform", "translateY(0)");
+	loading.registerKeyframeRule("bounce", 400, "transform", "translateY(-7px)");
+	loading.registerKeyframeRule("bounce", 800, "transform", "translateY(0)");
+	loading.registerKeyframeRule("bounce", 1000, "transform", "translateY(0)");
+	loading.registerRule("dot", "animation", "bounce 900ms linear infinite");
+	loading.registerRule("second", "animation", "bounce 900ms linear 150ms infinite");
+	loading.registerRule("third", "animation", "bounce 900ms linear 300ms infinite");
+	loading.startCssAnimations(1000); // Initial tree contains no loading dots.
+	const int firstDot = Tree::instance().createView(); NodeHandle(firstDot).classList().set("dot");
+	const int secondDot = Tree::instance().createView(); NodeHandle(secondDot).classList().set("dot second");
+	const int thirdDot = Tree::instance().createView(); NodeHandle(thirdDot).classList().set("dot third");
+	loading.startCssAnimations(2000);
+	const auto count = gea::css::AnimationEngine::instance().count();
+	if (!expectTrue(count > 0, "late-mounted dots start")) return 1;
+	loading.startCssAnimations(2360); gea::css::AnimationEngine::instance().tick(2360);
+	if (!expectEqual(rstyle(Tree::instance().node(firstDot).style).transform_translate_y, -7, "late dot reaches bounce peak")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(secondDot).style).transform_translate_y, -4, "second dot stagger")) return 1;
+	if (!expectEqual(rstyle(Tree::instance().node(thirdDot).style).transform_translate_y, -1, "third dot stagger")) return 1;
+	NodeHandle(firstDot).classList().set("dot unrelated");
+	if (!expectEqual(rstyle(Tree::instance().node(firstDot).style).transform_translate_y, -7, "style recompute preserves current pose")) return 1;
+	loading.startCssAnimations(2540); gea::css::AnimationEngine::instance().tick(2540);
+	if (!expectEqual(rstyle(Tree::instance().node(firstDot).style).transform_translate_y, -4, "repeated frames preserve animation clock")) return 1;
+	if (!expectEqual(static_cast<int>(gea::css::AnimationEngine::instance().count()), static_cast<int>(count), "tracks are not duplicated")) return 1;
+	NodeHandle(firstDot).classList().set("plain");
+	if (!expectTrue(gea::css::AnimationEngine::instance().count() < count, "removing animation class cancels tracks")) return 1;
+	Tree::instance().removeNode(secondDot); Tree::instance().removeNode(thirdDot);
+	if (!expectEqual(static_cast<int>(gea::css::AnimationEngine::instance().count()), 0, "removed dots release all tracks")) return 1;
+	const int reused = Tree::instance().createView(); NodeHandle(reused).classList().set("dot");
+	loading.startCssAnimations(3000); loading.startCssAnimations(3360); gea::css::AnimationEngine::instance().tick(3360);
+	if (!expectEqual(rstyle(Tree::instance().node(reused).style).transform_translate_y, -7, "reused node slot starts a fresh timeline")) return 1;
+
 	return 0;
 }

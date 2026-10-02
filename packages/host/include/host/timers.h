@@ -28,12 +28,13 @@ struct AnimationFramePerfStats {
 
 double setTimeout(TimerCallback callback, double delayMs);
 double setInterval(TimerCallback callback, double delayMs);
-void clearTimeout(double id);
-void clearInterval(double id);
+void clearTimeout(double id = 0);
+void clearInterval(double id = 0);
 void resetScheduledTimers();
 
 double requestAnimationFrame(AnimationFrameCallback callback);
 void runAnimationFrameCallbacks(AnimationFrameTimestamp timestampMs);
+const char *animationFrameCallbackStage();
 void resetAnimationFrameCallbacks();
 void animationFramePerfStatsReset();
 AnimationFramePerfStats animationFramePerfStatsRead();
