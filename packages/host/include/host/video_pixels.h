@@ -169,6 +169,10 @@ class VideoPixels {
     void* result = nullptr;
     if (posix_memalign(&result, 16, (bytes + 15) & ~std::size_t(15)) != 0) return nullptr;
     return static_cast<std::uint16_t*>(result);
+#elif defined(_WIN32)
+    // The MSVC CRT has no aligned_alloc: its aligned blocks come from
+    // _aligned_malloc and must go back through _aligned_free (see release).
+    return static_cast<std::uint16_t*>(_aligned_malloc((bytes + 15) & ~std::size_t(15), 16));
 #else
     return static_cast<std::uint16_t*>(::aligned_alloc(16, (bytes + 15) & ~std::size_t(15)));
 #endif
@@ -177,6 +181,8 @@ class VideoPixels {
   static void release(std::uint16_t* pointer) noexcept {
 #ifdef ESP_PLATFORM
     heap_caps_free(pointer);
+#elif defined(_WIN32)
+    _aligned_free(pointer);
 #else
     std::free(pointer);
 #endif
