@@ -66,8 +66,11 @@ const embeddedFontExtraCodepoints = [
   0x00a9, // copyright
   0x00ab, // left double guillemet
   0x00b0, // degree
+  0x00b1, // plus-minus
+  0x00b5, // micro sign (µs, µF)
   0x00b7, // middle dot (common UI separator; only appears in dynamic strings)
   0x00bb, // right double guillemet
+  0x00d7, // multiplication sign (close buttons, 2× scale)
   0x2010, // hyphen
   0x2011, // non-breaking hyphen
   0x2013, // en dash
