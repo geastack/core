@@ -1211,8 +1211,15 @@ public:
 			}
 			pen += gap + marginL + cn.layout.width + marginR;
 
-			if (soleRun && cn.type == NodeType::Text && !hasExplicitWidth(cn)) {
-				// text-align needs a box as wide as the line box to align inside.
+			// text-align needs a box as wide as the line box to align inside — but
+			// ONLY the alignments that actually consume the extra width. `start`
+			// (alignedOffset's 0 case) draws at the box's left edge either way, so
+			// widening is invisible, while the widened box becomes the run's
+			// layout.width and feeds the parent's shrink-to-fit: a `<button>Hours`
+			// with no width stopped hugging its label and took the whole row (the
+			// weather forecast tabs, which then pushed `Days` off-screen).
+			const bool alignmentNeedsLineBox = cn.style.text_align == 1 || cn.style.text_align == 2;
+			if (soleRun && cn.type == NodeType::Text && alignmentNeedsLineBox && !hasExplicitWidth(cn)) {
 				const int full = contentW - marginL - marginR;
 				if (full > cn.layout.width) cn.layout.width = clampInt16(full);
 			}
