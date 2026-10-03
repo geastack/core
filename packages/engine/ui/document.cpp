@@ -4,6 +4,7 @@
 #include "internal.h"
 
 #include "display.h"
+#include "display_underlay.h"
 #include "tree_internal.h"
 
 #include <algorithm>
@@ -365,3 +366,47 @@ void Document::addEventListener(const char *type, gea::framework::events::EventL
 }
 
 }  // namespace gea::embedded::ui
+
+namespace
+{
+	gea::framework::display::Underlay::Paint underlayPaint = nullptr;
+	void *underlayUser = nullptr;
+	int underlayX0 = 0, underlayY0 = 0, underlayX1 = -1, underlayY1 = -1;
+}  // namespace
+
+bool gea::framework::display::Underlay::composited()
+{
+	return !gea::embedded::ui::Document::directCanvasContextUsed() && gea::embedded::ui::Tree::instance().mountedRoot() >= 0;
+}
+
+void gea::framework::display::Underlay::set(Paint paint, void *user, int x0, int y0, int x1, int y1)
+{
+	underlayPaint = paint;
+	underlayUser = user;
+	underlayX0 = x0;
+	underlayY0 = y0;
+	underlayX1 = x1;
+	underlayY1 = y1;
+}
+
+void gea::framework::display::Underlay::clear()
+{
+	underlayPaint = nullptr;
+	underlayUser = nullptr;
+}
+
+bool gea::framework::display::Underlay::active()
+{
+	return underlayPaint != nullptr;
+}
+
+void gea::framework::display::Underlay::paint(int x0, int y0, int x1, int y1)
+{
+	if (!underlayPaint) return;
+	x0 = std::max(x0, underlayX0);
+	y0 = std::max(y0, underlayY0);
+	x1 = std::min(x1, underlayX1);
+	y1 = std::min(y1, underlayY1);
+	if (x0 > x1 || y0 > y1) return;
+	underlayPaint(x0, y0, x1, y1, underlayUser);
+}

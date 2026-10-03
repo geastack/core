@@ -2,6 +2,7 @@
 #include "absolute_leaf_refresh.h"
 #include "dirty_regions.h"
 #include "display.h"
+#include "display_underlay.h"
 #include "document.h"
 #include "internal.h"
 #include "layout_snapshot.h"
@@ -1675,6 +1676,7 @@ namespace gea::embedded::ui
 		DisplayList::instance().clear();
 		DisplayList::instance().recordNode(root, 255);
 		DisplayList::instance().weldTransformedFaces();
+		gea::framework::display::Underlay::paint(0, 0, width - 1, height - 1);
 		DisplayList::instance().replay();
 		state.displayListDirty = false;
 		state.displayListRebuildStructural = false; // this path already repainted everything
@@ -3058,6 +3060,7 @@ namespace gea::embedded::ui
 					gea::platform::display::Display::resetClip();
 					gea::platform::display::Display::setAlpha(255);
 					gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
+					gea::framework::display::Underlay::paint(r->x0, r->y0, r->x1, r->y1);
 					DisplayList::instance().replay();
 					gea::platform::display::Display::popClip();
 				}
