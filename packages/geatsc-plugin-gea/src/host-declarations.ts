@@ -89,6 +89,13 @@ const geaDeviceInfoHostMethods = ['deviceId', 'platform', 'chipModel', 'chipArch
 const geaGea3dHostMethods = [
   'createBuffer', 'bufferDataF32', 'bufferDataU32', 'beginFrame',
   'ambientLight', 'directionalLight', 'drawElements', 'endFrame', 'stat',
+  // scene graph
+  'deleteBuffer', 'createGeometry', 'deleteGeometry', 'geometryBuffers',
+  'createMaterial', 'deleteMaterial', 'materialSet', 'createNode',
+  'deleteNode', 'nodeParent', 'nodeTransform', 'nodeMatrix', 'nodeFlags',
+  'nodeGeometry', 'nodeInstances', 'nodeLight', 'nodeLightTarget',
+  'cameraProjection', 'sceneEnvironment', 'renderOptions', 'renderTarget',
+  'createSurface', 'drawScene', 'raycast', 'rayResult',
 ]
 const geaGea3dDeclarations = [...geaHostDeclarations, '#include "gea3d_native.h"']
 const geaMemoryHostMethods = [
