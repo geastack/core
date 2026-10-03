@@ -56,6 +56,6 @@
     "@types/node": "^22.15.3"
   },
   "peerDependencies": {
-    "@geastack/compiler": ">=1.0.20"
+    "@geastack/compiler": ">=1.0.21"
   }
 }

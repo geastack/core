@@ -65,8 +65,8 @@
     "@babel/types": "^7.23.0",
     "@geajs/core": "1.5.1",
     "@geajs/vite-plugin": "1.5.0",
-    "@geastack/compiler": "^1.0.20",
-    "@geastack/geatsc-plugin-gea": "^0.1.15",
+    "@geastack/compiler": "^1.0.21",
+    "@geastack/geatsc-plugin-gea": "^0.1.17",
     "opentype.js": "^2.0.0",
     "vite": "^8.0.0"
   }
