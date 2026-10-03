@@ -57,6 +57,6 @@
   },
   "sideEffects": false,
   "dependencies": {
-    "@geastack/core": "^0.1.36"
+    "@geastack/core": "^0.1.37"
   }
 }
