@@ -119,6 +119,7 @@ export type {
   HttpModule,
   HttpRequestHandler,
   HttpServer,
+  ImageData565,
   ImageProps,
   ImageSource,
   IncomingMessage,

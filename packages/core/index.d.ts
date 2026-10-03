@@ -653,6 +653,13 @@ export interface ImageProps extends DataAttributes {
   onFrame?: (frame: number) => void
 }
 
+export interface ImageData565 {
+  readonly width: number
+  readonly height: number
+  /** Row-major RGB565 pixels, `width * height` long. */
+  readonly data16: Uint16Array
+}
+
 export interface GeaEmbeddedImage {
   readonly width: number
   readonly height: number
@@ -1008,6 +1015,14 @@ export interface CanvasRenderingContext2D {
   drawImageCircle(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
   drawImageRotated90CW(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
   drawImageTiledX(image: GeaEmbeddedImage, dx: number, dy: number, width: number): void
+  /**
+   * An RGB565 pixel buffer the app writes directly:
+   * `img.data16[i] = ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3)`.
+   * Allocate once, write every frame, then draw with `putImageData`.
+   */
+  createImageData565(width: number, height: number): ImageData565
+  /** Draw an `ImageData565` with its top-left corner at (dx, dy): one blit. */
+  putImageData(image: ImageData565, dx: number, dy: number): void
   flush(): void
   beginBatch(): void
   endBatch(): void

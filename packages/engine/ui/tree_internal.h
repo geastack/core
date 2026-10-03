@@ -9,6 +9,14 @@
 #include <string>
 #include <string_view>
 
+// Framebuffer-free retained rendering: each dirty band is rasterized into the
+// display's internal-RAM DMA chunk and streamed to the panel while the next
+// band renders (tree_render.cpp). A board capability, set by the target's
+// CMake; off everywhere else, where it compiles out entirely.
+#ifndef GEA_EMBEDDED_DISPLAY_BANDED_UI
+#define GEA_EMBEDDED_DISPLAY_BANDED_UI 0
+#endif
+
 namespace gea::embedded::ui {
 
 class Tree {
@@ -206,5 +214,18 @@ void releaseRareData(int node);          // frees the block back to the pool
 // screenshot, working around the fused flush leaving the PSRAM framebuffer stale.
 // Caller must hold AppState::lock(). Returns false for canvas/present apps.
 bool renderRetainedSnapshotRgb565(std::uint16_t *dst, int width, int height);
+
+#if GEA_EMBEDDED_DISPLAY_BANDED_UI
+// Banded UI mode: the retained tree renders each dirty band straight into the
+// display's DMA staging buffers, so the PSRAM framebuffer does not hold the
+// frame on the panel. True once a banded frame has been presented (until a
+// full repaint into the framebuffer makes it current again) — a screenshot
+// must then re-render instead of copying the framebuffer.
+bool retainedFramebufferStale();
+// Set while a banded raster callback replays into a staging chunk. The 2-core
+// replay split must not engage then: the worker core's canvas is bound to the
+// framebuffer, not to the chunk.
+extern bool gBandedRasterActive;
+#endif
 
 }  // namespace gea::embedded::ui

@@ -138,6 +138,16 @@ extern "C" __attribute__((weak)) void *gea_display_command_buffer(int *cap_comma
 	return nullptr;
 }
 
+// Banded UI mode (GEA_EMBEDDED_DISPLAY_BANDED_UI) replays into a DMA staging
+// chunk the shared canvas is temporarily bound to; the worker core's canvas
+// still addresses the framebuffer, so no replay/fill may split across cores
+// while a band rasterizes. Constant true everywhere else.
+#if GEA_EMBEDDED_DISPLAY_BANDED_UI
+#define GEA_RENDER_SPLIT_ALLOWED (!gea::embedded::ui::gBandedRasterActive)
+#else
+#define GEA_RENDER_SPLIT_ALLOWED 1
+#endif
+
 // 2nd-core fill offload. The target may provide a worker pinned to the other CPU;
 // submit() hands it a row band (returns false if there's no worker), wait() joins.
 // Weak defaults = no worker, so the fill runs entirely on the calling core
@@ -3287,7 +3297,7 @@ int gLastScrollUiFrame = -1000;
 					gSplitN = gInlineN = gSplitRows = gInlineRows = gMaxRows = 0;
 				}
 			};
-			if (rows >= kMinRowsToSplit)
+			if (GEA_RENDER_SPLIT_ALLOWED && rows >= kMinRowsToSplit)
 			{
 				const int mid = (y0 + y1) >> 1;
 				struct Trampoline
@@ -7911,7 +7921,7 @@ int gLastScrollUiFrame = -1000;
 				constexpr int kMinPixelsToSplitFrame = GEA_EMBEDDED_RENDER_PARALLEL_MIN_PIXELS;
 				const int regionW = x1 - x0 + 1;
 				const int regionH = y1 - y0 + 1;
-				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && allowSplit && regionW > 0 && regionH >= kMinRowsToSplitFrame &&
+				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && GEA_RENDER_SPLIT_ALLOWED && allowSplit && regionW > 0 && regionH >= kMinRowsToSplitFrame &&
 						regionW * regionH >= kMinPixelsToSplitFrame)
 				{
 					int mainRows = (regionH * gea_render_parallel_main_share_permille()) / 1000;
@@ -8285,7 +8295,7 @@ int gLastScrollUiFrame = -1000;
 				constexpr int kMinPixelsToSplitFrame = GEA_EMBEDDED_RENDER_PARALLEL_MIN_PIXELS;
 				const int regionW = x1 - x0 + 1;
 				const int regionH = y1 - y0 + 1;
-				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && allowSplit && regionW > 0 && regionH >= kMinRowsToSplitFrame &&
+				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && GEA_RENDER_SPLIT_ALLOWED && allowSplit && regionW > 0 && regionH >= kMinRowsToSplitFrame &&
 						regionW * regionH >= kMinPixelsToSplitFrame)
 				{
 					int mainRows = (regionH * gea_render_parallel_main_share_permille()) / 1000;
@@ -8801,7 +8811,7 @@ int gLastScrollUiFrame = -1000;
 				constexpr int kMaxSplitRegions = 32;
 				constexpr int kMinRowsToSplitFrame = GEA_EMBEDDED_RENDER_PARALLEL_MIN_ROWS;
 				constexpr int kMinPixelsToSplitFrame = GEA_EMBEDDED_RENDER_PARALLEL_MIN_PIXELS;
-				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && allowSplit && count <= kMaxSplitRegions)
+				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && GEA_RENDER_SPLIT_ALLOWED && allowSplit && count <= kMaxSplitRegions)
 				{
 					int minY = 0x7fffffff, maxY = -0x7fffffff;
 					int totalArea = 0;

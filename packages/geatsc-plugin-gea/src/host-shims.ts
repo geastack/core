@@ -89,6 +89,9 @@ const IMAGE_RECEIVER_TYPES = [
   "LoadedImage",
 ];
 
+// Receiver type names for `gea_ir::ImageData565` (ctx.createImageData565).
+const IMAGE_DATA_565_RECEIVER_TYPES = ["gea_ir::ImageData565", "ImageData565"];
+
 const DISPLAY_NO_THROW_METHODS = [
   "getBrightness",
   "setBrightness",
@@ -396,6 +399,10 @@ export function createGeaHostShims(): HostShimDefinitions {
       // images — including a `GeaEmbeddedImage[]` tile cache — flow as native
       // structs with no `gea_cpp_value` boxing. `canvasImageId` reads `.id`.
       GeaEmbeddedImage: "gea::host::GeaEmbeddedImage",
+      // `ctx.createImageData565(w, h)` yields this record (width, height, the
+      // `data16` Uint16Array, and the image-store slot it is drawn through);
+      // see `imageData565InteropSource` in cpp-ir.ts.
+      ImageData565: "gea_ir::ImageData565",
       // `touch.read()` yields this concrete {touching,x,y} struct. Without the
       // native mapping the binding boxes it to a gea_cpp_value whose fields the
       // host struct can't expose, so `sample.touching` reads nullish — the device
@@ -1863,12 +1870,29 @@ export function createGeaHostShims(): HostShimDefinitions {
           returnType: "double",
           receiverTypes: IMAGE_RECEIVER_TYPES,
         },
+        {
+          emit: "({receiver}).width",
+          returnType: "double",
+          receiverTypes: IMAGE_DATA_565_RECEIVER_TYPES,
+        },
       ],
       height: [
         {
           emit: "({receiver}).height",
           returnType: "double",
           receiverTypes: IMAGE_RECEIVER_TYPES,
+        },
+        {
+          emit: "({receiver}).height",
+          returnType: "double",
+          receiverTypes: IMAGE_DATA_565_RECEIVER_TYPES,
+        },
+      ],
+      data16: [
+        {
+          emit: "({receiver}).data16",
+          returnType: "gea::Ref<gea::TypedArray<std::uint16_t>>",
+          receiverTypes: IMAGE_DATA_565_RECEIVER_TYPES,
         },
       ],
       frameCount: [
@@ -2339,6 +2363,8 @@ export function createGeaHostShims(): HostShimDefinitions {
       drawImageRotated90CW:
         "gea_ir::canvasDrawImageRotated90CW($receiver, $args)",
       drawImageTiledX: "gea_ir::canvasDrawImageTiledX($receiver, $args)",
+      createImageData565: "gea_ir::canvasCreateImageData565($receiver, $args)",
+      putImageData: "gea_ir::canvasPutImageData($receiver, $args)",
       flush: "gea_ir::canvasFlush($receiver /*$args*/)",
       beginBatch: "gea_ir::canvasBeginBatch($receiver /*$args*/)",
       endBatch: "gea_ir::canvasEndBatch($receiver /*$args*/)",
@@ -2354,6 +2380,7 @@ export function createGeaHostShims(): HostShimDefinitions {
       "fillCirclesRgb565",
       "fillCirclesRgb565Uniform",
       "fillTrianglesRgb565Sorted",
+      "putImageData",
       "beginPath",
       "arc",
       "moveTo",

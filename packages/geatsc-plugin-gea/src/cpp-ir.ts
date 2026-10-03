@@ -1470,6 +1470,95 @@ export interface CanvasInteropOptions {
   readonly boxedValueModel?: boolean;
 }
 
+// `ctx.createImageData565(w, h)` / `ctx.putImageData(img, x, y)`: an app-owned
+// RGB565 pixel buffer (`img.data16`, plain RGB565 whatever the panel wants)
+// drawn with one blit. The buffer is registered with the image store once, so
+// `putImageData` is an ordinary `drawImage` of that slot. Where the target's
+// native pixel already IS plain RGB565 the store reads `data16`'s own memory
+// (no copy); otherwise (a byte-swapped panel, a 24/32-bit or grayscale
+// framebuffer) a native staging buffer owned by the store is filled from
+// `data16` on each put.
+//
+// These helpers sit in `gea_ir`, which is emitted BEFORE gea_runtime.h, where
+// `gea::TypedArray` is only a name. So the record is a class template whose
+// pixel member is dependent: nothing is instantiated -- and the type need not
+// be complete -- until generated code after the runtime include uses it.
+const imageData565InteropSource: string[] = [
+  "}  // namespace gea_ir",
+  '#include "image.h"',
+  '#include "memory.h"',
+  "namespace gea {",
+  "template <typename T> class TypedArray;",
+  "template <typename T> struct Ref;",
+  "template <typename T, typename... Arguments> inline Ref<T> makeRef(Arguments&&... arguments);",
+  "}  // namespace gea",
+  "namespace gea_ir {",
+  "",
+  "template <typename D = void>",
+  "struct ImageData565T {",
+  "  using array_type = gea::TypedArray<std::conditional_t<std::is_void_v<D>, std::uint16_t, std::uint16_t>>;",
+  "  using pixels_type = gea::Ref<array_type>;",
+  "  double width = 0;",
+  "  double height = 0;",
+  "  pixels_type data16;",
+  "  int id = -1;",
+  "  gea::framework::graphics::pixel::native_t *staging = nullptr;",
+  "};",
+  "using ImageData565 = ImageData565T<>;",
+  "",
+  "inline constexpr bool imageData565ZeroCopy =",
+  "    std::is_same_v<gea::framework::graphics::pixel::native_t, std::uint16_t> && !GEA_EMBEDDED_PIXEL_PANEL_ENDIAN;",
+  "",
+  "template <typename W, typename H>",
+  "inline ImageData565T<std::conditional_t<true, void, W>> canvasCreateImageData565(gea::embedded::ui::CanvasRenderingContext2D &, const W &w, const H &h) {",
+  "  ImageData565T<std::conditional_t<true, void, W>> out;",
+  "  const int width = canvasInt(w) > 0 ? canvasInt(w) : 0;",
+  "  const int height = canvasInt(h) > 0 ? canvasInt(h) : 0;",
+  "  out.width = width;",
+  "  out.height = height;",
+  "  using __gea_image_t = decltype(out);",
+  "  out.data16 = gea::makeRef<typename __gea_image_t::array_type>(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));",
+  "  if (width == 0 || height == 0) return out;",
+  "  auto &store = gea::framework::graphics::ImageStore::instance();",
+  "  if constexpr (imageData565ZeroCopy) {",
+  "    out.id = store.registerBuffer(reinterpret_cast<gea::framework::graphics::pixel::native_t *>((*out.data16).data()), width, height);",
+  "  } else {",
+  "    const std::size_t count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);",
+  "    out.staging = static_cast<gea::framework::graphics::pixel::native_t *>(",
+  "        gea::framework::memory::Allocator::allocatePreferSpiram(count * sizeof(gea::framework::graphics::pixel::native_t), 128));",
+  "    if (out.staging) {",
+  "      for (std::size_t i = 0; i < count; ++i) out.staging[i] = gea::framework::graphics::pixel::toNative(0);",
+  "      out.id = store.registerBuffer(out.staging, width, height, -1, true);",
+  "      if (out.id < 0) {",
+  "        gea::framework::memory::Allocator::free(out.staging);",
+  "        out.staging = nullptr;",
+  "      }",
+  "    }",
+  "  }",
+  "  return out;",
+  "}",
+  "",
+  "template <typename D, typename X, typename Y>",
+  "inline void canvasPutImageData(gea::embedded::ui::CanvasRenderingContext2D &ctx, const ImageData565T<D> &image, const X &x, const Y &y) {",
+  "  if (image.id < 0) return;",
+  "  if constexpr (!imageData565ZeroCopy) {",
+  "    if (!image.staging) return;",
+  "    const std::uint16_t *src = (*image.data16).data();",
+  "    const std::size_t count = (*image.data16).size();",
+  "    gea::framework::graphics::pixel::native_t *dst = image.staging;",
+  "    // `toNative` is a format conversion only; the panel byte-swap of a 16-bit",
+  "    // framebuffer is `fromRgb565`'s.",
+  "    if constexpr (std::is_same_v<gea::framework::graphics::pixel::native_t, std::uint16_t>) {",
+  "      for (std::size_t i = 0; i < count; ++i) dst[i] = gea::framework::graphics::pixel::fromRgb565(src[i]);",
+  "    } else {",
+  "      for (std::size_t i = 0; i < count; ++i) dst[i] = gea::framework::graphics::pixel::toNative(src[i]);",
+  "    }",
+  "  }",
+  "  ctx.drawImage(image.id, canvasInt(x), canvasInt(y));",
+  "}",
+  "",
+];
+
 export function directCanvasInteropSource(
   usesCanvas: boolean,
   options: CanvasInteropOptions = {},
@@ -1757,6 +1846,7 @@ export function directCanvasInteropSource(
     "  ctx.drawImageTiledX(canvasImageId(image), canvasInt(x), canvasInt(y), canvasInt(w));",
     "}",
     "",
+    ...imageData565InteropSource,
     "inline void canvasFlush(gea::embedded::ui::CanvasRenderingContext2D &ctx) {",
     "  ctx.flush();",
     "}",
@@ -2503,6 +2593,7 @@ function canvasInteropSource(usesCanvas: boolean, directCanvas: boolean): string
           "  ctx.drawImageTiledX(canvasImageId(image), canvasInt(x), canvasInt(y), canvasInt(w));",
           "}",
           "",
+          ...imageData565InteropSource,
           "inline void canvasFlush(gea::embedded::ui::CanvasRenderingContext2D &ctx) {",
           "  ctx.flush();",
           "}",
