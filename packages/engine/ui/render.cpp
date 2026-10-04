@@ -8466,17 +8466,23 @@ int gLastScrollUiFrame = -1000;
 				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, base);
 			}
 
-			// Painter's-algorithm occlusion cull: the LAST node (in draw order) whose
-			// first command is an opaque fill or image covering the region occludes
-			// everything drawn before it — the replay walk can start there. A page-sized
-			// UI (e-reader page turn) stacks several full-bleed paper fills under the
-			// content; each is a full PSRAM write of the region, so skipping the covered
-			// ones removes ~100 ms/turn on a 540×960 GRAY4 panel. Conservative: the
-			// cover must be untransformed, at full effective alpha,
-			// its node's first command, never blinking, and not shrunk by any ancestor
-			// overflow clip smaller than the region.
+			// Painter's-algorithm occlusion cull: the LAST node (in draw order) from
+			// which the opaque fills or images that open the nodes drawn from there on
+			// cover the region together occludes everything drawn before it — the
+			// replay walk can start there. A page-sized UI (e-reader page turn) stacks
+			// several full-bleed paper fills under the content; each is a full PSRAM
+			// write of the region, so skipping the covered ones removes ~100 ms/turn on
+			// a 540×960 GRAY4 panel. A carousel mid-slide shows two side-by-side
+			// full-height images over a page background that neither covers alone but
+			// both do together. Conservative: a cover must span the region's full
+			// height, be untransformed, at full effective alpha, its node's first
+			// command, never blinking, and is narrowed to every ancestor overflow clip.
 			static int GEA_RENDER_HOT_SRAM occlusionCullStartIndex(int x0, int y0, int x1, int y1, Node *nodes, int nodeCount)
 			{
+				constexpr int kMaxCovers = 8;
+				int coverX0[kMaxCovers];
+				int coverX1[kMaxCovers];
+				int coverCount = 0;
 				for (int oi = state.drawNodeOrderCount - 1; oi > 0; --oi)
 				{
 					const int node_id = state.drawNodeOrder[oi];
@@ -8489,22 +8495,42 @@ int gLastScrollUiFrame = -1000;
 					if (start < 0 || end <= start || end > state.commandCount)
 						continue;
 					const DisplayCommand &c = state.commands[start];
-					bool covers = false;
+					int spanX0 = 0;
+					int spanX1 = -1;
 					if (c.type == DisplayCommandType::FillRect)
-						covers = c.fill.x <= x0 && c.fill.y <= y0 &&
-						         c.fill.x + c.fill.w - 1 >= x1 && c.fill.y + c.fill.h - 1 >= y1;
+					{
+						if (c.fill.y <= y0 && c.fill.y + c.fill.h - 1 >= y1)
+						{
+							spanX0 = c.fill.x;
+							spanX1 = c.fill.x + c.fill.w - 1;
+						}
+					}
 					else if (c.type == DisplayCommandType::BlitImage)
-						covers = c.blit.pixels && !c.blit.alpha &&
-						         c.blit.dx <= x0 && c.blit.dy <= y0 &&
-						         c.blit.dx + c.blit.sourceWidth - 1 >= x1 &&
-						         c.blit.dy + c.blit.sourceHeight - 1 >= y1;
-					if (!covers || c.textClipOwner >= 0)
+					{
+						if (c.blit.pixels && !c.blit.alpha && c.blit.dy <= y0 &&
+								c.blit.dy + c.blit.sourceHeight - 1 >= y1)
+						{
+							spanX0 = c.blit.dx;
+							spanX1 = c.blit.dx + c.blit.sourceWidth - 1;
+						}
+					}
+					if (spanX0 < x0)
+						spanX0 = x0;
+					if (spanX1 > x1)
+						spanX1 = x1;
+					if (spanX0 > spanX1 || c.textClipOwner >= 0)
 						continue;
-					// The recorded paint bbox must also cover the region (guards against
+					// The recorded paint bbox must also cover the span (guards against
 					// any recording that paints less than the command rect suggests).
-					if (c.bx > x0 || c.by > y0 || c.bx + c.bw - 1 < x1 || c.by + c.bh - 1 < y1)
+					if (c.by > y0 || c.by + c.bh - 1 < y1)
 						continue;
-					// Read node state only for a command large enough to cover the region.
+					if (spanX0 < c.bx)
+						spanX0 = c.bx;
+					if (spanX1 > c.bx + c.bw - 1)
+						spanX1 = c.bx + c.bw - 1;
+					if (spanX0 > spanX1)
+						continue;
+					// Read node state only for a command that covers part of the region.
 					Node *n = &nodes[node_id];
 					if (n->computedStyle().display == 1)
 						continue;
@@ -8518,9 +8544,16 @@ int gLastScrollUiFrame = -1000;
 						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (clip.layout.x > x0 || clip.layout.y > y0 ||
-								clip.layout.x + clip.layout.width - 1 < x1 ||
-								clip.layout.y + clip.layout.height - 1 < y1)
+						if (clip.layout.y > y0 || clip.layout.y + clip.layout.height - 1 < y1)
+						{
+							clipped = true;
+							break;
+						}
+						if (spanX0 < clip.layout.x)
+							spanX0 = clip.layout.x;
+						if (spanX1 > clip.layout.x + clip.layout.width - 1)
+							spanX1 = clip.layout.x + clip.layout.width - 1;
+						if (spanX0 > spanX1)
 						{
 							clipped = true;
 							break;
@@ -8528,7 +8561,29 @@ int gLastScrollUiFrame = -1000;
 					}
 					if (clipped)
 						continue;
-					return oi;
+					if (spanX0 == x0 && spanX1 == x1)
+						return oi;
+					if (coverCount == kMaxCovers)
+						return 0;
+					coverX0[coverCount] = spanX0;
+					coverX1[coverCount] = spanX1;
+					++coverCount;
+					// Covered when [x0, x1] can be walked left to right through the spans.
+					int reach = x0;
+					for (bool advanced = true; advanced && reach <= x1;)
+					{
+						advanced = false;
+						for (int i = 0; i < coverCount; ++i)
+						{
+							if (coverX0[i] <= reach && coverX1[i] >= reach)
+							{
+								reach = coverX1[i] + 1;
+								advanced = true;
+							}
+						}
+					}
+					if (reach > x1)
+						return oi;
 				}
 				return 0;
 			}

@@ -547,73 +547,94 @@ static inline bool roundedRectSampleContains(int x,
 	return true;
 }
 
-static inline int roundedRectCoverage(int x,
-                                      int y,
-                                      int w,
-                                      int h,
-                                      int tl,
-                                      int tr,
-                                      int br,
-                                      int bl,
-                                      int px,
-                                      int py,
-                                      int samples,
-                                      float kernelWidth)
+// `roundedRectSampleContains` over a pixel's whole sample grid, as a bit
+// mask (bit iy * samples + ix). The same zone order and the same float
+// expressions, but each corner's scaled x and y distances are taken once per
+// sample column and row, not once per sample, and only for the corners the
+// grid reaches.
+static inline std::uint32_t roundedRectSampleMask(int x,
+                                                  int y,
+                                                  int w,
+                                                  int h,
+                                                  int tl,
+                                                  int tr,
+                                                  int br,
+                                                  int bl,
+                                                  int px,
+                                                  int py,
+                                                  int samples,
+                                                  float kernelWidth)
 {
-	int coverage = 0;
-	for (int iy = 0; iy < samples; ++iy) {
-		const float oy = antialiasOffsetWithKernel(iy, samples, kernelWidth);
-		for (int ix = 0; ix < samples; ++ix) {
-			const float ox = antialiasOffsetWithKernel(ix, samples, kernelWidth);
-			if (roundedRectSampleContains(x, y, w, h, tl, tr, br, bl,
-			                              static_cast<float>(px) + ox,
-			                              static_cast<float>(py) + oy))
-				++coverage;
+	const float left = static_cast<float>(x);
+	const float top = static_cast<float>(y);
+	const float right = left + static_cast<float>(w);
+	const float bottom = top + static_cast<float>(h);
+	float sx[4], sy[4];
+	for (int i = 0; i < samples; ++i) {
+		sx[i] = static_cast<float>(px) + antialiasOffsetWithKernel(i, samples, kernelWidth);
+		sy[i] = static_cast<float>(py) + antialiasOffsetWithKernel(i, samples, kernelWidth);
+	}
+	// Corner order matches the sample test: tl, tr, br, bl.
+	const int radii[4]{tl, tr, br, bl};
+	const bool leftSide[4]{true, false, false, true};
+	const bool topSide[4]{true, true, false, false};
+	std::uint32_t zoneX[4]{}, zoneY[4]{};
+	float dxs[4][4], dys[4][4];
+	for (int c = 0; c < 4; ++c) {
+		const int radius = radii[c];
+		if (radius <= 0) continue;
+		const float rf = static_cast<float>(radius);
+		const float cx = leftSide[c] ? left + rf : right - rf;
+		const float cy = topSide[c] ? top + rf : bottom - rf;
+		for (int i = 0; i < samples; ++i) {
+			if (leftSide[c] ? sx[i] < cx : sx[i] >= cx) zoneX[c] |= 1u << i;
+			if (topSide[c] ? sy[i] < cy : sy[i] >= cy) zoneY[c] |= 1u << i;
+		}
+		if (!zoneX[c] || !zoneY[c]) {
+			zoneX[c] = zoneY[c] = 0;
+			continue;
+		}
+		for (int i = 0; i < samples; ++i) {
+			dxs[c][i] = (sx[i] - cx) / rf;
+			dys[c][i] = (sy[i] - cy) / rf;
 		}
 	}
-	return coverage;
+	std::uint32_t mask = 0;
+	for (int iy = 0; iy < samples; ++iy) {
+		if (sy[iy] < top || sy[iy] >= bottom) continue;
+		for (int ix = 0; ix < samples; ++ix) {
+			if (sx[ix] < left || sx[ix] >= right) continue;
+			bool inside = true;
+			for (int c = 0; c < 4; ++c) {
+				if (!((zoneX[c] >> ix) & 1u) || !((zoneY[c] >> iy) & 1u)) continue;
+				const float dx = dxs[c][ix];
+				const float dy = dys[c][iy];
+				inside = dx * dx + dy * dy <= 1.0f;
+				break;
+			}
+			if (inside) mask |= 1u << (iy * samples + ix);
+		}
+	}
+	return mask;
 }
 
-static inline int roundedRectStrokeCoverage(int x,
-                                            int y,
-                                            int w,
-                                            int h,
-                                            int tl,
-                                            int tr,
-                                            int br,
-                                            int bl,
-                                            int lineWidth,
-                                            int px,
-                                            int py,
-                                            int samples,
-                                            float kernelWidth)
+static inline int roundedRectCoverage(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                      int px, int py, int samples, float kernelWidth)
 {
-	const int innerX = x + lineWidth;
-	const int innerY = y + lineWidth;
+	return __builtin_popcount(roundedRectSampleMask(x, y, w, h, tl, tr, br, bl, px, py, samples, kernelWidth));
+}
+
+static inline int roundedRectStrokeCoverage(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                            int lineWidth, int px, int py, int samples, float kernelWidth)
+{
+	std::uint32_t band = roundedRectSampleMask(x, y, w, h, tl, tr, br, bl, px, py, samples, kernelWidth);
 	const int innerW = w - lineWidth * 2;
 	const int innerH = h - lineWidth * 2;
-	const int innerTl = std::max(0, tl - lineWidth);
-	const int innerTr = std::max(0, tr - lineWidth);
-	const int innerBr = std::max(0, br - lineWidth);
-	const int innerBl = std::max(0, bl - lineWidth);
-	const bool hasInner = innerW > 0 && innerH > 0;
-	int coverage = 0;
-	for (int iy = 0; iy < samples; ++iy) {
-		const float oy = antialiasOffsetWithKernel(iy, samples, kernelWidth);
-		for (int ix = 0; ix < samples; ++ix) {
-			const float ox = antialiasOffsetWithKernel(ix, samples, kernelWidth);
-			const float sx = static_cast<float>(px) + ox;
-			const float sy = static_cast<float>(py) + oy;
-			if (!roundedRectSampleContains(x, y, w, h, tl, tr, br, bl, sx, sy)) continue;
-			if (hasInner &&
-			    roundedRectSampleContains(innerX, innerY, innerW, innerH,
-			                              innerTl, innerTr, innerBr, innerBl,
-			                              sx, sy))
-				continue;
-			++coverage;
-		}
-	}
-	return coverage;
+	if (band && innerW > 0 && innerH > 0)
+		band &= ~roundedRectSampleMask(x + lineWidth, y + lineWidth, innerW, innerH, std::max(0, tl - lineWidth),
+		                               std::max(0, tr - lineWidth), std::max(0, br - lineWidth),
+		                               std::max(0, bl - lineWidth), px, py, samples, kernelWidth);
+	return __builtin_popcount(band);
 }
 
 // Whether every sample in [x0, x1] x [y0, y1] passes
@@ -690,6 +711,39 @@ static inline int roundedRectStrokeCoverageDecided(int x, int y, int w, int h, i
 	                                            std::max(0, tr - lineWidth), std::max(0, br - lineWidth),
 	                                            std::max(0, bl - lineWidth), x0, y0, x1, y1);
 	return inner < 0 ? -1 : inner ? 0 : sampleCount;
+}
+
+// The columns of row `py` whose every sample passes `roundedRectSampleContains`,
+// as [*inX0, *inX1] (empty when *inX0 > *inX1). Conservative: a column it
+// leaves out is merely sampled. Each corner insets the row by its chord at the
+// sample row deepest into it, widened by a margin far beyond the per-sample
+// test's float rounding, so whichever zone the test picks, the sample is
+// inside that zone's circle.
+static inline void roundedRectInsideSpan(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                         int py, float o0, float o1, int *inX0, int *inX1)
+{
+	*inX0 = 0;
+	*inX1 = -1;
+	const float left = static_cast<float>(x);
+	const float top = static_cast<float>(y);
+	const float right = left + static_cast<float>(w);
+	const float bottom = top + static_cast<float>(h);
+	const float y0 = static_cast<float>(py) + o0;
+	const float y1 = static_cast<float>(py) + o1;
+	if (y0 < top || y1 >= bottom) return;
+	auto inset = [](int radius, float depth) {
+		if (radius <= 0 || depth <= 0.0f) return 0.0f;
+		const float r = static_cast<float>(radius);
+		const float chord2 = r * r - depth * depth;
+		return r - (chord2 > 0.0f ? std::sqrt(chord2) : 0.0f) + 0.01f;
+	};
+	const float leftInset = std::max(inset(tl, top + static_cast<float>(tl) - y0),
+	                                 inset(bl, y1 - (bottom - static_cast<float>(bl))));
+	const float rightInset = std::max(inset(tr, top + static_cast<float>(tr) - y0),
+	                                  inset(br, y1 - (bottom - static_cast<float>(br))));
+	// px + o0 >= left + leftInset and px + o1 < right - rightInset.
+	*inX0 = static_cast<int>(std::ceil(left + leftInset - o0));
+	*inX1 = static_cast<int>(std::ceil(right - rightInset - o1)) - 1;
 }
 
 static inline int coverageAlpha(int alpha, int coverage, int sampleCount)
@@ -3765,7 +3819,23 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 		};
 
 		if (coverageSampleFill) {
-			for (int px = anyX0; px <= anyX1; ++px) paintCoverageEdge(px);
+			// Columns every sample covers take the whole fill alpha: one span,
+			// not a coverage test per pixel.
+			int inX0, inX1;
+			roundedRectInsideSpan(x, y, w, h, tl, tr, br, bl, sy, firstOffset, lastOffset, &inX0, &inX1);
+			if (inX0 < anyX0) inX0 = anyX0;
+			if (inX1 > anyX1) inX1 = anyX1;
+			if (inX0 > inX1) {
+				for (int px = anyX0; px <= anyX1; ++px) paintCoverageEdge(px);
+				continue;
+			}
+			for (int px = anyX0; px < inX0; ++px) paintCoverageEdge(px);
+			fillSpanGlobalAlpha(rowToPhysical(sy), inX0, inX1 - inX0 + 1, color);
+			if (inX0 < dirtyX0) dirtyX0 = inX0;
+			if (sy < dirtyY0) dirtyY0 = sy;
+			if (inX1 > dirtyX1) dirtyX1 = inX1;
+			if (sy > dirtyY1) dirtyY1 = sy;
+			for (int px = inX1 + 1; px <= anyX1; ++px) paintCoverageEdge(px);
 			continue;
 		} else if (useAntialias) {
 			if (sx0 <= sx1) {
@@ -3866,8 +3936,40 @@ void Canvas::strokeRoundedRect(int x, int y, int w, int h, int tl, int tr, int b
 		const int alpha = globalAlpha_;
 		const float firstOffset = antialiasOffsetWithKernel(0, aaSamples, kernelWidth);
 		const float lastOffset = antialiasOffsetWithKernel(aaSamples - 1, aaSamples, kernelWidth);
+		const int innerW = w - lw * 2;
+		const int innerH = h - lw * 2;
+		const bool hasInner = innerW > 0 && innerH > 0;
 		for (int sy = row0; sy <= row1; ++sy) {
-			for (int sx = col0; sx <= col1; ++sx) {
+			// Only the band needs a per-pixel test. Columns wholly inside the
+			// inner shape are the hole, and on a row no inner sample reaches,
+			// columns wholly inside the outer shape are the band at full alpha.
+			const int rowX0 = col0;
+			const int rowX1 = col1;
+			int holeX0 = 0, holeX1 = -1;
+			if (hasInner)
+				roundedRectInsideSpan(x + lw, y + lw, innerW, innerH, std::max(0, tl - lw), std::max(0, tr - lw),
+				                      std::max(0, br - lw), std::max(0, bl - lw), sy, firstOffset, lastOffset,
+				                      &holeX0, &holeX1);
+			int solidX0 = 0, solidX1 = -1;
+			const float rowY0 = static_cast<float>(sy) + firstOffset;
+			const float rowY1 = static_cast<float>(sy) + lastOffset;
+			if (!hasInner || rowY1 < static_cast<float>(y + lw) || rowY0 >= static_cast<float>(y + lw + innerH))
+				roundedRectInsideSpan(x, y, w, h, tl, tr, br, bl, sy, firstOffset, lastOffset, &solidX0, &solidX1);
+			for (int sx = rowX0; sx <= rowX1; ++sx) {
+				if (sx >= holeX0 && sx <= holeX1) {
+					sx = holeX1;
+					continue;
+				}
+				if (sx >= solidX0 && sx <= solidX1) {
+					const int end = std::min(solidX1, rowX1);
+					fillSpanGlobalAlpha(rowToPhysical(sy), sx, end - sx + 1, color);
+					if (sx < dirtyX0) dirtyX0 = sx;
+					if (sy < dirtyY0) dirtyY0 = sy;
+					if (end > dirtyX1) dirtyX1 = end;
+					if (sy > dirtyY1) dirtyY1 = sy;
+					sx = end;
+					continue;
+				}
 				int coverage = roundedRectStrokeCoverageDecided(x, y, w, h, tl, tr, br, bl, lw, sx, sy,
 				                                                firstOffset, lastOffset, aaSampleCount);
 				if (coverage < 0)
