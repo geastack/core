@@ -616,71 +616,79 @@ static inline int roundedRectStrokeCoverage(int x,
 	return coverage;
 }
 
-// Whether no sample in [x0, x1] x [y0, y1] can fall in a corner zone of the
-// rounded rect, where `roundedRectSampleContains` tests the arc; elsewhere it
-// is a plain bounds test.
-static inline bool roundedRectSamplesAvoidCorners(int x, int y, int w, int h, int tl, int tr, int br, int bl,
-                                                  float x0, float y0, float x1, float y1)
-{
-	const float left = static_cast<float>(x);
-	const float top = static_cast<float>(y);
-	const float right = left + static_cast<float>(w);
-	const float bottom = top + static_cast<float>(h);
-	if (tl > 0 && x0 < left + static_cast<float>(tl) && y0 < top + static_cast<float>(tl)) return false;
-	if (tr > 0 && x1 >= right - static_cast<float>(tr) && y0 < top + static_cast<float>(tr)) return false;
-	if (br > 0 && x1 >= right - static_cast<float>(br) && y1 >= bottom - static_cast<float>(br)) return false;
-	if (bl > 0 && x0 < left + static_cast<float>(bl) && y1 >= bottom - static_cast<float>(bl)) return false;
-	return true;
-}
-
-// 1 when every sample in the span is inside the rect's bounds, 0 when none
-// is, -1 when it straddles an edge.
-static inline int rectSamplesInside(int x, int y, int w, int h, float x0, float y0, float x1, float y1)
+// Whether every sample in [x0, x1] x [y0, y1] passes
+// `roundedRectSampleContains` (1), none does (0), or it varies (-1). Outside
+// the corner zones the shape is its bounds; a span wholly inside one corner
+// zone is decided by its nearest and farthest distance from that corner's
+// centre, with a margin far wider than the float rounding of the per-sample
+// test. Zones are taken in the sample test's order, so overlapping zones
+// resolve the same way.
+static inline int roundedRectSamplesDecided(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                            float x0, float y0, float x1, float y1)
 {
 	const float left = static_cast<float>(x);
 	const float top = static_cast<float>(y);
 	const float right = left + static_cast<float>(w);
 	const float bottom = top + static_cast<float>(h);
 	if (x1 < left || x0 >= right || y1 < top || y0 >= bottom) return 0;
-	if (x0 >= left && x1 < right && y0 >= top && y1 < bottom) return 1;
-	return -1;
+	if (x0 < left || x1 >= right || y0 < top || y1 >= bottom) return -1;
+	auto circle = [&](float cx, float cy, int radius) {
+		const float r2 = static_cast<float>(radius) * static_cast<float>(radius);
+		const float nx = cx < x0 ? x0 - cx : cx > x1 ? cx - x1 : 0.0f;
+		const float ny = cy < y0 ? y0 - cy : cy > y1 ? cy - y1 : 0.0f;
+		const float fx = std::max(std::fabs(x0 - cx), std::fabs(x1 - cx));
+		const float fy = std::max(std::fabs(y0 - cy), std::fabs(y1 - cy));
+		if (fx * fx + fy * fy <= r2 * 0.999f) return 1;
+		if (nx * nx + ny * ny >= r2 * 1.001f) return 0;
+		return -1;
+	};
+	if (tl > 0 && x0 < left + static_cast<float>(tl) && y0 < top + static_cast<float>(tl)) {
+		if (x1 >= left + static_cast<float>(tl) || y1 >= top + static_cast<float>(tl)) return -1;
+		return circle(left + static_cast<float>(tl), top + static_cast<float>(tl), tl);
+	}
+	if (tr > 0 && x1 >= right - static_cast<float>(tr) && y0 < top + static_cast<float>(tr)) {
+		if (x0 < right - static_cast<float>(tr) || y1 >= top + static_cast<float>(tr)) return -1;
+		return circle(right - static_cast<float>(tr), top + static_cast<float>(tr), tr);
+	}
+	if (br > 0 && x1 >= right - static_cast<float>(br) && y1 >= bottom - static_cast<float>(br)) {
+		if (x0 < right - static_cast<float>(br) || y0 < bottom - static_cast<float>(br)) return -1;
+		return circle(right - static_cast<float>(br), bottom - static_cast<float>(br), br);
+	}
+	if (bl > 0 && x0 < left + static_cast<float>(bl) && y1 >= bottom - static_cast<float>(bl)) {
+		if (x1 >= left + static_cast<float>(bl) || y0 < bottom - static_cast<float>(bl)) return -1;
+		return circle(left + static_cast<float>(bl), bottom - static_cast<float>(bl), bl);
+	}
+	return 1;
 }
 
-// `roundedRectCoverage` without sampling where its answer is decided: a
-// pixel whose samples all avoid the corner zones and lie wholly inside (or
-// wholly outside) the rect is fully covered (or not at all). -1 = sample it.
+// `roundedRectCoverage` without sampling where its answer is decided. -1 =
+// sample it. `o0`/`o1` are the first and last sample offsets.
 static inline int roundedRectCoverageDecided(int x, int y, int w, int h, int tl, int tr, int br, int bl,
                                              int px, int py, float o0, float o1, int sampleCount)
 {
 	const float x0 = static_cast<float>(px) + o0, x1 = static_cast<float>(px) + o1;
 	const float y0 = static_cast<float>(py) + o0, y1 = static_cast<float>(py) + o1;
-	const int inside = rectSamplesInside(x, y, w, h, x0, y0, x1, y1);
-	if (inside == 0) return 0;
-	if (inside < 0 || !roundedRectSamplesAvoidCorners(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1)) return -1;
-	return sampleCount;
+	const int decided = roundedRectSamplesDecided(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1);
+	return decided < 0 ? -1 : decided ? sampleCount : 0;
 }
 
 // `roundedRectStrokeCoverage` without sampling where its answer is decided:
-// away from the corners both contours are rectangles, so a pixel whose
-// samples all lie inside the outer one and outside the inner one is fully
-// covered, and one whose samples all miss the band is not. -1 = sample it.
-// `o0`/`o1` are the first and last sample offsets.
+// a pixel whose samples are all inside the outer contour and all outside the
+// inner one is fully covered, one whose samples all miss the band is not.
+// -1 = sample it. `o0`/`o1` are the first and last sample offsets.
 static inline int roundedRectStrokeCoverageDecided(int x, int y, int w, int h, int tl, int tr, int br, int bl,
                                                    int lineWidth, int px, int py, float o0, float o1, int sampleCount)
 {
 	const float x0 = static_cast<float>(px) + o0, x1 = static_cast<float>(px) + o1;
 	const float y0 = static_cast<float>(py) + o0, y1 = static_cast<float>(py) + o1;
-	const int outer = rectSamplesInside(x, y, w, h, x0, y0, x1, y1);
-	if (outer == 0) return 0;
-	if (outer < 0 || !roundedRectSamplesAvoidCorners(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1)) return -1;
+	const int outer = roundedRectSamplesDecided(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1);
+	if (outer <= 0) return outer;
 	const int innerW = w - lineWidth * 2;
 	const int innerH = h - lineWidth * 2;
 	if (innerW <= 0 || innerH <= 0) return sampleCount;
-	const int innerX = x + lineWidth, innerY = y + lineWidth;
-	if (!roundedRectSamplesAvoidCorners(innerX, innerY, innerW, innerH, std::max(0, tl - lineWidth), std::max(0, tr - lineWidth),
-	                                    std::max(0, br - lineWidth), std::max(0, bl - lineWidth), x0, y0, x1, y1))
-		return -1;
-	const int inner = rectSamplesInside(innerX, innerY, innerW, innerH, x0, y0, x1, y1);
+	const int inner = roundedRectSamplesDecided(x + lineWidth, y + lineWidth, innerW, innerH, std::max(0, tl - lineWidth),
+	                                            std::max(0, tr - lineWidth), std::max(0, br - lineWidth),
+	                                            std::max(0, bl - lineWidth), x0, y0, x1, y1);
 	return inner < 0 ? -1 : inner ? 0 : sampleCount;
 }
 
