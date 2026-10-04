@@ -61,6 +61,9 @@ struct ImageSlot {
 	pixel::native_t *pixels = nullptr;
 	std::uint8_t *alpha = nullptr;
 	bool ownsPixels = false;
+	// Registered by the app (registerBuffer): the app writes these pixels in
+	// place between frames, so the same pointer does not mean the same image.
+	bool mutablePixels = false;
 
 	void *gifDecoder = nullptr;
 	std::uint8_t *gifData = nullptr;
@@ -97,6 +100,11 @@ public:
 	// transfers ownership to the store (freed on dispose) — used by the iOS
 	// camera capture, which hands over a freshly-allocated RGBA8888 still.
 	int registerBuffer(pixel::native_t *pixels, int width, int height, int preferredSlot = -1, bool takeOwnership = false);
+
+	// True when `pixels` point into a registerBuffer() image, whose content the
+	// app rewrites in place. The present diff never treats such an image as
+	// unchanged from the previous frame.
+	bool pixelsMayChange(const pixel::native_t *pixels) const;
 
 	int width(int id) const;
 	int height(int id) const;

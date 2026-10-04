@@ -781,6 +781,20 @@ bool ImageStore::isAnimated(int id) const { const ImageSlot *image = slot(id); r
 ImageFormat ImageStore::format(int id) const { const ImageSlot *image = slot(id); return image ? image->format : ImageFormat::Unknown; }
 bool ImageStore::playing(int id) const { const ImageSlot *image = slot(id); return image && image->playing; }
 int ImageStore::currentFrame(int id) const { const ImageSlot *image = slot(id); return image ? image->currentFrame : 0; }
+bool ImageStore::pixelsMayChange(const pixel::native_t *pixels) const
+{
+	if (!pixels) return false;
+	for (int i = 0; i < kImageMax; i++) {
+		// Anywhere inside the buffer: a dirty-rect putImageData draws rows that
+		// start part-way into it (CanvasRenderingContext2D::drawPixelRows).
+		const ImageSlot &image = images_[i];
+		if (!used_[i] || !image.mutablePixels || !image.pixels) continue;
+		const std::size_t count = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height);
+		if (pixels >= image.pixels && pixels < image.pixels + count) return true;
+	}
+	return false;
+}
+
 const pixel::native_t *ImageStore::currentPixels(int id) const { materializeDeferred(id); const ImageSlot *image = slot(id); return image ? image->pixels : nullptr; }
 const std::uint8_t *ImageStore::currentAlpha(int id) const { materializeDeferred(id); const ImageSlot *image = slot(id); return image ? image->alpha : nullptr; }
 
@@ -901,6 +915,7 @@ int ImageStore::registerBuffer(pixel::native_t *pixels, int width, int height, i
 	image.frameCount = 1;
 	image.pixels = pixels;
 	image.ownsPixels = takeOwnership;
+	image.mutablePixels = true;
 	image.loopCount = 0;
 	image.playing = false;
 	used_[id] = true;

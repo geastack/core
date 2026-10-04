@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <memory>
+
 #include "canvas.h"
 #include "node.h"
 
@@ -87,6 +89,45 @@ void canvasPerfStatsReset();
 CanvasPerfStats canvasPerfStatsRead();
 void canvasTotalsRead(int *begin, int *end, int *fillRect, int *drawImage, int *nullPixels, int *presentOk);
 
+// Everything a 2D context carries between calls: the open batch and its
+// recorded commands, styles, the current path. One per canvas, shared by every
+// CanvasRenderingContext2D for it -- `getContext('2d')` hands back the same
+// object each time, so a context passed to a helper (a by-value copy in
+// generated code) must draw into, and style, the same batch as the original.
+struct CanvasContextState {
+	gea::framework::graphics::Canvas *batchCanvas_ = nullptr;
+	std::vector<CanvasPresentCommand> presentCommands_;
+	std::size_t presentCommandCount_ = 0;
+	gea::framework::graphics::pixel::native_t fillStyle_ = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+	gea::framework::graphics::pixel::native_t strokeStyle_ = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+	std::string fillStyleSource_;
+	std::string strokeStyleSource_;
+	double arcX_ = 0.0;
+	double arcY_ = 0.0;
+	double arcRadius_ = 0.0;
+	std::vector<double> pathX_;
+	std::vector<double> pathY_;
+	// Start index in pathX_/pathY_ of each subpath (one per moveTo), so a path
+	// can hold MULTIPLE rings/contours — required for concave polygons with
+	// holes (even-odd fill) and multi-part strokes.
+	std::vector<int> pathStarts_;
+	double lineWidth_ = 1.0;
+	float fontScale_ = 1.0f;
+	int fontFamilyId_ = -1;
+	int fontSizePx_ = 16;
+	// Cache the last CSS font string so setFont can skip the parse + FontRegistry
+	// lookups when an app re-sets the same font every frame (e.g. an FPS readout).
+	std::string lastFontStr_;
+	std::uint8_t globalAlpha_ = 255;
+	int batchDepth_ = 0;
+	bool fillStyleCached_ = false;
+	bool strokeStyleCached_ = false;
+	bool hasArc_ = false;
+	bool pathClosed_ = false;
+	bool presentRecording_ = false;
+	bool batchDirty_ = false;
+};
+
 class CanvasRenderingContext2D {
 public:
 	// A non-explicit default ctor is required so this type can be a by-value
@@ -95,8 +136,12 @@ public:
 	// which copy-`{}`-initializes each field — and copy-init cannot select an
 	// `explicit` constructor. `explicit` is kept on the int form so a bare
 	// `int` still can't implicitly convert to a context.
-	CanvasRenderingContext2D() : nodeId_(-1) {}
-	explicit CanvasRenderingContext2D(int nodeId) : nodeId_(nodeId) {}
+	CanvasRenderingContext2D() : nodeId_(-1), state_(stateFor(-1)) {}
+	explicit CanvasRenderingContext2D(int nodeId) : nodeId_(nodeId), state_(stateFor(nodeId)) {}
+	// The shared state of canvas `nodeId`; -1 is the direct-canvas display.
+	static std::shared_ptr<CanvasContextState> stateFor(int nodeId);
+	// Drops canvas `nodeId`'s state, so a node id reused later starts clean.
+	static void releaseState(int nodeId);
 
 	bool valid() const { return nodeId_ >= 0; }
 	// The absence state `valid()` already answers, in the spelling a test uses.
@@ -197,6 +242,11 @@ public:
 	void fillText(const std::string &text, int x, int y);
 	void fillText(const std::string &text, double x, double y);
 	void drawImage(int imageId, int dx, int dy);
+	// Draws `height` rows of `width` opaque pixels, row r read from
+	// `pixels + r * stride`, at (dx, dy). The rows must stay valid until the
+	// frame is presented: they are recorded, not copied. This is a sub-rectangle
+	// of a larger buffer -- putImageData's dirty rectangle -- without a copy.
+	void drawPixelRows(const gea::framework::graphics::pixel::native_t *pixels, int stride, int width, int height, int dx, int dy);
 	void drawImage(int imageId, double dx, double dy);
 	void drawImage(int imageId, int dx, int dy, int dw, int dh);
 	void drawImage(int imageId, double dx, double dy, double dw, double dh);
@@ -310,37 +360,7 @@ private:
 	void markDrawDirty();
 
 		int nodeId_;
-		gea::framework::graphics::Canvas *batchCanvas_ = nullptr;
-		std::vector<CanvasPresentCommand> presentCommands_;
-		std::size_t presentCommandCount_ = 0;
-		gea::framework::graphics::pixel::native_t fillStyle_ = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
-	gea::framework::graphics::pixel::native_t strokeStyle_ = gea::framework::graphics::pixel::nativeColor(255, 255, 255);
-	std::string fillStyleSource_;
-	std::string strokeStyleSource_;
-	double arcX_ = 0.0;
-	double arcY_ = 0.0;
-	double arcRadius_ = 0.0;
-	std::vector<double> pathX_;
-	std::vector<double> pathY_;
-	// Start index in pathX_/pathY_ of each subpath (one per moveTo), so a path
-	// can hold MULTIPLE rings/contours — required for concave polygons with
-	// holes (even-odd fill) and multi-part strokes.
-	std::vector<int> pathStarts_;
-	double lineWidth_ = 1.0;
-	float fontScale_ = 1.0f;
-	int fontFamilyId_ = -1;
-	int fontSizePx_ = 16;
-	// Cache the last CSS font string so setFont can skip the parse + FontRegistry
-	// lookups when an app re-sets the same font every frame (e.g. an FPS readout).
-	std::string lastFontStr_;
-	std::uint8_t globalAlpha_ = 255;
-	int batchDepth_ = 0;
-	bool fillStyleCached_ = false;
-	bool strokeStyleCached_ = false;
-	bool hasArc_ = false;
-	bool pathClosed_ = false;
-	bool presentRecording_ = false;
-	bool batchDirty_ = false;
+		std::shared_ptr<CanvasContextState> state_;
 };
 
 class CanvasElement : public NodeHandle {

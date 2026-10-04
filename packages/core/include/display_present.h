@@ -2,6 +2,7 @@
 
 #include "canvas.h"
 #include "display.h"
+#include "image.h"
 
 #include <algorithm>
 #include <array>
@@ -284,6 +285,13 @@ inline void addCommandBounds(const Command &command, Rect *rects, int *count, in
 	addRect(rects, count, capacity, commandBounds(command, width, height), width, height);
 }
 
+// An app-registered buffer (native surface, ImageData565, video frame) is
+// rewritten in place, so equal pointers say nothing about equal pixels.
+inline bool imagePixelsStable(const Command &command)
+{
+	return !gea::framework::graphics::ImageStore::instance().pixelsMayChange(command.pixels);
+}
+
 inline bool commandsEqual(const Command &a, const Command &b)
 {
 	if (a.type != b.type || a.alpha != b.alpha) return false;
@@ -321,15 +329,15 @@ inline bool commandsEqual(const Command &a, const Command &b)
 		                       sizeof(gea::framework::graphics::TriangleEntry)) == 0;
 	}
 	case Type::DrawImage:
-		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels &&
+		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels && imagePixelsStable(a) &&
 		       a.srcWidth == b.srcWidth && a.srcHeight == b.srcHeight && a.x == b.x && a.y == b.y;
 	case Type::DrawImageScaled:
 	case Type::DrawImageRotated90CW:
-		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels &&
+		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels && imagePixelsStable(a) &&
 		       a.srcWidth == b.srcWidth && a.srcHeight == b.srcHeight &&
 		       a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
 	case Type::DrawImageTiledX:
-		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels &&
+		return a.pixels == b.pixels && a.alphaPixels == b.alphaPixels && imagePixelsStable(a) &&
 		       a.srcWidth == b.srcWidth && a.srcHeight == b.srcHeight &&
 		       a.x == b.x && a.y == b.y && a.w == b.w;
 	case Type::FillText:
@@ -574,8 +582,17 @@ inline bool frameHasOpaqueBase(const Frame &frame, int width, int height)
 	const Command &first = frame.commands.front();
 	using Type = gea::platform::display::DisplayPresentCommandType;
 	if (first.type == Type::Clear) return true;
-	if (first.type != Type::FillRectRgb565 || first.alpha != 255) return false;
-	const Rect bounds = rectFromBox(first.x, first.y, first.w, first.h);
+	if (first.alpha != 255) return false;
+	Rect bounds;
+	if (first.type == Type::FillRectRgb565) {
+		bounds = rectFromBox(first.x, first.y, first.w, first.h);
+	} else if (first.type == Type::DrawImage && first.alphaPixels == nullptr) {
+		// A full-panel opaque image (putImageData of a whole-screen buffer)
+		// paints every pixel, the same as a full-panel fill.
+		bounds = rectFromBox(first.x, first.y, first.srcWidth, first.srcHeight);
+	} else {
+		return false;
+	}
 	return bounds.x0 <= 0 && bounds.y0 <= 0 && bounds.x1 >= width - 1 && bounds.y1 >= height - 1;
 }
 

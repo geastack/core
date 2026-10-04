@@ -1023,6 +1023,16 @@ export interface CanvasRenderingContext2D {
   createImageData565(width: number, height: number): ImageData565
   /** Draw an `ImageData565` with its top-left corner at (dx, dy): one blit. */
   putImageData(image: ImageData565, dx: number, dy: number): void
+  /** Draw only the dirty rectangle of an `ImageData565`, at (dx + dirtyX, dy + dirtyY). */
+  putImageData(
+    image: ImageData565,
+    dx: number,
+    dy: number,
+    dirtyX: number,
+    dirtyY: number,
+    dirtyWidth: number,
+    dirtyHeight: number,
+  ): void
   flush(): void
   beginBatch(): void
   endBatch(): void
