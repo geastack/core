@@ -1299,6 +1299,20 @@ public:
 			long s = std::lroundf(v * 8.0f);
 			return (int16_t)(s < -32768 ? -32768 : (s > 32767 ? 32767 : s));
 		};
+		// No transform or perspective anywhere up the chain: every ancestor's
+		// coefficients are the identity about its origin, which returns integer
+		// corners exactly. Skip gathering them -- a cache probe and coefficient
+		// fill per ancestor, ~80 us for a 6-deep chain on the ESP32-S31, paid by
+		// every untransformed image and text box re-recorded while anything else
+		// on screen animates a transform.
+		if (!hasTransformChain(node, usePrevious)) {
+			for (int i = 0; i < 4; i++) {
+				xs[i] = (int16_t)std::lroundf(points[i].x);
+				ys[i] = (int16_t)std::lroundf(points[i].y);
+				if (xs8) { xs8[i] = fx8(points[i].x); ys8[i] = fx8(points[i].y); }
+			}
+			return;
+		}
 		auto &state = treeState();
 		const int perspectiveNode = nearestPerspectiveNode(node, usePrevious);
 		const NodeTransformCache *chain[kMaxChainDepth];

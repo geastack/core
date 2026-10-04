@@ -4293,14 +4293,18 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 
 	// Absolute descendants positioned against a containing block OUTSIDE the
 	// scope mix coordinate spaces (the global containing-block pass runs in
-	// pre-resolve relative space) — those trees must take the full path.
+	// pre-resolve relative space) — those trees must take the full path. The
+	// scope itself is exempt: its own position is restored below, never
+	// recomputed, and a size change is rejected by the dims check. Testing it
+	// here refused every absolutely placed scope (Ember's temperature readout,
+	// then its screen), so each tick of a number fell back to a full relayout.
 	for (int i = 0; i < nodeCount; ++i) {
 		const Node &n = nodes[i];
+		if (i == scope) continue;
 		if (n.parent < 0 || !isOutOfFlowPosition(n.computedStyle().position) || isDisplayNone(n.computedStyle())) continue;
 		if (!inScope(i)) continue;
 		const int containing = containingBlockForAbsoluteNode(i, treeRoot, nodes);
 		if (containing >= 0 && !inScope(containing)) {
-			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeScopedRejectReason = 3);
 			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeScopedRejectNode = i);
 			return false;
 		}

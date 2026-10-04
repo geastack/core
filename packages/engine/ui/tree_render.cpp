@@ -2014,6 +2014,24 @@ namespace gea::embedded::ui
 			}
 			return -1;
 		}
+		// A transformed parent re-records its whole subtree (its descendants'
+		// corners all move). When no descendant paints anything -- the empty slot
+		// of `{done ? <img/> : null}` inside a pulsing dot -- there is nothing to
+		// move, and the node's own commands re-record in place like a leaf's. A
+		// descendant that starts painting cannot splice into its empty range, so
+		// rerecordNodeCommands refuses and the frame still falls back to a full
+		// record. Ember's flow dot otherwise rebuilt the whole list every frame.
+		bool descendantsPaintNothing(TreeState &state, int node)
+		{
+			for (int child = state.nodes[node].first_child; child >= 0; child = state.nodes[child].next_sibling)
+			{
+				if (DisplayList::instance().nodeCommandCount(child) != 0)
+					return false;
+				if (!descendantsPaintNothing(state, child))
+					return false;
+			}
+			return true;
+		}
 	} // namespace
 
 	void Tree::refresh(int root, int width, int height)
@@ -2411,7 +2429,8 @@ namespace gea::embedded::ui
 					continue;
 				if (layoutSizeChangeNeedsCommandRerecord(*n))
 					state.nodeCommandDirty[i] = 1;
-				if (state.nodeCommandDirty[i] && n->render.transform_dirty && n->first_child >= 0)
+				if (state.nodeCommandDirty[i] && n->render.transform_dirty && n->first_child >= 0 &&
+						!descendantsPaintNothing(state, i))
 				{
 					rebuild_for_transform = 1;
 					continue;

@@ -480,8 +480,11 @@ void Tree::markCanvasDirty(int id)
 	if (id < 0 || id >= state.nodeCount) return;
 	const auto *surface = state.canvases.find(id);
 	if (surface && surface->displayBacked()) return;
+	// Pixels only: drawing never changes the element's box, so no layout_dirty.
+	// It used to be set here, and a canvas redrawn every frame (Ember's heat
+	// arc) then cost a full relayout of the whole screen per frame (~5.5 ms of
+	// 163 layout calls on the S31) for a box that never moved.
 	state.nodes[id].render.dirty = 1;
-	state.nodes[id].render.layout_dirty = 1;
 #if GEA_CSS_SCROLLING
 	state.nodes[id].render.non_scroll_dirty = 1;
 #endif

@@ -1827,19 +1827,133 @@ int gLastScrollUiFrame = -1000;
 
 		int fillQuadCoverage(const int *xs, const int *ys, int x, int y, int samples)
 		{
+			// Every sample lies within half a pixel of the pixel centre, so a pixel
+			// whose centre clears each edge by that half-pixel reach (plus a bound on
+			// the float rounding of the per-sample test) classifies all of its samples
+			// at once. Exact integer math in half-pixel units; only the pixels an edge
+			// actually crosses pay for the per-sample test, which is unchanged. Small
+			// quads were ~7 us per pixel on the S31 doing every sample.
+			int positive = 0, negative = 0;
+			for (int i = 0; i < 4; ++i)
+			{
+				const int j = (i + 1) & 3;
+				const std::int64_t dx = static_cast<std::int64_t>(xs[j]) - xs[i];
+				const std::int64_t dy = static_cast<std::int64_t>(ys[j]) - ys[i];
+				const std::int64_t ry = 2 * static_cast<std::int64_t>(y) + 1 - 2 * static_cast<std::int64_t>(ys[i]);
+				const std::int64_t rx = 2 * static_cast<std::int64_t>(x) + 1 - 2 * static_cast<std::int64_t>(xs[i]);
+				const std::int64_t adx = dx < 0 ? -dx : dx;
+				const std::int64_t ady = dy < 0 ? -dy : dy;
+				const std::int64_t centre = dx * ry - dy * rx;
+				const std::int64_t reach = adx + ady;
+				const std::int64_t rounding = ((adx * ((ry < 0 ? -ry : ry) + 1) + ady * ((rx < 0 ? -rx : rx) + 1)) >> 20) + 1;
+				const std::int64_t margin = reach + rounding;
+				if (centre > margin)
+					positive |= 1 << i;
+				else if (centre < -margin)
+					negative |= 1 << i;
+			}
+			if (positive && negative)
+				return 0;
+			if (positive == 0xf || negative == 0xf)
+				return samples * samples;
+			float offsets[16];
+			const int n = std::min(samples, 16);
+			for (int i = 0; i < n; ++i)
+				offsets[i] = antialiasOffset(i, samples);
 			int coverage = 0;
 			for (int iy = 0; iy < samples; ++iy)
 			{
-				const float oy = antialiasOffset(iy, samples);
+				const float oy = iy < 16 ? offsets[iy] : antialiasOffset(iy, samples);
 				for (int ix = 0; ix < samples; ++ix)
 				{
-					const float ox = antialiasOffset(ix, samples);
+					const float ox = ix < 16 ? offsets[ix] : antialiasOffset(ix, samples);
 					if (convexQuadContainsFast(xs, ys, static_cast<float>(x) + ox, static_cast<float>(y) + oy))
 						++coverage;
 				}
 			}
 			return coverage;
 		}
+
+		// Per-command preparation for fillQuadCoverage. With 2x2 or 4x4 sampling the
+		// sample offsets are exact binary fractions, and while every edge's cross
+		// product stays below 2^21 the float test in convexQuadContainsFast never
+		// rounds — so the same signs come out of exact integers in 1/(2n) pixel
+		// units. Each edge is then a linear function stepped across the sample grid:
+		// a pixel it clears entirely costs two compares, and only the edges that
+		// cross the pixel fill in per-sample sign bits. Thin rotated quads (dial
+		// ticks) are almost all edge pixels; they were ~3 us per pixel on the S31.
+		struct QuadCoverage
+		{
+			const int *xs;
+			const int *ys;
+			int samples;
+			bool exact;
+			int a[4], b[4];
+			unsigned full;
+
+			QuadCoverage(const int *qx, const int *qy, int n, int x0, int y0, int x1, int y1)
+					: xs(qx), ys(qy), samples(n), exact(false), full(0)
+			{
+				if (n != 2 && n != 4)
+					return;
+				std::int64_t worst = 0;
+				for (int i = 0; i < 4; ++i)
+				{
+					const int j = (i + 1) & 3;
+					const std::int64_t dx = static_cast<std::int64_t>(qx[j]) - qx[i];
+					const std::int64_t dy = static_cast<std::int64_t>(qy[j]) - qy[i];
+					const std::int64_t spanX = std::max(std::llabs(static_cast<std::int64_t>(x0) - qx[i]), std::llabs(static_cast<std::int64_t>(x1) - qx[i])) + 1;
+					const std::int64_t spanY = std::max(std::llabs(static_cast<std::int64_t>(y0) - qy[i]), std::llabs(static_cast<std::int64_t>(y1) - qy[i])) + 1;
+					worst = std::max(worst, std::llabs(dx) * spanY + std::llabs(dy) * spanX);
+					a[i] = static_cast<int>(-dy);
+					b[i] = static_cast<int>(dx);
+				}
+				if (worst >= (std::int64_t(1) << 20))
+					return;
+				exact = true;
+				full = (1u << (n * n)) - 1u;
+			}
+
+			int at(int x, int y) const
+			{
+				if (!exact)
+					return fillQuadCoverage(xs, ys, x, y, samples);
+				const int n = samples;
+				const int unit = 2 * n;
+				unsigned anyPositive = 0, anyNegative = 0;
+				for (int i = 0; i < 4; ++i)
+				{
+					const int stepX = 2 * a[i], stepY = 2 * b[i];
+					const int base = b[i] * (unit * (y - ys[i]) + 1) + a[i] * (unit * (x - xs[i]) + 1);
+					const int reachX = stepX * (n - 1), reachY = stepY * (n - 1);
+					const int lo = base + std::min(0, reachX) + std::min(0, reachY);
+					const int hi = base + std::max(0, reachX) + std::max(0, reachY);
+					if (lo > 0)
+						anyPositive = full;
+					else if (hi < 0)
+						anyNegative = full;
+					else if (lo != 0 || hi != 0)
+					{
+						unsigned bit = 1;
+						int row = base;
+						for (int iy = 0; iy < n; ++iy, row += stepY)
+						{
+							int v = row;
+							for (int ix = 0; ix < n; ++ix, v += stepX, bit <<= 1)
+							{
+								if (v > 0)
+									anyPositive |= bit;
+								else if (v < 0)
+									anyNegative |= bit;
+							}
+						}
+					}
+					if ((anyPositive & anyNegative) == full)
+						return 0;
+				}
+				return __builtin_popcount(full & ~(anyPositive & anyNegative));
+			}
+		};
 
 		int combinedCoverageAlpha(int alpha, int coverage, int sampleCount)
 		{
@@ -4218,6 +4332,7 @@ int gLastScrollUiFrame = -1000;
 			const int coverageArea = (drawXMax - drawXMin + 1) * (drawY1 - drawY0 + 1);
 			const int aaSamples = gea::framework::graphics::Canvas::antialiasSamples();
 			const int aaSampleCount = aaSamples * aaSamples;
+			const QuadCoverage quadCoverage(xs, ys, aaSamples, drawXMin, drawY0, drawXMax, drawY1);
 			if (aaSamples >= 2 && drawXMin <= drawXMax && coverageArea > 0 && coverageArea <= kAntialiasFullCoverageAreaLimit)
 			{
 				int dirtyX0 = canvas->width();
@@ -4229,7 +4344,7 @@ int gLastScrollUiFrame = -1000;
 					gea::framework::graphics::pixel::native_t *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
 					for (int x = drawXMin; x <= drawXMax; ++x)
 					{
-						const int coverage = fillQuadCoverage(xs, ys, x, y, aaSamples);
+						const int coverage = quadCoverage.at(x, y);
 						if (coverage <= 0)
 							continue;
 						paintCoveragePixel(row[x], command.quad.color, alpha, coverage, aaSampleCount);
@@ -4312,7 +4427,7 @@ int gLastScrollUiFrame = -1000;
 
 					for (int x = aaLX0; x <= aaLX1; x++)
 					{
-						const int coverage = fillQuadCoverage(xs, ys, x, y, aaSamples);
+						const int coverage = quadCoverage.at(x, y);
 						if (coverage > 0)
 							paintCoveragePixel(row[x], quadColor, alpha, coverage, aaSampleCount);
 					}
@@ -4333,7 +4448,7 @@ int gLastScrollUiFrame = -1000;
 
 					for (int x = aaRX0; x <= aaRX1; x++)
 					{
-						const int coverage = fillQuadCoverage(xs, ys, x, y, aaSamples);
+						const int coverage = quadCoverage.at(x, y);
 						if (coverage > 0)
 							paintCoveragePixel(row[x], quadColor, alpha, coverage, aaSampleCount);
 					}
