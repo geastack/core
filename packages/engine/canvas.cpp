@@ -746,6 +746,111 @@ static inline void roundedRectInsideSpan(int x, int y, int w, int h, int tl, int
 	*inX1 = static_cast<int>(std::ceil(right - rightInset - o1)) - 1;
 }
 
+// Columns of row `py` whose samples ([px + o0, px + o1] squared) can reach the
+// rounded rect [x, x + w) x [y, y + h); every other pixel has zero coverage.
+// The widest the shape gets over the row's sample band is at the band edge
+// nearest each corner's centre; a pixel of margin keeps it conservative.
+static inline bool roundedRectReachSpan(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                        int py, float o0, float o1, int *outX0, int *outX1)
+{
+	const float left = static_cast<float>(x);
+	const float top = static_cast<float>(y);
+	const float right = left + static_cast<float>(w);
+	const float bottom = top + static_cast<float>(h);
+	const float y0 = static_cast<float>(py) + o0;
+	const float y1 = static_cast<float>(py) + o1;
+	if (y1 < top - 1.0f || y0 > bottom + 1.0f) return false;
+	auto inset = [&](int topRadius, int bottomRadius) {
+		const float rt = static_cast<float>(topRadius);
+		const float rb = static_cast<float>(bottomRadius);
+		if (y1 < top + rt) {
+			const float d = top + rt - y1;
+			return rt - std::sqrt(std::max(0.0f, rt * rt - d * d));
+		}
+		if (y0 > bottom - rb) {
+			const float d = y0 - (bottom - rb);
+			return rb - std::sqrt(std::max(0.0f, rb * rb - d * d));
+		}
+		return 0.0f;
+	};
+	const float reachLeft = left + inset(tl, bl);
+	const float reachRight = right - inset(tr, br);
+	*outX0 = static_cast<int>(std::floor(reachLeft - o1)) - 1;
+	*outX1 = static_cast<int>(std::ceil(reachRight - o0)) + 1;
+	return *outX0 <= *outX1;
+}
+
+// Antialiased coverage of a rounded rect depends only on its size, radii and
+// sample count and on the pixel's offset inside it: the sample offsets are
+// exact binary fractions and every test works on exact differences, so the same
+// shape at another integer position samples identically. A shape repainted every
+// frame (Ember's glow discs under a pulsing ring, ~2500 edge pixels at ~4 us
+// each on the S31) keeps its edge coverage here, filled lazily per pixel.
+//
+// The band rasterizer runs on both cores. The lock guards only lookup and
+// eviction; an entry in use is pinned by its refcount, and two cores filling
+// the same byte write the same value.
+namespace {
+struct RoundedCoverageTable {
+	int key[7] = {};
+	std::atomic<int> refs{0};
+	std::uint32_t stamp = 0;
+	std::uint8_t *cells = nullptr;
+	int capacity = 0;
+};
+constexpr int kRoundedCoverageTables = 4;
+constexpr int kRoundedCoverageMaxCells = 160 * 160;
+RoundedCoverageTable gRoundedCoverage[kRoundedCoverageTables];
+std::atomic_flag gRoundedCoverageLock = ATOMIC_FLAG_INIT;
+std::uint32_t gRoundedCoverageClock = 0;
+
+void *allocRoundedCoverageCells(int bytes)
+{
+#ifdef ESP_PLATFORM
+	void *cells = heap_caps_malloc(static_cast<std::size_t>(bytes), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (cells) return cells;
+#endif
+	return std::malloc(static_cast<std::size_t>(bytes));
+}
+
+RoundedCoverageTable *acquireRoundedCoverage(int w, int h, int tl, int tr, int br, int bl, int samples)
+{
+	const int cells = w * h;
+	if (cells < 32 * 32 || cells > kRoundedCoverageMaxCells) return nullptr;
+	const int key[7] = {w, h, tl, tr, br, bl, samples};
+	while (gRoundedCoverageLock.test_and_set(std::memory_order_acquire)) {}
+	RoundedCoverageTable *found = nullptr;
+	RoundedCoverageTable *victim = nullptr;
+	for (auto &table : gRoundedCoverage) {
+		if (table.cells && std::memcmp(table.key, key, sizeof(key)) == 0) { found = &table; break; }
+		if (table.refs.load(std::memory_order_relaxed) == 0 && (!victim || table.stamp < victim->stamp)) victim = &table;
+	}
+	if (!found && victim) {
+		if (victim->capacity < cells) {
+			std::free(victim->cells);
+			victim->cells = static_cast<std::uint8_t *>(allocRoundedCoverageCells(cells));
+			victim->capacity = victim->cells ? cells : 0;
+		}
+		if (victim->cells) {
+			std::memset(victim->cells, 0xff, static_cast<std::size_t>(cells));
+			std::memcpy(victim->key, key, sizeof(key));
+			found = victim;
+		}
+	}
+	if (found) {
+		found->refs.fetch_add(1, std::memory_order_relaxed);
+		found->stamp = ++gRoundedCoverageClock;
+	}
+	gRoundedCoverageLock.clear(std::memory_order_release);
+	return found;
+}
+
+void releaseRoundedCoverage(RoundedCoverageTable *table)
+{
+	if (table) table->refs.fetch_sub(1, std::memory_order_release);
+}
+} // namespace
+
 static inline int coverageAlpha(int alpha, int coverage, int sampleCount)
 {
 	if (alpha <= 0 || coverage <= 0) return 0;
@@ -3707,6 +3812,8 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 	}
 #endif
 
+	RoundedCoverageTable *coverageTable = useAntialias ? acquireRoundedCoverage(w, h, tl, tr, br, bl, aaSamples) : nullptr;
+	struct ReleaseCoverage { RoundedCoverageTable *table; ~ReleaseCoverage() { releaseRoundedCoverage(table); } } releaseCoverage{coverageTable};
 	for (int sy = row0; sy <= row1; sy++) {
 		int sx0 = width_;
 		int sx1 = -1;
@@ -3776,9 +3883,14 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 
 			auto paintCoverageEdge = [&](int px) {
 			if (px < clip->x0 || px > clip->x1 || px < 0 || px >= width_) return;
-			int decided = useAntialias ? roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, px, sy,
-			                                                        firstOffset, lastOffset, aaSampleCount)
-			                           : -1;
+			std::uint8_t *cell = coverageTable ? &coverageTable->cells[(sy - y) * w + (px - x)] : nullptr;
+			int decided = cell && *cell != 0xff ? *cell
+			    : useAntialias ? roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, px, sy,
+			                                                firstOffset, lastOffset, aaSampleCount)
+			                   : -1;
+			if (cell && *cell == 0xff && decided < 0)
+				decided = roundedRectCoverage(x, y, w, h, tl, tr, br, bl, px, sy, aaSamples, kernelWidth);
+			if (cell && *cell == 0xff) *cell = static_cast<std::uint8_t>(decided);
 			const int coverage = decided >= 0
 			    ? decided
 			    : useAntialias
@@ -3943,8 +4055,13 @@ void Canvas::strokeRoundedRect(int x, int y, int w, int h, int tl, int tr, int b
 			// Only the band needs a per-pixel test. Columns wholly inside the
 			// inner shape are the hole, and on a row no inner sample reaches,
 			// columns wholly inside the outer shape are the band at full alpha.
-			const int rowX0 = col0;
-			const int rowX1 = col1;
+			// Pixels beyond the outer shape's reach have no coverage: an 88px
+			// ring tested its ~1700 corner pixels one by one (3.5 ms on the S31).
+			int reachX0 = 0, reachX1 = -1;
+			if (!roundedRectReachSpan(x, y, w, h, tl, tr, br, bl, sy, firstOffset, lastOffset, &reachX0, &reachX1))
+				continue;
+			const int rowX0 = std::max(col0, reachX0);
+			const int rowX1 = std::min(col1, reachX1);
 			int holeX0 = 0, holeX1 = -1;
 			if (hasInner)
 				roundedRectInsideSpan(x + lw, y + lw, innerW, innerH, std::max(0, tl - lw), std::max(0, tr - lw),

@@ -1588,6 +1588,25 @@ int gLastScrollUiFrame = -1000;
 			out->brRy8 = scaleRadius8(r.brRy8, scaleY);
 			out->blRx8 = scaleRadius8(r.blRx8, scaleX);
 			out->blRy8 = scaleRadius8(r.blRy8, scaleY);
+			// A scaled circle's box rounds to whole pixels independently of its
+			// radii; rounding the box down leaves each radius up to a pixel past
+			// half the box, and the Canvas primitive refused it -- about half the
+			// frames of any scale animation then took the per-pixel shader. CSS
+			// clamps such a radius to the box anyway; clamp the rounding slack.
+			const int maxRx8 = std::min(out->w, out->h) * 4;
+			const int maxRy8 = maxRx8;
+			auto clampSlack = [](int &radius8, int max8) {
+				if (radius8 > max8 && radius8 - max8 <= 8)
+					radius8 = max8;
+			};
+			clampSlack(out->tlRx8, maxRx8);
+			clampSlack(out->trRx8, maxRx8);
+			clampSlack(out->brRx8, maxRx8);
+			clampSlack(out->blRx8, maxRx8);
+			clampSlack(out->tlRy8, maxRy8);
+			clampSlack(out->trRy8, maxRy8);
+			clampSlack(out->brRy8, maxRy8);
+			clampSlack(out->blRy8, maxRy8);
 			return true;
 		}
 
@@ -4720,6 +4739,111 @@ int gLastScrollUiFrame = -1000;
 			inner.blRx8 = std::max(0, s.rx8[3] - 8 * s.lineWidth); inner.blRy8 = std::max(0, s.ry8[3] - 8 * s.lineWidth);
 		}
 
+		// Whole-pixel answers for roundedRectContainsFast over a pixel's sample box.
+		// Valid only while no two corner radii overlap along a side: the contained
+		// set is then the convex rounded rect, so four inside corners mean every
+		// sample is inside, and a box wholly in one corner's quadrant whose nearest
+		// point lies outside that ellipse has every sample outside. The margins
+		// dwarf the float rounding of the per-sample test; anything closer than
+		// that is left to it.
+		struct RoundedRectPixelClassifier
+		{
+			bool valid = false;
+			bool empty = false;
+			float left = 0, top = 0, right = 0, bottom = 0;
+			float cx[4]{}, cy[4]{}, irx[4]{}, iry[4]{};
+			bool rounded[4]{};
+
+			explicit RoundedRectPixelClassifier(const TransformedRoundedRectCommand &r)
+			{
+				if (r.lw <= 0 || r.lh <= 0)
+				{
+					valid = true;
+					empty = true;
+					return;
+				}
+				left = static_cast<float>(r.lx);
+				top = static_cast<float>(r.ly);
+				right = left + static_cast<float>(r.lw);
+				bottom = top + static_cast<float>(r.lh);
+				const int rx8[4] = {std::max(0, int(r.tlRx8)), std::max(0, int(r.trRx8)), std::max(0, int(r.brRx8)), std::max(0, int(r.blRx8))};
+				const int ry8[4] = {std::max(0, int(r.tlRy8)), std::max(0, int(r.trRy8)), std::max(0, int(r.brRy8)), std::max(0, int(r.blRy8))};
+				if (rx8[0] + rx8[1] > 8 * r.lw || rx8[3] + rx8[2] > 8 * r.lw ||
+				    ry8[0] + ry8[3] > 8 * r.lh || ry8[1] + ry8[2] > 8 * r.lh)
+					return;
+				for (int k = 0; k < 4; ++k)
+				{
+					rounded[k] = rx8[k] > 0 && ry8[k] > 0;
+					if (!rounded[k])
+						continue;
+					// Below 2px the normalized margins shrink toward float error.
+					if (rx8[k] < 16 || ry8[k] < 16)
+						return;
+					const float rx = rx8[k] * 0.125f, ry = ry8[k] * 0.125f;
+					cx[k] = (k == 0 || k == 3) ? left + rx : right - rx;
+					cy[k] = (k == 0 || k == 1) ? top + ry : bottom - ry;
+					irx[k] = 1.0f / rx;
+					iry[k] = 1.0f / ry;
+				}
+				valid = true;
+			}
+
+			// The corner quadrant a point lies in: the region where the per-sample
+			// test consults that ellipse.
+			bool inQuadrant(int k, float px, float py, float m) const
+			{
+				const bool xSide = (k == 0 || k == 3) ? px < cx[k] - m : px > cx[k] + m;
+				const bool ySide = (k == 0 || k == 1) ? py < cy[k] - m : py > cy[k] + m;
+				return xSide && ySide;
+			}
+
+			bool pointSurelyInside(float px, float py) const
+			{
+				const float m = 1e-3f;
+				if (px < left + m || py < top + m || px >= right - m || py >= bottom - m)
+					return false;
+				for (int k = 0; k < 4; ++k)
+				{
+					if (!rounded[k])
+						continue;
+					const bool nearX = (k == 0 || k == 3) ? px < cx[k] + m : px > cx[k] - m;
+					const bool nearY = (k == 0 || k == 1) ? py < cy[k] + m : py > cy[k] - m;
+					if (!nearX || !nearY)
+						continue;
+					const float dx = (px - cx[k]) * irx[k], dy = (py - cy[k]) * iry[k];
+					if (dx * dx + dy * dy > 1.0f - 1e-3f)
+						return false;
+				}
+				return true;
+			}
+
+			// 1: every sample inside, -1: every sample outside, 0: undecided.
+			int box(float x0, float y0, float x1, float y1) const
+			{
+				if (empty)
+					return -1;
+				const float m = 1e-3f;
+				if (x1 < left - m || y1 < top - m || x0 >= right + m || y0 >= bottom + m)
+					return -1;
+				for (int k = 0; k < 4; ++k)
+				{
+					if (!rounded[k])
+						continue;
+					const float nx = (k == 0 || k == 3) ? x1 : x0;
+					const float ny = (k == 0 || k == 1) ? y1 : y0;
+					if (!inQuadrant(k, nx, ny, m))
+						continue;
+					const float dx = (nx - cx[k]) * irx[k], dy = (ny - cy[k]) * iry[k];
+					if (dx * dx + dy * dy > 1.0f + 1e-3f)
+						return -1;
+				}
+				if (pointSurelyInside(x0, y0) && pointSurelyInside(x1, y0) &&
+				    pointSurelyInside(x0, y1) && pointSurelyInside(x1, y1))
+					return 1;
+				return 0;
+			}
+		};
+
 		int cssRoundedBorderCoverage(const TransformedRoundedRectCommand &outer,
 		                             const TransformedRoundedRectCommand &inner,
 		                             int x, int y, int samples)
@@ -4739,6 +4863,11 @@ int gLastScrollUiFrame = -1000;
 			if (!canvas || !canvas->pixels() || s.w <= 0 || s.h <= 0 || s.lineWidth <= 0) return;
 			TransformedRoundedRectCommand outer{}, inner{};
 			cssRoundedBorderContours(s, outer, inner);
+			// A circular 2px ring is all corner box: every pixel ran 2 x 16
+			// containment tests (3.5 ms for an 88px ring on the S31). Settle whole
+			// pixels first; only the ones a contour crosses are sampled.
+			const RoundedRectPixelClassifier outerClass(outer), innerClass(inner);
+			const bool classify = outerClass.valid && innerClass.valid;
 			int x0, y0, x1, y1;
 			gea::platform::display::Display::clip(&x0, &y0, &x1, &y1);
 			x0 = std::max({x0, 0, int(s.x)}); y0 = std::max({y0, 0, int(s.y)});
@@ -4773,7 +4902,26 @@ int gLastScrollUiFrame = -1000;
 				for (int x = x0; x <= x1; ++x) {
 					int coverage;
 					if (cornerRow && (x < cornerX0 || x >= cornerX1))
-						coverage = cssRoundedBorderCoverage(outer, inner, x, y, samples);
+					{
+						int decided = -1;
+						if (classify)
+						{
+							const float o0 = 0.5f / samples, o1 = 1.0f - o0;
+							const float bx0 = x + o0, by0 = y + o0, bx1 = x + o1, by1 = y + o1;
+							const int out = outerClass.box(bx0, by0, bx1, by1);
+							if (out < 0)
+								decided = 0;
+							else
+							{
+								const int in = innerClass.box(bx0, by0, bx1, by1);
+								if (in > 0)
+									decided = 0;
+								else if (out > 0 && in < 0)
+									decided = full;
+							}
+						}
+						coverage = decided >= 0 ? decided : cssRoundedBorderCoverage(outer, inner, x, y, samples);
+					}
 					else
 						coverage = innerRow && x >= innerX0 && x < innerX1 ? 0 : full;
 					if (coverage) paintCoveragePixel(row[x], s.color, alpha, coverage, full);
