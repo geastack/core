@@ -801,8 +801,19 @@ void CanvasRenderingContext2D::drawPixelRows(const gea::framework::graphics::pix
 {
 	if (!pixels || width <= 0 || height <= 0 || stride < width) return;
 	if (!recordingPresentBatch()) return;
+	const std::uint8_t previousAlpha = state_->globalAlpha_;
+	state_->globalAlpha_ = 255;
 	for (int row = 0; row < height; ++row)
 		appendPresentDrawImage(pixels + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride), nullptr, width, 1, dx, dy + row);
+	state_->globalAlpha_ = previousAlpha;
+}
+void CanvasRenderingContext2D::putImage(int imageId, int dx, int dy)
+{
+	// putImageData replaces the destination pixels: globalAlpha does not apply.
+	const std::uint8_t previousAlpha = state_->globalAlpha_;
+	state_->globalAlpha_ = 255;
+	drawImage(imageId, dx, dy);
+	state_->globalAlpha_ = previousAlpha;
 }
 void CanvasRenderingContext2D::drawImage(int imageId, int dx, int dy, int dw, int dh)
 {
@@ -2114,17 +2125,27 @@ void CanvasRenderingContext2D::drawImage(int imageId, double dx, double dy)
 void CanvasRenderingContext2D::drawPixelRows(const gea::framework::graphics::pixel::native_t *pixels, int stride, int width, int height, int dx, int dy)
 {
 	if (!pixels || width <= 0 || height <= 0 || stride < width) return;
+	const std::uint8_t previousAlpha = state_->globalAlpha_;
+	state_->globalAlpha_ = 255;
 	if (recordingPresentBatch()) {
 		for (int row = 0; row < height; ++row)
 			appendPresentDrawImage(pixels + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride), nullptr, width, 1, dx, dy + row);
-		return;
+	} else if (auto *surface = drawingCanvas()) {
+		applyDrawState(*surface);
+		for (int row = 0; row < height; ++row)
+			surface->drawImage(pixels + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride), nullptr, width, 1, dx, dy + row);
+		markDrawDirty();
 	}
-	auto *surface = drawingCanvas();
-	if (!surface) return;
-	applyDrawState(*surface);
-	for (int row = 0; row < height; ++row)
-		surface->drawImage(pixels + static_cast<std::size_t>(row) * static_cast<std::size_t>(stride), nullptr, width, 1, dx, dy + row);
-	markDrawDirty();
+	state_->globalAlpha_ = previousAlpha;
+}
+
+void CanvasRenderingContext2D::putImage(int imageId, int dx, int dy)
+{
+	// putImageData replaces the destination pixels: globalAlpha does not apply.
+	const std::uint8_t previousAlpha = state_->globalAlpha_;
+	state_->globalAlpha_ = 255;
+	drawImage(imageId, dx, dy);
+	state_->globalAlpha_ = previousAlpha;
 }
 
 void CanvasRenderingContext2D::drawImage(int imageId, int dx, int dy, int dw, int dh)

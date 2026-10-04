@@ -1555,7 +1555,7 @@ const imageData565InteropSource: string[] = [
   "      for (std::size_t i = 0; i < count; ++i) dst[i] = gea::framework::graphics::pixel::toNative(src[i]);",
   "    }",
   "  }",
-  "  ctx.drawImage(image.id, canvasInt(x), canvasInt(y));",
+  "  ctx.putImage(image.id, canvasInt(x), canvasInt(y));",
   "}",
   "",
   "// `putImageData(image, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight)`: only",

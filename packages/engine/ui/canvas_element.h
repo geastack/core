@@ -242,10 +242,13 @@ public:
 	void fillText(const std::string &text, int x, int y);
 	void fillText(const std::string &text, double x, double y);
 	void drawImage(int imageId, int dx, int dy);
+	// drawImage at full opacity whatever globalAlpha is: putImageData.
+	void putImage(int imageId, int dx, int dy);
 	// Draws `height` rows of `width` opaque pixels, row r read from
 	// `pixels + r * stride`, at (dx, dy). The rows must stay valid until the
 	// frame is presented: they are recorded, not copied. This is a sub-rectangle
 	// of a larger buffer -- putImageData's dirty rectangle -- without a copy.
+	// Like putImageData, it ignores globalAlpha.
 	void drawPixelRows(const gea::framework::graphics::pixel::native_t *pixels, int stride, int width, int height, int dx, int dy);
 	void drawImage(int imageId, double dx, double dy);
 	void drawImage(int imageId, int dx, int dy, int dw, int dh);

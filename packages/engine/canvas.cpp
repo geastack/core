@@ -616,6 +616,60 @@ static inline int roundedRectStrokeCoverage(int x,
 	return coverage;
 }
 
+// Whether no sample in [x0, x1] x [y0, y1] can fall in a corner zone of the
+// rounded rect, where `roundedRectSampleContains` tests the arc; elsewhere it
+// is a plain bounds test.
+static inline bool roundedRectSamplesAvoidCorners(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                                  float x0, float y0, float x1, float y1)
+{
+	const float left = static_cast<float>(x);
+	const float top = static_cast<float>(y);
+	const float right = left + static_cast<float>(w);
+	const float bottom = top + static_cast<float>(h);
+	if (tl > 0 && x0 < left + static_cast<float>(tl) && y0 < top + static_cast<float>(tl)) return false;
+	if (tr > 0 && x1 >= right - static_cast<float>(tr) && y0 < top + static_cast<float>(tr)) return false;
+	if (br > 0 && x1 >= right - static_cast<float>(br) && y1 >= bottom - static_cast<float>(br)) return false;
+	if (bl > 0 && x0 < left + static_cast<float>(bl) && y1 >= bottom - static_cast<float>(bl)) return false;
+	return true;
+}
+
+// 1 when every sample in the span is inside the rect's bounds, 0 when none
+// is, -1 when it straddles an edge.
+static inline int rectSamplesInside(int x, int y, int w, int h, float x0, float y0, float x1, float y1)
+{
+	const float left = static_cast<float>(x);
+	const float top = static_cast<float>(y);
+	const float right = left + static_cast<float>(w);
+	const float bottom = top + static_cast<float>(h);
+	if (x1 < left || x0 >= right || y1 < top || y0 >= bottom) return 0;
+	if (x0 >= left && x1 < right && y0 >= top && y1 < bottom) return 1;
+	return -1;
+}
+
+// `roundedRectStrokeCoverage` without sampling where its answer is decided:
+// away from the corners both contours are rectangles, so a pixel whose
+// samples all lie inside the outer one and outside the inner one is fully
+// covered, and one whose samples all miss the band is not. -1 = sample it.
+// `o0`/`o1` are the first and last sample offsets.
+static inline int roundedRectStrokeCoverageDecided(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                                   int lineWidth, int px, int py, float o0, float o1, int sampleCount)
+{
+	const float x0 = static_cast<float>(px) + o0, x1 = static_cast<float>(px) + o1;
+	const float y0 = static_cast<float>(py) + o0, y1 = static_cast<float>(py) + o1;
+	const int outer = rectSamplesInside(x, y, w, h, x0, y0, x1, y1);
+	if (outer == 0) return 0;
+	if (outer < 0 || !roundedRectSamplesAvoidCorners(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1)) return -1;
+	const int innerW = w - lineWidth * 2;
+	const int innerH = h - lineWidth * 2;
+	if (innerW <= 0 || innerH <= 0) return sampleCount;
+	const int innerX = x + lineWidth, innerY = y + lineWidth;
+	if (!roundedRectSamplesAvoidCorners(innerX, innerY, innerW, innerH, std::max(0, tl - lineWidth), std::max(0, tr - lineWidth),
+	                                    std::max(0, br - lineWidth), std::max(0, bl - lineWidth), x0, y0, x1, y1))
+		return -1;
+	const int inner = rectSamplesInside(innerX, innerY, innerW, innerH, x0, y0, x1, y1);
+	return inner < 0 ? -1 : inner ? 0 : sampleCount;
+}
+
 static inline int coverageAlpha(int alpha, int coverage, int sampleCount)
 {
 	if (alpha <= 0 || coverage <= 0) return 0;
@@ -3779,14 +3833,19 @@ void Canvas::strokeRoundedRect(int x, int y, int w, int h, int tl, int tr, int b
 		int dirtyY1 = -1;
 		const int aaSampleCount = aaSamples * aaSamples;
 		const int alpha = globalAlpha_;
+		const float firstOffset = antialiasOffsetWithKernel(0, aaSamples, kernelWidth);
+		const float lastOffset = antialiasOffsetWithKernel(aaSamples - 1, aaSamples, kernelWidth);
 		for (int sy = row0; sy <= row1; ++sy) {
 			for (int sx = col0; sx <= col1; ++sx) {
-				const int coverage = roundedRectStrokeCoverage(x, y, w, h,
-				                                               tl, tr, br, bl,
-				                                               lw,
-				                                               sx, sy,
-				                                               aaSamples,
-				                                               kernelWidth);
+				int coverage = roundedRectStrokeCoverageDecided(x, y, w, h, tl, tr, br, bl, lw, sx, sy,
+				                                                firstOffset, lastOffset, aaSampleCount);
+				if (coverage < 0)
+					coverage = roundedRectStrokeCoverage(x, y, w, h,
+					                                     tl, tr, br, bl,
+					                                     lw,
+					                                     sx, sy,
+					                                     aaSamples,
+					                                     kernelWidth);
 				const int effectiveAlpha = coverageAlpha(alpha, coverage, aaSampleCount);
 				if (effectiveAlpha <= 0) continue;
 				const pixel::native_t c = color;

@@ -235,6 +235,28 @@ int main(int argc, char **argv)
 			fingerprint(background);
 		}
 	}
+	// CSS rounded borders: the raster samples only the corner boxes; widths
+	// and radii either side of each other, and uneven corners.
+	const char *borders[][2]{
+		{"1px solid #e0c060", "14px"},
+		{"3px solid #40e0a0", "12px"},
+		{"6px solid #ff6040", "4px"},
+		{"2px solid rgba(255, 255, 255, 0.5)", "20px 6px 30px 0px"},
+		{"9px solid #6080ff", "45px"},
+		{"1px solid #ffffff", "0px"},
+		{"1px solid #e0c060", "50%"},
+		{"4px solid #40e0a0", "30% 10%"},
+		{"2px solid #ff6040", "80px"},
+	};
+	for (const auto &border : borders) {
+		card.style().setProperty("border", border[0]);
+		card.style().setProperty("border-radius", border[1]);
+		Document::instance().refresh(root, 120, 120);
+		DisplayList::instance().replay();
+		fingerprint(border[0]);
+	}
+	card.style().setProperty("border", "0px solid #000000");
+	card.style().setProperty("border-radius", "12px");
 	if (cssOnly) card.style().setProperty("background", backgrounds[0]);
 	card.style().setProperty("transform", "rotate(17deg) scale(0.8)");
 	for (int frame = 0; frame < 3; ++frame) {

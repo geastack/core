@@ -4634,11 +4634,34 @@ int gLastScrollUiFrame = -1000;
 			const int alpha = gea::platform::display::Display::alpha();
 			if (!alpha) return;
 			const int stride = canvas->strideBytes() / sizeof(gea::framework::graphics::pixel::native_t);
+			const int full = samples * samples;
+			// Only the corner boxes need sampling. Outside them both contours are
+			// plain rectangles (the inner corners lie inside the outer corner
+			// boxes), so a pixel is fully covered when it is outside the inner
+			// rectangle and uncovered inside it -- exactly what sampling would
+			// give. Rows between the corners only touch the two side bands.
+			const int radiusX = (std::max({s.rx8[0], s.rx8[1], s.rx8[2], s.rx8[3]}) + 7) / 8;
+			const int radiusY = (std::max({s.ry8[0], s.ry8[1], s.ry8[2], s.ry8[3]}) + 7) / 8;
+			const int cornerX0 = s.x + radiusX, cornerX1 = s.x + s.w - radiusX;
+			const int cornerY0 = s.y + radiusY, cornerY1 = s.y + s.h - radiusY;
+			const int innerX0 = s.x + s.lineWidth, innerX1 = s.x + s.w - s.lineWidth;
+			const int innerY0 = s.y + s.lineWidth, innerY1 = s.y + s.h - s.lineWidth;
 			for (int y = y0; y <= y1; ++y) {
 				auto *row = canvas->pixels() + canvas->rowToPhysical(y) * stride;
+				const bool cornerRow = y < cornerY0 || y >= cornerY1;
+				const bool innerRow = y >= innerY0 && y < innerY1;
+				if (!cornerRow && innerRow) {
+					for (int x = x0; x <= std::min(x1, innerX0 - 1); ++x) paintCoveragePixel(row[x], s.color, alpha, full, full);
+					for (int x = std::max(x0, innerX1); x <= x1; ++x) paintCoveragePixel(row[x], s.color, alpha, full, full);
+					continue;
+				}
 				for (int x = x0; x <= x1; ++x) {
-					const int coverage = cssRoundedBorderCoverage(outer, inner, x, y, samples);
-					if (coverage) paintCoveragePixel(row[x], s.color, alpha, coverage, samples * samples);
+					int coverage;
+					if (cornerRow && (x < cornerX0 || x >= cornerX1))
+						coverage = cssRoundedBorderCoverage(outer, inner, x, y, samples);
+					else
+						coverage = innerRow && x >= innerX0 && x < innerX1 ? 0 : full;
+					if (coverage) paintCoveragePixel(row[x], s.color, alpha, coverage, full);
 				}
 			}
 			canvas->markDirty(x0, y0, x1, y1);
