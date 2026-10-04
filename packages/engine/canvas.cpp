@@ -646,6 +646,20 @@ static inline int rectSamplesInside(int x, int y, int w, int h, float x0, float 
 	return -1;
 }
 
+// `roundedRectCoverage` without sampling where its answer is decided: a
+// pixel whose samples all avoid the corner zones and lie wholly inside (or
+// wholly outside) the rect is fully covered (or not at all). -1 = sample it.
+static inline int roundedRectCoverageDecided(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                             int px, int py, float o0, float o1, int sampleCount)
+{
+	const float x0 = static_cast<float>(px) + o0, x1 = static_cast<float>(px) + o1;
+	const float y0 = static_cast<float>(py) + o0, y1 = static_cast<float>(py) + o1;
+	const int inside = rectSamplesInside(x, y, w, h, x0, y0, x1, y1);
+	if (inside == 0) return 0;
+	if (inside < 0 || !roundedRectSamplesAvoidCorners(x, y, w, h, tl, tr, br, bl, x0, y0, x1, y1)) return -1;
+	return sampleCount;
+}
+
 // `roundedRectStrokeCoverage` without sampling where its answer is decided:
 // away from the corners both contours are rectangles, so a pixel whose
 // samples all lie inside the outer one and outside the inner one is fully
@@ -3493,6 +3507,8 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 	const float kernelWidth = useAntialias ? roundedRectAntialiasKernelWidth(aaSamples, w, h, tl, tr, br, bl) : 1.0f;
 	const int edgePad = useAntialias ? antialiasEdgePad(kernelWidth) : 0;
 	const bool coverageSampleFill = useAntialias && roundedRectShouldCoverageSampleFill(w, h);
+	const float firstOffset = useAntialias ? antialiasOffsetWithKernel(0, aaSamples, kernelWidth) : 0.0f;
+	const float lastOffset = useAntialias ? antialiasOffsetWithKernel(aaSamples - 1, aaSamples, kernelWidth) : 0.0f;
 
 	const ClipRect *clip = &clipStack_[clipDepth_];
 	int row0 = y;
@@ -3526,8 +3542,10 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 			pixel::native_t *dst = &pixels_[rotPhysRow(sx) * stride_ + row0];
 #endif
 			for (int sy = row0; sy <= row1; ++sy) {
-				const int coverage = roundedRectCoverage(
-					x, y, w, h, tl, tr, br, bl, sx, sy, aaSamples, kernelWidth);
+				int coverage = roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, sx, sy,
+				                                          firstOffset, lastOffset, aaSampleCount);
+				if (coverage < 0)
+					coverage = roundedRectCoverage(x, y, w, h, tl, tr, br, bl, sx, sy, aaSamples, kernelWidth);
 				if (coverage <= 0) {
 #if !GEA_PIXEL_STORAGE_PACKED
 					++dst;
@@ -3696,7 +3714,12 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 
 			auto paintCoverageEdge = [&](int px) {
 			if (px < clip->x0 || px > clip->x1 || px < 0 || px >= width_) return;
-			const int coverage = useAntialias
+			int decided = useAntialias ? roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, px, sy,
+			                                                        firstOffset, lastOffset, aaSampleCount)
+			                           : -1;
+			const int coverage = decided >= 0
+			    ? decided
+			    : useAntialias
 			    ? roundedRectCoverage(x, y, w, h, tl, tr, br, bl, px, sy, aaSamples, kernelWidth)
 			    : (roundedRectSampleContains(x,
 			                                 y,

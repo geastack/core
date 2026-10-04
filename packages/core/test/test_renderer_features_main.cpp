@@ -256,6 +256,18 @@ int main(int argc, char **argv)
 		fingerprint(border[0]);
 	}
 	card.style().setProperty("border", "0px solid #000000");
+	// Small antialiased rounded fills take the per-pixel coverage path.
+	const char *pills[][3]{{"60px", "24px", "12px"}, {"24px", "6px", "3px"}, {"50px", "40px", "20% 6px"}, {"64px", "64px", "50%"}};
+	for (const auto &pill : pills) {
+		card.style().setProperty("width", pill[0]);
+		card.style().setProperty("height", pill[1]);
+		card.style().setProperty("border-radius", pill[2]);
+		card.style().setProperty("background-color", "#e0c060");
+		Document::instance().refresh(root, 120, 120);
+		DisplayList::instance().replay();
+		fingerprint(pill[2]);
+	}
+	card.style().width(90); card.style().height(90);
 	card.style().setProperty("border-radius", "12px");
 	if (cssOnly) card.style().setProperty("background", backgrounds[0]);
 	card.style().setProperty("transform", "rotate(17deg) scale(0.8)");
