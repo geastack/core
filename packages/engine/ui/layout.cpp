@@ -5481,7 +5481,14 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
 		LayoutNodePass(*this, id, node.layout.width, node.layout.height).repositionChildren();
-	if (clampsLines(node)) applyLineClamp(id);
+	if (clampsLines(node)) {
+		applyLineClamp(id);
+		node.layout.line_clamp_owner = 1;
+	} else if (node.layout.line_clamp_owner) {
+		// The container stopped clamping: lift the state its last clamp left.
+		clearLineClamp(Tree::instance().nodes(), id);
+		node.layout.line_clamp_owner = 0;
+	}
 	if (node.parent < 0) {
 		// The initial containing block places the root; there is no parent
 		// layout pass to position its margin box or apply float alignment.
@@ -5512,7 +5519,13 @@ void LayoutEngine::repositionChildren(int id)
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeLayoutRepositionCalls++);
 	Node *node = &Tree::instance().nodes()[id];
 	LayoutNodePass(*this, id, node->layout.width, node->layout.height).repositionChildren();
-	if (clampsLines(*node)) applyLineClamp(id);
+	if (clampsLines(*node)) {
+		applyLineClamp(id);
+		node->layout.line_clamp_owner = 1;
+	} else if (node->layout.line_clamp_owner) {
+		clearLineClamp(Tree::instance().nodes(), id);
+		node->layout.line_clamp_owner = 0;
+	}
 }
 
 bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)

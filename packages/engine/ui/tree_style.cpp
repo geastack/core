@@ -98,6 +98,18 @@ bool isLayoutProperty(Property prop)
 	case Property::LineClampDiscard:
 	case Property::ColumnSpanAll:
 	case Property::VerticalAlign:
+#if GEA_CSS_TEXT_ALIGN
+	// Line shifts and inline static positions follow physicalTextAlign.
+	case Property::TextAlign:
+#endif
+#if GEA_CSS_BORDER_RELIEF
+	// border-style: none / hidden zeroes the side's used width.
+	case Property::BorderRelief:
+	case Property::BorderTopRelief:
+	case Property::BorderRightRelief:
+	case Property::BorderBottomRelief:
+	case Property::BorderLeftRelief:
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Clear:
 #endif
@@ -356,10 +368,15 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: if ((GEA_CSS_MARGIN_TRIM ? rstyle(style).margin_trim : 0) != value) { rstyleMut(style).margin_trim = value; changed = 1; } break;
 #endif
-	case Property::MaxLines: if (rstyle(n->style).max_lines != value) { rstyleMut(n->style).max_lines = value; changed = 1; } break;
-	case Property::BlockEllipsisString: if (rstyle(n->style).block_ellipsis != value) { rstyleMut(n->style).block_ellipsis = value; changed = 1; } break;
-	case Property::ColumnCount: if (rstyle(n->style).column_count != value) { rstyleMut(n->style).column_count = value; changed = 1; } break;
-	case Property::ColumnWidth: if (rstyle(n->style).column_width != value) { rstyleMut(n->style).column_width = value; changed = 1; } break;
+#if GEA_CSS_LINE_CLAMP
+	case Property::MaxLines: if (rstyle(style).max_lines != value) { rstyleMut(style).max_lines = value; changed = 1; } break;
+	case Property::BlockEllipsisString: if (rstyle(style).block_ellipsis != value) { rstyleMut(style).block_ellipsis = value; changed = 1; } break;
+#endif
+#if GEA_CSS_MULTICOL
+	case Property::ColumnCount: if (rstyle(style).column_count != value) { rstyleMut(style).column_count = value; changed = 1; } break;
+	case Property::ColumnWidth: if (rstyle(style).column_width != value) { rstyleMut(style).column_width = value; changed = 1; } break;
+#endif
+#if GEA_CSS_LINE_CLAMP || GEA_CSS_MULTICOL
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
@@ -372,6 +389,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		if (rstyle(n->style).line_clamp_flags != next) { rstyleMut(n->style).line_clamp_flags = next; changed = 1; }
 		break;
 	}
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Clear: if (style.clear_side != value) { style.clear_side = value; changed = 1; } break;
 #endif
@@ -867,12 +885,16 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::BorderLeftRelief:
 		for (int side = 0; side < 4; ++side) {
 			if (prop != Property::BorderRelief && side != static_cast<int>(prop) - static_cast<int>(Property::BorderTopRelief)) continue;
+			const bool wasNone = rstyle(style).border_relief[side] & kBorderStyleNone;
 			if (rstyle(style).border_relief[side] != value) {
 				rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
 				changed = 1;
 			}
-			// border-style: none leaves the side without a border.
-			if (value & kBorderStyleNone) changed |= setComputedBorderWidth(n->style, side, 0, nullptr);
+			// border-style: none leaves the side without a border but keeps its
+			// declared width, which comes back when the style does.
+			const bool isNone = value & kBorderStyleNone;
+			if (isNone && !wasNone) changed |= setComputedBorderWidth(style, side, computedBorderWidth(style, side), nullptr);
+			else if (wasNone && !isNone) changed |= setComputedBorderWidth(style, side, rstyle(style).border_none_width[side], nullptr);
 		}
 		break;
 #endif

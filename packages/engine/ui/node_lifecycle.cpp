@@ -373,6 +373,7 @@ void NodeLifecycle::init(Node *n, NodeType type)
 	n->layout.height = 0;
 	n->layout.inline_indent = 0;
 	n->layout.line_clamp_hidden = 0;
+	n->layout.line_clamp_owner = 0;
 	n->layout.line_clamp_lines = 0;
 #if GEA_CSS_SCROLLING
 	n->layout.scroll_x = 0;

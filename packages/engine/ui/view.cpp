@@ -2630,6 +2630,10 @@ void recordOuterBoxShadow(const Node &node, uint8_t parentAlpha)
 	bool native = outerShadowKnockoutHidden(node, parentAlpha);
 	for (int i = 0; i < 4; ++i) native &= std::fabs(shape.rx[i] - shape.ry[i]) < 0.5f;
 	const int blur = std::max<int>(0, r.box_shadow_blur_radius);
+	// Native rounded rects carry int16 geometry. A shadow that reaches past that
+	// range (boxes are 32-bit) takes the span path, which saturates its rects.
+	native &= shape.x - blur >= -32768.0f && shape.y - blur >= -32768.0f &&
+	          shape.x + shape.w + blur <= 32767.0f && shape.y + shape.h + blur <= 32767.0f;
 	// Natively painted parts the opaque box fully covers are skipped: a full-
 	// screen card would otherwise refill its whole core on every dirty rect.
 	if (blur == 0) {

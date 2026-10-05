@@ -170,13 +170,22 @@ struct RareStyle {
 #else
 	static constexpr uint8_t margin_trim = 0;
 #endif
+#if GEA_CSS_MULTICOL
 	// Multi-column: column-count (0 = auto). Sits in padding.
 	uint8_t column_count = 0;
 	// Multi-column: column-width in px, -1 = auto. Sits in padding.
 	int16_t column_width = -1;
+#else
+	static constexpr uint8_t column_count = 0;
+	static constexpr int16_t column_width = -1;
+#endif
+#if GEA_CSS_LINE_CLAMP
 	// CSS atom of a custom block-ellipsis string; 0 = the default ellipsis.
 	// Only used when line_clamp_flags has block-ellipsis set. Sits in padding.
 	uint16_t block_ellipsis = 0;
+#else
+	static constexpr uint16_t block_ellipsis = 0;
+#endif
 	// IEEE float bits travel through the existing integer style-value transport.
 	// Negative ratios mean `auto <ratio>` (prefer a replaced element's natural ratio).
 #if GEA_CSS_ASPECT_RATIO
@@ -375,8 +384,12 @@ struct RareStyle {
 	// border-style is none or hidden (the side then keeps a zero width).
 #if GEA_CSS_BORDER_RELIEF
 	uint8_t border_relief[4] = {};
+	// The width a side declared while its border-style is none or hidden. The
+	// side paints with width 0 until the style changes back, then takes this.
+	int16_t border_none_width[4] = {};
 #else
 	static constexpr uint8_t border_relief[4] = {};
+	static constexpr int16_t border_none_width[4] = {};
 #endif
 #if GEA_CSS_SIDE_BORDERS
 	style_color_t border_side_color[4] = {
@@ -403,10 +416,24 @@ struct RareStyle {
 	//     center/extent 500/1000) ---
 #if GEA_CSS_BACKGROUND_LAYERS
 	uint16_t bg_image_layer_count = 1; // Includes none layers.
+	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
+	// border-image-* (see StyleValues::borderImageSource/Sides/Repeat): interned
+	// handles, zero is the initial value.
+	uint8_t border_image_source = 0;
+	uint8_t border_image_slice = 0;
+	uint8_t border_image_width = 0;
+	uint8_t border_image_outset = 0;
+	uint8_t border_image_repeat = 0; // bits 0-1 horizontal, 2-3 vertical: stretch, repeat, round, space
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #else
 	static constexpr uint16_t bg_image_layer_count = 1; // Includes none layers.
+	static constexpr uint8_t bg_blend = 0;
+	static constexpr uint8_t border_image_source = 0;
+	static constexpr uint8_t border_image_slice = 0;
+	static constexpr uint8_t border_image_width = 0;
+	static constexpr uint8_t border_image_outset = 0;
+	static constexpr uint8_t border_image_repeat = 0;
 	static constexpr int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	static constexpr int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #endif
@@ -418,30 +445,22 @@ struct RareStyle {
 	uint8_t bg_gradient_from_alpha = 255;
 	uint8_t bg_gradient_mid_alpha = 255;
 	uint8_t bg_gradient_to_alpha = 255;
-	// border-image-* (see StyleValues::borderImageSource/Sides/Repeat) sit in
-	// padding here: interned handles, zero is the initial value.
-	uint8_t border_image_source = 0;
 	uint16_t bg_gradient_mid_stop = 500;
 	uint16_t bg_gradient_to_stop = 1000;
 	uint8_t bg_gradient_has_mid = 0;
-	uint8_t border_image_slice = 0;
 	int16_t bg_gradient_angle = 1800;
 	uint8_t bg_overlay_gradient = 0;
-	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
 	style_color_t bg_overlay_gradient_from_color = 0;
 	style_color_t bg_overlay_gradient_mid_color = 0;
 	style_color_t bg_overlay_gradient_to_color = 0;
 	uint8_t bg_overlay_gradient_from_alpha = 255;
 	uint8_t bg_overlay_gradient_mid_alpha = 255;
 	uint8_t bg_overlay_gradient_to_alpha = 255;
-	uint8_t border_image_width = 0;
 	uint16_t bg_overlay_gradient_mid_stop = 500;
 	uint16_t bg_overlay_gradient_to_stop = 1000;
 	uint8_t bg_overlay_gradient_has_mid = 0;
-	uint8_t border_image_outset = 0;
 	int16_t bg_overlay_gradient_angle = 1800;
 	uint8_t bg_radial_gradient = 0;
-	uint8_t border_image_repeat = 0; // bits 0-1 horizontal, 2-3 vertical: stretch, repeat, round, space
 	style_color_t bg_radial_gradient_from_color = 0;
 	style_color_t bg_radial_gradient_to_color = 0;
 	uint8_t bg_radial_gradient_from_alpha = 255;
@@ -504,8 +523,16 @@ struct RareStyle {
 	// none, 4 / 8 = column-count / column-width set (a multicol container never
 	// clamps), 16 = column-fill: auto, 32 = continue: discard, 64 = column-span:
 	// all. Both sit in trailing padding, so RareStyle keeps its size.
+#if GEA_CSS_LINE_CLAMP
 	uint8_t max_lines = 0;
+#else
+	static constexpr uint8_t max_lines = 0;
+#endif
+#if GEA_CSS_LINE_CLAMP || GEA_CSS_MULTICOL
 	uint8_t line_clamp_flags = 0;
+#else
+	static constexpr uint8_t line_clamp_flags = 0;
+#endif
 	};
 
 // Individual translation is applied outside the transform list. Its translation
@@ -521,7 +548,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {
@@ -1097,8 +1124,15 @@ inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, co
 		widths[i] = computedBorderWidth(style, i);
 		if (side < 0 || side == i)
 			widths[i] = value == kInheritedBorderWidth ? (parent ? computedBorderWidth(*parent, i) : 0) : value;
+#if GEA_CSS_BORDER_RELIEF
 		// A side whose style is none has no border, whatever width it declares.
-		if (rstyle(style).border_relief[i] & kBorderStyleNone) widths[i] = 0;
+		// The declared width is kept so a later border-style brings it back.
+		if (rstyle(style).border_relief[i] & kBorderStyleNone) {
+			if ((side < 0 || side == i) && rstyle(style).border_none_width[i] != widths[i])
+				rstyleMut(style).border_none_width[i] = static_cast<int16_t>(widths[i]);
+			widths[i] = 0;
+		}
+#endif
 	}
 	const bool uniform = side < 0 && widths[0] == widths[1] && widths[0] == widths[2] && widths[0] == widths[3];
 	// A side can override a wider common border with a narrower or zero edge.
@@ -1426,6 +1460,9 @@ struct LayoutBox {
 	// clamp point and carries the block ellipsis. Like line_clamp_lines below
 	// it sits in padding.
 	uint8_t line_clamp_hidden = 0;
+	// 1 on a container whose last layout applied a line clamp, so a layout that
+	// no longer clamps clears the state left on its descendants. Sits in padding.
+	uint8_t line_clamp_owner = 0;
 
 	int16_t previous_x, previous_y;
 	// line-clamp: a text run its container's clamp point cuts paints only

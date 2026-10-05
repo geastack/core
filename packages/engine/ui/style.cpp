@@ -6546,7 +6546,12 @@ bool compileBorderShorthandValue(const std::string &value, CssCompiledValue &com
 		else if (!parseCompiledLengthSpec(part, compiled.lengths[0])) return false;
 		foundWidth = true;
 	}
-	if (noStroke) compiled.lengths[0] = {0.0f, CssLengthUnit::Px};
+	// none and hidden record kBorderStyleNone, so a later border-width alone
+	// cannot bring the border back (CSS Backgrounds 3.3); the width stays 0.
+	if (noStroke) {
+		compiled.lengths[0] = {0.0f, CssLengthUnit::Px};
+		compiled.values[2] = kBorderStyleNone;
+	}
 	compiled.aux = 0;
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
@@ -8334,10 +8339,15 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: rstyleMut(style).margin_trim = value; return true;
 #endif
+#if GEA_CSS_LINE_CLAMP
 	case Property::MaxLines: rstyleMut(style).max_lines = static_cast<uint8_t>(value); return true;
 	case Property::BlockEllipsisString: rstyleMut(style).block_ellipsis = static_cast<uint16_t>(value); return true;
+#endif
+#if GEA_CSS_MULTICOL
 	case Property::ColumnCount: rstyleMut(style).column_count = static_cast<uint8_t>(value); return true;
 	case Property::ColumnWidth: rstyleMut(style).column_width = static_cast<int16_t>(value); return true;
+#endif
+#if GEA_CSS_LINE_CLAMP || GEA_CSS_MULTICOL
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
 	case Property::ColumnCountSet:
@@ -8350,6 +8360,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		flags = static_cast<uint8_t>(value ? flags | bit : flags & ~bit);
 		return true;
 	}
+#endif
 #if GEA_CSS_FLOATS
 	case Property::Clear: style.clear_side = value; return true;
 #endif
@@ -8718,19 +8729,25 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		return true;
 #endif
 #if GEA_CSS_BORDER_RELIEF
+	case Property::BorderRelief:
 	case Property::BorderTopRelief:
 	case Property::BorderRightRelief:
 	case Property::BorderBottomRelief:
 	case Property::BorderLeftRelief: {
-		const int side = static_cast<int>(property) - static_cast<int>(Property::BorderTopRelief);
-		if (rstyle(style).border_relief[side] != value) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
-		if (value & kBorderStyleNone) setComputedBorderWidth(style, side, 0, nullptr);
-		return true;
-	}
-	case Property::BorderRelief: {
-		const auto &relief = rstyle(style).border_relief;
-		if (value == 0 && !(relief[0] | relief[1] | relief[2] | relief[3])) return true;
-		for (int side = 0; side < 4; ++side) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
+		if (property == Property::BorderRelief && value == 0) {
+			const auto &relief = rstyle(style).border_relief;
+			if (!(relief[0] | relief[1] | relief[2] | relief[3])) return true;
+		}
+		for (int side = 0; side < 4; ++side) {
+			if (property != Property::BorderRelief && side != static_cast<int>(property) - static_cast<int>(Property::BorderTopRelief)) continue;
+			const bool wasNone = rstyle(style).border_relief[side] & kBorderStyleNone;
+			if (rstyle(style).border_relief[side] != value) rstyleMut(style).border_relief[side] = static_cast<uint8_t>(value);
+			// border-style: none leaves the side without a border but keeps its
+			// declared width, which comes back when the style does.
+			const bool isNone = value & kBorderStyleNone;
+			if (isNone && !wasNone) setComputedBorderWidth(style, side, computedBorderWidth(style, side), nullptr);
+			else if (wasNone && !isNone) setComputedBorderWidth(style, side, rstyle(style).border_none_width[side], nullptr);
+		}
 		return true;
 	}
 #endif
@@ -16890,15 +16907,27 @@ struct NodeClassSnapshot {
 	}
 };
 
-bool classTokensTouchSiblingSelectors(int node, const NodeClassSnapshot &oldTokens, const NodeClassList &current)
+// A class mutation changes a + or ~ match only through a class it added or
+// removed: the tag and the classes present both before and after stay as
+// they were, so they cannot flip a sibling selector.
+bool classTokensTouchSiblingSelectors(const NodeClassSnapshot &oldTokens, const NodeClassList &current)
 {
 	rebuildRuleIndexIfNeeded();
 	if (!g_ruleIndex.hasSiblingRules) return false;
-	if (g_ruleIndex.siblingTags.contains(treeState().nodes[node].tag_id)) return true;
+	auto inOld = [&](CssAtomId token) {
+		for (std::size_t i = 0; i < oldTokens.count; ++i)
+			if (oldTokens.at(i) == token) return true;
+		return false;
+	};
+	auto inCurrent = [&](CssAtomId token) {
+		for (std::size_t i = 0, n = current.size(); i < n; ++i)
+			if (current.at(i) == token) return true;
+		return false;
+	};
 	for (std::size_t i = 0; i < oldTokens.count; ++i)
-		if (g_ruleIndex.siblingClasses.contains(oldTokens.at(i))) return true;
+		if (!inCurrent(oldTokens.at(i)) && g_ruleIndex.siblingClasses.contains(oldTokens.at(i))) return true;
 	for (std::size_t i = 0, n = current.size(); i < n; ++i)
-		if (g_ruleIndex.siblingClasses.contains(current.at(i))) return true;
+		if (!inOld(current.at(i)) && g_ruleIndex.siblingClasses.contains(current.at(i))) return true;
 	return false;
 }
 
@@ -17046,9 +17075,9 @@ void noteClassMutationForIncremental(int node, const NodeClassSnapshot &oldToken
 {
 	const auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
-	// A + or ~ selector keyed on the old or new classes (or the tag) restyles
-	// the siblings after this node.
-	if (classTokensTouchSiblingSelectors(node, oldTokens, state.classLists[node]))
+	// A + or ~ selector keyed on a class this mutation added or removed
+	// restyles the siblings after this node.
+	if (classTokensTouchSiblingSelectors(oldTokens, state.classLists[node]))
 		StyleSheet::instance().recomputeSiblingsFrom(state.nodes[node].next_sibling);
 	if (!g_styleMountBatchActive) return;
 	rebuildRuleIndexIfNeeded();

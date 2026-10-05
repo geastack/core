@@ -5834,7 +5834,9 @@ int gLastScrollUiFrame = -1000;
 					if (c[i] < c[lo]) lo = i;
 					if (c[i] >= c[hi]) hi = i;
 				}
-				if (lo == hi) { c[0] = c[1] = c[2] = 0.0f; return; }
+				// An achromatic colour (all channels equal) has no saturation to
+				// scale; the index test alone misses it and divides by zero below.
+				if (lo == hi || c[hi] - c[lo] <= 0.0f) { c[0] = c[1] = c[2] = 0.0f; return; }
 				const int mid = 3 - lo - hi;
 				c[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
 				c[hi] = s;
@@ -7935,7 +7937,10 @@ int gLastScrollUiFrame = -1000;
 				}
 
 				RoundedRectScreenSpan span{};
-				if (!transformedRoundedRectToScreenSpan(r, &span) ||
+				// A border ring has a hole the span rasterizers do not know about;
+				// it stays on the ring-aware replay path.
+				if (transformedRoundedRectIsRing(r) ||
+						!transformedRoundedRectToScreenSpan(r, &span) ||
 						!roundedRectScreenSpanFitsCanvas(span))
 					return false;
 				if (roundedRectScreenSpanIsCircle(span))
