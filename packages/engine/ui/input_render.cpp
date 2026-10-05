@@ -161,8 +161,8 @@ void InputRenderer::record(int id)
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
 			cmd->text.align = static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
-			cmd->text.textTransform = n.style.text_transform;
-			cmd->text.lineHeight = n.style.line_height;
+			cmd->text.textTransform = n.computedStyle().text_transform;
+			cmd->text.lineHeight = n.computedStyle().line_height;
 			cmd->text.containerWidth = contentW;
 			cmd->text.fontId = n.computedStyle().font_id;
 			// append() hands back uninitialized scratch — set these explicitly so

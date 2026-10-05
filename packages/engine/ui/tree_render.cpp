@@ -386,7 +386,7 @@ namespace gea::embedded::ui
 				return true;
 			if (node.computedStyle().mask_right_fade_width > 0)
 				return true;
-			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.style).box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 || rstyle(node.style).border_image_source)
+			if ((GEA_CSS_BOX_SHADOW ? rstyle(node.computedStyle()).box_shadow_alpha : 0) > 0 || node.render.previous_box_shadow_extent > 0 || rstyle(node.computedStyle()).border_image_source)
 				return true;
 			return node.computedStyle().has_bg && (styleHasRoundedRasterEdge(node.computedStyle()) || node.computedStyle().bg_alpha < 255);
 		}
@@ -410,8 +410,8 @@ namespace gea::embedded::ui
 				return rect;
 			// border-image-outset and an outer box-shadow paint outside the border box;
 			// the previous shadow extent covers pixels a moved or shrunk shadow left.
-			const int shadow = std::max(boxShadowExtent(node.style), static_cast<int>(node.render.previous_box_shadow_extent));
-			return expandDirtyRect(rect, 1 + std::max(StyleValues::borderImageOutsetExtent(node.style), shadow));
+			const int shadow = std::max(boxShadowExtent(node.computedStyle()), static_cast<int>(node.render.previous_box_shadow_extent));
+			return expandDirtyRect(rect, 1 + std::max(StyleValues::borderImageOutsetExtent(node.computedStyle()), shadow));
 		}
 
 		DirtyRegions::Rect dirtyRectWithRetainedMoveGuard(DirtyRegions::Rect rect)

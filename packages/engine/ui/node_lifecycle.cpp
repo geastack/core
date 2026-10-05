@@ -204,6 +204,7 @@ constexpr ComputedStyle makeDefaultStyle()
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	style.text_align = 0;
+#endif
 	style.text_align_last = 0;
 	style.text_emphasis = 0;
 	style.text_emphasis_color = 0;
@@ -375,6 +376,10 @@ void NodeLifecycle::init(Node *n, NodeType type)
 	n->layout.line_clamp_hidden = 0;
 	n->layout.line_clamp_owner = 0;
 	n->layout.line_clamp_lines = 0;
+#if !GEA_EMBEDDED_SHARED_STYLES
+	n->layout.memo_avail_w = n->layout.memo_avail_h = 0;
+	n->layout.memo_pass = 0;
+#endif
 #if GEA_CSS_SCROLLING
 	n->layout.scroll_x = 0;
 	n->layout.scroll_y = 0;

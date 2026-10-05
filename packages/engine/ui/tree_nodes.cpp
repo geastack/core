@@ -674,7 +674,7 @@ void Tree::removeNode(int id, bool restyleSiblings)
 	// Sibling selectors (+, ~) of the siblings that followed it.
 	if (restyleSiblings) StyleSheet::instance().recomputeSiblingsFrom(next);
 	n = &state.nodes[id];
-	n->style.display = 1;
+	n->mutableStyle().display = 1;
 	n->parent = -1;
 	n->first_child = -1;
 	n->last_child = -1;

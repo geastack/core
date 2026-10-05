@@ -560,7 +560,30 @@ struct ComputedStyle {
 	// inline-level tag (e.g. <span style="display:block">, which is block-level
 	// and stacks) from a span's default inline behaviour. Mirrors
 	// flex_direction_explicit. Other bits: kDisplayFlowRoot, kDisplayInline.
-	int8_t display_explicit;
+#if GEA_CSS_DISPLAY_EXPLICIT
+	uint8_t display_explicit : 3;
+#else
+	static constexpr uint8_t display_explicit = 0;
+#endif
+#if GEA_CSS_TEXT_ALIGN
+	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
+#else
+	static constexpr int8_t text_align = 0;
+#endif
+	int8_t overflow : 3;
+	uint8_t position : 3;  // kPositionSticky needs the third bit
+	uint8_t has_bg : 1;
+#if GEA_CSS_Z_INDEX
+	uint8_t z_index_auto : 1;
+#else
+	static constexpr int8_t z_index_auto = 1;
+#endif
+// A proven single byte radius fills the leading text-alignment slot when
+// that field is absent. Its read remains one ordinary byte load.
+#if GEA_CSS_U8_RADIUS && GEA_CSS_RADIUS_COUNT == 1 && !GEA_CSS_TEXT_ALIGN
+	uint8_t border_radius[1];
+#endif
+#if GEA_CSS_FLEX_DIRECTION
 	int8_t flex_direction;
 #else
 	static constexpr int8_t flex_direction = 0;
@@ -606,6 +629,7 @@ struct ComputedStyle {
 	// text-emphasis-color when text_emphasis says it is explicit. Inherited;
 	// sits in padding on 16-bit colour builds.
 	style_color_t text_emphasis_color;
+#if GEA_CSS_BOX_SIZING
 	int8_t box_sizing; // 0: content-box (CSS initial), 1: border-box
 #else
 	static constexpr int8_t box_sizing = 0;
@@ -676,7 +700,16 @@ struct ComputedStyle {
 	static constexpr int32_t height_expression = -1;
 #endif
 	int32_t width, height; // kUnset: auto; see kMaxLayoutExtent
-	int16_t width_percent, height_percent;
+#if GEA_CSS_WIDTH_PERCENT
+	int16_t width_percent;
+#else
+	static constexpr int16_t width_percent = kUnset;
+#endif
+#if GEA_CSS_HEIGHT_PERCENT
+	int16_t height_percent;
+#else
+	static constexpr int16_t height_percent = kUnset;
+#endif
 #if GEA_CSS_MIN_WIDTH
 	int16_t min_width;
 #else
@@ -809,6 +842,9 @@ struct ComputedStyle {
 	// linear/overlay/radial gradients + background-grid moved to RareStyle (rare).
 #if GEA_CSS_ACTIVE_BACKGROUND
 	style_color_t active_bg_color;
+#else
+	static constexpr style_color_t active_bg_color = 0;
+#endif
 	// CSS `vertical-align` of an inline-level box: 0 baseline, 1 top, 2 bottom,
 	// 3 middle, 4 text-top, 5 text-bottom, 6 sub, 7 super. Sits in padding.
 	int8_t vertical_align;
@@ -866,8 +902,7 @@ struct ComputedStyle {
 #elif !GEA_CSS_U8_LINE_HEIGHT
 	int16_t line_height;
 #endif
-	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
-	int8_t overflow;
+
 #if GEA_CSS_OVERFLOW_AXES
 	int8_t overflow_x;
 	int8_t overflow_y;
@@ -1455,6 +1490,7 @@ struct LayoutBox {
 	// and absolute-coordinate conversion; retained refresh reuses this anchor.
 	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t static_block_start = 0;
+	#endif
 	// line-clamp: bit 0 when the box lies after an ancestor's clamp point, which
 	// hides it; bit 1 on the text run whose last painted line ends before the
 	// clamp point and carries the block ellipsis. Like line_clamp_lines below
@@ -1620,7 +1656,7 @@ struct RenderState {
 	// end up at different heights. A run that owns its line keeps the centring.
 	// Bit 1: the line layout already applied text-align to this box's line, so
 	// the run draws start-aligned in its own box.
-	uint8_t inline_baseline;
+	uint8_t inline_baseline : 2;
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {

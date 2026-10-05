@@ -71,7 +71,7 @@ void LayoutSnapshot::capture()
 #if GEA_CSS_FILTERS
 		state.nodes[i].render.previous_filter_blur_radius = rs.filter_blur_radius;
 #endif
-		state.nodes[i].render.previous_box_shadow_extent = boxShadowExtent(state.nodes[i].style);
+		state.nodes[i].render.previous_box_shadow_extent = boxShadowExtent(state.nodes[i].computedStyle());
 		state.nodes[i].render.dirty = 0;
 		state.nodes[i].render.layout_dirty = 0;
 #if GEA_CSS_SCROLLING

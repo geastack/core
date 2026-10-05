@@ -8270,7 +8270,9 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	ComputedStyle &style = target.mutableStyle();
 	switch (property) {
 	case Property::Display:
+#if GEA_CSS_DISPLAY_EXPLICIT
 		style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+#endif
 		style.display = value & kDisplayKindMask;
 		return true;
 #if GEA_CSS_FLEX_DIRECTION
@@ -8852,6 +8854,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	case Property::TextAlign: style.text_align = value; return true;
+#endif
 	case Property::TextAlignLast: style.text_align_last = value; return true;
 	case Property::TextEmphasisStyle: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x0f) | (value & 0x0f)); return true;
 	case Property::TextEmphasisPosition: style.text_emphasis = static_cast<uint8_t>((style.text_emphasis & ~0x10) | (value & 0x10)); return true;
@@ -9306,7 +9309,7 @@ TransformComponents inheritedTransformComponents(int nodeId)
 	TransformComponents t;
 	const int parent = Tree::instance().node(nodeId).parent;
 	if (parent < 0) return t;
-	const RareStyle &r = rstyle(Tree::instance().node(parent).style);
+	const RareStyle &r = rstyle(Tree::instance().node(parent).computedStyle());
 	t.translateOuterAxes = r.transform_translate_outer_axes;
 	t.rotateX = r.transform_rotate_x; t.rotateY = r.transform_rotate_y; t.rotateZ = r.transform_rotate;
 	t.translateX = r.transform_translate_x; t.translateY = r.transform_translate_y; t.translateZ = r.transform_translate_z;
@@ -9918,6 +9921,7 @@ void applyInheritedStyleDefaults(int node)
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	style.text_align = parentStyle.text_align;
+#endif
 	style.text_align_last = parentStyle.text_align_last;
 	style.text_emphasis = parentStyle.text_emphasis;
 	style.text_emphasis_color = parentStyle.text_emphasis_color;
@@ -10162,7 +10166,7 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::BackgroundBlendMode: {
 		const int parent = Tree::instance().node(nodeId).parent;
 		const int blend = toLowerAscii(trimCssValue(value)) == "inherit"
-		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).style).bg_blend : 0)
+		    ? (parent >= 0 ? rstyle(Tree::instance().node(parent).computedStyle()).bg_blend : 0)
 		    : compileBackgroundBlendMode(value);
 		if (blend >= 0) setStyleValue(node, Property::BackgroundBlendMode, blend, source);
 		return true;
@@ -16771,6 +16775,9 @@ struct ParentStyleSnapshot {
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	std::uint8_t text_align;
+#else
+	static constexpr std::uint8_t text_align = 0;
+#endif
 	std::uint8_t text_align_last;
 	std::uint8_t text_emphasis;
 	style_color_t text_emphasis_color;
@@ -16816,6 +16823,7 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	out.text_align = s.text_align;
+#endif
 	out.text_align_last = s.text_align_last;
 	out.text_emphasis = s.text_emphasis;
 	out.text_emphasis_color = s.text_emphasis_color;
@@ -18210,8 +18218,8 @@ BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style,
 		}
 		if (out.origin != 0) {
 			int inset[4];
-			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->style, i) +
-			    (out.origin == 2 ? std::max<int>(0, node->style.padding[i]) : 0);
+			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(node->computedStyle(), i) +
+			    (out.origin == 2 ? std::max<int>(0, node->computedStyle().padding[i]) : 0);
 			x += inset[3]; y += inset[0]; width -= inset[1]+inset[3]; height -= inset[0]+inset[2];
 		}
 	}

@@ -730,8 +730,8 @@ bool recordProjectedRasterText(const Node &node, const char *text, uint8_t /*par
  if (lineWidth <= 0) return true;
 
 	const int fontLineHeight = font.lineHeight();
-	const int lineAdvance = node.style.line_height > 0 ? node.style.line_height : fontLineHeight;
-	const int lineBoxOffset = node.style.line_height > 0 ? (lineAdvance - fontLineHeight) / 2 : 0;
+	const int lineAdvance = node.computedStyle().line_height > 0 ? node.computedStyle().line_height : fontLineHeight;
+	const int lineBoxOffset = node.computedStyle().line_height > 0 ? (lineAdvance - fontLineHeight) / 2 : 0;
 	const int srcX = tx + alignedOffset(LayoutEngine::physicalTextAlign(node), tw, lineWidth);
 	const int srcY = ty + lineBoxOffset;
 	const int srcW = lineWidth;
@@ -1817,7 +1817,7 @@ void Tree::setText(int node, const char *text)
 	const int gid_previousX0 = gid_hadPartial ? target.render.text_dirty.x0 : 0;
 	const int gid_previousX1 = gid_hadPartial ? target.render.text_dirty.x1 : 0;
 	const bool gid_canPartial = (!target.render.dirty || gid_hadPartial) &&
-			!target.render.bg_recolor_pending && gid_singleLine && target.style.white_space == 1 &&
+			!target.render.bg_recolor_pending && gid_singleLine && target.computedStyle().white_space == 1 &&
 			LayoutEngine::physicalTextAlign(target) == 0 && gid_prefix < gid_newLen;
 	// Text and recolor shortcuts share their payload. Other pending paint
 	// changes require a full node repaint, while consecutive text runs union
@@ -2166,10 +2166,10 @@ static uint16_t blockEllipsisCommand(const Node &run, int textX, int &width)
 	const Tree &tree = Tree::instance();
 	for (int ancestor = run.parent; ancestor >= 0; ancestor = tree.node(ancestor).parent) {
 		const Node &box = tree.node(ancestor);
-		if (!(rstyle(box.style).line_clamp_flags & 1)) continue;
-		const int right = box.layout.x + box.layout.width - boxInset(box.style, 1);
+		if (!(rstyle(box.computedStyle()).line_clamp_flags & 1)) continue;
+		const int right = box.layout.x + box.layout.width - boxInset(box.computedStyle(), 1);
 		width = std::max(0, std::min(32767, right - textX));
-		return rstyle(box.style).block_ellipsis ? rstyle(box.style).block_ellipsis : kAutoBlockEllipsis;
+		return rstyle(box.computedStyle()).block_ellipsis ? rstyle(box.computedStyle()).block_ellipsis : kAutoBlockEllipsis;
 	}
 	return 0;
 }
@@ -2177,7 +2177,7 @@ static uint16_t blockEllipsisCommand(const Node &run, int textX, int &width)
 // DrawText::alignLast for a run: -1 unless text-align-last moves some line.
 static int8_t textAlignLastCommand(const Node &node)
 {
-	const int last = node.style.text_align_last - 1;
+	const int last = node.computedStyle().text_align_last - 1;
 	if (last < 0 || last == LayoutEngine::physicalTextAlign(node)) return -1;
 	const bool endsParagraph = LayoutEngine::endsFormattingLine(static_cast<int>(&node - Tree::instance().nodes()));
 	return static_cast<int8_t>(last | (endsParagraph ? 4 : 0));
@@ -2500,7 +2500,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		const int genFonts = 1;
 		inkOff = rasterizedSingleLineInkCenterOffsetY(measureText, textAlign, containerW,
-		                                             n->style.font_id, dbgFontSize, commandLineHeight);
+		                                             n->computedStyle().font_id, dbgFontSize, commandLineHeight);
 #else
 		const int genFonts = 0;
 #endif
@@ -2529,11 +2529,11 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 
 	int ellipsisWidth = 0;
 	const uint16_t blockEllipsis = !transformed && (n->layout.line_clamp_hidden & 2)
-	    ? blockEllipsisCommand(*n, n->layout.x + boxInset(n->style, 3), ellipsisWidth) : 0;
+	    ? blockEllipsisCommand(*n, n->layout.x + boxInset(n->computedStyle(), 3), ellipsisWidth) : 0;
 	// Emphasis marks sit above (or below) the glyph box, up to half an em.
-	if (n->style.text_emphasis & 7) {
-		const int reach = n->style.font_size;
-		if (n->style.text_emphasis & 0x10) bh += reach;
+	if (n->computedStyle().text_emphasis & 7) {
+		const int reach = n->computedStyle().font_size;
+		if (n->computedStyle().text_emphasis & 0x10) bh += reach;
 		else { by -= reach; bh += reach; }
 	}
 	// The ellipsis may reach past the run's own box to the end of its line.
@@ -2543,7 +2543,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		bw = right - bx;
 	}
 
-	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, n->style.text_alpha);
+	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, n->computedStyle().text_alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
 
 	DisplayCommand *cmd = DisplayList::instance().append();
@@ -2559,7 +2559,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.color = n->computedStyle().text_color;
 	cmd->text.scale = textScale;
 	cmd->text.align = static_cast<int8_t>(textAlign);
-	cmd->text.textTransform = n->style.text_transform;
+	cmd->text.textTransform = n->computedStyle().text_transform;
 	cmd->text.lineHeight = commandLineHeight;
 	cmd->text.containerWidth = containerW;
 	cmd->text.fontId = n->computedStyle().font_id;
@@ -2570,8 +2570,8 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.lineLimit = n->layout.line_clamp_lines;
 	cmd->text.blockEllipsis = blockEllipsis;
 	cmd->text.ellipsisWidth = static_cast<int16_t>(ellipsisWidth);
-	cmd->text.emphasis = (n->style.text_emphasis & 7) ? n->style.text_emphasis : 0;
-	cmd->text.emphasisColor = (n->style.text_emphasis & 0x60) == 0x20 ? n->style.text_emphasis_color : n->style.text_color;
+	cmd->text.emphasis = (n->computedStyle().text_emphasis & 7) ? n->computedStyle().text_emphasis : 0;
+	cmd->text.emphasisColor = (n->computedStyle().text_emphasis & 0x60) == 0x20 ? n->computedStyle().text_emphasis_color : n->computedStyle().text_color;
 	{
 		const int contentH = h - boxInset(n->computedStyle(), 0) - boxInset(n->computedStyle(), 2);
 		cmd->text.maxHeight = static_cast<int16_t>(contentH > 0 ? (contentH > 32767 ? 32767 : contentH) : 0);

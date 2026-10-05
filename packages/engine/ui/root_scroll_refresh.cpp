@@ -489,10 +489,10 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 {
 	auto &state = treeState();
 	auto &perf = refreshPerfStatsMutable();
-	perf.rootScrollCalls++;
+	GEA_REFRESH_PERF(perf.rootScrollCalls++);
 	// Shifting content by the scroll delta would drag sticky boxes along.
 	if (state.stickyPresent) {
-		perf.rootScrollRejected++;
+		GEA_REFRESH_PERF(perf.rootScrollRejected++);
 		return 0;
 	}
 	DirtyNode extraDirtyNodes[kMaxExtraDirtyNodes];

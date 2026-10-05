@@ -5518,8 +5518,8 @@ int gLastScrollUiFrame = -1000;
 				case DisplayCommandType::PushClip: {
 					const int id = c->clip.nodeId;
 					const Node *owner = id >= 0 && id < Tree::instance().nodeCount() ? &Tree::instance().nodes()[id] : nullptr;
-					const int clipDx = !owner || overflowX(owner->style) ? dx : 0;
-					const int clipDy = !owner || overflowY(owner->style) ? dy : 0;
+					const int clipDx = !owner || overflowX(owner->computedStyle()) ? dx : 0;
+					const int clipDy = !owner || overflowY(owner->computedStyle()) ? dy : 0;
 					c->clip.x += clipDx;
 					c->bx -= dx - clipDx;
 					c->clip.y += clipDy;
@@ -7020,10 +7020,10 @@ int gLastScrollUiFrame = -1000;
 				auto &tree = Tree::instance();
 				if (id < 0 || id >= tree.nodeCount()) return;
 				const auto &node = tree.nodes()[id];
-				if (node.style.display == 1 || (id != owner && isOutOfFlowPosition(node.style.position))) return;
-				opaque = opaque && node.style.opacity == 255;
-				if (state.hasNodeScratchFor(id) && node.style.visibility == 0) {
-					const bool hidesBackground = opaque && node.type == NodeType::Text && node.style.text_alpha == 255;
+				if (node.computedStyle().display == 1 || (id != owner && isOutOfFlowPosition(node.computedStyle().position))) return;
+				opaque = opaque && node.computedStyle().opacity == 255;
+				if (state.hasNodeScratchFor(id) && node.computedStyle().visibility == 0) {
+					const bool hidesBackground = opaque && node.type == NodeType::Text && node.computedStyle().text_alpha == 255;
 					const int begin = state.nodeDrawStart[id] + copyOffset, end = state.nodeDrawEnd[id] + copyOffset;
 					for (int ci = std::max(0, begin); ci < end && ci < state.commandCount; ++ci) {
 						const auto &c = state.commands[ci];
@@ -7517,7 +7517,7 @@ int gLastScrollUiFrame = -1000;
 				DisplayCommand *cmd = list.append();
 				if (!cmd)
 					return false;
-				const int top = n.layout.y + boxInset(n.style, 0);
+				const int top = n.layout.y + boxInset(n.computedStyle(), 0);
 				const int y0 = k == 0 ? -16384 : top;
 				const int y1 = k == columns.used - 1 && !columns.discard ? 16383 : top + columns.height;
 				cmd->type = DisplayCommandType::PushClip;
@@ -7547,7 +7547,7 @@ int gLastScrollUiFrame = -1000;
 			static void replicateColumns(DisplayList &list, const Node &n, const MulticolLayout &columns, int begin, int end)
 			{
 				const bool rtl = LayoutEngine::rightToLeftDirection(n);
-				const int contentWidth = n.layout.width - boxInset(n.style, 1) - boxInset(n.style, 3);
+				const int contentWidth = n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
 				const int step = rtl ? -(columns.width + columns.gap) : columns.width + columns.gap;
 				const int start = rtl ? contentWidth - columns.width : 0;
 				if (start != 0)
@@ -7587,7 +7587,7 @@ int gLastScrollUiFrame = -1000;
 					return;
 				}
 				Node *n = &Tree::instance().nodes()[id];
-				if (n->style.display == 1 || (n->layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
+				if (n->computedStyle().display == 1 || (n->layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
 					return;
@@ -9422,9 +9422,17 @@ int gLastScrollUiFrame = -1000;
 						if (!nodeRecordsOverflowClip(cursor, nodes, nodeCount, &shape))
 							continue;
 						const Node &clip = nodes[cursor];
-						if (shape.shaped || clip.layout.x > x0 || clip.layout.y > y0 ||
-								clip.layout.x + clip.layout.width - 1 < x1 ||
-								clip.layout.y + clip.layout.height - 1 < y1)
+						// A rounded (shaped) clip never proves a rectangular cover.
+						if (shape.shaped || clip.layout.y > y0 || clip.layout.y + clip.layout.height - 1 < y1)
+						{
+							clipped = true;
+							break;
+						}
+						if (spanX0 < clip.layout.x)
+							spanX0 = clip.layout.x;
+						if (spanX1 > clip.layout.x + clip.layout.width - 1)
+							spanX1 = clip.layout.x + clip.layout.width - 1;
+						if (spanX0 > spanX1)
 						{
 							clipped = true;
 							break;
@@ -10066,12 +10074,12 @@ int gLastScrollUiFrame = -1000;
 	{
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
-		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.style.position) &&
-		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		const bool item = n.parent >= 0 && !isOutOfFlowPosition(n.computedStyle().position) &&
+		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
 		// A multicol container paints its whole flow thread, positioned content
 		// included, so every column box can repeat it.
-		return n.parent < 0 || n.style.position == kPositionFixed || ChildZSorter::effectGroup(n) ||
-		    (!n.style.z_index_auto && (n.style.position != 0 || item)) || LayoutEngine::multicolContainer(n);
+		return n.parent < 0 || n.computedStyle().position == kPositionFixed || ChildZSorter::effectGroup(n) ||
+		    (!n.computedStyle().z_index_auto && (n.computedStyle().position != 0 || item)) || LayoutEngine::multicolContainer(n);
 	}
 
 	bool PaintOrder::isGroup(int id)
@@ -10079,10 +10087,10 @@ int gLastScrollUiFrame = -1000;
 		const auto *nodes = Tree::instance().nodes();
 		const auto &n = nodes[id];
 		const bool item = n.parent >= 0 &&
-		    (nodes[n.parent].style.display == kDisplayFlex || isDisplayGrid(nodes[n.parent].style));
+		    (nodes[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes[n.parent].computedStyle()));
 		// An inline-block, inline-flex or inline-grid paints atomically, like a
 		// float (CSS 2.2 Appendix E).
-		return isContext(id) || n.style.position != 0 || n.style.float_side || item || isAtomicInline(n.style);
+		return isContext(id) || n.computedStyle().position != 0 || n.computedStyle().float_side || item || isAtomicInline(n.computedStyle());
 	}
 
 	std::vector<int> PaintOrder::collectChildren(int root, bool groupRoot, bool includePositioned)
@@ -13343,10 +13351,10 @@ int gLastScrollUiFrame = -1000;
 		// an empty range, which `old_len == 0 && tmp_len > 0` below (correctly) refuses
 		// to splice — and the refusal cost the whole frame its retained display list.
 		const bool outsideRecordClip = !isDocumentCanvasRoot(*n) && nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight());
-		if (!outsideRecordClip && n->style.visibility == 0 && !(n->layout.line_clamp_hidden & 1) && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
-				n->style.display != 1 &&
-				n->style.opacity != 0 &&
-				!(n->style.blink_interval_ms > 0 && !n->style.blink_visible) &&
+		if (!outsideRecordClip && n->computedStyle().visibility == 0 && !(n->layout.line_clamp_hidden & 1) && !isCollapsedFlexSubtree(*n) && !ViewRenderer::backfaceSubtreeHidden(*n) &&
+				n->computedStyle().display != 1 &&
+				n->computedStyle().opacity != 0 &&
+				!(n->computedStyle().blink_interval_ms > 0 && !n->computedStyle().blink_visible) &&
 				!isNativeTextInputView(*n))
 		{
 			ViewRenderer::recordBox(*n);

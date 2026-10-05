@@ -331,12 +331,14 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		// Any application of the `display` property is explicit authoring — record
 		// it so the inline-formatting heuristic treats e.g. `display:block` on a
 		// <span> as block-level (stacks) rather than its default inline behaviour.
+#if GEA_CSS_DISPLAY_EXPLICIT
 		// Keyword bits above the box kind (flow-root) are recorded with it.
-		if (n->style.display_explicit != (kDisplayExplicit | (value >> kDisplayFlagShift))) {
-			n->style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+		if (style.display_explicit != (kDisplayExplicit | (value >> kDisplayFlagShift))) {
+			style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
 			changed = 1;
 		}
-		if (n->style.display != (value & kDisplayKindMask)) { n->style.display = value & kDisplayKindMask; changed = 1; }
+#endif
+		if (style.display != (value & kDisplayKindMask)) { style.display = value & kDisplayKindMask; changed = 1; }
 		break;
 #if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
@@ -385,8 +387,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::LineClampDiscard:
 	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(prop);
-		const int next = value ? rstyle(n->style).line_clamp_flags | bit : rstyle(n->style).line_clamp_flags & ~bit;
-		if (rstyle(n->style).line_clamp_flags != next) { rstyleMut(n->style).line_clamp_flags = next; changed = 1; }
+		const int next = value ? rstyle(style).line_clamp_flags | bit : rstyle(style).line_clamp_flags & ~bit;
+		if (rstyle(style).line_clamp_flags != next) { rstyleMut(style).line_clamp_flags = next; changed = 1; }
 		break;
 	}
 #endif
@@ -665,8 +667,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::Position:         if (value == kPositionFixed) state.fixedPositionUsed = true; if (style.position != value) { style.position = value; changed = 1; } break;
 	case Property::Top:
 #if GEA_CSS_POSITION_TOP
-		if (GEA_CSS_POSITION_PX_0(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_0(n->style) != kUnset) {
-			GEA_CSS_POSITION_PX_0(n->style) = storedPositionOffset(value);
+		if (GEA_CSS_POSITION_PX_0(style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_0(style) != kUnset) {
+			GEA_CSS_POSITION_PX_0(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_TOP_PERCENT
 			GEA_CSS_POSITION_PERCENT_0(style) = kUnset;
 #endif
@@ -676,8 +678,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Right:
 #if GEA_CSS_POSITION_RIGHT
-		if (GEA_CSS_POSITION_PX_1(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_1(n->style) != kUnset) {
-			GEA_CSS_POSITION_PX_1(n->style) = storedPositionOffset(value);
+		if (GEA_CSS_POSITION_PX_1(style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_1(style) != kUnset) {
+			GEA_CSS_POSITION_PX_1(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_RIGHT_PERCENT
 			GEA_CSS_POSITION_PERCENT_1(style) = kUnset;
 #endif
@@ -687,8 +689,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Bottom:
 #if GEA_CSS_POSITION_BOTTOM
-		if (GEA_CSS_POSITION_PX_2(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_2(n->style) != kUnset) {
-			GEA_CSS_POSITION_PX_2(n->style) = storedPositionOffset(value);
+		if (GEA_CSS_POSITION_PX_2(style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_2(style) != kUnset) {
+			GEA_CSS_POSITION_PX_2(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_BOTTOM_PERCENT
 			GEA_CSS_POSITION_PERCENT_2(style) = kUnset;
 #endif
@@ -698,8 +700,8 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	case Property::Left:
 #if GEA_CSS_POSITION_LEFT
-		if (GEA_CSS_POSITION_PX_3(n->style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_3(n->style) != kUnset) {
-			GEA_CSS_POSITION_PX_3(n->style) = storedPositionOffset(value);
+		if (GEA_CSS_POSITION_PX_3(style) != storedPositionOffset(value) || GEA_CSS_POSITION_PERCENT_3(style) != kUnset) {
+			GEA_CSS_POSITION_PX_3(style) = storedPositionOffset(value);
 #if GEA_CSS_POSITION_LEFT_PERCENT
 			GEA_CSS_POSITION_PERCENT_3(style) = kUnset;
 #endif
@@ -773,18 +775,18 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	}
 #if GEA_CSS_BACKGROUND_LAYERS
-	case Property::BackgroundClip: if (rstyle(n->style).bg_clip != value) { rstyleMut(n->style).bg_clip = value; changed = 1; } break;
-	case Property::BackgroundBlendMode: if (rstyle(n->style).bg_blend != value) { rstyleMut(n->style).bg_blend = value; changed = 1; } break;
-	case Property::BorderImageSource: if (rstyle(n->style).border_image_source != value) { rstyleMut(n->style).border_image_source = value; changed = 1; } break;
-	case Property::BorderImageSlice: if (rstyle(n->style).border_image_slice != value) { rstyleMut(n->style).border_image_slice = value; changed = 1; } break;
-	case Property::BorderImageWidth: if (rstyle(n->style).border_image_width != value) { rstyleMut(n->style).border_image_width = value; changed = 1; } break;
-	case Property::BorderImageOutset: if (rstyle(n->style).border_image_outset != value) { rstyleMut(n->style).border_image_outset = value; changed = 1; } break;
-	case Property::BorderImageRepeat: if (rstyle(n->style).border_image_repeat != value) { rstyleMut(n->style).border_image_repeat = value; changed = 1; } break;
-	case Property::BackgroundSizeList: if (rstyle(n->style).bg_size_list != value) { rstyleMut(n->style).bg_size_list = value; changed = 1; } break;
-	case Property::BackgroundPositionList: if (rstyle(n->style).bg_position_list != value) { rstyleMut(n->style).bg_position_list = value; changed = 1; } break;
-	case Property::BackgroundRepeatList: if (rstyle(n->style).bg_repeat_list != value) { rstyleMut(n->style).bg_repeat_list = value; changed = 1; } break;
-	case Property::BackgroundAttachmentList: if (rstyle(n->style).bg_attachment_list != value) { rstyleMut(n->style).bg_attachment_list = value; changed = 1; } break;
-	case Property::BackgroundOriginList: if (rstyle(n->style).bg_origin_list != value) { rstyleMut(n->style).bg_origin_list = value; changed = 1; } break;
+	case Property::BackgroundClip: if (rstyle(style).bg_clip != value) { rstyleMut(style).bg_clip = value; changed = 1; } break;
+	case Property::BackgroundBlendMode: if (rstyle(style).bg_blend != value) { rstyleMut(style).bg_blend = value; changed = 1; } break;
+	case Property::BorderImageSource: if (rstyle(style).border_image_source != value) { rstyleMut(style).border_image_source = value; changed = 1; } break;
+	case Property::BorderImageSlice: if (rstyle(style).border_image_slice != value) { rstyleMut(style).border_image_slice = value; changed = 1; } break;
+	case Property::BorderImageWidth: if (rstyle(style).border_image_width != value) { rstyleMut(style).border_image_width = value; changed = 1; } break;
+	case Property::BorderImageOutset: if (rstyle(style).border_image_outset != value) { rstyleMut(style).border_image_outset = value; changed = 1; } break;
+	case Property::BorderImageRepeat: if (rstyle(style).border_image_repeat != value) { rstyleMut(style).border_image_repeat = value; changed = 1; } break;
+	case Property::BackgroundSizeList: if (rstyle(style).bg_size_list != value) { rstyleMut(style).bg_size_list = value; changed = 1; } break;
+	case Property::BackgroundPositionList: if (rstyle(style).bg_position_list != value) { rstyleMut(style).bg_position_list = value; changed = 1; } break;
+	case Property::BackgroundRepeatList: if (rstyle(style).bg_repeat_list != value) { rstyleMut(style).bg_repeat_list = value; changed = 1; } break;
+	case Property::BackgroundAttachmentList: if (rstyle(style).bg_attachment_list != value) { rstyleMut(style).bg_attachment_list = value; changed = 1; } break;
+	case Property::BackgroundOriginList: if (rstyle(style).bg_origin_list != value) { rstyleMut(style).bg_origin_list = value; changed = 1; } break;
 
 #endif
 	case Property::BackgroundImage:
@@ -1032,22 +1034,26 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			style.line_height_multiplier = value; style.line_height = height; changed = 1;
 		} break;
 	}
-	case Property::TextAlign:       if (n->style.text_align != value) { n->style.text_align = value; changed = 1; } break;
-	case Property::TextAlignLast:   if (n->style.text_align_last != value) { n->style.text_align_last = value; changed = 1; } break;
+#endif
+#endif
+#if GEA_CSS_TEXT_ALIGN
+	case Property::TextAlign:       if (style.text_align != value) { style.text_align = value; changed = 1; } break;
+#endif
+	case Property::TextAlignLast:   if (style.text_align_last != value) { style.text_align_last = value; changed = 1; } break;
 	case Property::TextEmphasisStyle:
 	case Property::TextEmphasisPosition:
 	case Property::TextEmphasisColorMode: {
 		const int mask = prop == Property::TextEmphasisStyle ? 0x0f : prop == Property::TextEmphasisPosition ? 0x10 : 0x60;
-		const int next = (n->style.text_emphasis & ~mask) | (value & mask);
-		if (n->style.text_emphasis != next) { n->style.text_emphasis = static_cast<uint8_t>(next); changed = 1; }
+		const int next = (style.text_emphasis & ~mask) | (value & mask);
+		if (style.text_emphasis != next) { style.text_emphasis = static_cast<uint8_t>(next); changed = 1; }
 		break;
 	}
 	case Property::TextEmphasisColor: {
 		const auto color = StyleValues::pixelFromStyleValue(value);
-		if (n->style.text_emphasis_color != color) { n->style.text_emphasis_color = color; changed = 1; }
+		if (style.text_emphasis_color != color) { style.text_emphasis_color = color; changed = 1; }
 		break;
 	}
-	case Property::VerticalAlign:   if (n->style.vertical_align != value) { n->style.vertical_align = value; changed = 1; } break;
+	case Property::VerticalAlign:   if (style.vertical_align != value) { style.vertical_align = value; changed = 1; } break;
 #if GEA_CSS_TEXT_DECORATION
 	case Property::TextDecoration:  if (style.text_decoration != value) { style.text_decoration = value; changed = 1; } break;
 #endif
