@@ -235,6 +235,14 @@
 #define GEA_CSS_RADIUS_INDEX(index) 0
 #endif
 
+// Shaped overflow clips: a rounded or transformed `overflow: hidden` box clips
+// its content to the padding box's inner radii, or to its screen parallelogram.
+// Off, every overflow clip is a rectangle and a transformed box does not clip,
+// and replay carries none of the save/restore machinery.
+#ifndef GEA_CSS_SHAPED_CLIPS
+#define GEA_CSS_SHAPED_CLIPS 1
+#endif
+
 #ifndef GEA_CSS_FIRST_LINE
 #define GEA_CSS_FIRST_LINE 1
 #endif
@@ -245,6 +253,15 @@
 
 #ifndef GEA_CSS_BACKGROUND_LAYERS
 #define GEA_CSS_BACKGROUND_LAYERS 1
+#endif
+
+// CSS Overflow 4 line clamping (line-clamp, max-lines, continue, block-ellipsis)
+// and CSS Multi-column (column-count, column-width, column-fill, column-span).
+#ifndef GEA_CSS_LINE_CLAMP
+#define GEA_CSS_LINE_CLAMP 1
+#endif
+#ifndef GEA_CSS_MULTICOL
+#define GEA_CSS_MULTICOL 1
 #endif
 
 #ifndef GEA_CSS_LINE_HEIGHT_EXPRESSIONS

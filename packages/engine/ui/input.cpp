@@ -443,7 +443,7 @@ private:
 	int hitTestNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.computedStyle().display == 1 || isCollapsedFlexSubtree(node)) return -1;
+		if (node.computedStyle().display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
 		// CSS `pointer-events: none` — this node and its subtree are never the
 		// target of a pointer event, so the hit-test falls through to whatever is
 		// painted behind it. Without this, a decorative overlay image positioned
@@ -482,7 +482,7 @@ private:
 	int findScrollNodeId(int id, int x, int y, bool clipped = false, bool groupRoot = true, bool includePositioned = true)
 	{
 		Node &node = Tree::instance().nodes()[id];
-		if (node.computedStyle().display == 1 || isCollapsedFlexSubtree(node)) return -1;
+		if (node.computedStyle().display == 1 || (node.layout.line_clamp_hidden & 1) || isCollapsedFlexSubtree(node)) return -1;
 
 		const bool inside = pointInsideNodeHitArea(node, x, y);
 		if (LayoutEngine::isViewportFixed(node)) clipped = false;

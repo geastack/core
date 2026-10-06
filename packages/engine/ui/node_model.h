@@ -34,6 +34,20 @@ using style_color_t = gea::framework::graphics::pixel::native_t;
 #endif
 inline constexpr int kMaxNodes = GEA_EMBEDDED_MAX_NODES;
 inline constexpr int kUnset = -32768;
+// Position offsets are int16 with kUnset meaning auto. Saturate every other
+// length so a huge inset stays far away instead of wrapping or reading as auto.
+inline int16_t storedPositionOffset(int value)
+{
+	return static_cast<int16_t>(value == kUnset ? kUnset : std::clamp(value, -32767, 32767));
+}
+// Width and height (declared and laid out) are 32-bit: a box can be larger than
+// int16 allows and still fit the screen under a scale transform. The bound
+// keeps every size exact in the float math of transform projection.
+inline constexpr int kMaxLayoutExtent = 1 << 24;
+inline int32_t clampLayoutExtent(int value)
+{
+	return std::clamp(value, -kMaxLayoutExtent, kMaxLayoutExtent);
+}
 // Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
 inline constexpr int kZIndexAuto = INT32_MIN;
 // Dimension expression slots use nonnegative values for pooled expressions,
@@ -73,7 +87,18 @@ inline constexpr int8_t kDisplayBlock = 0;
 inline constexpr int8_t kDisplayNone = 1;
 inline constexpr int8_t kDisplayGrid = 2;
 inline constexpr int8_t kDisplayFlex = 3;
+// A Display property value carries the box kind in its low bits and extra
+// keyword bits above kDisplayFlagShift; the extra bits land in display_explicit.
+inline constexpr int kDisplayKindMask = 15;
+inline constexpr int kDisplayFlagShift = 4;
+inline constexpr int8_t kDisplayExplicit = 1;
+inline constexpr int8_t kDisplayFlowRoot = 2; // display: flow-root
+// display: inline on a block kind; with kDisplayFlowRoot it is inline-block, and
+// on a flex or grid kind inline-flex or inline-grid. Those three are atomic.
+inline constexpr int8_t kDisplayInline = 4;
 inline constexpr int kPositionFixed = 3;
+// position: sticky stays in flow; the absolute-coordinate pass shifts it.
+inline constexpr int kPositionSticky = 4;
 inline bool isOutOfFlowPosition(int position) { return position == 1 || position == kPositionFixed; }
 // Existing alignment values occupy the low nibble. Overflow-position is
 // independent of the alignment keyword and fits in the existing int8 fields.
@@ -144,6 +169,22 @@ struct RareStyle {
 	uint8_t margin_trim = 0;
 #else
 	static constexpr uint8_t margin_trim = 0;
+#endif
+#if GEA_CSS_MULTICOL
+	// Multi-column: column-count (0 = auto). Sits in padding.
+	uint8_t column_count = 0;
+	// Multi-column: column-width in px, -1 = auto. Sits in padding.
+	int16_t column_width = -1;
+#else
+	static constexpr uint8_t column_count = 0;
+	static constexpr int16_t column_width = -1;
+#endif
+#if GEA_CSS_LINE_CLAMP
+	// CSS atom of a custom block-ellipsis string; 0 = the default ellipsis.
+	// Only used when line_clamp_flags has block-ellipsis set. Sits in padding.
+	uint16_t block_ellipsis = 0;
+#else
+	static constexpr uint16_t block_ellipsis = 0;
 #endif
 	// IEEE float bits travel through the existing integer style-value transport.
 	// Negative ratios mean `auto <ratio>` (prefer a replaced element's natural ratio).
@@ -339,10 +380,16 @@ struct RareStyle {
 	static constexpr int16_t border_side_width[4] = {};
 #endif
 	// 0: flat; 1: groove; 2: ridge; 3: inset; 4: outset.
+	// Per side: 1-4 groove / ridge / inset / outset, and kBorderStyleNone when
+	// border-style is none or hidden (the side then keeps a zero width).
 #if GEA_CSS_BORDER_RELIEF
 	uint8_t border_relief[4] = {};
+	// The width a side declared while its border-style is none or hidden. The
+	// side paints with width 0 until the style changes back, then takes this.
+	int16_t border_none_width[4] = {};
 #else
 	static constexpr uint8_t border_relief[4] = {};
+	static constexpr int16_t border_none_width[4] = {};
 #endif
 #if GEA_CSS_SIDE_BORDERS
 	style_color_t border_side_color[4] = {
@@ -369,10 +416,24 @@ struct RareStyle {
 	//     center/extent 500/1000) ---
 #if GEA_CSS_BACKGROUND_LAYERS
 	uint16_t bg_image_layer_count = 1; // Includes none layers.
+	uint8_t bg_blend = 0; // Interned background-blend-mode list; zero is all normal.
+	// border-image-* (see StyleValues::borderImageSource/Sides/Repeat): interned
+	// handles, zero is the initial value.
+	uint8_t border_image_source = 0;
+	uint8_t border_image_slice = 0;
+	uint8_t border_image_width = 0;
+	uint8_t border_image_outset = 0;
+	uint8_t border_image_repeat = 0; // bits 0-1 horizontal, 2-3 vertical: stretch, repeat, round, space
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #else
 	static constexpr uint16_t bg_image_layer_count = 1; // Includes none layers.
+	static constexpr uint8_t bg_blend = 0;
+	static constexpr uint8_t border_image_source = 0;
+	static constexpr uint8_t border_image_slice = 0;
+	static constexpr uint8_t border_image_width = 0;
+	static constexpr uint8_t border_image_outset = 0;
+	static constexpr uint8_t border_image_repeat = 0;
 	static constexpr int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	static constexpr int32_t bg_attachment_list = -1, bg_origin_list = -1;
 #endif
@@ -457,6 +518,21 @@ struct RareStyle {
 	static constexpr uint8_t bg_grid_line_x = 0;
 	static constexpr uint8_t bg_grid_line_y = 0;
 #endif
+	// CSS Overflow 4 line clamping: max-lines (0 = none, capped at 255) and
+	// flags: 1 = continue: collapse or discard, 2 = block-ellipsis other than
+	// none, 4 / 8 = column-count / column-width set (a multicol container never
+	// clamps), 16 = column-fill: auto, 32 = continue: discard, 64 = column-span:
+	// all. Both sit in trailing padding, so RareStyle keeps its size.
+#if GEA_CSS_LINE_CLAMP
+	uint8_t max_lines = 0;
+#else
+	static constexpr uint8_t max_lines = 0;
+#endif
+#if GEA_CSS_LINE_CLAMP || GEA_CSS_MULTICOL
+	uint8_t line_clamp_flags = 0;
+#else
+	static constexpr uint8_t line_clamp_flags = 0;
+#endif
 	};
 
 // Individual translation is applied outside the transform list. Its translation
@@ -472,7 +548,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {
@@ -483,19 +559,19 @@ struct ComputedStyle {
 	// inline-formatting heuristic distinguish an explicit `display:block` on an
 	// inline-level tag (e.g. <span style="display:block">, which is block-level
 	// and stacks) from a span's default inline behaviour. Mirrors
-	// flex_direction_explicit.
+	// flex_direction_explicit. Other bits: kDisplayFlowRoot, kDisplayInline.
 #if GEA_CSS_DISPLAY_EXPLICIT
-	uint8_t display_explicit : 1;
+	uint8_t display_explicit : 3;
 #else
 	static constexpr uint8_t display_explicit = 0;
 #endif
 #if GEA_CSS_TEXT_ALIGN
-	int8_t text_align;
+	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
 #else
 	static constexpr int8_t text_align = 0;
 #endif
 	int8_t overflow : 3;
-	uint8_t position : 2;
+	uint8_t position : 3;  // kPositionSticky needs the third bit
 	uint8_t has_bg : 1;
 #if GEA_CSS_Z_INDEX
 	uint8_t z_index_auto : 1;
@@ -550,6 +626,9 @@ struct ComputedStyle {
 #if GEA_CSS_GAP && !GEA_CSS_U8_GAP
 	int16_t gap;
 #endif
+	// text-emphasis-color when text_emphasis says it is explicit. Inherited;
+	// sits in padding on 16-bit colour builds.
+	style_color_t text_emphasis_color;
 #if GEA_CSS_BOX_SIZING
 	int8_t box_sizing; // 0: content-box (CSS initial), 1: border-box
 #else
@@ -620,7 +699,7 @@ struct ComputedStyle {
 #else
 	static constexpr int32_t height_expression = -1;
 #endif
-	int16_t width, height;
+	int32_t width, height; // kUnset: auto; see kMaxLayoutExtent
 #if GEA_CSS_WIDTH_PERCENT
 	int16_t width_percent;
 #else
@@ -756,12 +835,19 @@ struct ComputedStyle {
 	uint8_t line_height;
 #endif
 	style_color_t bg_color;
+	// text-emphasis (inherited): bits 0-2 mark 0 none, 1 dot, 2 circle,
+	// 3 double-circle, 4 triangle, 5 sesame; bit 3 open; bit 4 under; bits 5-6
+	// colour 0 currentColor, 1 text_emphasis_color, 2 transparent. In padding.
+	uint8_t text_emphasis;
 	// linear/overlay/radial gradients + background-grid moved to RareStyle (rare).
 #if GEA_CSS_ACTIVE_BACKGROUND
 	style_color_t active_bg_color;
 #else
 	static constexpr style_color_t active_bg_color = 0;
 #endif
+	// CSS `vertical-align` of an inline-level box: 0 baseline, 1 top, 2 bottom,
+	// 3 middle, 4 text-top, 5 text-bottom, 6 sub, 7 super. Sits in padding.
+	int8_t vertical_align;
 	style_color_t text_color;
 #if GEA_CSS_OPACITY
 	uint8_t opacity;
@@ -777,6 +863,9 @@ struct ComputedStyle {
 	static constexpr int32_t blink_started_ms = 0;
 	static constexpr uint8_t blink_visible = 1;
 #endif
+	// CSS `text-align-last`: 0 = auto (follow text-align), otherwise a text_align
+	// value plus one. Inherited. Sits in padding, so ComputedStyle keeps its size.
+	int8_t text_align_last;
 
 #if GEA_CSS_BORDER_WIDTHS && !GEA_CSS_U8_BORDER
 	int16_t border_width;
@@ -1058,6 +1147,9 @@ inline int computedBorderWidth(const ComputedStyle &style, int side)
 #endif
 }
 
+// RareStyle::border_relief bit for border-style: none / hidden on that side.
+inline constexpr uint8_t kBorderStyleNone = 0x80;
+
 inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, const ComputedStyle *parent)
 {
 #if GEA_CSS_BORDER_WIDTHS
@@ -1067,6 +1159,15 @@ inline bool setComputedBorderWidth(ComputedStyle &style, int side, int value, co
 		widths[i] = computedBorderWidth(style, i);
 		if (side < 0 || side == i)
 			widths[i] = value == kInheritedBorderWidth ? (parent ? computedBorderWidth(*parent, i) : 0) : value;
+#if GEA_CSS_BORDER_RELIEF
+		// A side whose style is none has no border, whatever width it declares.
+		// The declared width is kept so a later border-style brings it back.
+		if (rstyle(style).border_relief[i] & kBorderStyleNone) {
+			if ((side < 0 || side == i) && rstyle(style).border_none_width[i] != widths[i])
+				rstyleMut(style).border_none_width[i] = static_cast<int16_t>(widths[i]);
+			widths[i] = 0;
+		}
+#endif
 	}
 	const bool uniform = side < 0 && widths[0] == widths[1] && widths[0] == widths[2] && widths[0] == widths[3];
 	// A side can override a wider common border with a narrower or zero edge.
@@ -1230,6 +1331,26 @@ inline bool isDisplayGrid(const ComputedStyle &style)
 	return GEA_CSS_GRID && style.display == kDisplayGrid;
 }
 
+inline bool isFlowRoot(const ComputedStyle &style)
+{
+	return style.display == kDisplayBlock && (style.display_explicit & kDisplayFlowRoot);
+}
+
+// inline-block, inline-flex and inline-grid sit on a line like an image, sized
+// to their content. Floats and absolutely positioned boxes are blockified.
+inline bool isAtomicInline(const ComputedStyle &style)
+{
+	return (style.display_explicit & kDisplayInline) && (style.display != kDisplayBlock || (style.display_explicit & kDisplayFlowRoot)) &&
+	    !style.float_side && !isOutOfFlowPosition(style.position);
+}
+
+// An authored display: inline, which makes any element an inline box like a
+// <span>.
+inline bool isInlineBoxDisplay(const ComputedStyle &style)
+{
+	return style.display == kDisplayBlock && (style.display_explicit & (kDisplayInline | kDisplayFlowRoot)) == kDisplayInline;
+}
+
 inline bool usesRowLayout(const ComputedStyle &style)
 {
 	// `flex-direction` applies to FLEX CONTAINERS, and to nothing else --
@@ -1325,6 +1446,17 @@ inline bool hasSideBorder(const ComputedStyle &style)
 #endif
 }
 
+// How far an outer box-shadow can paint outside the border box.
+inline int boxShadowExtent(const ComputedStyle &style)
+{
+	const RareStyle &r = rstyle(style);
+	if (r.box_shadow_inset || r.box_shadow_alpha == 0) return 0;
+	const int ox = r.box_shadow_offset_x < 0 ? -r.box_shadow_offset_x : r.box_shadow_offset_x;
+	const int oy = r.box_shadow_offset_y < 0 ? -r.box_shadow_offset_y : r.box_shadow_offset_y;
+	const int reach = r.box_shadow_spread + (r.box_shadow_blur_radius > 0 ? r.box_shadow_blur_radius : 0) + (ox > oy ? ox : oy);
+	return reach > 0 ? reach : 0;
+}
+
 inline bool hasAnyBorder(const ComputedStyle &style)
 {
 	return style.border_width > 0 || hasSideBorder(style);
@@ -1333,7 +1465,8 @@ inline bool hasAnyBorder(const ComputedStyle &style)
 inline bool hasBorderRelief(const ComputedStyle &style)
 {
 	const auto &r = rstyle(style);
-	return r.border_relief[0] || r.border_relief[1] || r.border_relief[2] || r.border_relief[3];
+	constexpr uint8_t relief = static_cast<uint8_t>(~kBorderStyleNone);
+	return (r.border_relief[0] & relief) || (r.border_relief[1] & relief) || (r.border_relief[2] & relief) || (r.border_relief[3] & relief);
 }
 
 #ifndef GEA_EMBEDDED_SHARED_STYLES
@@ -1342,7 +1475,7 @@ inline bool hasBorderRelief(const ComputedStyle &style)
 
 struct LayoutBox {
 	int16_t x, y;
-	int16_t width, height;
+	int32_t width, height; // see kMaxLayoutExtent
 
 	// Inline formatting: x offset, inside this box's content area, at which the
 	// run's FIRST line starts. A text run that begins part-way along a line box
@@ -1358,9 +1491,20 @@ struct LayoutBox {
 	#if !GEA_EMBEDDED_SHARED_STYLES
 	int16_t static_block_start = 0;
 	#endif
+	// line-clamp: bit 0 when the box lies after an ancestor's clamp point, which
+	// hides it; bit 1 on the text run whose last painted line ends before the
+	// clamp point and carries the block ellipsis. Like line_clamp_lines below
+	// it sits in padding.
+	uint8_t line_clamp_hidden = 0;
+	// 1 on a container whose last layout applied a line clamp, so a layout that
+	// no longer clamps clears the state left on its descendants. Sits in padding.
+	uint8_t line_clamp_owner = 0;
 
 	int16_t previous_x, previous_y;
-	int16_t previous_width, previous_height;
+	// line-clamp: a text run its container's clamp point cuts paints only
+	// this many lines. 0 paints them all.
+	int16_t line_clamp_lines = 0;
+	int32_t previous_width, previous_height;
 
 	// Scroll geometry must be 32-bit: a <virtual-list> scrolls over a virtual
 	// content height of itemCount * rowHeight (e.g. 5000 * 259 ≈ 1.29M px),
@@ -1510,13 +1654,19 @@ struct RenderState {
 	// the line advance: ink centring shifts by however far that particular string's
 	// glyphs reach, so runs of different words — or different fonts — on one line
 	// end up at different heights. A run that owns its line keeps the centring.
-	uint8_t inline_baseline : 1;
+	// Bit 1: the line layout already applied text-align to this box's line, so
+	// the run draws start-aligned in its own box.
+	uint8_t inline_baseline : 2;
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {
 		style_color_t bg_recolor_from;
 		struct { int16_t x0, x1; } text_dirty;
 	};
+	// boxShadowExtent at the last snapshot, so a moved or restyled shadow
+	// invalidates the pixels it used to cover. Spread, blur and offset are each
+	// int16_t, so their sum needs 32 bits.
+	int32_t previous_box_shadow_extent;
 };
 
 inline bool hadIndividualLinearTransform(const RenderState &s)

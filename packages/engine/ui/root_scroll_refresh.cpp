@@ -490,6 +490,11 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	auto &state = treeState();
 	auto &perf = refreshPerfStatsMutable();
 	GEA_REFRESH_PERF(perf.rootScrollCalls++);
+	// Shifting content by the scroll delta would drag sticky boxes along.
+	if (state.stickyPresent) {
+		GEA_REFRESH_PERF(perf.rootScrollRejected++);
+		return 0;
+	}
 	DirtyNode extraDirtyNodes[kMaxExtraDirtyNodes];
 	int extraDirtyCount = 0;
 	int slotNodes[kMaxSlotRepositionNodes];
@@ -614,7 +619,8 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		                               !horizontal &&
 		                               n->type != NodeType::VirtualList &&
 		                               slotCount == 0 &&
-		                               extraDirtyCount == 0;
+		                               extraDirtyCount == 0 &&
+		                               !list.hasColumnCopies();
 		const int coverageDelta = scrollYNow - coverageScrollY;
 		const bool coverageValid = translateEligible &&
 		                           coverageRoot == root &&

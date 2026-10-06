@@ -369,6 +369,175 @@ bool hasExplicitHeight(const Node &node)
 	       !layoutSizeExpressionUsesPercentage(static_cast<int>(&node - Tree::instance().nodes()), node.computedStyle().height_expression);
 }
 
+// Line clamping (CSS Overflow 4). A block container with continue: collapse
+// hides everything after its clamp point, which follows its max-lines'th line
+// or, without max-lines, the last content that fits its used height. Lines of
+// inline wrappers and plain block descendants count; independent formatting
+// contexts are single units. Child coordinates are still parent-relative.
+int writingMode(const Node &node);
+bool emptyInlineBox(const Node &node);
+
+struct LineClampWalk {
+	Node *nodes;
+	int maxLines;
+	int limit;
+	int lines = 0;
+	int lastLineTop = INT_MIN;
+	int keptBottom = 0;
+	// The text run whose line is the last one kept; -1 when that is an atomic box.
+	int lastRun = -1;
+	// Lines and boxes kept so far.
+	int kept = 0;
+	bool clamped = false;
+	// The blocks the walk is inside, innermost last. Clamping removes the rest
+	// of their content, so each still ends with its bottom border and padding,
+	// its min-height and its bottom margin.
+	struct OpenBlock { int top, inset, minHeight, margin; };
+	std::vector<OpenBlock> open;
+	// Where the container's content ends when clamped after content ending at
+	// `bottom` with bottom margin `margin`. Margins collapse outwards through
+	// blocks without bottom border, padding or min-height (CSS 2.2 8.3.1); the
+	// container is a BFC root, so the outermost margin stays inside it.
+	int endAfter(int bottom, int margin) const
+	{
+		for (auto it = open.rbegin(); it != open.rend(); ++it) {
+			if (it->inset > 0 || it->minHeight > 0) { bottom += margin; margin = 0; }
+			bottom = std::max(bottom + it->inset, it->top + it->minHeight);
+			margin = std::max(margin, it->margin);
+		}
+		return bottom + margin;
+	}
+};
+
+void hideAfterLineClamp(Node *nodes, int id)
+{
+	nodes[id].layout.line_clamp_hidden = 1;
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) hideAfterLineClamp(nodes, c);
+}
+
+// line-clamp applies to block containers, never to inline boxes, flex or
+// grid containers, or multicol containers.
+bool clampsLines(const Node &node)
+{
+	const int flags = rstyle(node.computedStyle()).line_clamp_flags;
+	return (flags & 1) && !(flags & 12) && node.type == NodeType::View && node.computedStyle().display == kDisplayBlock &&
+	       !(LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node));
+}
+
+// A nested clamp container keeps the state inside it for its own layout.
+void clearLineClamp(Node *nodes, int id)
+{
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) {
+		nodes[c].layout.line_clamp_hidden = 0;
+		nodes[c].layout.line_clamp_lines = 0;
+		if (!clampsLines(nodes[c])) clearLineClamp(nodes, c);
+	}
+}
+
+void walkLineClamp(LineClampWalk &walk, int parent, int originY)
+{
+	Node *nodes = walk.nodes;
+	for (int id = nodes[parent].first_child; id >= 0; id = nodes[id].next_sibling) {
+		Node &child = nodes[id];
+		if (walk.clamped) {
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || child.computedStyle().float_side ||
+		    isLineBreak(child) || suppressAnonymousWhitespace(nodes, parent, id)) continue;
+		const bool inlineWrapper = LayoutEngine::isCssInlineLevelBox(child) && LayoutEngine::isInlineLevelNode(child);
+		// Phantom line content (collapsible spaces, empty inline boxes) is
+		// treated as not existing, so it neither counts as a line nor clamps.
+		const bool collapsible = child.computedStyle().white_space == 0 || child.computedStyle().white_space == 1 || child.computedStyle().white_space == 4;
+		if (child.type == NodeType::Text ? collapsible && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos
+		                                 : inlineWrapper && child.first_child < 0 && emptyInlineBox(child)) continue;
+		const int top = originY + child.layout.y;
+		// An empty block's margins collapse through it; with clearance the
+		// collapsed margin sits above its border edge (CSS 2.2 8.3.1).
+		auto bottomMargin = [&](bool empty) {
+			if (inlineWrapper) return 0;
+			return empty && child.layout.height == 0 ? std::max(0, child.computedStyle().margin[2] - child.computedStyle().margin[0]) : int(child.computedStyle().margin[2]);
+		};
+		if (child.type == NodeType::Text) {
+			const int advance = TextRenderer::measureHeight("X", child.computedStyle().font_id, child.computedStyle().font_size, 0, child.computedStyle().line_height);
+			const int inner = child.layout.height - boxInsets(child.computedStyle(), false);
+			const int count = advance > 0 ? std::max(1, (inner + advance - 1) / advance) : 1;
+			for (int line = 0; line < count; ++line) {
+				const int lineTop = top + boxInset(child.computedStyle(), 0) + line * advance;
+				const bool newLine = lineTop > walk.lastLineTop;
+				const int end = walk.endAfter(lineTop + advance, 0);
+				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : end > walk.limit) {
+					walk.clamped = true;
+					if (line == 0) hideAfterLineClamp(nodes, id);
+					else child.layout.line_clamp_lines = static_cast<int16_t>(line);
+					break;
+				}
+				if (newLine) {
+					++walk.lines;
+					walk.lastLineTop = lineTop;
+				}
+				walk.keptBottom = std::max(walk.keptBottom, end);
+				walk.lastRun = id;
+				++walk.kept;
+			}
+			continue;
+		}
+		const bool plainBlock = child.computedStyle().display == kDisplayBlock && !overflowEstablishesContext(child.computedStyle()) &&
+		    !isFlowRoot(child.computedStyle()) && child.computedStyle().align_content == 0 && !clampsLines(child) &&
+		    writingMode(child) == writingMode(nodes[parent]);
+		if (child.first_child >= 0 && (inlineWrapper || plainBlock)) {
+			// A block between the last line box and the clamp point takes the
+			// ellipsis away from that line; its own lines may take it instead.
+			const int lastRun = walk.lastRun;
+			if (!inlineWrapper) walk.lastRun = -1;
+			const int kept = walk.kept;
+			if (!inlineWrapper) {
+				const int minHeight = child.computedStyle().min_height > 0 ? contentSizeToBorderSize(child.computedStyle(), child.computedStyle().min_height, false) : 0;
+				walk.open.push_back({top, boxInset(child.computedStyle(), 2), minHeight, child.computedStyle().margin[2]});
+			}
+			walkLineClamp(walk, id, top);
+			if (!inlineWrapper) walk.open.pop_back();
+			// A box whose first content already follows the clamp point is
+			// hidden whole, backgrounds and borders included. It is not between
+			// the last line and the clamp point, so that line keeps the ellipsis.
+			if (walk.clamped && walk.kept == kept) {
+				hideAfterLineClamp(nodes, id);
+				walk.lastRun = lastRun;
+			}
+			if (!walk.clamped) {
+				if (!inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, walk.endAfter(top + child.layout.height, bottomMargin(walk.kept == kept)));
+				++walk.kept;
+			}
+			continue;
+		}
+		const int end = walk.endAfter(top + child.layout.height, bottomMargin(child.first_child < 0));
+		if (walk.maxLines ? walk.lines >= walk.maxLines : end > walk.limit) {
+			walk.clamped = true;
+			hideAfterLineClamp(nodes, id);
+			continue;
+		}
+		walk.keptBottom = std::max(walk.keptBottom, end);
+		walk.lastRun = -1;
+		++walk.kept;
+	}
+}
+
+void applyLineClamp(int id)
+{
+	Node *nodes = Tree::instance().nodes();
+	Node &node = nodes[id];
+	clearLineClamp(nodes, id);
+	LineClampWalk walk{nodes, rstyle(node.computedStyle()).max_lines, node.layout.height - boxInset(node.computedStyle(), 2)};
+	walk.keptBottom = boxInset(node.computedStyle(), 0);
+	walkLineClamp(walk, id, 0);
+	// The block ellipsis ends the last line before the clamp point.
+	if (walk.clamped && (rstyle(node.computedStyle()).line_clamp_flags & 2) && walk.lastRun >= 0)
+		nodes[walk.lastRun].layout.line_clamp_hidden |= 2;
+	if (!walk.clamped || hasExplicitHeight(node)) return;
+	const int height = clampBorderBoxSize(node.computedStyle(), walk.keptBottom + boxInset(node.computedStyle(), 2), false);
+	if (height < node.layout.height) node.layout.height = clampLayoutExtent(height);
+}
+
 int resolvedStyleWidth(const Node &node, int basis)
 {
 	if (const auto *scope = flexBasisScope(node, true)) return scope->value == kUnset ? basis : scope->value;
@@ -455,8 +624,14 @@ int ratioTransferredSize(const Node &node, int crossBorderSize, bool horizontal)
 {
 	const double ratio = preferredRatio(node);
 	if (ratio <= 0) return 0;
-	const int crossEdges = node.computedStyle().box_sizing ? 0 : boxInsets(node.computedStyle(), !horizontal);
-	const int mainEdges = node.computedStyle().box_sizing ? 0 : boxInsets(node.computedStyle(), horizontal);
+	// `auto <ratio>` (stored negative) sizes the content box whatever box-sizing
+	// says (CSS Sizing 4, 5.1).
+	float stored = 0;
+	const int bits = rstyle(node.computedStyle()).aspect_ratio;
+	std::memcpy(&stored, &bits, sizeof(stored));
+	const bool contentBox = !node.computedStyle().box_sizing || stored < 0;
+	const int crossEdges = contentBox ? boxInsets(node.computedStyle(), !horizontal) : 0;
+	const int mainEdges = contentBox ? boxInsets(node.computedStyle(), horizontal) : 0;
 	const double value = std::max(0, crossBorderSize - crossEdges) * (horizontal ? ratio : 1 / ratio) + mainEdges;
 	return static_cast<int>(std::min(32767.0, std::round(value)));
 }
@@ -472,7 +647,7 @@ bool definiteFlexCrossSize(const Node &parent, const Node &child, bool row)
 void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 {
 	if (!preferredRatio(node) || (node.type != NodeType::View && node.type != NodeType::Image)) return;
-	if (node.type != NodeType::Image && LayoutEngine::isInlineLevelNode(node)) return;
+	if (node.type != NodeType::Image && !isAtomicInline(node.computedStyle()) && LayoutEngine::isInlineLevelNode(node)) return;
 	bool width = hasExplicitWidth(node), height = hasExplicitHeight(node);
 	if (width && height) return;
 	const Node *parent = node.parent >= 0 ? &Tree::instance().nodes()[node.parent] : nullptr;
@@ -497,24 +672,27 @@ void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 		width = true;
 	}
 	const bool horizontal = !width && height;
-	int16_t &target = horizontal ? node.layout.width : node.layout.height;
+	int32_t &target = horizontal ? node.layout.width : node.layout.height;
 	const int fromRatio = ratioTransferredSize(node, horizontal ? node.layout.height : node.layout.width, horizontal);
 	// Non-scrollable boxes retain a content-based minimum on the automatic axis.
 	const bool contentMinimum = node.type != NodeType::Image && (horizontal ? node.computedStyle().min_width : node.computedStyle().min_height) == kUnset &&
 	                            !isScrollableOverflow(horizontal ? overflowX(node.computedStyle()) : overflowY(node.computedStyle()));
 	const int result = contentMinimum ? std::max<int>(target, fromRatio) : fromRatio;
-	target = clampInt16(clampLayoutSize(node, result, horizontal));
+	target = clampLayoutExtent(clampLayoutSize(node, result, horizontal));
 }
 
 int baselineFallbackAlignment(const Node &parent, const Node &child, int alignment, int free, bool horizontal, bool staticPosition)
 {
-	// Baseline self-alignment follows the subject's writing mode. Resolving
-	// automatic insets uses the fallback edge without overflow safety; actual
-	// in-flow self-alignment uses the safe fallback instead (CSS Position 3.5.1).
+	// In-flow baseline self-alignment falls back to self-start/self-end in the
+	// subject's writing mode. An absolutely positioned box shares no baseline;
+	// browsers resolve its fallback to the containing box's start/end, even when
+	// the box's own direction or writing mode differs. Resolving automatic insets
+	// uses the fallback edge without overflow safety; actual in-flow
+	// self-alignment uses the safe fallback instead (CSS Position 3.5.1).
 	if (!staticPosition && free < 0)
 		return gridAxisReversed(parent, horizontal) ? 2 : 6;
 	const bool last = (alignment & 15) == kAlignLastBaseline;
-	return gridAxisReversed(child, horizontal) != last ? 2 : 6;
+	return gridAxisReversed(staticPosition ? parent : child, horizontal) != last ? 2 : 6;
 }
 
 // Self-relative edges use the subject's writing mode, even when it differs
@@ -548,6 +726,27 @@ int usedGridAlignment(const Node &parent, const Node &child, int alignment, int 
 	return usedAlignment(alignment, free, gridAxisReversed(parent, horizontal));
 }
 
+// Half of a free space, rounded half up like a fractional edge snapped to the
+// nearest pixel (12.5 -> 13, -12.5 -> -12).
+int roundedHalf(int free) { return free >= -1 ? (free + 1) / 2 : -(-free / 2); }
+
+// An absolute box with both insets of an axis set and an explicit, non-normal
+// self-alignment places its margin box inside the inset-modified containing
+// block (CSS Position 3, 4.4; CSS Align 3). offset is measured from the
+// containing area's start. Auto margins, normal and stretch keep the CSS 2
+// placement from the start inset.
+bool insetAlignedOffset(const Node &containing, const Node &absolute, bool horizontal, int areaSize, int start, int end, int &offset)
+{
+	// justify-self works in the containing block's inline axis, align-self in its block axis.
+	const int align = horizontal == (writingMode(containing) == 0) ? rstyle(absolute.computedStyle()).justify_self : absolute.computedStyle().align_self;
+	if (align <= 0 || (absolute.computedStyle().margin_auto & (horizontal ? 10 : 5))) return false;
+	const int before = absolute.computedStyle().margin[horizontal ? 3 : 0], after = absolute.computedStyle().margin[horizontal ? 1 : 2];
+	const int free = areaSize - start - end - (horizontal ? absolute.layout.width : absolute.layout.height) - before - after;
+	const int used = usedGridAlignment(containing, absolute, align, free, horizontal);
+	offset = start + before + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
+	return true;
+}
+
 void gridPhysicalRange(const Node &parent, bool columns, int start, int end, int &offset, int &size)
 {
 	const bool horizontal = columns == (writingMode(parent) == 0);
@@ -561,8 +760,13 @@ bool flexRowDirection(const ComputedStyle &style)
 	return !style.flex_direction_explicit || (style.flex_direction & 1);
 }
 
+bool isMulticolContainer(const Node &node);
+bool establishesAbsoluteContainingBlock(const Node &node);
+
 int resolvedGap(const Node &node, bool rowGap, int width, int height)
 {
+	// A multicol container's column-gap separates its column boxes, not its content.
+	if (isMulticolContainer(node)) return 0;
 	const int length = rowGap ? node.computedStyle().row_gap : node.computedStyle().column_gap;
 	const int percent = rowGap ? node.computedStyle().row_gap_percent : node.computedStyle().column_gap_percent;
 	const bool vertical = writingMode(node) != 0;
@@ -579,6 +783,54 @@ int clampBorderSize(LayoutEngine &engine, const Node &node, int size, bool horiz
 {
 	return clampLayoutSize(node, size, horizontal);
 }
+
+static bool isInlineLevelTag(const char *tag);
+static bool inlineBoxView(const Node &n);
+bool blockLevelView(const Node &node);
+bool splitInlineWrapper(const Node *nodes, int id);
+
+// The physical side (0 top, 1 right, 2 bottom, 3 left) of a margin-trim flag
+// bit of a container: block-start, block-end, inline-start, inline-end.
+int marginTrimSide(const Node &container, int flag)
+{
+	const int mode = writingMode(container);
+	const bool inlineAxis = flag >= 2, end = flag & 1;
+	const bool reversed = inlineAxis ? rightToLeft(container) != (mode == 4) : mode == 2 || mode == 3;
+	const int start = inlineAxis == (mode == 0) ? 3 : 0;
+	return reversed != end ? (start + 2) % 4 : start;
+}
+
+// Margins zeroed by margin-trim for one layout pass, restored when it ends.
+struct TrimmedMargins {
+	struct Entry { int child, side; int16_t value; bool automatic; };
+	std::vector<Entry> entries;
+	void cut(int child, int side)
+	{
+		Node &item = Tree::instance().nodes()[child];
+		if (!item.computedStyle().margin[side] && !(item.computedStyle().margin_auto & (1 << side))) return;
+		entries.push_back({child, side, item.computedStyle().margin[side], static_cast<bool>(item.computedStyle().margin_auto & (1 << side))});
+#if GEA_CSS_MARGINS
+		item.mutableStyle().margin[side] = 0;
+#endif
+#if GEA_CSS_MARGIN_AUTO
+		item.mutableStyle().margin_auto &= static_cast<uint8_t>(~(1 << side));
+#endif
+	}
+	void restore()
+	{
+		Node *nodes = Tree::instance().nodes();
+		for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+#if GEA_CSS_MARGINS
+			nodes[it->child].mutableStyle().margin[it->side] = it->value;
+#endif
+#if GEA_CSS_MARGIN_AUTO
+			if (it->automatic) nodes[it->child].mutableStyle().margin_auto |= static_cast<uint8_t>(1 << it->side);
+#endif
+		}
+		entries.clear();
+	}
+	~TrimmedMargins() { restore(); }
+};
 
 class FlexLayoutPass {
 public:
@@ -641,8 +893,8 @@ public:
 				// wider than its empty neighbours).
 				if (!zeroBasisGrowItem(item)) {
 					const int floor = automaticMinimumMainSize(item);
-					int16_t &main = isRow_ ? item.layout.width : item.layout.height;
-					if (main < floor) { main = clampInt16(floor); engine_.repositionChildren(child); }
+					int32_t &main = isRow_ ? item.layout.width : item.layout.height;
+					if (main < floor) { main = clampLayoutExtent(floor); engine_.repositionChildren(child); }
 				}
 			}
 		}
@@ -652,6 +904,9 @@ public:
 	{
 		const int originalWidth = node_.layout.width, originalHeight = node_.layout.height;
 		int lineCount = buildLines();
+		// Trimmed margins stay zero until this pass ends.
+		TrimmedMargins trimmed;
+		trimEdgeMargins(lineCount, trimmed);
 		expandCrossSizes(lineCount, autosize);
 		if (autosize) autosizeParent(lineCount);
 		positionLines(lineCount);
@@ -736,6 +991,7 @@ public:
 	{
 		Node *nodes = Tree::instance().nodes();
 		const int parentId = static_cast<int>(&node_ - nodes);
+		widenedRuns_.clear();
 		int firstLineStyleOwner = -1;
 #if GEA_CSS_FIRST_LINE
 		for (int ancestor = parentId; ancestor >= 0; ancestor = nodes[ancestor].parent) {
@@ -781,17 +1037,29 @@ public:
 #endif
 		std::vector<std::pair<int, int>> staticBoundaries;
 		int flowIndex = 0;
-		for (int child = node_.first_child; child >= 0; child = nodes[child].next_sibling) {
-			if (isDisplayNone(nodes[child].computedStyle()) || suppressAnonymousWhitespace(nodes, parentId, child)) continue;
-			if (isOutOfFlowPosition(nodes[child].computedStyle().position)) {
-				if (auto *rare = rareDataFor(child)) rare->inlineStaticPosition.valid = false;
-				if (LayoutEngine::isCssInlineLevelBox(nodes[child], true))
-					staticBoundaries.emplace_back(flowIndex, child);
-				continue;
+		// Split inline wrappers lend their children to this flow, out-of-flow
+		// ones included. Inside an inline box block-level boxes take static
+		// positions from the lines too, as it has no block layout of its own.
+		const bool inlineBox = LayoutEngine::isCssInlineLevelBox(node_) && LayoutEngine::isInlineLevelNode(node_);
+		auto collectStaticBoundaries = [&](auto &&self, int parent) -> void {
+			for (int child = nodes[parent].first_child; child >= 0; child = nodes[child].next_sibling) {
+				if (isDisplayNone(nodes[child].computedStyle()) || suppressAnonymousWhitespace(nodes, parent, child)) continue;
+				if (isOutOfFlowPosition(nodes[child].computedStyle().position)) {
+					if (auto *rare = rareDataFor(child)) rare->inlineStaticPosition.valid = false;
+					if (parent != parentId || inlineBox || LayoutEngine::isCssInlineLevelBox(nodes[child], true))
+						staticBoundaries.emplace_back(flowIndex, child);
+					continue;
+				}
+				if (splitInlineWrapper(nodes, child) &&
+				    std::find(children_, children_ + childCount_, child) == children_ + childCount_) {
+					self(self, child);
+					continue;
+				}
+				while (flowIndex < childCount_ && children_[flowIndex] != child) ++flowIndex;
+				if (flowIndex < childCount_) ++flowIndex;
 			}
-			while (flowIndex < childCount_ && children_[flowIndex] != child) ++flowIndex;
-			if (flowIndex < childCount_) ++flowIndex;
-		}
+		};
+		collectStaticBoundaries(collectStaticBoundaries, parentId);
 		int contentW = mainAvail_ < 0 ? 0 : mainAvail_;
 		if (intrinsicWidthConstraint(node_) == 1) {
 			int pendingWord = 0;
@@ -837,6 +1105,9 @@ public:
 				    continuationLine && LayoutEngine::isCssInlineLevelBox(node_);
 				rare.inlineStaticPosition.x = clampInt16(
 				    (rare.inlineStaticPosition.continuationLine ? 0 : contentLeft) + pen);
+				rare.inlineStaticPosition.afterContent = pen > 0 || continuationLine;
+				rare.inlineStaticPosition.anchorRight = false;
+				rare.inlineStaticPosition.flowNode = static_cast<std::int16_t>(parentId);
 			}
 		};
 
@@ -852,6 +1123,8 @@ public:
 			int wrapSpans = 0;
 			int wrapAdvance = 0;
 			int wrapLastWidth = 0;
+			bool lineAligned = false;
+			int topItemHeight = 0, bottomItemHeight = 0;
 			std::vector<int> lineStaticChildren;
 
 			for (; j < childCount_; j++) {
@@ -883,7 +1156,8 @@ public:
 					// not of the line it can fill.
 					const int rest = contentW - marginL - marginR - padH;
 					const int firstAvail = rest - pen - gap;
-					const bool atLineStart = pen == 0 && (j > 0 || blockOpensItsFirstLine);
+					// A leading space also collapses into one that ends the item before it.
+					const bool atLineStart = pen == 0 ? j > 0 || blockOpensItsFirstLine : j > 0 && endsWithCollapsibleSpace(nodes[children_[j - 1]]);
 					const InlineFlowMeasure m =
 					    TextRenderer::measureInlineFlow(subject, firstAvail, rest, atLineStart);
 					// Without real line metrics childFirstBaseline reports the box's
@@ -895,7 +1169,7 @@ public:
 					if (m.lineCount > 0 && haveLineMetrics) {
 						// Its first WORD does not fit what is left: the run starts the
 						// next line box rather than overflowing it or being cut open.
-						if (pen > 0 && m.firstLineWidth > firstAvail) break;
+						if (pen > 0 && m.firstLineWidth > firstAvail && !collapsibleSpaceOnly(subject)) break;
 						const int boxH = m.lineCount * m.lineAdvance + padV;
 						const bool wraps = m.lineCount > 1;
 						const int boxW = wraps ? rest + padH : m.firstLineWidth + padH;
@@ -907,8 +1181,8 @@ public:
 						// whitespace; that discarded space is not part of the fragment.
 						const int firstLineFragmentX = fragmentItemX + (wraps ? pen + gap : 0);
 						const int firstLineFragmentWidth = m.firstLineWidth + padH;
-						subject.layout.height = clampInt16(boxH);
-						subject.layout.width = clampInt16(boxW);
+						subject.layout.height = clampLayoutExtent(boxH);
+						subject.layout.width = clampLayoutExtent(boxW);
 						subject.layout.inline_indent = clampInt16(indent);
 						if (innerRun >= 0) {
 							// The wrapper is transparent: it takes the run's box exactly, and
@@ -916,8 +1190,8 @@ public:
 							// through the wrapper still lands on the run's own baseline.
 							subject.layout.x = 0;
 							subject.layout.y = 0;
-							cn.layout.height = clampInt16(boxH);
-							cn.layout.width = clampInt16(boxW);
+							cn.layout.height = clampLayoutExtent(boxH);
+							cn.layout.width = clampLayoutExtent(boxW);
 							cn.layout.inline_indent = clampInt16(indent);
 						}
 						if (wraps) {
@@ -943,13 +1217,21 @@ public:
 					cn.layout.inline_indent = 0;
 				}
 
-				const int itemMain = cn.layout.width + marginL + marginR;
-				if (pen > 0 && pen + gap + itemMain > contentW) break;
+				const int lead = collapsedLead(nodes, j, pen == 0 && !lineIsContinuation);
+				const int itemMain = cn.layout.width + marginL + marginR - lead;
+				// An item starts the next line only where the line may break, and only
+				// when it does not fit together with what no break opportunity
+				// separates from it: nowrap text and words split across items stay
+				// together. Collapsible spaces hang instead.
+				if (pen > 0 && !collapsibleSpaceOnly(cn) &&
+				    (j == 0 || trailingSoftWrap(nodes[children_[j - 1]]) || leadingSoftWrap(cn)) &&
+				    pen + gap + (isFragmentableRun(subject) ? itemMain : gluedWidth(nodes, j, false)) > contentW) break;
 				if (isFragmentableRun(subject) && captureFirstLine && i == 0) {
 					const int padH = boxInset(subject.computedStyle(), 1) + boxInset(subject.computedStyle(), 3);
 					const int rest = contentW - marginL - marginR - padH;
 					const InlineFlowMeasure m = TextRenderer::measureInlineFlow(
-					    subject, rest - pen - gap, rest, pen == 0 && (j > 0 || blockOpensItsFirstLine));
+					    subject, rest - pen - gap, rest,
+					    pen == 0 ? j > 0 || blockOpensItsFirstLine : j > 0 && endsWithCollapsibleSpace(nodes[children_[j - 1]]));
 					if (m.lineCount > 0 && m.firstLineWidth > 0) {
 							firstLineCandidates.push_back({innerRun >= 0 ? innerRun : child,
 								                              contentLeft + pen + gap + marginL,
@@ -958,11 +1240,45 @@ public:
 								                              j, m.firstLineTrailingSpace});
 					}
 				}
-				const int ascent = cn.computedStyle().margin[0] + childBaseline(cn);
-				const int descent = cn.layout.height + cn.computedStyle().margin[2] - childBaseline(cn);
-				if (ascent > lineAscent) lineAscent = ascent;
-				if (descent > lineDescent) lineDescent = descent;
+				const int outerHeight = cn.computedStyle().margin[0] + cn.layout.height + cn.computedStyle().margin[2];
+				if (cn.computedStyle().vertical_align) lineAligned = true;
+				if (cn.computedStyle().vertical_align == 1) topItemHeight = std::max(topItemHeight, outerHeight);
+				else if (cn.computedStyle().vertical_align == 2) bottomItemHeight = std::max(bottomItemHeight, outerHeight);
+				else {
+					int ascent = 0, descent = 0;
+					lineExtent(cn, ascent, descent);
+					if (ascent > lineAscent) lineAscent = ascent;
+					if (descent > lineDescent) lineDescent = descent;
+				}
 				pen += gap + itemMain;
+			}
+			// A line with vertically aligned items is sized as CSS sizes it: from
+			// the block's strut and every item's reach, which may be negative when
+			// the line-height is below the font size. top/bottom items only grow a
+			// line shorter than themselves.
+			if (lineAligned) {
+				const auto strut = TextRenderer::inlineFontMetrics(node_.computedStyle());
+				lineAscent = lineIsContinuation ? std::max(strut.strutAscent, inheritedAscent) : strut.strutAscent;
+				lineDescent = lineIsContinuation ? std::max(strut.strutDescent, inheritedDescent) : strut.strutDescent;
+				for (int k = i; k < j; ++k) {
+					const Node &item = nodes[children_[k]];
+					if (item.computedStyle().vertical_align == 1 || item.computedStyle().vertical_align == 2) continue;
+					int ascent = 0, descent = 0;
+					if (k == wrapIdx) {
+						const int run = isFragmentableRun(item) ? -1 : transparentInlineRun(item);
+						ascent = item.computedStyle().margin[0] + childBaseline(item);
+						descent = runLineDescent(run >= 0 ? nodes[run] : item, wrapAdvance);
+					} else if (isLineBreak(item)) {
+						ascent = childBaseline(item);
+						descent = item.layout.height - childBaseline(item);
+					} else {
+						lineExtent(item, ascent, descent);
+					}
+					lineAscent = std::max(lineAscent, ascent);
+					lineDescent = std::max(lineDescent, descent);
+				}
+				if (bottomItemHeight > lineAscent + lineDescent) lineAscent = bottomItemHeight - lineDescent;
+				if (topItemHeight > lineAscent + lineDescent) lineDescent = topItemHeight - lineAscent;
 			}
 			const bool endedWithBreak = j > i && isLineBreak(nodes[children_[j - 1]]);
 			const bool trailingWrappedStaticBoundary = j >= childCount_ && !endedWithBreak && wrapIdx >= 0;
@@ -973,14 +1289,15 @@ public:
 
 			const int baseline = continuing ? continuedBaseline : lineTop + lineAscent;
 			lineTop = baseline - lineAscent;
-			for (int id : lineStaticChildren) {
-				auto &position = ensureRareData(id).inlineStaticPosition;
-				position.y = clampInt16(lineTop);
-				position.valid = true;
-			}
 			int lineCross = lineAscent + lineDescent;
 			if (lineCross < 0) lineCross = 0;
 			const int actualLineCross = lineCross;
+			for (int id : lineStaticChildren) {
+				auto &position = ensureRareData(id).inlineStaticPosition;
+				position.y = clampInt16(lineTop);
+				position.lineHeight = clampInt16(actualLineCross);
+				position.valid = true;
+			}
 			if (i == 0) firstLineHeight = lineCross;
 			// The one case the flex path's expandCrossSizes is observable here: a
 			// lone line box in a block with a definite height fills it, so
@@ -989,8 +1306,19 @@ public:
 			    padHeight_ > lineCross)
 				lineCross = padHeight_;
 
+			// text-align moves a line of single-line items as a whole. A text run
+			// that owns its line, or wraps across lines, is aligned by the drawer.
+			const int contentEnd = j > i && isLineBreak(nodes[children_[j - 1]]) ? j - 1 : j;
+			const bool soleRun = !lineIsContinuation && contentEnd - i == 1 && nodes[children_[i]].type == NodeType::Text;
+			const int align = !lineIsContinuation && wrapIdx < 0 && !soleRun && contentEnd > i ? LayoutEngine::physicalTextAlign(node_) : 0;
+			int lineShift = 0;
+			if (align) {
+				const int used = pen - hangingSpace(nodes[children_[contentEnd - 1]]);
+				lineShift = std::max(0, align == 1 ? (contentW - used) / 2 : contentW - used);
+				for (int id : lineStaticChildren) ensureRareData(id).inlineStaticPosition.x += lineShift;
+			}
 			placeLineItems(nodes, i, j, contentLeft, contentW, lineTop, lineCross, baseline, penStart,
-			               !lineIsContinuation);
+			               !lineIsContinuation, lineShift, align != 0);
 #if GEA_CSS_FIRST_LINE
 			if (i == 0 && captureFirstLine) {
 				int firstFormattedLineHeight = actualLineCross;
@@ -1020,7 +1348,7 @@ public:
 				for (const auto &candidate : firstLineCandidates) {
 					if (candidate.node < 0 || candidate.node >= Tree::instance().nodeCount()) continue;
 					auto &fragment = ensureRareData(candidate.node).firstLineFragment;
-					fragment.x = clampInt16(candidate.x);
+					fragment.x = clampInt16(candidate.x + lineShift);
 					fragment.y = clampInt16(lineTop);
 					// Spaces between inline runs remain part of the background;
 					// collapsible spaces at the end of the line do not.
@@ -1050,6 +1378,7 @@ public:
 					for (int id : trailingStaticChildren) {
 						auto &position = ensureRareData(id).inlineStaticPosition;
 						position.y = clampInt16(continuedBaseline - inheritedAscent);
+						position.lineHeight = 0;
 						position.valid = true;
 					}
 				}
@@ -1069,6 +1398,7 @@ public:
 				for (int id : trailingStaticChildren) {
 					auto &position = ensureRareData(id).inlineStaticPosition;
 					position.y = clampInt16(lineTop);
+					position.lineHeight = 0;
 					position.valid = true;
 				}
 			}
@@ -1086,6 +1416,7 @@ public:
 			for (int id : emptyStaticChildren) {
 				auto &position = ensureRareData(id).inlineStaticPosition;
 				position.y = clampInt16(contentTop);
+				position.lineHeight = 0;
 				position.valid = true;
 			}
 		}
@@ -1099,11 +1430,16 @@ public:
 		const bool keepScrollWidth = !intrinsicWidthConstraint(node_) && scrollsOverflowX(node_.computedStyle()) && node_.layout.width > 0;
 		if (!hasExplicitHeight(node_) && !keepScrollHeight) {
 			const int height = (flowHeight < 0 ? 0 : flowHeight) + boxInset(node_.computedStyle(), 0) + boxInset(node_.computedStyle(), 2);
-			node_.layout.height = clampInt16(clampLayoutSize(node_, height, false));
+			node_.layout.height = clampLayoutExtent(clampLayoutSize(node_, height, false));
 		}
 		if (!hasExplicitWidth(node_) && !keepScrollWidth) {
 			const int width = maxLineWidth + boxInset(node_.computedStyle(), 1) + boxInset(node_.computedStyle(), 3);
-			node_.layout.width = clampInt16(clampLayoutSize(node_, width, true));
+			node_.layout.width = clampLayoutExtent(clampLayoutSize(node_, width, true));
+			// A widened sole run spans the box's final content width instead, so
+			// its extent does not hold the box at the width it was offered.
+			const int content = node_.layout.width - boxInsets(node_.computedStyle(), true);
+			for (const WidenedRun &run : widenedRuns_)
+				nodes[run.id].layout.width = clampLayoutExtent(std::max(run.natural, content + run.extra));
 		}
 		return extent;
 	}
@@ -1175,6 +1511,88 @@ public:
 		return run;
 	}
 
+	// The text node at an inline item's start or end, found through inline
+	// boxes, or -1 for an atomic inline box.
+	static int edgeTextRun(const Node &item, bool last)
+	{
+		const Node *nodes = Tree::instance().nodes();
+		const Node *n = &item;
+		while (n->type == NodeType::View) {
+			if (!inlineBoxView(*n) || isLineBreak(*n)) return -1;
+			int c = last ? n->last_child : n->first_child;
+			while (c >= 0 && (isDisplayNone(nodes[c].computedStyle()) || isOutOfFlowPosition(nodes[c].computedStyle().position) || nodes[c].computedStyle().float_side))
+				c = last ? nodes[c].prev_sibling : nodes[c].next_sibling;
+			if (c < 0) return -1;
+			n = &nodes[c];
+		}
+		return static_cast<int>(n - nodes);
+	}
+
+	static bool wrapsLines(const Node &text) { return text.computedStyle().white_space == 0 || text.computedStyle().white_space >= 3; }
+	static bool collapsesSpaces(const Node &text) { return text.computedStyle().white_space == 0 || text.computedStyle().white_space == 1 || text.computedStyle().white_space == 4; }
+	static bool collapsibleSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
+
+	// Collapsible spaces hang at the end of a line; they never start another.
+	static bool collapsibleSpaceOnly(const Node &item)
+	{
+		return item.type == NodeType::Text && (item.computedStyle().white_space == 0 || item.computedStyle().white_space == 1) &&
+		       item.text.find_first_not_of(" \t\r\n\f") == std::string::npos;
+	}
+
+	// Soft wrap opportunities at an item's edges. Text only offers one at a
+	// space its white-space lets wrap; atomic inline boxes always do.
+	static bool leadingSoftWrap(const Node &item)
+	{
+		const int run = edgeTextRun(item, false);
+		if (run < 0) return true;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.str().front()) && wrapsLines(text);
+	}
+
+	static bool trailingSoftWrap(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return true;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.str().back()) && wrapsLines(text);
+	}
+
+	// A collapsible space that opens an atomic text item is removed at the
+	// start of a line, and collapses into one that ends the text before it.
+	// The item keeps its box and draws over that space; this is how far it
+	// moves back.
+	int collapsedLead(const Node *nodes, int k, bool lineStart) const
+	{
+		const Node &item = nodes[children_[k]];
+		if (item.type != NodeType::Text || isFragmentableRun(item) || item.text.empty() ||
+		    !collapsibleSpace(item.text.str().front()) || !collapsesSpaces(item)) return 0;
+		if (!lineStart) {
+			const int before = k > 0 ? edgeTextRun(nodes[children_[k - 1]], true) : -1;
+			if (before < 0) return 0;
+			const Node &previous = nodes[before];
+			if (previous.text.empty() || !collapsibleSpace(previous.text.str().back()) || !collapsesSpaces(previous)) return 0;
+		}
+		return TextRenderer::measureWidth(" ", item.computedStyle().font_id, item.computedStyle().font_size);
+	}
+
+	// Width of children_[j] and of the items after it that no soft wrap
+	// opportunity separates from it; a text run that follows adds its first word.
+	int gluedWidth(const Node *nodes, int j, bool lineStart) const
+	{
+		int width = 0;
+		for (int k = j; k < childCount_; ++k) {
+			const Node &item = nodes[children_[k]];
+			if (k > j && (isLineBreak(item) || trailingSoftWrap(nodes[children_[k - 1]]) || leadingSoftWrap(item))) break;
+			const int inner = isFragmentableRun(item) ? -1 : transparentInlineRun(item);
+			if (k > j && (isFragmentableRun(item) || inner >= 0)) {
+				width += item.computedStyle().margin[3] + TextRenderer::firstUnbreakableWidth(inner >= 0 ? nodes[inner] : item);
+				break;
+			}
+			width += item.layout.width + item.computedStyle().margin[1] + item.computedStyle().margin[3] - collapsedLead(nodes, k, lineStart && k == j);
+		}
+		return width;
+	}
+
 	// Distance from ONE of a run's line baselines to the bottom of that line box,
 	// including the run's own bottom padding/margin (which only the last line
 	// actually carries — the others are flush, so this is the taller, safe value).
@@ -1185,8 +1603,26 @@ public:
 		return descent < 0 ? 0 : descent;
 	}
 
+	static bool endsWithCollapsibleSpace(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return false;
+		const Node &text = Tree::instance().nodes()[run];
+		return !text.text.empty() && collapsibleSpace(text.text.str().back()) && collapsesSpaces(text);
+	}
+
+	// The collapsible space that ends a line item hangs past the line's end.
+	static int hangingSpace(const Node &item)
+	{
+		const int run = edgeTextRun(item, true);
+		if (run < 0) return 0;
+		const Node &text = Tree::instance().nodes()[run];
+		if (text.text.empty() || !collapsibleSpace(text.text.str().back()) || !collapsesSpaces(text)) return 0;
+		return TextRenderer::measureWidth(" ", text.computedStyle().font_id, text.computedStyle().font_size);
+	}
+
 	void placeLineItems(Node *nodes, int from, int to, int contentLeft, int contentW, int lineTop,
-	                    int lineCross, int baseline, int penStart, bool ownsLineStart)
+	                    int lineCross, int baseline, int penStart, bool ownsLineStart, int lineShift = 0, bool lineAligned = false)
 	{
 		const int contentEnd = to > from && isLineBreak(nodes[children_[to - 1]]) ? to - 1 : to;
 		const bool soleRun =
@@ -1201,23 +1637,33 @@ public:
 			const int marginL = cn.computedStyle().margin[3];
 			const int marginR = cn.computedStyle().margin[1];
 			const int gap = pen > 0 ? mainGap_ : 0;
+			int lead = 0;
 
 			if (cn.layout.inline_indent > 0) {
 				// A wrapped continuation keeps a full-width box at the block's left
 				// edge; its indent is what carries the pen it started from.
 				cn.layout.x = clampInt16(contentLeft + marginL);
 			} else {
-				cn.layout.x = clampInt16(contentLeft + pen + gap + marginL);
+				lead = collapsedLead(nodes, k, pen == 0 && ownsLineStart);
+				cn.layout.x = clampInt16(contentLeft + lineShift + pen + gap + marginL - lead);
+				pen -= lead;
 			}
 			pen += gap + marginL + cn.layout.width + marginR;
 
 			if (soleRun && cn.type == NodeType::Text && !hasExplicitWidth(cn)) {
 				// text-align needs a box as wide as the line box to align inside.
-				const int full = contentW - marginL - marginR;
-				if (full > cn.layout.width) cn.layout.width = clampInt16(full);
+				// A removed leading space sits before that box's content edge.
+				const int full = contentW - marginL - marginR + lead;
+				if (full > cn.layout.width) {
+					widenedRuns_.push_back({child, cn.layout.width, full - contentW});
+					cn.layout.width = clampLayoutExtent(full);
+				}
 			}
 
 			int y = baseline - childBaseline(cn);
+			if (cn.computedStyle().vertical_align == 1) y = lineTop + cn.computedStyle().margin[0];
+			else if (cn.computedStyle().vertical_align == 2) y = lineTop + lineCross - cn.layout.height - cn.computedStyle().margin[2];
+			else y += verticalAlignShift(cn);
 			const int align = usedAlignment(crossAlignFor(cn), lineCross - cn.layout.height - cn.computedStyle().margin[0] - cn.computedStyle().margin[2]);
 			if (align != 5) {
 				const int crossBefore = cn.computedStyle().margin[0];
@@ -1227,17 +1673,19 @@ public:
 				if (align == 1) y += (lineCross - crossTotal) / 2;
 				else if (align == 2) y += lineCross - crossTotal;
 				else if (align == 0 && !hasExplicitHeight(cn) && !isIntrinsicSizeExpression(cn.computedStyle().height_expression)) {
-					cn.layout.height = clampInt16(lineCross - crossBefore - crossAfter);
+					cn.layout.height = clampLayoutExtent(lineCross - crossBefore - crossAfter);
 					engine_.repositionChildren(child);
 				}
 			}
 			cn.layout.y = clampInt16(y);
-			cn.render.inline_baseline = 1;
+			const uint8_t placed = lineAligned ? 3 : 1;
+			cn.render.inline_baseline = placed;
 			// An inline wrapper (<span>text</span>) contributes its CHILD's glyphs to
 			// this line box, so the flag has to reach the node that actually draws.
-			if (cn.type == NodeType::View) {
+			// An atomic inline box (inline-flex) lays out its own children.
+			if (cn.type == NodeType::View && !isAtomicInline(cn.computedStyle())) {
 				for (int c = cn.first_child; c >= 0; c = nodes[c].next_sibling)
-					if (nodes[c].type == NodeType::Text) nodes[c].render.inline_baseline = 1;
+					if (nodes[c].type == NodeType::Text) nodes[c].render.inline_baseline = placed;
 			}
 		}
 	}
@@ -1329,7 +1777,7 @@ public:
 					const int mainSize = isRow_ ? childNode.layout.width : childNode.layout.height;
 					if (mainSize == 0) {
 						const int floor = automaticMinimumMainSize(childNode);
-						if (floor > 0) (isRow_ ? childNode.layout.width : childNode.layout.height) = clampInt16(floor);
+						if (floor > 0) (isRow_ ? childNode.layout.width : childNode.layout.height) = clampLayoutExtent(floor);
 						engine_.repositionChildren(child);
 					}
 				}
@@ -1351,8 +1799,8 @@ public:
 		// height affects following lines and reversed line order as well.
 		if (ratioCrossChanged) {
 			expandCrossSizes(lineCount, true);
-			int16_t &cross = isRow_ ? node_.layout.height : node_.layout.width;
-			cross = clampInt16(clampLayoutSize(node_, totalCrossSize(lineCount) + boxInsets(node_.computedStyle(), !isRow_), !isRow_));
+			int32_t &cross = isRow_ ? node_.layout.height : node_.layout.width;
+			cross = clampLayoutExtent(clampLayoutSize(node_, totalCrossSize(lineCount) + boxInsets(node_.computedStyle(), !isRow_), !isRow_));
 		}
 		int crossOffset = boxInset(node_.computedStyle(), isRow_ ? 0 : 3);
 		const int crossBox = (isRow_ ? node_.layout.height : node_.layout.width) - boxInsets(node_.computedStyle(), !isRow_);
@@ -1421,7 +1869,11 @@ public:
 			node_.layout.height = clampLayoutSize(node_, height, false);
 		}
 
-		if (!hasExplicitWidth(node_) && !keepScrollWidth) {
+		// A document's root element is block-level in the initial containing
+		// block, so its automatic width fills it whatever its display (CSS 2.2
+		// 10.3.3). A native root sizes to its content.
+		const bool fillsRoot = node_.parent < 0 && std::strcmp(tagFromId(node_.tag_id), "html") == 0;
+		if (!hasExplicitWidth(node_) && !keepScrollWidth && !fillsRoot) {
 			const int width = (isRow_ ? maxMainSize(lineCount) : totalCrossSize(lineCount)) + boxInset(node_.computedStyle(), 1) + boxInset(node_.computedStyle(), 3);
 			node_.layout.width = clampLayoutSize(node_, width, true);
 		}
@@ -1645,13 +2097,19 @@ private:
 		int applied = 0;
 		int lastGrowChild = -1;
 
+		// Round the running share, not each item's: every item edge lands on the
+		// pixel nearest its exact position, as browsers snap fractional edges
+		// (3:1 of 70px is 53/17, not 52/18).
+		long long weight = 0;
 		for (int i = 0; i < line.count; i++) {
 			const int child = children_[line.start + i];
 			Node &childNode = nodes[child];
 			if (childNode.computedStyle().flex <= 0) continue;
 			lastGrowChild = child;
-			const int change = (delta * childNode.computedStyle().flex) / totalGrow;
-			applied += applyFlexMainSizeDelta(child, childNode, change);
+			const long long before = (2LL * delta * weight + totalGrow) / (2LL * totalGrow);
+			weight += childNode.computedStyle().flex;
+			const long long after = (2LL * delta * weight + totalGrow) / (2LL * totalGrow);
+			applied += applyFlexMainSizeDelta(child, childNode, static_cast<int>(after - before));
 		}
 
 		const int remainder = delta - applied;
@@ -1720,6 +2178,17 @@ private:
 			const int transferred = ratioTransferredSize(childNode, isRow_ ? childNode.layout.height : childNode.layout.width, isRow_);
 			extent = childNode.type == NodeType::Image ? std::min(extent, transferred) : std::max(extent, transferred);
 		}
+		// With a preferred aspect ratio the content size suggestion is clamped by
+		// the definite minimum and maximum cross sizes converted through it
+		// (CSS Flexbox 4.5).
+		if (preferredRatio(childNode) > 0) {
+			const int maxCross = isRow_ ? childNode.computedStyle().max_height : childNode.computedStyle().max_width;
+			const int minCross = isRow_ ? childNode.computedStyle().min_height : childNode.computedStyle().min_width;
+			if (maxCross != kUnset)
+				extent = std::min(extent, ratioTransferredSize(childNode, contentSizeToBorderSize(childNode.computedStyle(), maxCross, !isRow_), isRow_));
+			if (minCross != kUnset && minCross > 0)
+				extent = std::max(extent, ratioTransferredSize(childNode, contentSizeToBorderSize(childNode.computedStyle(), minCross, !isRow_), isRow_));
+		}
 		if (extent <= 0) return 0;
 		const int max = isRow_ ? childNode.computedStyle().max_width : childNode.computedStyle().max_height;
 		if (max != kUnset) extent = std::min(extent, contentSizeToBorderSize(childNode.computedStyle(), max, isRow_));
@@ -1752,8 +2221,8 @@ private:
 		else childNode.layout.height = after;
 		if (preferredRatio(childNode) > 0 && !(isRow_ ? hasExplicitHeight(childNode) : hasExplicitWidth(childNode)) &&
 		    !definiteFlexCrossSize(node_, childNode, isRow_)) {
-			int16_t &cross = isRow_ ? childNode.layout.height : childNode.layout.width;
-			cross = clampInt16(clampLayoutSize(childNode, ratioTransferredSize(childNode, after, !isRow_), !isRow_));
+			int32_t &cross = isRow_ ? childNode.layout.height : childNode.layout.width;
+			cross = clampLayoutExtent(clampLayoutSize(childNode, ratioTransferredSize(childNode, after, !isRow_), !isRow_));
 		}
 		engine_.repositionChildren(child);
 		return delta > 0 ? after - before : before - after;
@@ -1778,7 +2247,9 @@ private:
 		}
 	}
 
-	void positionLineChildren(const FlexLine &line, Node *nodes, int mainOffset, int crossOffset, int autoSpace = 0, int autoCount = 0, int distributedFree = 0)
+	// Physical sides (0 top, 1 right, 2 bottom, 3 left) the main axis starts at
+	// and the first line sits against.
+	void flexStartSides(bool &reverseMain, bool &reverseCross, int &mainBefore, int &crossBefore) const
 	{
 #if GEA_CSS_FLEX_WRAP
         const bool wrapReversed = (node_.computedStyle().flex_wrap & 3) == 2;
@@ -1790,11 +2261,56 @@ private:
 		const int mode = writingMode(node_);
 		const bool blockReversed = mode == 2 || mode == 3;
 		const bool inlineReversed = rightToLeft(node_) != (mode == 4);
-		const bool reverseMain = flex && ((node_.computedStyle().flex_direction_explicit && node_.computedStyle().flex_direction >= 2) != (logicalRow ? inlineReversed : blockReversed));
-		const bool reverseCross = flex && ((wrapReversed) != (logicalRow ? blockReversed : inlineReversed));
-		const int mainBefore = isRow_ ? (reverseMain ? 1 : 3) : (reverseMain ? 2 : 0);
+		reverseMain = flex && ((node_.computedStyle().flex_direction_explicit && node_.computedStyle().flex_direction >= 2) != (logicalRow ? inlineReversed : blockReversed));
+		reverseCross = flex && ((wrapReversed) != (logicalRow ? blockReversed : inlineReversed));
+		mainBefore = isRow_ ? (reverseMain ? 1 : 3) : (reverseMain ? 2 : 0);
+		crossBefore = isRow_ ? (reverseCross ? 2 : 0) : (reverseCross ? 1 : 3);
+	}
+
+	// CSS Box 4 margin-trim on a flex container: the margins of items against a
+	// trimmed edge of the container are zero. Along the main axis that is each
+	// line's first or last item, across it every item of the first or last line.
+	void trimEdgeMargins(int lineCount, TrimmedMargins &trimmed)
+	{
+		const int trim = rstyle(node_.computedStyle()).margin_trim;
+		if (!trim || node_.computedStyle().display != kDisplayFlex || lineCount <= 0) return;
+		Node *nodes = Tree::instance().nodes();
+		bool reverseMain, reverseCross;
+		int mainBefore, crossBefore;
+		flexStartSides(reverseMain, reverseCross, mainBefore, crossBefore);
+		for (int flag = 0; flag < 4; ++flag) {
+			if (!(trim & (1 << flag))) continue;
+			const int side = marginTrimSide(node_, flag);
+			if (side == mainBefore || side == (mainBefore + 2) % 4) {
+				for (int l = 0; l < lineCount; ++l)
+					if (lines_[l].count) trimmed.cut(children_[side == mainBefore ? lines_[l].start : lines_[l].start + lines_[l].count - 1], side);
+			} else {
+				const FlexLine &line = lines_[side == crossBefore ? 0 : lineCount - 1];
+				for (int i = 0; i < line.count; ++i) trimmed.cut(children_[line.start + i], side);
+			}
+		}
+		if (trimmed.entries.empty()) return;
+		for (int l = 0; l < lineCount; ++l) {
+			FlexLine &line = lines_[l];
+			int mainSize = std::max(0, line.count - 1) * mainGap_, crossSize = 0;
+			for (int i = 0; i < line.count; ++i) {
+				const Node &item = nodes[children_[line.start + i]];
+				mainSize += isRow_ ? item.layout.width + item.computedStyle().margin[1] + item.computedStyle().margin[3]
+				                   : item.layout.height + item.computedStyle().margin[0] + item.computedStyle().margin[2];
+				crossSize = std::max(crossSize, isRow_ ? item.layout.height + item.computedStyle().margin[0] + item.computedStyle().margin[2]
+				                                       : item.layout.width + item.computedStyle().margin[1] + item.computedStyle().margin[3]);
+			}
+			line.mainSize = mainSize;
+			line.crossSize = std::max(line.strutSize, baselineCrossSize(line.start, line.count, crossSize));
+		}
+	}
+
+	void positionLineChildren(const FlexLine &line, Node *nodes, int mainOffset, int crossOffset, int autoSpace = 0, int autoCount = 0, int distributedFree = 0)
+	{
+		bool reverseMain, reverseCross;
+		int mainBefore, crossBefore;
+		flexStartSides(reverseMain, reverseCross, mainBefore, crossBefore);
 		const int mainAfter = (mainBefore + 2) % 4;
-		const int crossBefore = isRow_ ? (reverseCross ? 2 : 0) : (reverseCross ? 1 : 3);
 		const int crossAfter = (crossBefore + 2) % 4;
 		int autoUsed = 0;
 		auto autoMargin = [&](const Node &child, int side) {
@@ -1811,7 +2327,7 @@ private:
 		if (isRow_) {
 			for (int i = 0; i < line.count; i++) {
 				Node &probe = nodes[children_[line.start + i]];
-				if (probe.computedStyle().margin_auto & 5) continue;
+				if ((probe.computedStyle().margin_auto & 5) || usesBaselineFallback(probe)) continue;
 				if (crossAlignFor(probe) == kAlignLastBaseline) {
 					const int baseline = childBaseline(probe, true);
 					lineMaxLastDescent = std::max(lineMaxLastDescent, probe.computedStyle().margin[2] + probe.layout.height - baseline);
@@ -1846,7 +2362,7 @@ private:
 				// Baselines are distances from physical top. Reversing the line
 				// order must not mirror each item's baseline inside that line.
 				const int alignment = crossAlignFor(childNode) & 15;
-				if (isRow_ && reverseCross && (alignment == 5 || alignment == kAlignLastBaseline))
+				if (isRow_ && reverseCross && (alignment == 5 || alignment == kAlignLastBaseline) && !usesBaselineFallback(childNode))
 					crossPosition = crossOffset + line.crossSize - (crossPosition - crossOffset) - crossSize;
 			}
 
@@ -1865,8 +2381,15 @@ private:
 
 			const int mainSize = isRow_ ? childNode.layout.width : childNode.layout.height;
 			mainOffset += mainSize + mainMarginAfter + mainGap_;
-			// Flex items own their boxes; nothing here shares a line box.
-			childNode.render.inline_baseline = 0;
+			// Flex items own their boxes; nothing here shares a line box. Ink
+			// centring stays for a text item the container centres vertically,
+			// which is where optical centring is what the author asked for. Any
+			// other text item sits on its baseline, as the anonymous block around
+			// bare flex text puts it (CSS Flexbox 4).
+			const int verticalAlignment = isRow_ ? crossAlignFor(childNode) : node_.computedStyle().justify_content;
+			const bool centredText = verticalAlignment >= 0 && (verticalAlignment & 15) == 1;
+			const bool baselineText = childNode.type == NodeType::Text && node_.computedStyle().display == kDisplayFlex && !centredText;
+			childNode.render.inline_baseline = baselineText ? 1 : 0;
 		}
 	}
 
@@ -1881,6 +2404,17 @@ private:
 		return inlineRow_ ? 5 : node_.computedStyle().align_items;
 	}
 
+	// Baseline alignment needs baselines that cross the cross axis. When a flex
+	// item's inline axis runs along the cross axis instead (a column, or a row
+	// of a vertical container), it uses the fallback: self-start/self-end in its
+	// own writing mode, which wrap-reverse does not flip.
+	bool usesBaselineFallback(const Node &childNode) const
+	{
+		const int keyword = crossAlignFor(childNode) & 15;
+		return node_.computedStyle().display == kDisplayFlex && !inlineRow_ && (keyword == 5 || keyword == kAlignLastBaseline) &&
+		       (writingMode(childNode) == 0) == !isRow_;
+	}
+
 	void positionCrossAxisChild(int child, Node &childNode, int lineCrossSize, int crossMarginBefore, int crossMarginAfter, int crossTotal, int *crossPosition, int lineMaxBaseline, int lineLastBaseline)
 	{
 #if GEA_CSS_FLEX_WRAP
@@ -1890,6 +2424,8 @@ private:
 #endif
 		const int alignment = crossAlignFor(childNode);
 		int align = physicalSelfAlignment(node_, childNode, alignment, lineCrossSize - crossTotal, !isRow_);
+		if (align < 0 && usesBaselineFallback(childNode))
+			align = baselineFallbackAlignment(node_, childNode, alignment, lineCrossSize - crossTotal, !isRow_, false);
 		if (align >= 0) {
 			const bool reversed = gridAxisReversed(node_, !isRow_) != (wrapReversed);
 			if (reversed) align = align == 2 ? 6 : 2;
@@ -1935,10 +2471,92 @@ private:
 	// places runs at `top + ascender - bearingY`, so this matches the drawn
 	// pixels exactly. Flex items synthesize missing baselines from border edges;
 	// inline boxes use margin edges.
+	// CSS aligns a non-replaced inline box by its line-height box, which can
+	// differ from its layout box when the line-height is below the font size.
+	bool alignsByLineHeight(const Node &item) const
+	{
+		return item.type == NodeType::Text ||
+		       (item.type == NodeType::View && item.first_child >= 0 && LayoutEngine::isCssInlineLevelBox(item) &&
+		        LayoutEngine::isInlineLevelNode(item));
+	}
+
+	// The aligned box of an item, as its reach above and below the item's
+	// own baseline.
+	void alignedBox(const Node &item, int &above, int &below) const
+	{
+		if (alignsByLineHeight(item)) {
+			const auto own = TextRenderer::inlineFontMetrics(item.computedStyle());
+			above = own.strutAscent;
+			below = own.strutDescent;
+			return;
+		}
+		above = item.computedStyle().margin[0] + childBaseline(item);
+		below = item.layout.height + item.computedStyle().margin[2] - childBaseline(item);
+	}
+
+	// vertical-align of a one-line inline item: how far below its baseline
+	// position it sits. top and bottom align to the line box instead.
+	int verticalAlignShift(const Node &item) const
+	{
+		const int align = item.computedStyle().vertical_align;
+		if (align < 3) return 0;
+		const auto parent = TextRenderer::inlineFontMetrics(node_.computedStyle());
+		int above = 0, below = 0;
+		alignedBox(item, above, below);
+		if (align == 3) return (above - below) / 2 - parent.xHeight / 2;
+		if (align == 4) return above - parent.ascent;
+		if (align == 5) return parent.descent - below;
+		return align == 6 ? parent.fontSize / 5 : -(parent.fontSize / 3);
+	}
+
+	// How far an item reaches above and below the line's baseline. A shifted
+	// item contributes its aligned box; baseline items keep their layout box.
+	void lineExtent(const Node &item, int &ascent, int &descent) const
+	{
+		const int shift = verticalAlignShift(item);
+		if (item.computedStyle().vertical_align >= 3) alignedBox(item, ascent, descent);
+		else {
+			ascent = item.computedStyle().margin[0] + childBaseline(item);
+			descent = item.layout.height + item.computedStyle().margin[2] - childBaseline(item);
+		}
+		ascent -= shift;
+		descent += shift;
+	}
+
+	// The baseline of a block container's last in-flow line box, or -1 without
+	// one. A block child without line boxes adds none; one that clips its
+	// overflow stands for its bottom margin edge.
+	int lastLineBaseline(const Node &block) const
+	{
+		const Node *nodes = Tree::instance().nodes();
+		for (int c = block.last_child; c >= 0; c = nodes[c].prev_sibling) {
+			const Node &inner = nodes[c];
+			if (isDisplayNone(inner.computedStyle()) || isOutOfFlowPosition(inner.computedStyle().position) || inner.computedStyle().float_side ||
+			    collapsibleSpaceOnly(inner)) continue;
+			// Blocks and inline boxes are searched in turn; atomic boxes and text
+			// sit on a line of this container.
+			if (inner.type == NodeType::View && inner.computedStyle().display == kDisplayBlock && !isAtomicInline(inner.computedStyle())) {
+				if (blockLevelView(inner) && overflowEstablishesContext(inner.computedStyle()))
+					return inner.layout.y + inner.layout.height + inner.computedStyle().margin[2];
+				const int line = lastLineBaseline(inner);
+				if (line >= 0) return inner.layout.y + line;
+				continue;
+			}
+			return inner.layout.y + childBaseline(inner, true);
+		}
+		return -1;
+	}
+
 	int childBaseline(const Node &childNode, bool last = false) const
 	{
 		if ((childNode.type == NodeType::Text || isLineBreak(childNode)) && childNode.computedStyle().font_id >= 0)
 			return TextRenderer::baselineOffset(childNode, last);
+		// An inline-block takes its last line box's baseline, or its bottom
+		// margin edge when it has none or clips its overflow (CSS 2.2 10.8.1).
+		if (childNode.type == NodeType::View && childNode.computedStyle().display == kDisplayBlock && isAtomicInline(childNode.computedStyle())) {
+			const int line = overflowEstablishesContext(childNode.computedStyle()) ? -1 : lastLineBaseline(childNode);
+			return line >= 0 ? line : childNode.layout.height + childNode.computedStyle().margin[2];
+		}
 		// An inline wrapper (a <span> around text) carries no text of its own, so
 		// CSS takes the baseline of its FIRST in-flow line box. Its children were
 		// already positioned by measureChildren, and layout.y is still parent-
@@ -1950,7 +2568,8 @@ private:
 			const Node *nodes = Tree::instance().nodes();
 			for (int c = last ? childNode.last_child : childNode.first_child; c >= 0; c = last ? nodes[c].prev_sibling : nodes[c].next_sibling) {
 				const Node &inner = nodes[c];
-				if (isDisplayNone(inner.computedStyle()) || isOutOfFlowPosition(inner.computedStyle().position)) continue;
+				// Collapsible white space alone makes no line box, so no baseline.
+				if (isDisplayNone(inner.computedStyle()) || isOutOfFlowPosition(inner.computedStyle().position) || collapsibleSpaceOnly(inner)) continue;
 				return inner.layout.y + childBaseline(inner, last);
 			}
 		}
@@ -1987,6 +2606,10 @@ private:
 	int padHeight_ = 0;
 	FlexLine *lines_ = nullptr;
 	std::vector<FlexLine> extraLines_;
+	// Sole runs placeLineItems widened to the offered line: the run, its own
+	// width, and its widened width less the line's.
+	struct WidenedRun { int id, natural, extra; };
+	std::vector<WidenedRun> widenedRuns_;
 	int mainGap_ = 0;
 	int crossGap_ = 0;
 };
@@ -2006,26 +2629,91 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "mark") == 0;
 }
 
+// A view that is an inline box: an authored display: inline, or an inline-level
+// tag with no authored display.
+static bool inlineBoxView(const Node &n)
+{
+	return n.type == NodeType::View && (n.computedStyle().display_explicit ? isInlineBoxDisplay(n.computedStyle()) : isInlineLevelTag(tagFromId(n.tag_id)));
+}
+
+// A block container with a column count or width (CSS Multi-column 2).
+// Spanning elements (column-span: all) split the columns into sets, which
+// this layout does not do: such a container keeps a single column.
+bool isMulticolContainer(const Node &node)
+{
+	const RareStyle &rs = rstyle(node.computedStyle());
+	if ((rs.column_count <= 0 && rs.column_width <= 0) || node.type != NodeType::View || node.computedStyle().display != kDisplayBlock ||
+	    (LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node))) return false;
+	const Node *nodes = Tree::instance().nodes();
+	for (int c = node.first_child; c >= 0; c = nodes[c].next_sibling)
+		if (rstyle(nodes[c].computedStyle()).line_clamp_flags & 64) return false;
+	return true;
+}
+
+// column-gap: normal is 1em in a multicol container.
+int multicolGap(const Node &node, int available)
+{
+	const auto &s = node.computedStyle();
+	if (s.column_gap_percent != kUnset) return std::max(0, resolvePercentSize(available, s.column_gap_percent));
+	if (s.column_gap != kUnset) return std::max(0, static_cast<int>(s.column_gap));
+	return s.gap > 0 ? s.gap : s.font_size;
+}
+
+// An inline box with nothing to show: no insets and no visible box.
+bool emptyInlineBox(const Node &node)
+{
+	return !boxInsets(node.computedStyle(), true) && !boxInsets(node.computedStyle(), false) && FlexLayoutPass::paintsNoBox(node);
+}
+
+// A view that is block-level in its parent: neither an inline box nor an
+// atomic inline-level box (inline-block, inline-flex).
+bool blockLevelView(const Node &node)
+{
+	return node.type == NodeType::View && !isAtomicInline(node.computedStyle()) && !inlineBoxView(node);
+}
+
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
 // ancestry still owns inheritance, events, relative translation, and painting.
 // Visible inline decorations require fragments; keep those on their own path.
 bool splitInlineWrapper(const Node *nodes, int id)
 {
 	const Node &n = nodes[id];
-	if (n.type != NodeType::View || n.computedStyle().display_explicit || n.computedStyle().display != kDisplayBlock ||
-	    !isInlineLevelTag(tagFromId(n.tag_id)) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
+	if (!inlineBoxView(n) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
 	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.computedStyle(), true) || boxInsets(n.computedStyle(), false) ||
 	    n.computedStyle().margin[1] || n.computedStyle().margin[3] || n.computedStyle().opacity != 255 || overflowEstablishesContext(n.computedStyle())) return false;
 	bool containsBlock = false;
 	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
 		const Node &child = nodes[c];
 		if (isDisplayNone(child.computedStyle())) continue;
-		if (isOutOfFlowPosition(child.computedStyle().position)) return false;
-		if (child.computedStyle().float_side) continue;
-		if (child.type == NodeType::View && (child.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
+		// Out-of-flow children stay with the wrapper, whose fragments contain them
+		// (LayoutNodePass::positionFragmentedInlineChildren).
+		if (isOutOfFlowPosition(child.computedStyle().position)) continue;
+		// A float inside an inline belongs to the enclosing block's float context.
+		if (child.computedStyle().float_side) { containsBlock = true; continue; }
+		// A forced break splits the inline across line boxes.
+		if (isLineBreak(child)) { containsBlock = true; continue; }
+		if (blockLevelView(child)) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
 	return containsBlock;
+}
+
+// An inline box with visible decorations split by an in-flow block (CSS 2.2
+// 9.2.1.1) keeps its box but lays its inline runs out as fragments: shrink-
+// wrapped like the unsplit span, open on the split sides. The blocks sit on
+// the parent's content edges. Only a span on its own line (Gea reads vertical
+// margins so) starts at those edges.
+bool splitDecoratedInline(const Node *nodes, int id)
+{
+	const Node &n = nodes[id];
+	if (!LayoutEngine::isCssInlineLevelBox(n) || LayoutEngine::isInlineLevelNode(n) || n.type != NodeType::View ||
+	    n.computedStyle().display != kDisplayBlock || emptyInlineBox(n) || overflowEstablishesContext(n.computedStyle())) return false;
+	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
+		const Node &child = nodes[c];
+		if (!isDisplayNone(child.computedStyle()) && !isOutOfFlowPosition(child.computedStyle().position) && !child.computedStyle().float_side &&
+		    blockLevelView(child)) return true;
+	}
+	return false;
 }
 
 int formattingEdgeNode(const Node *nodes, int id, bool last)
@@ -2070,7 +2758,7 @@ public:
 		if (isLineBreak(node_) && LayoutEngine::isInlineLevelNode(node_) &&
 		    (node_.parent < 0 || (nodes_[node_.parent].computedStyle().display != kDisplayFlex && !isDisplayGrid(nodes_[node_.parent].computedStyle())))) {
 			node_.layout.width = 0;
-			node_.layout.height = clampInt16(TextRenderer::measureHeight(" ", node_.computedStyle().font_id,
+			node_.layout.height = clampLayoutExtent(TextRenderer::measureHeight(" ", node_.computedStyle().font_id,
 			    node_.computedStyle().font_size, 0, node_.computedStyle().line_height));
 			return;
 		}
@@ -2092,6 +2780,17 @@ public:
 			return;
 		}
 
+		if (NodeRareData *rare = rareDataFor(id_)) {
+			rare->multicol.valid = false;
+			rare->inlineParts.clear();
+		}
+		const ColumnGeometry columns = columnGeometry();
+		if (columns.count > 0) layoutColumns(columns);
+		else layoutContent();
+	}
+
+	void layoutContent()
+	{
 		const int padWidth = paddedWidth();
 		const int padHeight = paddedHeight();
 		const bool inlineRow = resolveInlineFormattingRow();
@@ -2123,6 +2822,7 @@ public:
 			encloseFloatDescendants();
 			updateScrollContentSize();
 			positionAbsoluteChildren();
+			positionFragmentedInlineChildren();
 			applyRelativeOffsets();
 			return;
 		}
@@ -2158,6 +2858,9 @@ public:
 #if GEA_CSS_FIRST_LINE
 		if (NodeRareData *rare = rareDataFor(id_)) rare->firstLineBackground.lineValid = false;
 #endif
+		// A multicol container's content keeps the column width it was laid out in.
+		const ColumnGeometry columns = columnGeometry();
+		ColumnWidthScope columnWidth(node_, columns.count > 0 ? columns.width + boxInsets(node_.computedStyle(), true) : -1);
 
 		const int padWidth = paddedWidth();
 		const int padHeight = paddedHeight();
@@ -2184,6 +2887,7 @@ public:
 		if (layoutFloatChildren(scratch.children(), childCount, padWidth, padHeight, false)) {
 			updateScrollContentSize();
 			positionAbsoluteChildren();
+			positionFragmentedInlineChildren();
 			applyRelativeOffsets();
 			return;
 		}
@@ -2202,6 +2906,112 @@ public:
 		}
 		positionAbsoluteChildren();
 		applyRelativeOffsets();
+	}
+
+	struct ColumnGeometry {
+		int count = 0, width = 0, gap = 0;
+	};
+
+	// CSS Multi-column 3.4: the used column count and width of a multicol
+	// container. count 0: not a multicol container.
+	ColumnGeometry columnGeometry() const
+	{
+		ColumnGeometry g;
+		if (!isMulticolContainer(node_)) return g;
+		const RareStyle &rs = rstyle(node_.computedStyle());
+		const int available = paddedWidth();
+		g.gap = multicolGap(node_, available);
+		int count = rs.column_count;
+		if (rs.column_width > 0) {
+			const int fit = std::max(1, (available + g.gap) / (rs.column_width + g.gap));
+			count = count > 0 ? std::min(count, fit) : fit;
+		}
+		g.count = std::max(1, count);
+		g.width = std::max(1, (available - (g.count - 1) * g.gap) / g.count);
+		return g;
+	}
+
+	// Lays content out in a narrower border box, restoring the width after.
+	struct ColumnWidthScope {
+		Node &node;
+		int16_t width;
+		ColumnWidthScope(Node &n, int columnWidth) : node(n), width(n.layout.width)
+		{
+			if (columnWidth >= 0) n.layout.width = clampLayoutExtent(columnWidth);
+		}
+		~ColumnWidthScope() { node.layout.width = width; }
+	};
+
+	// A multicol container lays its content out as one column (the flow
+	// thread) of the column width; painting slices it into column boxes (see
+	// RenderRecorder). Column height follows a definite height under
+	// column-fill: auto, else balances the flow without cutting a line box.
+	void layoutColumns(const ColumnGeometry &g)
+	{
+		const int insetsX = boxInsets(node_.computedStyle(), true);
+		const int insetsY = boxInsets(node_.computedStyle(), false);
+		const bool definite = hasExplicitHeight(node_);
+		const int given = paddedHeight();
+		int flow = 0;
+		{
+			ColumnWidthScope columnWidth(node_, g.width + insetsX);
+			layoutContent();
+			if (node_.first_child >= 0) updateScrollContentSize();
+			flow = node_.first_child >= 0 ? std::max(0, node_.layout.scroll_content_height - insetsY) : 0;
+		}
+		const int flags = rstyle(node_.computedStyle()).line_clamp_flags;
+		int height = definite && (flags & 16) ? given : balancedColumnHeight(flow, g.count);
+		if (definite) height = std::min(height, given);
+		height = std::max(1, height);
+		if (!definite) node_.layout.height = clampLayoutExtent(clampLayoutSize(node_, height + insetsY, false));
+		// Overflow columns follow the last column box; continue: discard drops them.
+		int used = std::max(1, (flow + height - 1) / height);
+		if (flags & 32) used = std::min(used, g.count);
+		ensureRareData(id_).multicol = MulticolLayout{clampInt16(g.width), clampInt16(g.gap), clampInt16(height), clampInt16(used), true, (flags & 32) != 0};
+#if GEA_CSS_SCROLLING
+		node_.layout.scroll_content_width = clampInt16(std::max<int>(node_.layout.width, insetsX + used * (g.width + g.gap) - g.gap));
+		node_.layout.scroll_content_height = node_.layout.height;
+#endif
+	}
+
+	// The shortest column height that fits the flow into `count` columns with
+	// no column boundary cutting a line box or a replaced element.
+	int balancedColumnHeight(int flow, int count) const
+	{
+		if (count <= 1 || flow <= 0) return flow;
+		std::vector<std::pair<int, int>> units;
+		collectMonolithicUnits(id_, -boxInset(node_.computedStyle(), 0), units);
+		for (int height = (flow + count - 1) / count; height < flow; ++height) {
+			bool fits = true;
+			for (const auto &unit : units) {
+				const int column = unit.first / height;
+				if (column < count - 1 && unit.second > (column + 1) * height) { fits = false; break; }
+			}
+			if (fits) return height;
+		}
+		return flow;
+	}
+
+	void collectMonolithicUnits(int parent, int originY, std::vector<std::pair<int, int>> &units) const
+	{
+		for (int id = nodes_[parent].first_child; id >= 0; id = nodes_[id].next_sibling) {
+			const Node &child = nodes_[id];
+			if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position)) continue;
+			const int top = originY + child.layout.y;
+			if (child.type == NodeType::Text) {
+				const int advance = TextRenderer::measureHeight("X", child.computedStyle().font_id, child.computedStyle().font_size, 0, child.computedStyle().line_height);
+				const int inner = child.layout.height - boxInsets(child.computedStyle(), false);
+				const int lines = advance > 0 ? std::max(1, (inner + advance - 1) / advance) : 1;
+				for (int line = 0; line < lines; ++line) {
+					const int lineTop = top + boxInset(child.computedStyle(), 0) + line * advance;
+					units.emplace_back(lineTop, std::min(lineTop + advance, top + child.layout.height));
+				}
+			} else if (child.type == NodeType::Image) {
+				units.emplace_back(top, top + child.layout.height);
+			} else {
+				collectMonolithicUnits(id, top, units);
+			}
+		}
 	}
 
 	bool containsChildMargins() const
@@ -2253,7 +3063,46 @@ private:
 			}
 		};
 		collect(collect, id_);
+		deferUnbreakableFloats(children, count);
 		return count;
+	}
+
+	// True when a line may end just before children[k]: at a block or line
+	// start, or after a soft wrap opportunity. Whitespace-only nowrap text
+	// collapses into its neighbours, so the search continues through it.
+	bool softWrapBefore(const int *children, int k) const
+	{
+		for (int prev = k - 1; prev >= 0; --prev) {
+			const Node &item = nodes_[children[prev]];
+			if (item.computedStyle().float_side) continue;
+			if (blockBox(item) || isLineBreak(item) || FlexLayoutPass::trailingSoftWrap(item)) return true;
+			const int run = FlexLayoutPass::edgeTextRun(item, true);
+			if (nodes_[run].text.find_first_not_of(" \t\r\n\f") != std::string::npos) return false;
+		}
+		return true;
+	}
+
+	// Floats end inline runs in this layout, so a float anchored where the line
+	// cannot break (inside a word or nowrap text) would split its line. CSS
+	// places such a float after the line holding its anchor instead: move it,
+	// with any floats beside it, to the next soft wrap opportunity.
+	void deferUnbreakableFloats(int *children, int count) const
+	{
+		for (int k = 0; k < count; ++k) {
+			if (!nodes_[children[k]].computedStyle().float_side) continue;
+			int group = k + 1;
+			while (group < count && nodes_[children[group]].computedStyle().float_side) ++group;
+			int target = group;
+			if (!softWrapBefore(children, k)) {
+				while (target < count) {
+					const Node &item = nodes_[children[target]];
+					if (item.computedStyle().float_side || blockBox(item) || isLineBreak(item) || FlexLayoutPass::leadingSoftWrap(item)) break;
+					if (FlexLayoutPass::trailingSoftWrap(nodes_[children[target++]])) break;
+				}
+			}
+			if (target > group) std::rotate(children + k, children + group, children + target);
+			k = target - 1;
+		}
 	}
 
 	struct FloatBox { int left, top, right, bottom, side; };
@@ -2278,8 +3127,7 @@ private:
 
 	bool blockBox(const Node &n) const
 	{
-		return n.type == NodeType::View && !isDisplayNone(n.computedStyle()) &&
-		    (n.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(n.tag_id)));
+		return !isDisplayNone(n.computedStyle()) && blockLevelView(n);
 	}
 
 	bool flowChild(int parent, int child) const
@@ -2288,10 +3136,13 @@ private:
 		    !nodes_[child].computedStyle().float_side && !suppressAnonymousWhitespace(nodes_, parent, child);
 	}
 
+	// A non-normal align-content makes a block container a BFC root (CSS Align 3
+	// 5.1), just like display: flow-root and a line-clamp container.
 	bool establishesBlockContext(const Node &n) const
 	{
 		return n.parent < 0 || isOutOfFlowPosition(n.computedStyle().position) || n.computedStyle().float_side ||
-		    n.computedStyle().display != kDisplayBlock || overflowEstablishesContext(n.computedStyle()) ||
+		    n.computedStyle().display != kDisplayBlock || isFlowRoot(n.computedStyle()) || (blockBox(n) && n.computedStyle().align_content != 0) || clampsLines(n) ||
+		    overflowEstablishesContext(n.computedStyle()) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].computedStyle()) ||
 		                      writingMode(n) != writingMode(nodes_[n.parent])));
 	}
@@ -2413,6 +3264,29 @@ private:
 		return margin;
 	}
 
+	// The exact border-box height of a box sized by a plain percentage of
+	// `basis`, or -1 when its integer height is already exact (lengths, auto,
+	// calc(), or min/max clamping).
+	double exactPercentHeight(const Node &child, int basis) const
+	{
+		const auto &s = child.computedStyle();
+		if (s.height_percent == kUnset || s.height != kUnset || s.height_expression >= 0 ||
+		    percentageHeightDependsOnIntrinsicSize(child) || flexBasisScope(child, false) || intrinsicSizeScope(child, false)) return -1;
+		const int insets = s.box_sizing == 0 ? boxInsets(s, false) : 0;
+		if (resolvePercentSize(basis, s.height_percent) + insets != child.layout.height) return -1;
+		return static_cast<double>(basis) * s.height_percent / 1000.0 + insets;
+	}
+
+	// Where a block-level box sits in the free inline space of its horizontal
+	// container: auto margins take it (CSS 2.2 10.3.3); otherwise it starts at
+	// the container's start edge.
+	int blockInlineOffset(const Node &child, int slack) const
+	{
+		const bool autoLeft = child.computedStyle().margin_auto & (1 << 3), autoRight = child.computedStyle().margin_auto & (1 << 1);
+		if (autoLeft || autoRight) return slack > 0 && autoLeft ? (autoRight ? slack / 2 : slack) : 0;
+		return rightToLeft(node_) ? slack : 0;
+	}
+
 	bool layoutBlockChildren(int *children, int count, int contentWidth, int contentHeight, bool autosize)
 	{
 		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit) return false;
@@ -2438,7 +3312,7 @@ private:
 				    !(preferredRatio(child) > 0 && hasExplicitWidth(child))) {
 					const int height = clampLayoutSize(child, std::max(0, contentHeight - child.computedStyle().margin[0] - child.computedStyle().margin[2]), false);
 					if (child.layout.height != height) {
-						child.layout.height = clampInt16(height); engine_.repositionChildren(id);
+						child.layout.height = clampLayoutExtent(height); engine_.repositionChildren(id);
 					}
 				}
 				const int slack = contentHeight - child.layout.height - child.computedStyle().margin[0] - child.computedStyle().margin[2];
@@ -2472,21 +3346,21 @@ private:
 				if (!hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child))) {
 					const int width = clampLayoutSize(child, std::max(0, contentWidth - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
 					if (child.layout.width != width) {
-						child.layout.width = clampInt16(width);
+						child.layout.width = clampLayoutExtent(width);
 						engine_.repositionChildren(id);
 					}
 				}
 				const int slack = contentWidth - child.layout.width - child.computedStyle().margin[1] - child.computedStyle().margin[3];
-				const bool autoLeft = child.computedStyle().margin_auto & (1 << 3);
-				const bool autoRight = child.computedStyle().margin_auto & (1 << 1);
-				int offset = slack > 0 && autoLeft ? (autoRight ? slack / 2 : slack) : 0;
-				if (!autoLeft && !autoRight && rightToLeft(node_)) offset = slack;
-				child.layout.x = boxInset(node_.computedStyle(), 3) + child.computedStyle().margin[3] + offset;
+				child.layout.x = boxInset(node_.computedStyle(), 3) + child.computedStyle().margin[3] + blockInlineOffset(child, slack);
 			}
 		}
 		const bool mergeTop = collapsesWithChildren(id_, false);
 		const bool mergeBottom = collapsesWithChildren(id_, true);
 		int cursor = 0;
+		// The exact flow position minus cursor. Percentage heights are
+		// fractional; each such box ends on the pixel nearest its exact bottom
+		// edge, as browsers snap, so 75% and 25% of 70px are 53 and 17.
+		double drift = 0;
 		bool first = true;
 		CollapsedMargin pending;
 		for (int i = 0; i < count; ++i) {
@@ -2506,6 +3380,18 @@ private:
 			pending.add(childEdgeMargin(id_, id, false));
 			cursor += first && mergeTop ? 0 : pending.value();
 			(vertical ? child.layout.x : child.layout.y) = boxInset(node_.computedStyle(), blockMarginSide(false)) + cursor;
+			if (const double exact = vertical ? -1 : exactPercentHeight(child, contentHeight); exact >= 0) {
+				const double bottom = cursor + drift + exact;
+				const int height = static_cast<int>(std::floor(bottom + 0.5)) - cursor;
+				if (height >= 0 && height != child.layout.height) {
+#if GEA_CSS_SCROLLING
+					if (child.layout.scroll_content_height == child.layout.height) child.layout.scroll_content_height = clampInt16(height);
+#endif
+					child.layout.height = clampLayoutExtent(height);
+					engine_.repositionChildren(id);
+				}
+				drift = bottom - cursor - child.layout.height;
+			}
 			cursor += vertical ? child.layout.width : child.layout.height;
 			pending = childEdgeMargin(id_, id, true);
 			first = false;
@@ -2572,6 +3458,34 @@ private:
 		int intrinsicWidth = 0;
 		CollapsedMargin pending;
 		bool first = true, clearedThrough = false;
+		// A split decorated inline (splitDecoratedInline): the runs between its
+		// blocks become fragments, which reach past its content box on their
+		// open sides. outer[] is margin, border and padding per side.
+		const bool split = splitDecoratedInline(nodes_, id_);
+		const bool rtl = rightToLeft(node_);
+		int outer[4];
+		for (int s = 0; s < 4; ++s) outer[s] = split ? node_.computedStyle().margin[s] + boxInset(node_.computedStyle(), s) : 0;
+		std::vector<InlinePart> parts;
+		int partTop = -1, partWidth = 0, trimLeft = 0, trimRight = 0;
+		auto blockFollows = [&](int from) {
+			for (int k = from; k < count; ++k)
+				if (blockBox(nodes_[children[k]]) && !nodes_[children[k]].computedStyle().float_side) return true;
+			return false;
+		};
+		auto closePart = [&]() {
+			const int left = rtl ? contentWidth + trimRight - partWidth - (trimLeft ? 0 : boxInset(node_.computedStyle(), 3)) : -trimLeft - (trimLeft ? 0 : boxInset(node_.computedStyle(), 3));
+			const int right = rtl ? contentWidth + trimRight + (trimRight ? 0 : boxInset(node_.computedStyle(), 1)) : -trimLeft + partWidth + (trimRight ? 0 : boxInset(node_.computedStyle(), 1));
+			const int top = partTop - boxInset(node_.computedStyle(), 0), bottom = flowY + boxInset(node_.computedStyle(), 2);
+			InlinePart part;
+			part.x = clampInt16(boxInset(node_.computedStyle(), 3) + left);
+			part.y = clampInt16(boxInset(node_.computedStyle(), 0) + top);
+			part.width = clampInt16(right - left);
+			part.height = clampInt16(bottom - top);
+			part.sides = static_cast<std::uint8_t>(5 | (trimRight ? 0 : 2) | (trimLeft ? 0 : 8));
+			parts.push_back(part);
+			partTop = -1;
+			partWidth = 0;
+		};
 		for (int i = 0; i < count; ++i) {
 			Node &child = nodes_[children[i]];
 			if (!blockBox(child) && !child.computedStyle().float_side) {
@@ -2582,6 +3496,15 @@ private:
 				       end < count && !blockBox(nodes_[children[end]]) && !nodes_[children[end]].computedStyle().float_side) ++end;
 				flowY += pending.value();
 				pending = {};
+				if (split && partTop < 0) {
+					const bool firstPart = parts.empty(), lastPart = !blockFollows(end);
+					if (!firstPart) flowY += outer[0];
+					partTop = flowY;
+					trimLeft = (rtl ? !lastPart : !firstPart) ? outer[3] : 0;
+					trimRight = (rtl ? !firstPart : !lastPart) ? outer[1] : 0;
+				}
+				const int runWidth = contentWidth + (split ? trimLeft + trimRight : 0);
+				const int runShift = split ? trimLeft : 0;
 				ScratchFrame inlineScratch;
 					if (inlineScratch.valid()) {
 						auto layoutRun = [&](int width) {
@@ -2593,7 +3516,7 @@ private:
 						NodeRareData *ownerRare = rareDataFor(id_);
 						const bool ownerLineWasValid = ownerRare && ownerRare->firstLineBackground.lineValid;
 #endif
-						auto extent = layoutRun(contentWidth);
+						auto extent = layoutRun(runWidth);
 					// If even the first unbreakable unit cannot fit beside a float,
 					// move this line down to the next float boundary and retry.
 					// Once the whole containing width is available, the word may overflow.
@@ -2608,20 +3531,36 @@ private:
 						minimum += item.computedStyle().margin[1] + item.computedStyle().margin[3];
 						if (item.type == NodeType::Text) minimum += boxInsets(item.computedStyle(), true);
 					}
-					int left = 0, right = contentWidth;
+					int left = 0, right = runWidth;
 					for (;;) {
-						left = 0; right = contentWidth;
+						left = 0; right = runWidth;
 						int nextBottom = INT_MAX;
 						for (const auto &f : floats) {
 							if (originY + flowY >= f.bottom || originY + flowY + extent.firstLineHeight <= f.top) continue;
-							if (f.side == 1) left = std::max(left, f.right - originX);
-							else right = std::min(right, f.left - originX);
+							if (f.side == 1) left = std::max(left, f.right - originX + runShift);
+							else right = std::min(right, f.left - originX + runShift);
 							nextBottom = std::min(nextBottom, f.bottom - originY);
 						}
-						if (minimum <= right-left || (left == 0 && right == contentWidth) || nextBottom == INT_MAX) break;
+						if (minimum <= right-left || (left == 0 && right == runWidth) || nextBottom == INT_MAX) break;
 						flowY = nextBottom;
 					}
-					if (right - left != contentWidth) extent = layoutRun(std::max(0, right - left));
+					if (right - left != runWidth) extent = layoutRun(std::max(0, right - left));
+					// A float after a one-line run goes to the top of that line when it
+					// fits beside the run's content (CSS 2.2 9.5.1): place the float
+					// first, then flow the run again beside it.
+					if (end < count && nodes_[children[end]].computedStyle().float_side && !nodes_[children[end]].computedStyle().clear_side &&
+					    !isLineBreak(nodes_[children[end - 1]]) && extent.height == extent.firstLineHeight) {
+						const Node &next = nodes_[children[end]];
+						engine_.layoutNode(children[end], contentWidth, contentHeight, measureWidth);
+						if (extent.width + next.layout.width + next.computedStyle().margin[1] + next.computedStyle().margin[3] <= right - left) {
+#if GEA_CSS_FIRST_LINE
+							if (ownerRare) ownerRare->firstLineBackground.lineValid = ownerLineWasValid;
+#endif
+							std::rotate(children + i, children + end, children + end + 1);
+							--i;
+							continue;
+						}
+					}
 #if GEA_CSS_FIRST_LINE
 					if (!ownerLineWasValid && ownerRare && ownerRare->firstLineBackground.lineValid)
 						ownerRare->firstLineBackground.lineY = clampInt16(ownerRare->firstLineBackground.lineY + flowY);
@@ -2633,7 +3572,7 @@ private:
 							if (NodeRareData *rare = rareDataFor(fragmentId)) {
 								auto &fragment = rare->firstLineFragment;
 								if (fragment.valid && fragment.contextNode == id_) {
-									fragment.x = clampInt16(fragment.x + left);
+									fragment.x = clampInt16(fragment.x + left - runShift);
 									fragment.y = clampInt16(fragment.y + flowY);
 								}
 							}
@@ -2641,11 +3580,17 @@ private:
 					}
 #endif
 					for (int j = i; j < end; ++j) {
-						nodes_[children[j]].layout.x += left;
+						nodes_[children[j]].layout.x += left - runShift;
 						nodes_[children[j]].layout.y += flowY;
 					}
 					flowY += extent.height;
 					intrinsicWidth = std::max(intrinsicWidth, left + extent.width);
+					if (split) {
+						// A one-line run's collapsible trailing space hangs past the fragment.
+						const int lastItem = children[isLineBreak(nodes_[children[end - 1]]) && end - 1 > i ? end - 2 : end - 1];
+						const int hang = extent.height == extent.firstLineHeight ? FlexLayoutPass::hangingSpace(nodes_[lastItem]) : 0;
+						partWidth = std::max(partWidth, left + extent.width - hang);
+					}
 					const Node &last = nodes_[children[end - 1]];
 					if (isLineBreak(last)) for (const auto &f : floats)
 						if (last.computedStyle().clear_side & f.side) flowY = std::max(flowY, f.bottom - originY);
@@ -2654,7 +3599,14 @@ private:
 				i = end - 1;
 				continue;
 			}
-			engine_.layoutNode(children[i], contentWidth, contentHeight, measureWidth);
+			const bool splitBlock = split && !child.computedStyle().float_side && blockBox(child);
+			if (splitBlock && partTop >= 0) {
+				closePart();
+				flowY += outer[2];
+			}
+			// A block splitting an inline fills the parent's content box.
+			const int area = splitBlock ? contentWidth + outer[1] + outer[3] : contentWidth;
+			engine_.layoutNode(children[i], area, contentHeight, measureWidth);
 			const bool block = !child.computedStyle().float_side && blockBox(child);
 			const int measuredOuterW = child.layout.width + child.computedStyle().margin[3] + child.computedStyle().margin[1];
 			const bool automaticWidth = block && !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) &&
@@ -2662,9 +3614,9 @@ private:
 			// Ordinary blocks still fill their containing block beside floats;
 			// only their line boxes are shortened by float exclusions.
 			if (automaticWidth) {
-				const int width = clampLayoutSize(child, std::max(0, contentWidth - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
+				const int width = clampLayoutSize(child, std::max(0, area - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
 				if (child.layout.width != width) {
-					child.layout.width = clampInt16(width);
+					child.layout.width = clampLayoutExtent(width);
 					engine_.repositionChildren(children[i]);
 				}
 			}
@@ -2693,16 +3645,22 @@ private:
 			// when that requires negative clearance above the top margin.
 			y = clearance ? clearBottom : std::max(y, clearBottom);
 			if (clearance && !context.hasClearance(children[i])) context.cleared.push_back(children[i]);
-			int left = 0, right = contentWidth, contextX = 0;
+			int left = 0, right = area, contextX = 0, contextFree = 0;
 			const bool independentBlock = block && establishesBlockContext(child);
 			if (child.computedStyle().float_side || child.computedStyle().display != kDisplayBlock || establishesBlockContext(child)) {
+				// An automatic-width BFC tries the widest opportunity at each y
+				// first and narrows only while its height meets more floats. Its
+				// width never grows back, so a height that depends on the width
+				// (aspect-ratio, wrapping) cannot make this search oscillate.
+				const bool searchWidth = independentBlock && automaticWidth;
+				int extent = searchWidth ? 1 : independentBlock ? int(child.layout.height) : outerH;
 				for (;;) {
-					left = 0; right = contentWidth;
+					left = 0; right = area;
 					int nextY = 32767;
 					bool hasLeft = false, hasRight = false;
 					for (const auto &global : floats) {
 						const FloatBox f{global.left - originX, global.top - originY, global.right - originX, global.bottom - originY, global.side};
-						if (y >= f.bottom || y + std::max(1, independentBlock ? int(child.layout.height) : outerH) <= f.top) continue;
+						if (y >= f.bottom || y + std::max(1, extent) <= f.top) continue;
 						if (f.side == 1) { left = std::max(left, f.right); hasLeft = true; }
 						else { right = std::min(right, f.left); hasRight = true; }
 						nextY = std::min(nextY, f.bottom);
@@ -2713,33 +3671,42 @@ private:
 						// Automatic width uses the remaining interval. Even a
 						// zero-width float prevents a negative margin crossing it.
 						const int start = hasLeft ? std::max<int>(child.computedStyle().margin[3], left) : child.computedStyle().margin[3];
-						const int end = hasRight ? std::min<int>(contentWidth - child.computedStyle().margin[1], right) : contentWidth - child.computedStyle().margin[1];
+						const int end = hasRight ? std::min<int>(area - child.computedStyle().margin[1], right) : area - child.computedStyle().margin[1];
 						contextX = start - child.computedStyle().margin[3];
-						if (automaticWidth) {
-							const int width = clampLayoutSize(child, std::max(0, end - start), true);
+						if (searchWidth && end >= start) {
+							const int width = clampLayoutSize(child, end - start, true);
 							if (child.layout.width != width) {
-								const int previousHeight = child.layout.height;
 								engine_.layoutNode(children[i], width + child.computedStyle().margin[1] + child.computedStyle().margin[3], contentHeight);
-								child.layout.width = clampInt16(width);
+								child.layout.width = clampLayoutExtent(width);
 								engine_.repositionChildren(children[i]);
 								outerW = width + child.computedStyle().margin[1] + child.computedStyle().margin[3];
 								outerH = child.layout.height + child.computedStyle().margin[0] + child.computedStyle().margin[2];
-								if (previousHeight != child.layout.height) continue;
 							}
+							if (child.layout.height > extent) { extent = child.layout.height; continue; }
 						}
 						fits = child.layout.width <= end - start;
+						contextFree = end - start - child.layout.width;
 					}
 					if (fits || nextY == 32767) break;
 					y = nextY;
+					if (searchWidth) extent = 1;
 				}
 			}
-			const int x = child.computedStyle().float_side == 2 ? right - outerW : independentBlock ? contextX : left;
+			// A normal block ignores floats; auto margins center it, and in
+			// right-to-left flow one that does not fill the line hugs the right.
+			// A block formatting context beside floats centers with auto margins in
+			// the space between them.
+			const bool autoMargins = child.computedStyle().margin_auto & 10;
+			const int x = (block && !independentBlock ? left + blockInlineOffset(child, right - left - outerW) :
+			               child.computedStyle().float_side == 2 ? right - outerW :
+			               independentBlock ? contextX + (autoMargins ? blockInlineOffset(child, contextFree) : 0) : left) -
+			    (splitBlock ? outer[3] : 0);
 			intrinsicWidth = std::max(intrinsicWidth, child.computedStyle().float_side
 			    ? left + outerW + contentWidth - right : measuredOuterW);
 			child.layout.x = boxInset(node_.computedStyle(), 3) + x + child.computedStyle().margin[3];
 			child.layout.y = boxInset(node_.computedStyle(), 0) + y + (block ? 0 : child.computedStyle().margin[0]);
 			if (block && !establishesBlockContext(child) && child.first_child >= 0) {
-				LayoutNodePass nested(engine_, children[i], contentWidth, contentHeight);
+				LayoutNodePass nested(engine_, children[i], area, contentHeight);
 				if (!nested.resolveInlineFormattingRow()) {
 					ScratchFrame nestedScratch;
 					if (nestedScratch.valid()) {
@@ -2796,10 +3763,12 @@ private:
 				clearedThrough = false;
 			} else flowY = y + outerH;
 		}
+		if (partTop >= 0) closePart();
+		if (split) ensureRareData(id_).inlineParts = std::move(parts);
 		if (clearedThrough || (!collapsesWithChildren(id_, true) && !(first && collapsesWithChildren(id_, false))))
 			flowY += pending.value();
 		if (measureWidth)
-			node_.layout.width = clampInt16(clampLayoutSize(node_, intrinsicWidth + boxInsets(node_.computedStyle(), true), true));
+			node_.layout.width = clampLayoutExtent(clampLayoutSize(node_, intrinsicWidth + boxInsets(node_.computedStyle(), true), true));
 		if (autosize && !hasExplicitHeight(node_)) {
 			// Float enclosure is finalized with all same-context descendants.
 			node_.layout.height = clampBorderSize(engine_, node_, flowY + boxInsets(node_.computedStyle(), false), false);
@@ -3024,6 +3993,17 @@ private:
 			p.row.start = cursorRow;
 			occupy(p);
 			cursorColumn = p.column.end;
+		}
+		// CSS Box 4 margin-trim: an item in the first or last row or column has
+		// no margin against that edge of the grid, until this pass ends.
+		TrimmedMargins trimmed;
+		if (const int trim = rstyle(node_.computedStyle()).margin_trim) {
+			for (int i = 0; i < childCount; ++i) {
+				const auto &p = placements[i];
+				const bool atEdge[4] = {p.row.start == 0, p.row.end == rowCount, p.column.start == 0, p.column.end == columnCount};
+				for (int flag = 0; flag < 4; ++flag)
+					if ((trim & (1 << flag)) && atEdge[flag]) trimmed.cut(children[i], marginTrimSide(node_, flag));
+			}
 		}
 
 		const int columnGap = resolvedGap(node_, false, padWidth, padHeight);
@@ -3321,21 +4301,24 @@ private:
 		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling)
 			if (isOutOfFlowPosition(nodes_[c].computedStyle().position)) layoutState(c).static_block_axis = 0;
 		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit ||
-		    (LayoutEngine::isInlineLevelNode(node_) && !isOutOfFlowPosition(node_.computedStyle().position))) return;
+		    (LayoutEngine::isInlineLevelNode(node_) && !isAtomicInline(node_.computedStyle()) && !isOutOfFlowPosition(node_.computedStyle().position))) return;
 		const bool vertical = writingMode(node_) != 0;
 		const bool reversed = vertical && gridAxisReversed(node_, true);
-		int cursor = boxInset(node_.computedStyle(), blockMarginSide(false));
+		int cursor = boxInset(node_.computedStyle(), blockMarginSide(false)) + contentShift_;
 		bool first = true;
 		CollapsedMargin pending;
 		visitFormattingChildren(nodes_, id_, [&](int id) {
 			Node &child = nodes_[id];
 			if (isDisplayNone(child.computedStyle())) return;
 			if (isOutOfFlowPosition(child.computedStyle().position)) {
-				if (child.parent != id_ || !blockBox(child)) return;
+				// An inline-level box that no line box placed (inlineStaticPosition)
+				// starts a hypothetical line here, where a block-level one would.
+				if (child.parent != id_) return;
 				const int edge = cursor + (first && collapsesWithChildren(id_, false) ? 0 : pending.value());
 				auto &persistent = layoutState(id);
 				persistent.static_block_start = clampInt16(reversed ? node_.layout.width - edge : edge);
 				persistent.static_block_axis = vertical ? 2 : 1;
+				if (!vertical && LayoutEngine::isCssInlineLevelBox(child, true)) captureHypotheticalLine(id, edge);
 				return;
 			}
 			if (child.computedStyle().float_side || suppressAnonymousWhitespace(nodes_, child.parent, id)) return;
@@ -3351,8 +4334,70 @@ private:
 		});
 	}
 
+	// An inline-level box that no line placed would open an empty line at edge:
+	// the floats before it shorten that line and text-align places the static
+	// position on it. In a right-to-left block the box's right edge meets it
+	// (CSS 2.2 10.3.7).
+	void captureHypotheticalLine(int id, int edge)
+	{
+		if (const NodeRareData *rare = rareDataFor(id); rare && rare->inlineStaticPosition.valid) return;
+		int left = boxInset(node_.computedStyle(), 3), right = node_.layout.width - boxInset(node_.computedStyle(), 1);
+		for (int f = node_.first_child; f >= 0 && f != id; f = nodes_[f].next_sibling) {
+			const Node &box = nodes_[f];
+			if (!box.computedStyle().float_side || isDisplayNone(box.computedStyle()) || isOutOfFlowPosition(box.computedStyle().position)) continue;
+			if (edge < box.layout.y - box.computedStyle().margin[0] || edge >= box.layout.y + box.layout.height + box.computedStyle().margin[2]) continue;
+			if (box.computedStyle().float_side == 1) left = std::max(left, box.layout.x + box.layout.width + box.computedStyle().margin[1]);
+			else right = std::min(right, box.layout.x - box.computedStyle().margin[3]);
+		}
+		right = std::max(left, right);
+		const int align = LayoutEngine::physicalTextAlign(node_);
+		auto &position = ensureRareData(id).inlineStaticPosition;
+		position = InlineStaticPosition{};
+		position.x = clampInt16(align == 1 ? left + (right - left) / 2 : align == 2 ? right : left);
+		position.y = clampInt16(edge);
+		position.flowNode = static_cast<std::int16_t>(id_);
+		position.anchorRight = rightToLeft(node_);
+		position.valid = true;
+	}
+
+	// CSS Align 3: center or end align-content on a block container moves its
+	// in-flow content down when its content box is taller; with no content, the
+	// static positions of its absolute children move. Recomputed from the
+	// content's current top, so a second call leaves it where it is.
+	int contentShift_ = 0;
+	void alignBlockContent()
+	{
+		contentShift_ = 0;
+		const int keyword = node_.computedStyle().align_content & 15;
+		const bool center = keyword == 1 || keyword == 4 || keyword == kAlignSpaceEvenly, end = keyword == 2 || keyword == kAlignEnd;
+		// An automatic height already fits the content, floats included.
+		if ((!center && !end) || (!hasExplicitHeight(node_) && node_.computedStyle().min_height <= 0) ||
+		    node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit ||
+		    inlineBoxView(node_) || writingMode(node_) != 0 || overflowEstablishesContext(node_.computedStyle()) || isMulticolContainer(node_)) return;
+		const int top = boxInset(node_.computedStyle(), 0);
+		int first = INT_MAX, last = top;
+		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling) {
+			const Node &child = nodes_[c];
+			if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || suppressAnonymousWhitespace(nodes_, id_, c)) continue;
+			first = std::min(first, child.layout.y - child.computedStyle().margin[0]);
+			last = std::max(last, child.layout.y + child.layout.height + child.computedStyle().margin[2]);
+		}
+		if (first == INT_MAX) first = top;
+		const int free = node_.layout.height - boxInsets(node_.computedStyle(), false) - (last - first);
+		if (free <= 0) return;
+		contentShift_ = end ? free : roundedHalf(free);
+		const int delta = top + contentShift_ - first;
+		if (!delta) return;
+		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling) {
+			Node &child = nodes_[c];
+			if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position)) continue;
+			child.layout.y = clampInt16(child.layout.y + delta);
+		}
+	}
+
 	void positionAbsoluteChildren()
 	{
+		alignBlockContent();
 		captureBlockStaticPositions();
 		for (int child = node_.first_child; child >= 0; child = nodes_[child].next_sibling) {
 			Node &childNode = nodes_[child];
@@ -3365,6 +4410,110 @@ private:
 			stretchAbsoluteChild(child, childNode, childAvailWidth, childAvailHeight);
 			positionAbsoluteChild(childNode);
 		}
+	}
+
+	// A positioned inline split into fragments across this block's lines is
+	// the containing block of its out-of-flow children: the rect from its first
+	// fragment's inline-start and block-start edges to its last fragment's
+	// inline-end and block-end edges (CSS Position 3, 3.2). Its box, otherwise
+	// empty at its parent's origin, takes that rect, its in-flow content keeps
+	// its place, and its out-of-flow children are positioned against it.
+	void positionFragmentedInlineChildren()
+	{
+		if (!splitInlineChildren_) return;
+		auto visit = [&](auto &&self, int parent, int originX, int originY) -> void {
+			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+				if (!splitInlineWrapper(nodes_, c)) continue;
+				Node &wrapper = nodes_[c];
+				int x = originX + wrapper.layout.x, y = originY + wrapper.layout.y;
+				bool contains = false;
+				for (int k = wrapper.first_child; k >= 0 && !contains; k = nodes_[k].next_sibling)
+					contains = !isDisplayNone(nodes_[k].computedStyle()) && isOutOfFlowPosition(nodes_[k].computedStyle().position);
+				int rect[4];
+				if (contains && establishesAbsoluteContainingBlock(wrapper) && fragmentRect(c, x, y, rect)) {
+					const int dx = rect[0] - x, dy = rect[1] - y;
+					wrapper.layout.x = clampInt16(wrapper.layout.x + dx);
+					wrapper.layout.y = clampInt16(wrapper.layout.y + dy);
+					wrapper.layout.width = clampLayoutExtent(rect[2]);
+					wrapper.layout.height = clampLayoutExtent(rect[3]);
+					for (int k = wrapper.first_child; k >= 0; k = nodes_[k].next_sibling) {
+						if (isOutOfFlowPosition(nodes_[k].computedStyle().position)) continue;
+						nodes_[k].layout.x = clampInt16(nodes_[k].layout.x - dx);
+						nodes_[k].layout.y = clampInt16(nodes_[k].layout.y - dy);
+					}
+					x = rect[0];
+					y = rect[1];
+					LayoutNodePass wrapperPass(engine_, c, rect[2], rect[3]);
+					wrapperPass.positionAbsoluteChildren();
+				}
+				self(self, c, x, y);
+			}
+		};
+		visit(visit, id_, 0, 0);
+	}
+
+	// The fragments of a split inline at (originX, originY): x, y, width and
+	// height from its first in-flow inline content to its last.
+	bool fragmentRect(int wrapper, int originX, int originY, int rect[4]) const
+	{
+		struct Leaf { int id, x, y; };
+		Leaf first{-1, 0, 0}, last{-1, 0, 0};
+		auto walk = [&](auto &&self, int parent, int ox, int oy) -> void {
+			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+				const Node &child = nodes_[c];
+				if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || child.computedStyle().float_side ||
+				    isLineBreak(child) || blockBox(child) || suppressAnonymousWhitespace(nodes_, parent, c)) continue;
+				if (child.type == NodeType::Text && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+				if (splitInlineWrapper(nodes_, c)) {
+					self(self, c, ox + child.layout.x, oy + child.layout.y);
+					continue;
+				}
+				if (first.id < 0) first = {c, ox + child.layout.x, oy + child.layout.y};
+				last = {c, ox + child.layout.x, oy + child.layout.y};
+			}
+		};
+		walk(walk, wrapper, originX, originY);
+		if (first.id < 0) return false;
+		const Node &a = nodes_[first.id], &b = nodes_[last.id];
+		int firstLeft, firstRight, firstLastLeft, firstLastRight, lastFirstLeft, lastFirstRight, lastLeft, lastRight;
+		inlineExtent(a, first.x, firstLeft, firstRight, firstLastLeft, firstLastRight);
+		inlineExtent(b, last.x, lastFirstLeft, lastFirstRight, lastLeft, lastRight);
+		int left = firstLeft, right = lastRight;
+		if (rightToLeft(nodes_[wrapper])) {
+			left = lastLeft;
+			right = firstRight;
+		}
+		rect[0] = left;
+		rect[1] = first.y;
+		rect[2] = std::max(0, right - left);
+		rect[3] = std::max(0, last.y + b.layout.height - first.y);
+		return true;
+	}
+
+	// The x ranges an inline item's first and last line actually cover. A text
+	// run's box can be wider than its glyphs (a lone run fills its line for
+	// text-align), so text is measured again from where its first line starts.
+	void inlineExtent(const Node &item, int x, int &firstStart, int &firstEnd, int &lastStart, int &lastEnd) const
+	{
+		firstStart = lastStart = x;
+		firstEnd = lastEnd = x + item.layout.width;
+		if (item.type != NodeType::Text) return;
+		const int contentLeft = boxInset(node_.computedStyle(), 3);
+		const int lineStart = x + std::max<int>(0, item.layout.inline_indent);
+		const int contentWidth = paddedWidth();
+		const InlineFlowMeasure m = TextRenderer::measureInlineFlow(item, contentWidth - (lineStart - contentLeft), contentWidth, true);
+		if (m.lineCount <= 0) return;
+		const int hang = FlexLayoutPass::hangingSpace(item);
+		const int firstWidth = m.firstLineWidth - (m.lineCount == 1 ? hang : m.firstLineTrailingSpace);
+		const int lastWidth = m.lastLineWidth - hang;
+		// Unless the line layout placed it, the drawer aligns each line in the box.
+		const int align = (item.render.inline_baseline & 2) ? 0 : LayoutEngine::physicalTextAlign(item);
+		const int box = item.layout.width - boxInsets(item.computedStyle(), true);
+		const auto offset = [&](int width) { return std::max(0, align == 1 ? (box - width) / 2 : align == 2 ? box - width : 0); };
+		firstStart = lineStart + offset(firstWidth);
+		firstEnd = firstStart + firstWidth;
+		lastStart = m.lineCount == 1 ? firstStart : x + offset(lastWidth);
+		lastEnd = lastStart + lastWidth;
 	}
 
 	void stretchAbsoluteChild(int child, Node &childNode, int childAvailWidth, int childAvailHeight)
@@ -3403,10 +4552,19 @@ private:
 	{
 		int x, y, width, height;
 		LayoutEngine::absoluteContainingArea(node_, childNode, x, y, width, height);
-		if (hasPositionOffset<3>(childNode)) childNode.layout.x = x + resolvedPositionOffsetWithBasis<3>(childNode, width) + childNode.computedStyle().margin[3];
+		int offset = 0;
+		if (hasPositionOffset<3>(childNode) && hasPositionOffset<1>(childNode) &&
+		    insetAlignedOffset(node_, childNode, true, width, resolvedPositionOffsetWithBasis<3>(childNode, width),
+		                       resolvedPositionOffsetWithBasis<1>(childNode, width), offset))
+			childNode.layout.x = x + offset;
+		else if (hasPositionOffset<3>(childNode)) childNode.layout.x = x + resolvedPositionOffsetWithBasis<3>(childNode, width) + childNode.computedStyle().margin[3];
 		else if (hasPositionOffset<1>(childNode)) childNode.layout.x = x + width - childNode.layout.width - resolvedPositionOffsetWithBasis<1>(childNode, width) - childNode.computedStyle().margin[1];
 		else childNode.layout.x = alignedAbsoluteChildPosition(childNode, true);
-		if (hasPositionOffset<0>(childNode)) childNode.layout.y = y + resolvedPositionOffsetWithBasis<0>(childNode, height) + childNode.computedStyle().margin[0];
+		if (hasPositionOffset<0>(childNode) && hasPositionOffset<2>(childNode) &&
+		    insetAlignedOffset(node_, childNode, false, height, resolvedPositionOffsetWithBasis<0>(childNode, height),
+		                       resolvedPositionOffsetWithBasis<2>(childNode, height), offset))
+			childNode.layout.y = y + offset;
+		else if (hasPositionOffset<0>(childNode)) childNode.layout.y = y + resolvedPositionOffsetWithBasis<0>(childNode, height) + childNode.computedStyle().margin[0];
 		else if (hasPositionOffset<2>(childNode)) childNode.layout.y = y + height - childNode.layout.height - resolvedPositionOffsetWithBasis<2>(childNode, height) - childNode.computedStyle().margin[2];
 		else childNode.layout.y = alignedAbsoluteChildPosition(childNode, false);
 	}
@@ -3491,7 +4649,8 @@ bool establishesTransformContainingBlock(const Node &node)
 
 bool establishesAbsoluteContainingBlock(const Node &node)
 {
-	return isOutOfFlowPosition(node.computedStyle().position) || node.computedStyle().position == 2 || establishesTransformContainingBlock(node);
+	return isOutOfFlowPosition(node.computedStyle().position) || node.computedStyle().position == 2 || node.computedStyle().position == kPositionSticky ||
+	       establishesTransformContainingBlock(node);
 }
 
 int containingBlockForAbsoluteNode(int node, int root, Node *nodes)
@@ -3658,15 +4817,23 @@ void positionAbsoluteNodeInContainingBlock(int node, int containing, Node *nodes
 	if (!hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute))
 		absolute.layout.y = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, false, &containingNode, areaY - parentOffsetY, areaHeight);
 
-	int containingX = absolute.layout.x + parentOffsetX;
-	if (hasPositionOffsetValue<3>(absolute))
+	int containingX = absolute.layout.x + parentOffsetX, offset = 0;
+	if (hasPositionOffsetValue<3>(absolute) && hasPositionOffsetValue<1>(absolute) &&
+	    insetAlignedOffset(containingNode, absolute, true, areaWidth, resolvedPositionOffsetForBasis<3>(absolute, areaWidth),
+	                       resolvedPositionOffsetForBasis<1>(absolute, areaWidth), offset))
+		containingX = areaX + offset;
+	else if (hasPositionOffsetValue<3>(absolute))
 		containingX = areaX + resolvedPositionOffsetForBasis<3>(absolute, areaWidth) + absolute.computedStyle().margin[3];
 	else if (hasPositionOffsetValue<1>(absolute))
 		containingX = areaX + areaWidth - absolute.layout.width -
 		              resolvedPositionOffsetForBasis<1>(absolute, areaWidth) - absolute.computedStyle().margin[1];
 
 	int containingY = absolute.layout.y + parentOffsetY;
-	if (hasPositionOffsetValue<0>(absolute))
+	if (hasPositionOffsetValue<0>(absolute) && hasPositionOffsetValue<2>(absolute) &&
+	    insetAlignedOffset(containingNode, absolute, false, areaHeight, resolvedPositionOffsetForBasis<0>(absolute, areaHeight),
+	                       resolvedPositionOffsetForBasis<2>(absolute, areaHeight), offset))
+		containingY = areaY + offset;
+	else if (hasPositionOffsetValue<0>(absolute))
 		containingY = areaY + resolvedPositionOffsetForBasis<0>(absolute, areaHeight) + absolute.computedStyle().margin[0];
 	else if (hasPositionOffsetValue<2>(absolute))
 		containingY = areaY + areaHeight - absolute.layout.height -
@@ -3805,37 +4972,89 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 	const Node *treeNodes = Tree::instance().nodes();
 	const int childId = static_cast<int>(&childNode - treeNodes);
 	if (const auto *rare = rareDataFor(childId); rare && rare->inlineStaticPosition.valid) {
-		int continuationOrigin = 0;
-		if (horizontal && rare->inlineStaticPosition.continuationLine) {
-			// Resolve fragmented inline origins here, after ancestor layout has
-			// finalized their first-fragment x positions. The continuation line
-			// starts at the nearest formatting block's content edge, not at the
-			// inline parent's first-fragment padding edge.
-			int inlineOffset = 0;
-			int cursor = static_cast<int>(&parent - treeNodes);
-			while (cursor >= 0 && isCssInlineLevelBox(treeNodes[cursor])) {
-				inlineOffset += treeNodes[cursor].layout.x;
-				cursor = treeNodes[cursor].parent;
-			}
-			if (cursor >= 0) continuationOrigin = boxInset(treeNodes[cursor].computedStyle(), 3) - inlineOffset;
+		const auto &position = rare->inlineStaticPosition;
+		// A block-level box that a line placed stands where the block it would be
+		// starts: at the next line box when content precedes it on its line
+		// (CSS 2.2 10.3.7).
+		const bool nextLine = blockLevelView(childNode) && position.afterContent && writingMode(parent) == 0;
+		// A box inside a split inline wrapper was placed by an ancestor's lines;
+		// the wrappers in between may have moved to their fragment rectangles.
+		int dx = 0, dy = 0, cursor = static_cast<int>(&parent - treeNodes);
+		for (; cursor >= 0 && cursor != position.flowNode; cursor = treeNodes[cursor].parent) {
+			dx += treeNodes[cursor].layout.x;
+			dy += treeNodes[cursor].layout.y;
 		}
-		return (horizontal ? rare->inlineStaticPosition.x + continuationOrigin + childNode.computedStyle().margin[3]
-		                   : rare->inlineStaticPosition.y + childNode.computedStyle().margin[0]);
+		if (cursor < 0) dx = dy = 0;
+		if (horizontal) {
+			int x = position.x - dx;
+			if (position.continuationLine || nextLine) {
+				// Resolve fragmented inline origins here, after ancestor layout has
+				// finalized their first-fragment x positions. A new line starts at
+				// the nearest formatting block's content edge, not at the inline
+				// parent's first-fragment padding edge.
+				int inlineOffset = 0;
+				int cursor = static_cast<int>(&parent - treeNodes);
+				while (cursor >= 0 && isCssInlineLevelBox(treeNodes[cursor])) {
+					inlineOffset += treeNodes[cursor].layout.x;
+					cursor = treeNodes[cursor].parent;
+				}
+				const int origin = cursor >= 0 ? boxInset(treeNodes[cursor].computedStyle(), 3) - inlineOffset : 0;
+				x = (nextLine ? 0 : position.x) + origin;
+			}
+			// The static-position rectangle has no inline size, so an explicit
+			// justify-self centers or ends the margin box on it.
+			const int justify = rstyle(childNode.computedStyle()).justify_self;
+			const int free = -(childNode.layout.width + childNode.computedStyle().margin[1] + childNode.computedStyle().margin[3]);
+			const int used = justify > 0 && writingMode(parent) == 0 ? usedGridAlignment(parent, childNode, justify, free, true, true)
+			                 : position.anchorRight ? 2 : 6;
+			return x + childNode.computedStyle().margin[3] + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
+		}
+		// The static-position rectangle spans the line box's block extent, so an
+		// explicit align-self aligns within it (CSS Position 3, 4.1).
+		int y = position.y - dy + (nextLine ? position.lineHeight : 0) + childNode.computedStyle().margin[0];
+		const int align = childNode.computedStyle().align_self;
+		if (align >= 0 && writingMode(parent) == 0) {
+			const int free = position.lineHeight - childNode.layout.height -
+			                 childNode.computedStyle().margin[0] - childNode.computedStyle().margin[2];
+			const int used = usedGridAlignment(parent, childNode, align, free, false, true);
+			if (used == 1) y += roundedHalf(free);
+			else if (used == 2) y += free;
+		}
+		return y;
 	}
 	const auto &persistent = layoutState(childId);
 	if (parent.computedStyle().display == kDisplayBlock && !parent.computedStyle().flex_direction_explicit &&
 	    persistent.static_block_axis == (horizontal ? 2 : 1)) {
+		// A block-level static-position rectangle has no block size: the margin
+		// box starts at it, or with an explicit align-self centers or ends on it
+		// (CSS Align 3). A reversed block axis (vertical-rl) starts on the right.
 		const bool reversed = horizontal && gridAxisReversed(parent, true);
-		return persistent.static_block_start + (reversed ? -childNode.layout.width - childNode.computedStyle().margin[1]
-		    : childNode.computedStyle().margin[horizontal ? 3 : 0]);
+		const int free = -((horizontal ? childNode.layout.width : childNode.layout.height) +
+		    childNode.computedStyle().margin[horizontal ? 3 : 0] + childNode.computedStyle().margin[horizontal ? 1 : 2]);
+		const int align = childNode.computedStyle().align_self;
+		const int used = align >= 0 ? usedGridAlignment(parent, childNode, align, free, horizontal, true) : reversed ? 2 : 6;
+		return persistent.static_block_start + childNode.computedStyle().margin[horizontal ? 3 : 0] +
+		    (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
 	}
 	// In block layout the hypothetical box starts at the parent's inline
 	// content edge. RTL anchors its inline-end margin edge, even when the absolute
 	// box is wider than its static-position parent. Its actual containing
 	// block can be an entirely different ancestor.
 	if (horizontal == (writingMode(parent) == 0) && parent.computedStyle().display == kDisplayBlock &&
-	    (!isInlineLevelNode(parent) || isOutOfFlowPosition(parent.computedStyle().position)) &&
+	    (!isInlineLevelNode(parent) || isAtomicInline(parent.computedStyle()) || isOutOfFlowPosition(parent.computedStyle().position)) &&
 	    !parent.computedStyle().flex_direction_explicit) {
+		// An explicit justify-self aligns the margin box in the parent's content
+		// box, the static-position rectangle's inline extent. auto stays normal
+		// for an absolutely positioned box (CSS Align 3, 6.1).
+		const int justify = rstyle(childNode.computedStyle()).justify_self;
+		if (justify >= 0) {
+			const int free = (horizontal ? parent.layout.width : parent.layout.height) - boxInsets(parent.computedStyle(), horizontal) -
+			    (horizontal ? childNode.layout.width : childNode.layout.height) -
+			    childNode.computedStyle().margin[horizontal ? 3 : 0] - childNode.computedStyle().margin[horizontal ? 1 : 2];
+			const int used = usedGridAlignment(parent, childNode, justify, free, horizontal, true);
+			return boxInset(parent.computedStyle(), horizontal ? 3 : 0) + childNode.computedStyle().margin[horizontal ? 3 : 0] +
+			    (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
+		}
 		return rightToLeft(parent)
 		    ? (horizontal ? parent.layout.width : parent.layout.height) - boxInset(parent.computedStyle(), horizontal ? 1 : 2) -
 		        (horizontal ? childNode.layout.width : childNode.layout.height) - childNode.computedStyle().margin[horizontal ? 1 : 2]
@@ -3933,34 +5152,79 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 
 bool LayoutEngine::isInlineLevelNode(const Node &n)
 {
-	if (n.computedStyle().display == kDisplayFlex || n.computedStyle().display == kDisplayGrid || n.computedStyle().display == kDisplayNone)
-		return false;
+	if (n.computedStyle().display == kDisplayNone) return false;
+	if (isAtomicInline(n.computedStyle())) return true;
+	if (n.computedStyle().display == kDisplayFlex || n.computedStyle().display == kDisplayGrid) return false;
 	// An explicit `display:block` makes even an inline-level tag (a <span>) — or a
 	// Text/Image node — a BLOCK-LEVEL box, so it stacks vertically among siblings
 	// instead of flowing into an inline row. Browsers do this; gea must too (e.g.
 	// the weather city list's .city-name/.city-detail spans set display:block to
 	// stack the name over the region). Without an explicit display, fall back to
 	// the tag's intrinsic inline-ness.
-	if (n.computedStyle().display == kDisplayBlock && n.computedStyle().display_explicit) return false;
+	if (n.computedStyle().display == kDisplayBlock && n.computedStyle().display_explicit && !isInlineBoxDisplay(n.computedStyle())) return false;
 	// In Gea's native layout model, vertical margins on inline-level wrappers are
 	// used as an authoring signal that the wrapper occupies its own line. Keep
 	// default spans inline, but do not merge title/score spans with margin-bottom
 	// into one row.
 	if (n.computedStyle().margin[0] != 0 || n.computedStyle().margin[2] != 0) return false;
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return isInlineLevelTag(tagFromId(n.tag_id));
+	return inlineBoxView(n);
+}
+
+// Mirror of startsFormattingLine: walk forward through siblings and inline
+// ancestors to the next content that shares or closes this line box.
+bool LayoutEngine::multicolContainer(const Node &node)
+{
+	return isMulticolContainer(node);
+}
+
+bool LayoutEngine::rightToLeftDirection(const Node &node)
+{
+	return rightToLeft(node);
+}
+
+int LayoutEngine::physicalTextAlign(const Node &node)
+{
+	switch (node.computedStyle().text_align) {
+	case 1: return 1;
+	case 2: return 2;
+	case 3: return 0;
+	case 4: return rightToLeft(node) ? 0 : 2;
+	default: return rightToLeft(node) ? 2 : 0;
+	}
+}
+
+bool LayoutEngine::endsFormattingLine(int id)
+{
+	const Node *nodes = Tree::instance().nodes();
+	while (isCssInlineLevelBox(nodes[id]) && isInlineLevelNode(nodes[id])) {
+		for (int sibling = nodes[id].next_sibling; sibling >= 0; sibling = nodes[sibling].next_sibling) {
+			const Node &next = nodes[sibling];
+			if (isDisplayNone(next.computedStyle()) || isOutOfFlowPosition(next.computedStyle().position) || next.computedStyle().float_side)
+				continue;
+			if (isAnonymousTextNode(next) &&
+			    (next.computedStyle().white_space == 0 || next.computedStyle().white_space == 1 || next.computedStyle().white_space == 4) &&
+			    next.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+			const int edge = formattingEdgeNode(nodes, sibling, false);
+			if (edge < 0) continue;
+			return isLineBreak(nodes[edge]) || !isInlineLevelNode(nodes[edge]);
+		}
+		id = nodes[id].parent;
+		if (id < 0) return true;
+	}
+	return true;
 }
 
 bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
 {
-	if (n.computedStyle().display == kDisplayNone || n.computedStyle().display_explicit) return false;
+	if (n.computedStyle().display == kDisplayNone || (n.computedStyle().display_explicit && !isInlineBoxDisplay(n.computedStyle()))) return false;
 	if (!hypothetical && (n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position))) return false;
 	if (!hypothetical && n.parent >= 0) {
 		const Node &parent = Tree::instance().nodes()[n.parent];
 		if (parent.computedStyle().display == kDisplayFlex || isDisplayGrid(parent.computedStyle())) return false;
 	}
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return n.type == NodeType::View && isInlineLevelTag(tagFromId(n.tag_id));
+	return inlineBoxView(n);
 }
 
 int LayoutEngine::clampSize(int size, int minSize, int maxSize) const
@@ -4138,10 +5402,11 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	Node &node = Tree::instance().nodes()[id];
 	auto &persistent = layoutState(id);
 	const Node *parent = node.parent >= 0 ? &Tree::instance().nodes()[node.parent] : nullptr;
-	// Horizontal non-replaced floats use the same min/max-content measurement
-	// and final used-width phase as fit-content. Floats on flex/grid items are
-	// ignored; orthogonal automatic inline sizing is handled separately.
-	const bool shrinkFloat = node.type == NodeType::View && node.computedStyle().float_side &&
+	// Horizontal non-replaced floats and atomic inline boxes (inline-flex) use
+	// the same min/max-content measurement and final used-width phase as
+	// fit-content. Flex and grid items are blockified, so they are left alone;
+	// orthogonal automatic inline sizing is handled separately.
+	const bool shrinkFloat = node.type == NodeType::View && (node.computedStyle().float_side || isAtomicInline(node.computedStyle())) &&
 	    !isOutOfFlowPosition(node.computedStyle().position) &&
 	    (!parent || (parent->computedStyle().display != kDisplayFlex && !isDisplayGrid(parent->computedStyle()))) &&
 	    node.computedStyle().width == kUnset && node.computedStyle().width_percent == kUnset && node.computedStyle().width_expression == -1 &&
@@ -4233,6 +5498,14 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
 		LayoutNodePass(*this, id, node.layout.width, node.layout.height).repositionChildren();
+	if (clampsLines(node)) {
+		applyLineClamp(id);
+		node.layout.line_clamp_owner = 1;
+	} else if (node.layout.line_clamp_owner) {
+		// The container stopped clamping: lift the state its last clamp left.
+		clearLineClamp(Tree::instance().nodes(), id);
+		node.layout.line_clamp_owner = 0;
+	}
 	if (node.parent < 0) {
 		// The initial containing block places the root; there is no parent
 		// layout pass to position its margin box or apply float alignment.
@@ -4263,6 +5536,13 @@ void LayoutEngine::repositionChildren(int id)
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeLayoutRepositionCalls++);
 	Node *node = &Tree::instance().nodes()[id];
 	LayoutNodePass(*this, id, node->layout.width, node->layout.height).repositionChildren();
+	if (clampsLines(*node)) {
+		applyLineClamp(id);
+		node->layout.line_clamp_owner = 1;
+	} else if (node->layout.line_clamp_owner) {
+		clearLineClamp(Tree::instance().nodes(), id);
+		node->layout.line_clamp_owner = 0;
+	}
 }
 
 bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
@@ -4355,8 +5635,8 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 		// A parent-owned box cannot be reproduced by laying only the child's
 		// subtree. Put those dimensions back and position its descendants inside
 		// the same box exactly as the omitted parent pass would.
-		a.layout.width = static_cast<std::int16_t>(prevW);
-		a.layout.height = static_cast<std::int16_t>(prevH);
+		a.layout.width = prevW;
+		a.layout.height = prevH;
 		repositionChildren(scope);
 	}
 	a.layout.x = prevX;
@@ -4384,7 +5664,92 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	return true;
 }
 
+namespace {
+
+// The position offset macros select a side at compile time.
+template <int side>
+int stickyInsetFor(const Node &node, int basis)
+{
+	int inset = GEA_CSS_POSITION_PX(node.computedStyle(), side) != kUnset ? GEA_CSS_POSITION_PX(node.computedStyle(), side) : 0;
+	if (GEA_CSS_POSITION_PERCENT(node.computedStyle(), side) != kUnset) inset += basis * GEA_CSS_POSITION_PERCENT(node.computedStyle(), side) / 1000;
+	return inset;
+}
+
+int stickyInset(const Node &node, int side, int basis)
+{
+	switch (side) {
+	case 0: return stickyInsetFor<0>(node, basis);
+	case 1: return stickyInsetFor<1>(node, basis);
+	case 2: return stickyInsetFor<2>(node, basis);
+	default: return stickyInsetFor<3>(node, basis);
+	}
+}
+
+bool hasStickyInset(const Node &node, int side)
+{
+	switch (side) {
+	case 0: return hasPositionOffsetValue<0>(node);
+	case 1: return hasPositionOffsetValue<1>(node);
+	case 2: return hasPositionOffsetValue<2>(node);
+	default: return hasPositionOffsetValue<3>(node);
+	}
+}
+
+// position: sticky (CSS Position 3): shift the box, never out of its
+// containing block, just enough to keep it inset from its scrollport edges.
+// `port` is that scrollport, x0 y0 x1 y1 exclusive, in resolved coordinates.
+void applyStickyOffset(Node &node, const Node &block, const int port[4])
+{
+	const int portW = port[2] - port[0], portH = port[3] - port[1];
+	auto axis = [&](int start, int size, int marginStart, int marginEnd, int portStart, int portEnd,
+	                int blockStart, int blockEnd, int startSide, int endSide, int basis) {
+		int shift = 0;
+		if (hasStickyInset(node, startSide)) {
+			const int limit = portStart + stickyInset(node, startSide, basis);
+			if (start < limit) shift = std::min(limit - start, std::max(0, blockEnd - marginEnd - (start + size)));
+		}
+		if (hasStickyInset(node, endSide)) {
+			const int limit = portEnd - stickyInset(node, endSide, basis);
+			if (start + size + shift > limit)
+				shift = std::max(limit - (start + size), std::min(0, blockStart + marginStart - start));
+		}
+		return shift;
+	};
+	const int blockX0 = block.layout.x + boxInset(block.computedStyle(), 3), blockX1 = block.layout.x + block.layout.width - boxInset(block.computedStyle(), 1);
+	const int blockY0 = block.layout.y + boxInset(block.computedStyle(), 0), blockY1 = block.layout.y + block.layout.height - boxInset(block.computedStyle(), 2);
+	node.layout.y += axis(node.layout.y, node.layout.height, node.computedStyle().margin[0], node.computedStyle().margin[2], port[1], port[3],
+	                      blockY0, blockY1, 0, 2, portH);
+	node.layout.x += axis(node.layout.x, node.layout.width, node.computedStyle().margin[3], node.computedStyle().margin[1], port[0], port[2],
+	                      blockX0, blockX1, 3, 1, portW);
+}
+
+// A scroll container's padding box, in resolved coordinates.
+void scrollportOf(const Node &node, int port[4])
+{
+	port[0] = node.layout.x + computedBorderWidth(node.computedStyle(), 3);
+	port[1] = node.layout.y + computedBorderWidth(node.computedStyle(), 0);
+	port[2] = node.layout.x + node.layout.width - computedBorderWidth(node.computedStyle(), 1);
+	port[3] = node.layout.y + node.layout.height - computedBorderWidth(node.computedStyle(), 2);
+}
+
+}  // namespace
+
 void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
+{
+	Node *nodes = Tree::instance().nodes();
+	if (nodes[id].parent < 0) treeState().stickyPresent = false;
+	// A subtree pass (scoped relayout) inherits its nearest scroll container's
+	// scrollport; its ancestors are already resolved.
+	int port[4] = {0, 0, Tree::instance().mountedWidth(), Tree::instance().mountedHeight()};
+	for (int ancestor = nodes[id].parent; ancestor >= 0; ancestor = nodes[ancestor].parent) {
+		if (!overflowEstablishesContext(nodes[ancestor].computedStyle())) continue;
+		scrollportOf(nodes[ancestor], port);
+		break;
+	}
+	resolveAbsoluteCoordsIn(id, parent_x, parent_y, port);
+}
+
+void LayoutEngine::resolveAbsoluteCoordsIn(int id, int parent_x, int parent_y, const int *scrollport)
 {
 	Node *nodes = Tree::instance().nodes();
 	Node *node = &nodes[id];
@@ -4393,6 +5758,10 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		node->layout.x += parent_x;
 		node->layout.y += parent_y;
 	}
+	if (node->computedStyle().position == kPositionSticky && node->parent >= 0 && !isDisplayNone(node->computedStyle())) {
+		applyStickyOffset(*node, nodes[node->parent], scrollport);
+		treeState().stickyPresent = true;
+	}
 
 	int childParentX = node->layout.x;
 	int childParentY = node->layout.y;
@@ -4400,9 +5769,15 @@ void LayoutEngine::resolveAbsoluteCoords(int id, int parent_x, int parent_y)
 		if (scrollsOverflowX(node->computedStyle())) childParentX -= node->layout.scroll_x;
 		if (scrollsOverflowY(node->computedStyle())) childParentY -= node->layout.scroll_y;
 	}
+	// A scroll container's padding box is the scrollport of sticky descendants.
+	int port[4];
+	if (overflowEstablishesContext(node->computedStyle())) {
+		scrollportOf(*node, port);
+		scrollport = port;
+	}
 
 	for (int child = node->first_child; child >= 0; child = nodes[child].next_sibling) {
-		resolveAbsoluteCoords(child, childParentX, childParentY);
+		resolveAbsoluteCoordsIn(child, childParentX, childParentY, scrollport);
 	}
 }
 
