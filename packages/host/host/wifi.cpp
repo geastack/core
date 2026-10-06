@@ -24,61 +24,46 @@ void sleepForMs(int ms) {
 #endif
 }
 
-}  // namespace
+} // namespace
 
-bool WifiBackend::enabled() {
-  return wifi().enabled();
-}
+bool WifiBackend::enabled() { return wifi().enabled(); }
 
-void WifiBackend::setEnabled(bool enabled) {
-  wifi().setEnabled(enabled);
-}
+void WifiBackend::setEnabled(bool enabled) { wifi().setEnabled(enabled); }
 
-bool WifiBackend::connected() {
-  return wifi().connected();
-}
+bool WifiBackend::connected() { return wifi().connected(); }
 
-double WifiBackend::rssi() {
-  return static_cast<double>(wifi().rssi());
-}
+double WifiBackend::rssi() { return static_cast<double>(wifi().rssi()); }
 
-std::string WifiBackend::ssid() {
-  return wifi().ssid();
-}
+std::string WifiBackend::ssid() { return wifi().ssid(); }
 
-std::string WifiBackend::ip() {
-  return wifi().ip();
-}
+std::string WifiBackend::ip() { return wifi().ip(); }
 
-std::string WifiBackend::mac() {
-  return wifi().mac();
-}
+std::string WifiBackend::mac() { return wifi().mac(); }
 
-void WifiBackend::configure(const std::string &ssid, const std::string &password) {
+void WifiBackend::configure(const std::string &ssid,
+                            const std::string &password) {
   wifi().configure(ssid, password);
 }
 
 bool WifiBackend::waitForConnection(double timeoutMs) {
-  if (wifi().connected()) return true;
+  if (wifi().connected())
+    return true;
   wifi().setEnabled(true);
 
   const int timeout = timeoutMs > 0 ? static_cast<int>(timeoutMs) : 0;
   int elapsed = 0;
   while (elapsed < timeout) {
-    if (wifi().connected()) return true;
+    if (wifi().connected())
+      return true;
     sleepForMs(100);
     elapsed += 100;
   }
   return wifi().connected();
 }
 
-void WifiBackend::startScan() {
-  wifi().scan();
-}
+void WifiBackend::startScan() { wifi().scan(); }
 
-bool WifiBackend::scanning() {
-  return wifi().scanning();
-}
+bool WifiBackend::scanning() { return wifi().scanning(); }
 
 double WifiBackend::scanCount() {
   return static_cast<double>(wifi().scanCount());
@@ -96,4 +81,4 @@ bool WifiBackend::scanSecuredAt(double index) {
   return wifi().networkAt(static_cast<int>(index)).secured;
 }
 
-}  // namespace gea::framework::network
+} // namespace gea::framework::network

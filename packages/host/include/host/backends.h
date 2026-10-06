@@ -24,7 +24,7 @@ public:
   static double gyroscopeZ();
 };
 
-}  // namespace gea::framework::sensors
+} // namespace gea::framework::sensors
 
 namespace gea::framework::camera {
 
@@ -36,7 +36,8 @@ public:
 
   // facing: "front" | "back" | <device id from deviceIdAt>
   // preferredWidth/Height: 0 means "platform default"
-  static bool open(const std::string &facing, double preferredWidth, double preferredHeight);
+  static bool open(const std::string &facing, double preferredWidth,
+                   double preferredHeight);
   static void close();
   static bool isOpen();
 
@@ -69,8 +70,10 @@ public:
 
   // Capture controls forwarded to the platform backend. See camera.h for the
   // accepted `mode` keywords; numeric args default to 0 ("leave as is").
-  static void setExposure(const std::string &mode, double bias, double iso, double durationMs);
-  static void setWhiteBalance(const std::string &mode, double temperatureK, double tint);
+  static void setExposure(const std::string &mode, double bias, double iso,
+                          double durationMs);
+  static void setWhiteBalance(const std::string &mode, double temperatureK,
+                              double tint);
   static void setFocus(const std::string &mode, double pointX, double pointY);
   static void setTorch(const std::string &mode, double level);
 
@@ -86,20 +89,24 @@ public:
       facing = static_cast<std::string>(options.facing);
     } else if constexpr (requires { options.record_get_literal("facing"); }) {
       auto value = options.record_get_literal("facing");
-      if (!value.is_nullish()) facing = static_cast<std::string>(value);
+      if (!value.is_nullish())
+        facing = static_cast<std::string>(value);
     }
-    if (facing.empty()) facing = "back";
+    if (facing.empty())
+      facing = "back";
     if constexpr (requires { options.width; }) {
       width = static_cast<double>(options.width);
     } else if constexpr (requires { options.record_get_literal("width"); }) {
       auto value = options.record_get_literal("width");
-      if (!value.is_nullish()) width = static_cast<double>(value);
+      if (!value.is_nullish())
+        width = static_cast<double>(value);
     }
     if constexpr (requires { options.height; }) {
       height = static_cast<double>(options.height);
     } else if constexpr (requires { options.record_get_literal("height"); }) {
       auto value = options.record_get_literal("height");
-      if (!value.is_nullish()) height = static_cast<double>(value);
+      if (!value.is_nullish())
+        height = static_cast<double>(value);
     }
     return open(facing, width, height);
   }
@@ -112,7 +119,8 @@ public:
       mirror = static_cast<bool>(options.mirror);
     } else if constexpr (requires { options.record_get_literal("mirror"); }) {
       auto value = options.record_get_literal("mirror");
-      if (!value.is_nullish()) mirror = static_cast<bool>(value);
+      if (!value.is_nullish())
+        mirror = static_cast<bool>(value);
     }
     return mirror ? captureMirrored() : capture();
   }
@@ -123,18 +131,22 @@ public:
   // anonymous options structs — are read field-by-field in each control form
   // below, since member selection needs the field name at compile time.
   template <typename Options>
-  static std::string optionString(const Options &options, const char *field, const std::string &fallback) {
+  static std::string optionString(const Options &options, const char *field,
+                                  const std::string &fallback) {
     if constexpr (requires { options.record_get_literal(field); }) {
       auto value = options.record_get_literal(field);
-      if (!value.is_nullish()) return static_cast<std::string>(value);
+      if (!value.is_nullish())
+        return static_cast<std::string>(value);
     }
     return fallback;
   }
   template <typename Options>
-  static double optionNumber(const Options &options, const char *field, double fallback) {
+  static double optionNumber(const Options &options, const char *field,
+                             double fallback) {
     if constexpr (requires { options.record_get_literal(field); }) {
       auto value = options.record_get_literal(field);
-      if (!value.is_nullish()) return static_cast<double>(value);
+      if (!value.is_nullish())
+        return static_cast<double>(value);
     }
     return fallback;
   }
@@ -145,22 +157,29 @@ public:
 // so bare presence of the member means present), falling back to the dynamic
 // record arm, then the default. Expression-shaped so the readers stay
 // declarative; undefined behind this header's include boundary.
-#define GEA_CAMERA_OPTION_FIELD(options, field, fallback, castT)                                          \
-  ([&]() {                                                                                                \
-    if constexpr (requires { (options).field; }) {                                                        \
-      bool __gea_present = true;                                                                          \
-      if constexpr (requires { (options).__gea_has_##field; }) __gea_present = (options).__gea_has_##field; \
-      if (__gea_present) return static_cast<castT>((options).field);                                      \
-    }                                                                                                     \
-    return static_cast<castT>(optionsFieldFallback_##castT((options), #field, fallback));                 \
+#define GEA_CAMERA_OPTION_FIELD(options, field, fallback, castT)               \
+  ([&]() {                                                                     \
+    if constexpr (requires { (options).field; }) {                             \
+      bool __gea_present = true;                                               \
+      if constexpr (requires { (options).__gea_has_##field; })                 \
+        __gea_present = (options).__gea_has_##field;                           \
+      if (__gea_present)                                                       \
+        return static_cast<castT>((options).field);                            \
+    }                                                                          \
+    return static_cast<castT>(                                                 \
+        optionsFieldFallback_##castT((options), #field, fallback));            \
   }())
 
   template <typename Options>
-  static std::string optionsFieldFallback_OptionStringT(const Options &options, const char *field, const std::string &fallback) {
+  static std::string
+  optionsFieldFallback_OptionStringT(const Options &options, const char *field,
+                                     const std::string &fallback) {
     return optionString(options, field, fallback);
   }
   template <typename Options>
-  static double optionsFieldFallback_OptionNumberT(const Options &options, const char *field, double fallback) {
+  static double optionsFieldFallback_OptionNumberT(const Options &options,
+                                                   const char *field,
+                                                   double fallback) {
     return optionNumber(options, field, fallback);
   }
   using OptionStringT = std::string;
@@ -171,16 +190,20 @@ public:
   // to a typed struct (preferred) or a dynamic gea_cpp_value record (legacy).
   template <typename Options>
   static void setExposureWithOptions(const Options &options) {
-    setExposure(GEA_CAMERA_OPTION_FIELD(options, mode, std::string("continuous"), OptionStringT),
-                GEA_CAMERA_OPTION_FIELD(options, bias, 0.0, OptionNumberT),
-                GEA_CAMERA_OPTION_FIELD(options, iso, 0.0, OptionNumberT),
-                GEA_CAMERA_OPTION_FIELD(options, durationMs, 0.0, OptionNumberT));
+    setExposure(
+        GEA_CAMERA_OPTION_FIELD(options, mode, std::string("continuous"),
+                                OptionStringT),
+        GEA_CAMERA_OPTION_FIELD(options, bias, 0.0, OptionNumberT),
+        GEA_CAMERA_OPTION_FIELD(options, iso, 0.0, OptionNumberT),
+        GEA_CAMERA_OPTION_FIELD(options, durationMs, 0.0, OptionNumberT));
   }
   template <typename Options>
   static void setWhiteBalanceWithOptions(const Options &options) {
-    setWhiteBalance(GEA_CAMERA_OPTION_FIELD(options, mode, std::string("auto"), OptionStringT),
-                    GEA_CAMERA_OPTION_FIELD(options, temperature, 0.0, OptionNumberT),
-                    GEA_CAMERA_OPTION_FIELD(options, tint, 0.0, OptionNumberT));
+    setWhiteBalance(
+        GEA_CAMERA_OPTION_FIELD(options, mode, std::string("auto"),
+                                OptionStringT),
+        GEA_CAMERA_OPTION_FIELD(options, temperature, 0.0, OptionNumberT),
+        GEA_CAMERA_OPTION_FIELD(options, tint, 0.0, OptionNumberT));
   }
   template <typename Options>
   static void setFocusWithOptions(const Options &options) {
@@ -197,12 +220,15 @@ public:
         py = optionNumber(point, "y", 0.0);
       }
     }
-    setFocus(GEA_CAMERA_OPTION_FIELD(options, mode, std::string("continuous"), OptionStringT), px, py);
+    setFocus(GEA_CAMERA_OPTION_FIELD(options, mode, std::string("continuous"),
+                                     OptionStringT),
+             px, py);
   }
   template <typename Options>
   static bool startRecordingWithOptions(const Options &options) {
-    return startRecording(GEA_CAMERA_OPTION_FIELD(options, path, std::string(""), OptionStringT),
-                          GEA_CAMERA_OPTION_FIELD(options, fps, 0.0, OptionNumberT));
+    return startRecording(
+        GEA_CAMERA_OPTION_FIELD(options, path, std::string(""), OptionStringT),
+        GEA_CAMERA_OPTION_FIELD(options, fps, 0.0, OptionNumberT));
   }
 #undef GEA_CAMERA_OPTION_FIELD
 };
@@ -213,7 +239,7 @@ public:
 // registers its driver. Defined in host/camera.cpp.
 void registerCameraSurface();
 
-}  // namespace gea::framework::camera
+} // namespace gea::framework::camera
 
 namespace gea::framework::network {
 
@@ -236,7 +262,7 @@ public:
   static bool scanSecuredAt(double index);
 };
 
-}  // namespace gea::framework::network
+} // namespace gea::framework::network
 
 namespace gea::framework::geolocation {
 
@@ -249,13 +275,14 @@ public:
   static double accuracy();
 };
 
-}  // namespace gea::framework::geolocation
+} // namespace gea::framework::geolocation
 
 namespace gea::framework::bluetooth {
 
 class HidBackend {
 public:
-  static void init(const std::string &device_name, double appearance, const std::string &mac_address);
+  static void init(const std::string &device_name, double appearance,
+                   const std::string &mac_address);
   static bool enabled();
   static void setEnabled(bool enabled);
   static void startAdvertising();
@@ -306,7 +333,7 @@ public:
   static void configPushActivity(double index);
 };
 
-}  // namespace gea::framework::bluetooth
+} // namespace gea::framework::bluetooth
 
 namespace gea::framework::audio {
 
@@ -316,7 +343,7 @@ public:
   static void setVolume(double volume);
 };
 
-}  // namespace gea::framework::audio
+} // namespace gea::framework::audio
 
 namespace gea::framework::display {
 
@@ -330,11 +357,11 @@ public:
   // without an e-paper panel). Negative numbers = leave unchanged. LUTs must
   // be the panel's full waveform table (159 bytes on SSD1681-class panels);
   // hasLut=true with an empty vector restores the board's vendor default.
-  static void setEpaperRefreshConfig(double fullRefreshEveryPartials,
-                                     double fullRefreshHardCapPartials,
-                                     double fastStreakWindowMs,
-                                     const std::vector<std::uint8_t> &partialLut, bool hasPartialLut,
-                                     const std::vector<std::uint8_t> &fastLut, bool hasFastLut);
+  static void setEpaperRefreshConfig(
+      double fullRefreshEveryPartials, double fullRefreshHardCapPartials,
+      double fastStreakWindowMs, const std::vector<std::uint8_t> &partialLut,
+      bool hasPartialLut, const std::vector<std::uint8_t> &fastLut,
+      bool hasFastLut);
   static void epaperFullRefresh();
   // Toggle 4-level grayscale rendering on e-paper boards that support it
   // (weak-hooked no-op elsewhere). Gray mode trades the fast partial waveform
@@ -346,7 +373,8 @@ public:
   static std::string orientation();
   static void setOrientation(const std::string &orientation);
   static std::vector<std::string> supportedOrientations();
-  static void setSupportedOrientations(const std::vector<std::string> &orientations);
+  static void
+  setSupportedOrientations(const std::vector<std::string> &orientations);
   static void setSupportedOrientations(const std::string &orientation);
   static bool autoRotate();
   static void setAutoRotate(bool enabled);
@@ -359,17 +387,19 @@ public:
   // 4bpp targets; no-op elsewhere). 0xRRGGBB; negative disables.
   static void setTextSolidBackdrop(int rrggbb);
   // Mark the next present as a full-screen damage-all (skip the dirty-rect diff
-  // and the persistent previous-frame copy). No-op on targets without a present diff.
+  // and the persistent previous-frame copy). No-op on targets without a present
+  // diff.
   static void invalidate();
   static std::string pixelFormat();
   static void setPixelFormat(const std::string &format);
   static std::string panelPixelFormat();
   static std::vector<std::string> supportedPixelFormats();
   static void updateAutoRotationFromAccelerometer();
-  static void updateAutoRotation(double acceleration_x, double acceleration_y, double acceleration_z);
+  static void updateAutoRotation(double acceleration_x, double acceleration_y,
+                                 double acceleration_z);
 };
 
-}  // namespace gea::framework::display
+} // namespace gea::framework::display
 
 namespace gea::framework::memory {
 
@@ -398,7 +428,7 @@ public:
   static double allocationPsramPeakBytes();
 };
 
-}  // namespace gea::framework::memory
+} // namespace gea::framework::memory
 
 namespace gea::framework::input {
 
@@ -413,7 +443,7 @@ public:
   static bool consumeBackButton();
 };
 
-}  // namespace gea::framework::input
+} // namespace gea::framework::input
 
 namespace gea::framework::gpio {
 
@@ -452,4 +482,4 @@ public:
   static void detach();
 };
 
-}  // namespace gea::framework::gpio
+} // namespace gea::framework::gpio

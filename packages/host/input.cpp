@@ -21,48 +21,46 @@ std::atomic_int g_key_queue[kKeyQueueSize]{};
 std::atomic<unsigned> g_key_write{0};
 std::atomic<unsigned> g_key_read{0};
 
-}  // namespace
+} // namespace
 
-void pressBackButton()
-{
-	g_back_pending.store(true, std::memory_order_release);
+void pressBackButton() {
+  g_back_pending.store(true, std::memory_order_release);
 }
 
-bool consumeBackButton()
-{
-	return g_back_pending.exchange(false, std::memory_order_acq_rel);
+bool consumeBackButton() {
+  return g_back_pending.exchange(false, std::memory_order_acq_rel);
 }
 
-void queueRotaryDelta(int delta)
-{
-	if (delta == 0) return;
-	g_rotary_delta.fetch_add(delta, std::memory_order_acq_rel);
+void queueRotaryDelta(int delta) {
+  if (delta == 0)
+    return;
+  g_rotary_delta.fetch_add(delta, std::memory_order_acq_rel);
 }
 
-int consumeRotaryDelta()
-{
-	return g_rotary_delta.exchange(0, std::memory_order_acq_rel);
+int consumeRotaryDelta() {
+  return g_rotary_delta.exchange(0, std::memory_order_acq_rel);
 }
 
-void queueKeyDown(int keyCode)
-{
-	if (keyCode == 0) return;
-	const unsigned slot = g_key_write.fetch_add(1, std::memory_order_acq_rel) % kKeyQueueSize;
-	g_key_queue[slot].store(keyCode, std::memory_order_release);
+void queueKeyDown(int keyCode) {
+  if (keyCode == 0)
+    return;
+  const unsigned slot =
+      g_key_write.fetch_add(1, std::memory_order_acq_rel) % kKeyQueueSize;
+  g_key_queue[slot].store(keyCode, std::memory_order_release);
 }
 
-int consumeKeyDown()
-{
-	const unsigned write = g_key_write.load(std::memory_order_acquire);
-	unsigned read = g_key_read.load(std::memory_order_acquire);
-	while (read != write) {
-		const unsigned slot = read % kKeyQueueSize;
-		const int code = g_key_queue[slot].exchange(0, std::memory_order_acq_rel);
-		g_key_read.store(read + 1, std::memory_order_release);
-		if (code != 0) return code;
-		read = g_key_read.load(std::memory_order_acquire);
-	}
-	return 0;
+int consumeKeyDown() {
+  const unsigned write = g_key_write.load(std::memory_order_acquire);
+  unsigned read = g_key_read.load(std::memory_order_acquire);
+  while (read != write) {
+    const unsigned slot = read % kKeyQueueSize;
+    const int code = g_key_queue[slot].exchange(0, std::memory_order_acq_rel);
+    g_key_read.store(read + 1, std::memory_order_release);
+    if (code != 0)
+      return code;
+    read = g_key_read.load(std::memory_order_acquire);
+  }
+  return 0;
 }
 
-}  // namespace gea::framework::input
+} // namespace gea::framework::input

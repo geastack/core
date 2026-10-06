@@ -25,9 +25,9 @@ using NativeHttpServerHandle = std::uint32_t;
 
 // The request a handler sees (built natively from the incoming HTTP request).
 struct HttpRequest {
-  std::string method;  // "GET", "POST", ...
-  std::string path;    // request path, query stripped (e.g. "/note_003.wav")
-  std::string query;   // raw query string after '?' (e.g. "tag=Idea"), or ""
+  std::string method; // "GET", "POST", ...
+  std::string path;   // request path, query stripped (e.g. "/note_003.wav")
+  std::string query;  // raw query string after '?' (e.g. "tag=Idea"), or ""
 };
 
 // What a handler returns. Either an inline `body`, or a `file` path to stream
@@ -67,15 +67,17 @@ void platform_close(NativeHttpServerHandle handle);
 // object across module scope. Handle 0 is a no-op.
 inline void close_server(double handle) {
   const NativeHttpServerHandle h = static_cast<NativeHttpServerHandle>(handle);
-  if (h == 0) return;
+  if (h == 0)
+    return;
   platform_close(h);
   unregister_handler(h);
 }
 
 // Test seam (non-ESP): dispatch a request synchronously through the registered
 // handler and return its reply, without any sockets.
-HttpReply test_dispatch(NativeHttpServerHandle handle, const std::string &method,
-                        const std::string &path, const std::string &query);
+HttpReply test_dispatch(NativeHttpServerHandle handle,
+                        const std::string &method, const std::string &path,
+                        const std::string &query);
 
 #ifdef GEA_CPP_VALUE_AVAILABLE
 // Builds a native RequestHandler that marshals the request into a JS record,
@@ -90,13 +92,17 @@ inline NativeHttpServerHandle create_server(gea_cpp_value handler) {
   RequestHandler native = [callable](const HttpRequest &req) -> HttpReply {
     gea_cpp_value request;
     request.kind = gea_cpp_value::kind_t::record;
-    request.entries = std::make_shared<std::vector<std::pair<std::string, gea_cpp_value>>>();
+    request.entries =
+        std::make_shared<std::vector<std::pair<std::string, gea_cpp_value>>>();
     request.record_set_literal("method", gea_cpp_value(req.method));
     request.record_set_literal("path", gea_cpp_value(req.path));
-    request.record_set_literal("url", gea_cpp_value(req.query.empty() ? req.path : req.path + "?" + req.query));
+    request.record_set_literal(
+        "url", gea_cpp_value(req.query.empty() ? req.path
+                                               : req.path + "?" + req.query));
     request.record_set_literal("query", gea_cpp_value(req.query));
 
-    const gea_cpp_value result = (*callable)(std::vector<gea_cpp_value>{request});
+    const gea_cpp_value result =
+        (*callable)(std::vector<gea_cpp_value>{request});
 
     HttpReply reply;
     if (result.kind != gea_cpp_value::kind_t::record) {
@@ -112,7 +118,8 @@ inline NativeHttpServerHandle create_server(gea_cpp_value handler) {
       reply.status = static_cast<int>(status.number);
     }
     const gea_cpp_value contentType = result.record_get_literal("contentType");
-    if (contentType.kind == gea_cpp_value::kind_t::string && !contentType.text.empty()) {
+    if (contentType.kind == gea_cpp_value::kind_t::string &&
+        !contentType.text.empty()) {
       reply.contentType = contentType.text;
     }
     const gea_cpp_value file = result.record_get_literal("file");
@@ -120,7 +127,8 @@ inline NativeHttpServerHandle create_server(gea_cpp_value handler) {
       reply.file = file.text;
     }
     const gea_cpp_value download = result.record_get_literal("download");
-    if (download.kind == gea_cpp_value::kind_t::string && !download.text.empty()) {
+    if (download.kind == gea_cpp_value::kind_t::string &&
+        !download.text.empty()) {
       reply.download = download.text;
     }
     const gea_cpp_value body = result.record_get_literal("body");
@@ -131,31 +139,36 @@ inline NativeHttpServerHandle create_server(gea_cpp_value handler) {
   };
   return register_handler(std::move(native));
 }
-#endif  // GEA_CPP_VALUE_AVAILABLE
+#endif // GEA_CPP_VALUE_AVAILABLE
 
-}  // namespace http
+} // namespace http
 
 // A server handle. `createServer()` lowers to `http::create_server(...)`, whose
 // double return is wrapped back into this by the plugin's nativeTypes mapping,
 // so `server.listen(...)` / `server.close()` lower to direct native calls.
 class HttpServer {
- public:
+public:
   NativeHttpServerHandle nativeHandle = 0;
 
   constexpr HttpServer() = default;
   explicit HttpServer(NativeHttpServerHandle h) : nativeHandle(h) {}
-  explicit HttpServer(double h) : nativeHandle(static_cast<NativeHttpServerHandle>(h)) {}
+  explicit HttpServer(double h)
+      : nativeHandle(static_cast<NativeHttpServerHandle>(h)) {}
 
-  constexpr operator double() const { return static_cast<double>(nativeHandle); }
+  constexpr operator double() const {
+    return static_cast<double>(nativeHandle);
+  }
 
   // Numeric handle, so apps can persist it as a plain number and close later
   // via `http.close(handle)` without storing (and boxing) the object.
   double id() const { return static_cast<double>(nativeHandle); }
-  bool listen(double port) const { return http::platform_listen(nativeHandle, static_cast<int>(port)); }
+  bool listen(double port) const {
+    return http::platform_listen(nativeHandle, static_cast<int>(port));
+  }
   void close() const {
     http::platform_close(nativeHandle);
     http::unregister_handler(nativeHandle);
   }
 };
 
-}  // namespace gea::host
+} // namespace gea::host

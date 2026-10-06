@@ -30,4 +30,4 @@ void queueKeyDown(int keyCode);
 // Reads and clears the oldest pending key press. Returns 0 when none pending.
 int consumeKeyDown();
 
-}  // namespace gea::framework::input
+} // namespace gea::framework::input
