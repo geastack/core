@@ -18,6 +18,19 @@ import type { AudioContextOptions, AudioWorklet, MediaStreamAudioSourceNode } fr
 declare const __gea_int_brand: unique symbol
 declare global {
   type int = number & { readonly [__gea_int_brand]?: never }
+  type i64 = number & { readonly [__gea_int_brand]?: never }
+  type int64 = number & { readonly [__gea_int_brand]?: never }
+}
+
+// Opt-in native 32-bit integer: `int` at the width of a 32-bit core, held in an
+// `int32_t`. On an ESP32-S3 a 64-bit `int` sum is two instructions and its
+// quotient a library call; an `i32` one is a single instruction. Arithmetic
+// wraps at 32 bits, `/` landing in an `i32` truncates, and a Number stored into
+// one converts by ToInt32 (truncate, wrap, NaN -> 0). Under Node it is a number.
+declare const __gea_i32_brand: unique symbol
+declare global {
+  type i32 = number & { readonly [__gea_i32_brand]?: never }
+  type int32 = number & { readonly [__gea_i32_brand]?: never }
 }
 
 // Opt-in single-precision float. Structurally a `number` (assign/read without
