@@ -2819,9 +2819,22 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 	// clips exactly as much: no screen reaches beyond it. A transformed clip
 	// takes its rect from the projected corners instead.
 	if (!transformed) saturateRect16(x, y, w, h);
-	out = OverflowClipShape{x, y, w, h, false, {}, {}, 0, 0, 0, 0, {}, {}};
-	// The padding edge is rounded with the outer radii less the border widths.
+	out = OverflowClipShape{};
+	out.x = x;
+	out.y = y;
+	out.w = w;
+	out.h = h;
+#if !GEA_CSS_SHAPED_CLIPS
+	// Every clip is a rectangle; a transformed box clips nothing.
+	return !transformed;
+#else
+	// The common clip, an untransformed box without rounded corners, is a
+	// rectangle and leaves here: replay asks for this shape in its inner loops.
+	if (!transformed && !hasAnyRadius(node)) return true;
 	const auto &s = node.computedStyle();
+	// A clip open on one axis stays a rectangle; a transformed one clips nothing.
+	if (!overflowX(s) || !overflowY(s)) return !transformed;
+	// The padding edge is rounded with the outer radii less the border widths.
 	const int border[4] = {boxInset(s, 0) - s.padding[0], boxInset(s, 1) - s.padding[1],
 	                       boxInset(s, 2) - s.padding[2], boxInset(s, 3) - s.padding[3]};
 	int16_t rx8[4]{};
@@ -2833,8 +2846,7 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 		out.ry8[i] = static_cast<int16_t>(std::max(0, ry8[i] - 8 * border[i < 2 ? 0 : 2]));
 		rounded |= out.rx8[i] > 0 && out.ry8[i] > 0;
 	}
-	// A clip open on one axis stays a rectangle; a transformed one clips nothing.
-	if (!overflowX(s) || !overflowY(s) || (!transformed && !rounded)) return !transformed;
+	if (!transformed && !rounded) return true;
 	out.lx = static_cast<int16_t>(x);
 	out.ly = static_cast<int16_t>(y);
 	out.lw = static_cast<int16_t>(w);
@@ -2859,6 +2871,7 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 	}
 	out.shaped = true;
 	return true;
+#endif
 }
 
 bool ViewRenderer::recordClipBegin(const Node &node)
@@ -2878,6 +2891,7 @@ bool ViewRenderer::recordClipBegin(const Node &node)
 		cmd->bh = cmd->clip.h = static_cast<int16_t>(shape.h);
 		cmd->clip.nodeId = static_cast<int16_t>(&node - Tree::instance().nodes());
 		cmd->clip.shaped = shape.shaped ? 1 : 0;
+#if GEA_CSS_SHAPED_CLIPS
 		for (int i = 0; i < 4; ++i) {
 			cmd->clip.qx[i] = shape.qx[i];
 			cmd->clip.qy[i] = shape.qy[i];
@@ -2888,6 +2902,7 @@ bool ViewRenderer::recordClipBegin(const Node &node)
 		cmd->clip.ly = shape.ly;
 		cmd->clip.lw = shape.lw;
 		cmd->clip.lh = shape.lh;
+#endif
 	}
 	return 1;
 }

@@ -99,9 +99,11 @@ void rootScrollImageHoldTick();
 				// above is its bounds; replay restores what the clipped content paints
 				// outside the shape. 0 for a plain rect clip.
 				uint8_t shaped;
+#if GEA_CSS_SHAPED_CLIPS
 				int16_t qx[4], qy[4];
 				int16_t lx, ly, lw, lh;
 				int16_t rx8[4], ry8[4];
+#endif
 			} clip;
 			struct
 			{
@@ -542,9 +544,11 @@ void rootScrollImageHoldTick();
 	{
 		int x, y, w, h;
 		bool shaped;
+#if GEA_CSS_SHAPED_CLIPS
 		int16_t qx[4], qy[4];
 		int16_t lx, ly, lw, lh;
 		int16_t rx8[4], ry8[4];
+#endif
 	};
 
 	class ViewRenderer
