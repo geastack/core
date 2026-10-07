@@ -5,6 +5,42 @@ import ts from "typescript";
 
 import { createGeaHostShims } from "../dist/host-shims.js";
 
+test("native animation frames declare integer timestamps while retaining numeric request handles", () => {
+  const declaration = fileURLToPath(
+    new URL("../../core/index.d.ts", import.meta.url),
+  );
+  const program = ts.createProgram([declaration], {
+    strict: true,
+    skipLibCheck: true,
+    lib: ["lib.es2022.d.ts"],
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(declaration);
+  const symbol = checker.resolveName(
+    "requestAnimationFrame",
+    source,
+    ts.SymbolFlags.Value,
+    false,
+  );
+  const signature = checker
+    .getTypeOfSymbolAtLocation(symbol, source)
+    .getCallSignatures()[0];
+  const callback = checker
+    .getTypeOfSymbolAtLocation(signature.parameters[0], source)
+    .getCallSignatures()[0];
+  const timestamp = checker.getTypeOfSymbolAtLocation(
+    callback.parameters[0],
+    source,
+  );
+
+  assert.equal(timestamp.aliasSymbol?.name, "int");
+  assert.ok(checker.isTypeAssignableTo(timestamp, checker.getNumberType()));
+  assert.equal(
+    checker.getReturnTypeOfSignature(signature).flags & ts.TypeFlags.Number,
+    ts.TypeFlags.Number,
+  );
+});
+
 // A listener parameter declared as any event interface index.d.ts publishes is
 // handed the engine's one event struct. `Event` is declared by `onScroll` and by
 // `EventTarget.addEventListener(type, listener: (event: Event) => void)`; without

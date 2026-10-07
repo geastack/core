@@ -2586,6 +2586,9 @@ export function createGeaHostShims(): HostShimDefinitions {
           },
         ],
         hostExternDeclarations: geaHostExternDeclarations,
+        nativeFunctionSignatureSources: {
+          requestAnimationFrame: { packageName: "@geastack/host", header: "include/host/timers.h" },
+        },
         embeddedHostFunctions: {
           // These are declared by core/index.d.ts rather than the standard lib;
           // btoa also has the host's existing ArrayBuffer/Uint8Array overloads.

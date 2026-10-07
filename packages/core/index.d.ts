@@ -133,7 +133,11 @@ declare global {
   }
   const console: Console
 
-  function requestAnimationFrame(callback: (timestampMs: number) => void): number
+  // Retains the callback and runs it next frame, so it cannot be inert -- but it
+  // writes no property on anything, which is all the argument stamp asks.
+  // Native frames supply whole milliseconds; the request handle stays numeric.
+  /** @gea-host-no-property-writes */
+  function requestAnimationFrame(callback: (timestampMs: int) => void): number
 
   // Native one-shot / repeating timers (gea::host::setTimeout/setInterval,
   // engine/../host/include/host/timers.h), NOT Node's `NodeJS.Timeout` (there is

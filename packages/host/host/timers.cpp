@@ -106,7 +106,7 @@ public:
 		}
 	}
 
-	void run(AnimationFrameTimestamp timestampMs)
+	void run(double timestampMs)
 	{
 		if (!std::isfinite(timestampMs)) timestampMs = currentTimeMs();
 		lastTimestampMs_ = timestampMs;
@@ -195,7 +195,7 @@ public:
 		return id;
 	}
 
-	void run(double timestampMs)
+	void run(AnimationFrameTimestamp timestampMs)
 	{
 		[[maybe_unused]] const std::int64_t runStartUs = rafPerfNowUs();
 		const int count = static_cast<int>(pending_.size());

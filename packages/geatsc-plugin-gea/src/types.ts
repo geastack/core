@@ -105,6 +105,8 @@ export interface HostShimDefinitions {
   canvasContextPropertySetters?: Record<string, string>;
   embeddedHostConstants?: Record<string, { emit: string; type: string }>;
   embeddedHostFunctions?: Record<string, string>;
+  /** Headers inspected for native signatures; no duplicated scalar/callback type metadata. */
+  nativeFunctionSignatureSources?: Record<string, { packageName: string; header: string }>;
   embeddedHostNoThrowFunctions?: string[];
   hostNamespaceNoThrowMethods?: Record<string, string[]>;
   embeddedHostFunctionReturnTypes?: Record<string, string>;

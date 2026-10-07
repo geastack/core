@@ -268,7 +268,7 @@ void Application::frame(int timestampMs)
 	applicationFramePhaseSet(ApplicationFramePhase::DrainMicrotasks);
 	generated::drainMicrotasks();
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);
-	gea::host::runAnimationFrameCallbacks(static_cast<gea::host::AnimationFrameTimestamp>(timestampMs));
+	gea::host::runAnimationFrameCallbacks(timestampMs);
 	generated::drainMicrotasks();
 	applicationFramePhaseSet(ApplicationFramePhase::Idle);
 #else
@@ -294,7 +294,7 @@ void Application::frame(int timestampMs)
 
 	startUs = phaseClockUs();
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);
-	gea::host::runAnimationFrameCallbacks(static_cast<double>(timestampMs));
+	gea::host::runAnimationFrameCallbacks(timestampMs);
 	applicationFramePhaseSet(ApplicationFramePhase::CallbackMicrotasks);
 	generated::drainMicrotasks();
 	recordFramePhase(ApplicationFramePhase::AnimationFrameCallbacks, phaseClockUs() - startUs);

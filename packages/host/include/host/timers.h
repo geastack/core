@@ -6,11 +6,8 @@
 
 namespace gea::host {
 
-#if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
-using AnimationFrameTimestamp = float;
-#else
-using AnimationFrameTimestamp = double;
-#endif
+// Application::frame supplies integer milliseconds on every native target.
+using AnimationFrameTimestamp = int;
 
 using AnimationFrameCallback = std::function<void(AnimationFrameTimestamp)>;
 using TimerCallback = std::function<void()>;

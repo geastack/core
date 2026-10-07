@@ -4635,6 +4635,10 @@ const geatscArgs = [
   `gea.ir=${geaIrPath}`,
   '--plugin-option',
   `gea.microtasks-namespace=${microtasksNamespaceForEntry(entrySymbol)}`,
+  '--plugin-option',
+  `gea.native-signature-core-root=${coreRoot}`,
+  '--plugin-option',
+  `gea.native-signature-host-root=${process.env.GEA_HOST_DIR || path.resolve(coreRoot, '..', 'host')}`,
 ]
 if (!moduleGraphCompile) geatscArgs.push('--target', 'cpp')
 if (moduleGraphCompile) {
