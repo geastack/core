@@ -95,6 +95,10 @@ export interface GeaIntrinsicElements {
   img: ImageProps
   input: NativeInputElementProps
   textarea: NativeTextAreaElementProps
+  select: NativeSelectProps
+  option: NativeOptionProps
+  stepper: NativeStepperProps
+  progress: NativeProgressProps
   'virtual-list': NativeVirtualListProps
 }
 
@@ -1633,7 +1637,8 @@ export interface ButtonProps {
   children?: any
 }
 
-export interface NativeButtonProps extends NativeEventAttributes {
+export interface NativeButtonProps extends DataAttributes, NativeEventAttributes {
+  id?: string
   disabled?: boolean
   key?: string | number
   class?: ClassValue
@@ -1665,12 +1670,9 @@ export interface NativeVirtualListProps extends NativeEventAttributes {
 export interface InputElementProps {
   class?: ClassValue
   style?: Style
-  // The three shapes the renderer actually materializes: `range` becomes an
-  // NSSlider and `checkbox` an NSSwitch, everything else an NSTextField
-  // (`apple/targets/macos/main/macos_renderer.mm`, `makeViewForType`). The union
-  // had drifted to the text-field spellings alone, so an app writing the switch
-  // the renderer has always drawn did not typecheck.
-  type?: 'text' | 'password' | 'button' | 'range' | 'checkbox'
+  // macOS uses NSSlider for range, NSButton for radio, and NSSwitch for checkbox.
+  // Add data-control="checkbox" for an AppKit checkbox button.
+  type?: 'text' | 'password' | 'button' | 'range' | 'checkbox' | 'radio'
   // Optional, because the renderer treats it as one: every reader guards with
   // `if (value && value[0])`, and `applySwitchProps` never reads it at all --
   // a switch's state is `checked`. Requiring it made `<input type="checkbox">`
@@ -1683,7 +1685,11 @@ export interface InputElementProps {
   // switch's state and is written back on toggle.
   min?: number | string
   max?: number | string
+  step?: number | string
   checked?: boolean | string
+  disabled?: boolean
+  readOnly?: boolean
+  name?: string
   placeholder?: string
   autoFocus?: boolean | number
   pressId?: number
@@ -1701,7 +1707,8 @@ export interface InputElementProps {
   keyup?: (keyCode: number) => void
 }
 
-export interface NativeInputElementProps extends InputElementProps {
+export interface NativeInputElementProps extends InputElementProps, DataAttributes {
+  id?: string
   ref?: GeaElement | null
 }
 
@@ -1715,8 +1722,38 @@ export interface TextAreaElementProps {
   onBlur?: () => void
 }
 
-export interface NativeTextAreaElementProps extends TextAreaElementProps {
+export interface NativeTextAreaElementProps extends TextAreaElementProps, DataAttributes {
+  id?: string
+  disabled?: boolean
+  readOnly?: boolean
   ref?: GeaElement | null
+}
+
+export interface NativeSelectProps extends NativeViewProps {
+  value?: string
+  disabled?: boolean
+  onInput?: (event: InputEvent) => void
+}
+
+export interface NativeOptionProps extends TextProps {
+  value?: string
+  selected?: boolean
+  disabled?: boolean
+}
+
+export interface NativeStepperProps extends NativeViewProps {
+  value?: string
+  min?: number | string
+  max?: number | string
+  step?: number | string
+  disabled?: boolean
+  onInput?: (event: InputEvent) => void
+}
+
+export interface NativeProgressProps extends NativeViewProps {
+  value?: number | string
+  max?: number | string
+  indeterminate?: boolean
 }
 
 export declare function mount(component: new () => Component): void
