@@ -1871,7 +1871,16 @@ declare global {
  * off disk — a reply that sets `file` streams that path on the server worker
  * without ever loading the bytes into JS.
  */
+export interface HttpHeader {
+  name: string
+  value: string
+}
+
 export interface IncomingMessage {
+  readonly headers: HttpHeader[]
+  /** Raw request body, limited to 2 MiB by the native server. */
+  readonly body: Uint8Array
+
   /** "GET", "POST", ... */
   readonly method: string
   /** Full request target including the query string (e.g. "/n/3.wav?x=1"). */
@@ -1883,6 +1892,7 @@ export interface IncomingMessage {
 }
 
 export interface HttpReply {
+  headers?: HttpHeader[]
   /** HTTP status code. Defaults to 200. */
   status?: number
   /** Response Content-Type. Defaults to "text/plain". */

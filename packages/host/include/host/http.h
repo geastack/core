@@ -4,14 +4,15 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 // A lightweight device-hosted HTTP server, modeled after Node's `http` package:
 // `http.createServer(handler)` returns a server; the handler is called once per
 // request and RETURNS a plain reply record `{ status, contentType, body, file,
-// download }`. Like the WebSocket facade, the handler crosses the JS<->native
-// boundary as a boxed callable and is invoked on the FRAME task (drained by
+// download }`. The compiler adapts its typed callable directly at the native
+// boundary and invokes it on the FRAME task (drained by
 // `runRequests()` from the app frame loop), so app logic stays in TypeScript.
 //
 // The reply is data, never a live object: there is no `res` with mutating
@@ -23,11 +24,56 @@ namespace gea::host {
 
 using NativeHttpServerHandle = std::uint32_t;
 
+struct HttpHeader {
+  std::string name;
+  std::string value;
+};
+
+// Reject malformed fields before crossing into an HTTP transport.
+inline bool validHttpHeader(const HttpHeader &header) {
+  if (header.name.empty())
+    return false;
+  for (unsigned char ch : header.name) {
+    if (!(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') &&
+        !(ch >= '0' && ch <= '9') &&
+        std::string_view("!#$%&'*+-.^_`|~").find(ch) == std::string_view::npos)
+      return false;
+  }
+  return header.value.find_first_of("\r\n") == std::string::npos &&
+         header.value.find('\0') == std::string::npos;
+}
+
+inline std::vector<HttpHeader> parseHttpHeaders(std::string_view raw) {
+  std::vector<HttpHeader> headers;
+  std::size_t begin = 0;
+  while (begin < raw.size()) {
+    auto end = raw.find_first_of(std::string_view("\r\n\0", 3), begin);
+    if (end == std::string_view::npos)
+      end = raw.size();
+    const auto line = raw.substr(begin, end - begin);
+    const auto colon = line.find(':');
+    if (colon != std::string_view::npos) {
+      auto value = line.substr(colon + 1);
+      while (!value.empty() && (value.front() == ' ' || value.front() == '\t'))
+        value.remove_prefix(1);
+      while (!value.empty() && (value.back() == ' ' || value.back() == '\t'))
+        value.remove_suffix(1);
+      HttpHeader header{std::string(line.substr(0, colon)), std::string(value)};
+      if (validHttpHeader(header))
+        headers.push_back(std::move(header));
+    }
+    begin = end + 1;
+  }
+  return headers;
+}
+
 // The request a handler sees (built natively from the incoming HTTP request).
 struct HttpRequest {
   std::string method; // "GET", "POST", ...
   std::string path;   // request path, query stripped (e.g. "/note_003.wav")
   std::string query;  // raw query string after '?' (e.g. "tag=Idea"), or ""
+  std::vector<std::uint8_t> body;
+  std::vector<HttpHeader> headers;
 };
 
 // What a handler returns. Either an inline `body`, or a `file` path to stream
@@ -38,6 +84,7 @@ struct HttpReply {
   std::string body;
   std::string file;
   std::string download;
+  std::vector<HttpHeader> headers;
 };
 
 namespace http {

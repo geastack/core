@@ -558,6 +558,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           WiFi: "gea::host::navigator.wifi",
           wifi: "gea::host::navigator.wifi",
           http: "gea::host::http",
+          __gea_http: "gea::host::http",
           Accelerometer: "Accelerometer",
           __gea_Accelerometer: "gea::host::Accelerometer",
           Camera: "gea::host::Camera",
@@ -2815,7 +2816,19 @@ export function createGeaHostShims(): HostShimDefinitions {
             // create_server returns the numeric handle; wrap it in the HttpServer
             // handle type (its ctors are explicit) so the binding stores native.
             createServer: {
-              emit: "gea::host::HttpServer(gea::host::http::create_server({args}))",
+              emit: "gea::host::HttpServer(gea::host::http::create_typed_server({args}))",
+              returnType: "gea::host::HttpServer",
+            },
+            close: {
+              emit: "gea::host::http::close_server({args})",
+              returnType: "void",
+            },
+          },
+          __gea_http: {
+            // create_server returns the numeric handle; wrap it in the HttpServer
+            // handle type (its ctors are explicit) so the binding stores native.
+            createServer: {
+              emit: "gea::host::HttpServer(gea::host::http::create_typed_server({args}))",
               returnType: "gea::host::HttpServer",
             },
             close: {

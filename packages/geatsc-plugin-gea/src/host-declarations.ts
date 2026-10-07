@@ -169,7 +169,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ['gea::host::fetchRelease', geaHostDeclarations],
       ['gea::host::websocket::create_handle', geaHostDeclarations],
       ['gea::host::WebSocket', geaHostDeclarations],
-      ['gea::host::http::create_server', geaHostDeclarations],
+      ['gea::host::http::create_typed_server', [...geaHostDeclarations, '#include "gea/http-native-runtime.h"']],
       ['gea::host::Haptics.vibrate', geaHostDeclarations],
       ['gea::host::HttpServer', geaHostDeclarations],
       ['gea::host::media::get_user_media_audio', geaHostDeclarations],

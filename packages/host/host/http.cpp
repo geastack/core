@@ -151,6 +151,7 @@ HttpReply test_dispatch(NativeHttpServerHandle handle,
   req.method = method;
   req.path = path;
   req.query = query;
+
   return handler(req);
 }
 
@@ -160,6 +161,7 @@ HttpReply test_dispatch(NativeHttpServerHandle handle,
 
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -208,6 +210,8 @@ const char *statusLine(int status) {
     return "200 OK";
   case 204:
     return "204 No Content";
+  case 302:
+    return "302 Found";
   case 303:
     return "303 See Other";
   case 400:
@@ -235,6 +239,10 @@ esp_err_t sendFile(httpd_req_t *r, const HttpReply &reply) {
   }
   httpd_resp_set_status(r, statusLine(reply.status));
   httpd_resp_set_type(r, reply.contentType.c_str());
+  for (const auto &header : reply.headers) {
+    if (validHttpHeader(header))
+      httpd_resp_set_hdr(r, header.name.c_str(), header.value.c_str());
+  }
   if (!reply.download.empty()) {
     const std::string disposition =
         "attachment; filename=\"" + reply.download + "\"";
@@ -283,6 +291,44 @@ esp_err_t wildcardHandler(httpd_req_t *r) {
   req.method = methodName(r->method);
   req.path = path;
   req.query = query;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+  const auto rawLength = httpd_get_raw_req_data_len(r);
+  std::string raw(rawLength, '\0');
+  if (rawLength && httpd_get_raw_req_data(r, raw.data(), rawLength) == ESP_OK) {
+    req.headers = parseHttpHeaders(raw);
+  }
+#else
+  // Older IDF does not expose header enumeration; retain the standard fields
+  // needed by device upload handlers without using private httpd structures.
+  for (const char *name : {"Host", "Content-Type", "Content-Length",
+                           "X-File-Name", "Authorization", "Origin"}) {
+    const auto length = httpd_req_get_hdr_value_len(r, name);
+    if (!length)
+      continue;
+    std::string value(length + 1, '\0');
+    if (httpd_req_get_hdr_value_str(r, name, value.data(), value.size()) ==
+        ESP_OK) {
+      value.resize(length);
+      req.headers.push_back({name, std::move(value)});
+    }
+  }
+#endif
+
+  constexpr int maxBodyBytes = 2 * 1024 * 1024;
+  if (r->content_len > maxBodyBytes) {
+    httpd_resp_set_status(r, "413 Content Too Large");
+    return httpd_resp_sendstr(r, "Request body exceeds 2 MiB");
+  }
+  req.body.resize(static_cast<std::size_t>(r->content_len));
+  std::size_t received = 0;
+  while (received < req.body.size()) {
+    const int count =
+        httpd_req_recv(r, reinterpret_cast<char *>(req.body.data() + received),
+                       req.body.size() - received);
+    if (count <= 0)
+      return ESP_FAIL;
+    received += static_cast<std::size_t>(count);
+  }
 
   const HttpReply reply = dispatchAndWait(
       server, std::move(req), kRendezvousTimeoutMs, kRendezvousPollMs,
@@ -293,6 +339,10 @@ esp_err_t wildcardHandler(httpd_req_t *r) {
 
   httpd_resp_set_status(r, statusLine(reply.status));
   httpd_resp_set_type(r, reply.contentType.c_str());
+  for (const auto &header : reply.headers) {
+    if (validHttpHeader(header))
+      httpd_resp_set_hdr(r, header.name.c_str(), header.value.c_str());
+  }
   if (!reply.download.empty()) {
     const std::string disposition =
         "attachment; filename=\"" + reply.download + "\"";
@@ -317,7 +367,7 @@ bool platform_listen(NativeHttpServerHandle handle, int port) {
   config.ctrl_port = static_cast<std::uint16_t>(32768 + (port % 1000) + 1);
   config.stack_size =
       4096; // esp_http_server default; 8192 risked NO_MEM post-WiFi
-  config.max_uri_handlers = 2;
+  config.max_uri_handlers = 6;
   // A personal portal serves a page + an audio stream; a few sockets is plenty.
   // The default (7) competes with the diagnostics/OTA servers for the limited
   // LWIP socket pool, so keep this small.
@@ -351,11 +401,17 @@ bool platform_listen(NativeHttpServerHandle handle, int port) {
 
   httpd_uri_t wildcard = {};
   wildcard.uri = "/*";
-  wildcard.method = HTTP_GET;
   wildcard.handler = wildcardHandler;
   wildcard.user_ctx =
       reinterpret_cast<void *>(static_cast<std::uintptr_t>(handle));
-  httpd_register_uri_handler(server, &wildcard);
+  for (const auto method :
+       {HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_DELETE, HTTP_HEAD, HTTP_PATCH}) {
+    wildcard.method = method;
+    if (httpd_register_uri_handler(server, &wildcard) != ESP_OK) {
+      httpd_stop(server);
+      return false;
+    }
+  }
 
   espServers()[handle] = server;
   ESP_LOGI(kTag, "listening on :%d (handle %u)", port,

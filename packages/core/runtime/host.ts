@@ -30,6 +30,9 @@ import type {
   EmbeddedMemoryConfig,
   EmbeddedMemoryStats,
   HttpReply,
+  IncomingMessage,
+  HttpModule,
+  HttpServer,
   AudioContext,
   WiFiController
 } from '../index'
@@ -677,32 +680,25 @@ export const wifi = WiFi
 
 // Device-hosted HTTP server. On hardware, geatsc lowers `http.createServer(...)`
 // to the native esp_http_server facade (packages/core/host/http.cpp); this JS
-// stub is the web/simulator fallback — browsers can't open a listening socket,
-// so it accepts the handler and reports a no-op server (listen() returns false).
-export interface HttpIncomingMessage {
-  method: string
-  url: string
-  path: string
-  query: string
-}
+// fallback reports unsupported use because browsers cannot open a listening socket.
+export type HttpIncomingMessage = IncomingMessage
 export interface HttpServerInstance {
   listen(port: number): boolean
   close(): void
   id(): number
 }
+declare const __gea_http: HttpModule
+
 export const http = {
-  createServer(_handler: (req: HttpIncomingMessage) => HttpReply): HttpServerInstance {
-    return {
-      listen(_port: number): boolean {
-        return false
-      },
-      close(): void {},
-      id(): number {
-        return 0
-      }
+  createServer(handler: (req: HttpIncomingMessage) => HttpReply): HttpServer {
+    if (typeof __gea_http !== 'undefined') {
+      return __gea_http.createServer(handler)
     }
+    throw new Error('HTTP servers are unavailable in this browser runtime')
   },
-  close(_handle: number): void {}
+  close(handle: number): void {
+    if (typeof __gea_http !== 'undefined') __gea_http.close(handle)
+  },
 }
 export const Geolocation: typeof navigator.geolocation = {
   hasFix(): boolean {
