@@ -6,6 +6,7 @@ import path from 'node:path'
 const JS_LIKE_RE = /\.(?:mjs|cjs|js|jsx|ts|tsx)$/i
 const STATIC_ASSET_RE = /\.(?:apng|bmp|png|jpe?g|jfif|pjpeg|pjp|gif|svg|ico|webp|avif|cur|jxl|mp4|webm|ogg|mp3|wav|flac|aac|opus|mov|m4a|vtt|woff2?|eot|ttf|otf|webmanifest|pdf|txt|glb|gltf|hdr)$/i
 const STATIC_ASSET_MODULE_SUFFIX = '.geaassetmodule.js'
+const RAW_MODULE_SUFFIX = '.gearawmodule.js'
 const STATIC_IMPORT_RE = /\bimport\s+(?:[^'"()]*?\s+from\s*)?["']([^"']+)["']/g
 const EXPORT_FROM_RE = /\bexport\s+(?:[^'"]*?\s+from\s*)["']([^"']+)["']/g
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g
@@ -100,6 +101,7 @@ export function geaModuleGraphPlugins(options = {}) {
     transformed: new Map(),
     imports: new Map(),
     assets: new Map(),
+    rawModules: new Map(),
     // GEA_MODULE_GRAPH_ENTRY_REACHABLE_ONLY=0 keeps the unpruned graph, so a
     // build can be A/B'd against the reachability filter without editing the
     // generated vite config.
@@ -119,32 +121,44 @@ export function geaModuleGraphPlugins(options = {}) {
         // Vite normally turns a plain static-asset import into a JS module that
         // exports the emitted browser URL. The native compiler consumes source
         // snapshots instead of the browser bundle, so expose the same binding
-        // through a compiler-visible synthetic JS module. Query imports retain
-        // Vite's distinct ?raw/?inline/etc. semantics.
+        // through a compiler-visible synthetic JS module. Raw imports export
+        // file contents instead; other query imports retain Vite semantics.
         const normalizedImporter = normalizeModuleId(importer)
+        const raw = source.endsWith('?raw')
+        const assetSpecifier = raw ? source.slice(0, -4) : source
         if (
           !importer ||
           !shouldTrackModule(normalizedImporter) ||
-          source.includes('?') ||
-          source.includes('#') ||
-          !STATIC_ASSET_RE.test(source)
+          assetSpecifier.includes('?') ||
+          assetSpecifier.includes('#') ||
+          (!raw && !STATIC_ASSET_RE.test(assetSpecifier))
         ) return null
 
         let resolvedId = ''
-        const resolved = await this.resolve(source, importer, { skipSelf: true })
+        const resolved = await this.resolve(assetSpecifier, importer, { skipSelf: true })
         if (resolved && !resolved.external) resolvedId = normalizeModuleId(resolved.id)
-        if (!resolvedId && source.startsWith('.')) {
-          resolvedId = path.resolve(path.dirname(normalizedImporter), source)
+        if (!resolvedId && assetSpecifier.startsWith('.')) {
+          resolvedId = path.resolve(path.dirname(normalizedImporter), assetSpecifier)
         }
         if (!path.isAbsolute(resolvedId) || !fs.existsSync(resolvedId) || !fs.statSync(resolvedId).isFile()) return null
 
         const assetSource = fs.realpathSync(resolvedId)
+        if (raw) {
+          const moduleId = `${assetSource}${RAW_MODULE_SUFFIX}`
+          state.rawModules.set(moduleId, fs.readFileSync(assetSource, 'utf8'))
+          return moduleId
+        }
+
         const moduleId = `${assetSource}${STATIC_ASSET_MODULE_SUFFIX}`
         if (!state.assets.has(moduleId)) state.assets.set(moduleId, describeStaticAsset(assetSource))
         return moduleId
       },
       load(id) {
-        const asset = state.assets.get(normalizeModuleId(id))
+        const normalizedId = normalizeModuleId(id)
+        if (state.rawModules.has(normalizedId)) {
+          return `export default ${JSON.stringify(state.rawModules.get(normalizedId))}\n`
+        }
+        const asset = state.assets.get(normalizedId)
         if (!asset) return null
         return `export default ${JSON.stringify(asset.url)}\n`
       },
@@ -207,10 +221,16 @@ function writeModuleGraph(pluginContext, state) {
     const id = normalizeModuleId(rawId)
     if (shouldTrackModule(id) && !rawIdsByNormalizedId.has(id)) rawIdsByNormalizedId.set(id, rawId)
   }
+  // A framework transform can consume an imported asset while leaving the
+  // original TS snapshot's binding intact. Rollup then never loads its module;
+  // the native graph still needs the resolved literal module for that binding.
+  for (const id of [...state.assets.keys(), ...state.rawModules.keys()]) {
+    if (!rawIdsByNormalizedId.has(id)) rawIdsByNormalizedId.set(id, id)
+  }
   const modules = []
   const allIds = Array.from(rawIdsByNormalizedId.keys()).sort()
   const reachableIds = state.entryReachableOnly
-    ? entryReachableModuleIds(pluginContext, rawIdsByNormalizedId, allIds)
+    ? entryReachableModuleIds(pluginContext, state, rawIdsByNormalizedId, allIds)
     : allIds
   const live = liveModuleIds(state, reachableIds)
   const ids = reachableIds.filter((id) => live.keep.has(id))
@@ -218,11 +238,13 @@ function writeModuleGraph(pluginContext, state) {
   for (const id of ids) {
     const info = pluginContext.getModuleInfo(rawIdsByNormalizedId.get(id))
     const prune = (code) => pruneDeadReExports(code, id, state, live)
-    const originalCode = prune(normalizeSnapshotSourceForGeatsc(state.original.get(id) ?? readFileSource(id)))
-    const transformedCode = prune(normalizeSnapshotSourceForGeatsc(state.transformed.get(id)))
+    const asset = state.assets.get(id)
+    const literal = asset?.url ?? state.rawModules.get(id)
+    const syntheticSource = literal === undefined ? undefined : `export default ${JSON.stringify(literal)}\n`
+    const originalCode = prune(normalizeSnapshotSourceForGeatsc(state.original.get(id) ?? syntheticSource ?? readFileSource(id)))
+    const transformedCode = prune(normalizeSnapshotSourceForGeatsc(state.transformed.get(id) ?? syntheticSource))
     const originalPath = writeSnapshot(state, id, 'original', originalCode)
     const transformedPath = writeSnapshot(state, id, 'transformed', transformedCode)
-    const asset = state.assets.get(id)
     modules.push({
       id,
       file: path.isAbsolute(id) ? id : null,
@@ -421,7 +443,7 @@ function pruneDeadReExports(code, id, state, live) {
   })
 }
 
-function entryReachableModuleIds(pluginContext, rawIdsByNormalizedId, allIds) {
+function entryReachableModuleIds(pluginContext, state, rawIdsByNormalizedId, allIds) {
   const tracked = new Set(allIds)
   const reachable = new Set()
   const pending = []
@@ -440,7 +462,10 @@ function entryReachableModuleIds(pluginContext, rawIdsByNormalizedId, allIds) {
     if (!id || reachable.has(id)) continue
     reachable.add(id)
     const info = pluginContext.getModuleInfo(rawIdsByNormalizedId.get(id))
-    for (const dependency of [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? [])]) {
+    const snapshotAssets = (state.imports.get(id) ?? [])
+      .map((item) => item.resolvedId)
+      .filter((target) => state.assets.has(target) || state.rawModules.has(target))
+    for (const dependency of [...(info?.importedIds ?? []), ...(info?.dynamicallyImportedIds ?? []), ...snapshotAssets]) {
       const normalized = normalizeModuleId(dependency)
       if (tracked.has(normalized) && !reachable.has(normalized)) pending.push(normalized)
     }
