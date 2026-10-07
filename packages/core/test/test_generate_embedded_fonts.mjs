@@ -131,8 +131,18 @@ const atlasGlyphCounts = new Map(
 )
 
 // Printable ASCII plus the punctuation the baseline adds.
-const baselineGlyphCount = 0x7e - 0x20 + 1 + 28
+const baselineGlyphCount = 0x7e - 0x20 + 1 + 31
 assert.equal(atlasGlyphCounts.get(20), baselineGlyphCount, 'a size with no charset bakes the whole baseline')
+// Runtime measurement labels and controls use these outside literal CSS text.
+// Counting alone would miss a same-sized replacement of the required glyphs.
+const baselineFontId = [...charsetGenerated.matchAll(/font_data_(\d+)\s*=\s*\{\s*\d+,\s*(\d+),/g)]
+  .find((match) => Number(match[2]) === 20)[1]
+const baselineGlyphTable = charsetGenerated.match(
+  new RegExp(`font_glyphs_${baselineFontId}\\[\\d+\\] = \\{([\\s\\S]*?)\\n\\};`),
+)[1]
+for (const codepoint of [0x00b5, 0x00b7, 0x2212]) {
+  assert.match(baselineGlyphTable, new RegExp(`\\{ ${codepoint},`), `baseline keeps UI codepoint ${codepoint}`)
+}
 // The ten digits, the escaped em dash, and the space and `?` every atlas keeps.
 assert.equal(atlasGlyphCounts.get(100), 13, 'a charset narrows its own atlas, honouring CSS escapes')
 assert.equal(atlasGlyphCounts.get(120), baselineGlyphCount, 'one rule without a charset widens the shared atlas back')

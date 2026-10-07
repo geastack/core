@@ -154,10 +154,19 @@ gea_build_native_test() {
     echo "no generated geatsc C++ sources found in $build_dir" >&2
     return 1
   fi
-  if [[ -f "$build_dir/gea_embedded_font_generated.cpp" ]]; then
+  # Engine-only tests supply this exact top-level stub and own their font
+  # fixtures. A previous compiler pipeline may have left generated assets in
+  # this shared output directory; their existence does not make them inputs to
+  # the new stub program (and links duplicate ensureLinked definitions).
+  local engine_only_stub=0
+  if [[ ${#generated_sources[@]} -eq 1 && "${generated_sources[0]}" == "$build_dir/program.cpp" ]] &&
+     [[ "$(tr -d '[:space:]' < "$build_dir/program.cpp")" == 'void__gea_top_level(){}' ]]; then
+    engine_only_stub=1
+  fi
+  if [[ "$engine_only_stub" == 0 && -f "$build_dir/gea_embedded_font_generated.cpp" ]]; then
     generated_sources+=("$build_dir/gea_embedded_font_generated.cpp")
   fi
-  if [[ -f "$build_dir/gea_embedded_assets_generated.cpp" ]]; then
+  if [[ "$engine_only_stub" == 0 && -f "$build_dir/gea_embedded_assets_generated.cpp" ]]; then
     generated_sources+=("$build_dir/gea_embedded_assets_generated.cpp")
   fi
   # No `gea_runtime.cpp` wrapper. It used to be written here as a one-line

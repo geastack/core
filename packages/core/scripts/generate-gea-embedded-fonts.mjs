@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import {
+  buildBitmapFont,
+  loadBitmapFontSource,
+} from "./bitmap-font-source.mjs";
 import path from "node:path";
 import process from "node:process";
 import zlib from "node:zlib";
@@ -364,11 +368,25 @@ function parseFontSizes(value) {
   return uniqueSizes(sizes);
 }
 
-function simpleCssSelectors(selectorText) {
+function parseFontShorthand(value) {
+  // Style/weight precede the required size; optional line-height follows it.
+  // Keep the family tail intact so quoted names and fallback lists use the
+  // same parser as an explicit font-family declaration.
+  const match = value.match(
+    /(?:^|\s)([+]?(?:\d*\.)?\d+(?:px|pt|em|rem|vw|vh|vmin|vmax|%))(?:\s*\/\s*[^\s]+)?\s+(.+)$/i,
+  );
+  if (!match) return null;
+  return {
+    family: firstFontFamily(match[2]),
+    sizePxs: parseFontSizes(match[1]),
+  };
+}
+
+function fontCssSelectors(selectorText) {
   return selectorText
     .split(",")
     .map((selector) => selector.trim())
-    .filter((selector) => /^\.?[A-Za-z][A-Za-z0-9_-]*$/.test(selector));
+    .filter((selector) => selector.length > 0 && !selector.startsWith("@"));
 }
 
 function rememberFontTuple(tuples, fontFaces, family, sizePx, charset) {
@@ -420,7 +438,20 @@ function parseFontFaces(css, cssFile) {
       continue;
     const cleanSrc = rawSrc.split(/[?#]/, 1)[0];
     const resolved = path.resolve(cssDirName, cleanSrc);
-    if (fs.existsSync(resolved)) faces.push({ family, src: resolved });
+    if (fs.existsSync(resolved)) {
+      const embeddedMatch = block.match(
+        /--gea-font-source\s*:\s*url\(\s*(?:"([^"]+)"|'([^']+)'|([^)"']+))\s*\)/i,
+      );
+      const embedded = embeddedMatch
+        ? path.resolve(
+            cssDirName,
+            (embeddedMatch[1] ?? embeddedMatch[2] ?? embeddedMatch[3]).trim(),
+          )
+        : null;
+      if (embedded && !fs.existsSync(embedded))
+        fail(`missing bitmap font source: ${embedded}`);
+      faces.push({ family, src: resolved, embedded });
+    }
   }
   return faces;
 }
@@ -430,11 +461,16 @@ function collectSourceFontFaces() {
   // the directory this ran in.
   const sourceDirs = [appDir, path.join(process.cwd(), "components")];
   const fontFaces = new Map();
+  fontFaces.embeddedSources = new Map();
   for (const dir of sourceDirs) {
     for (const file of findCssFiles(dir)) {
       const css = stripCssComments(fs.readFileSync(file, "utf8"));
       for (const face of parseFontFaces(css, file)) {
-        if (!fontFaces.has(face.family)) fontFaces.set(face.family, face.src);
+        if (!fontFaces.has(face.family)) {
+          fontFaces.set(face.family, face.src);
+          if (face.embedded)
+            fontFaces.embeddedSources.set(face.family, face.embedded);
+        }
       }
     }
   }
@@ -453,7 +489,7 @@ function collectUsedFontTuples(fontFaces) {
     while ((match = ruleRe.exec(css)) !== null) {
       const selector = match[1].trim();
       if (selector.startsWith("@")) continue;
-      const selectors = simpleCssSelectors(selector);
+      const selectors = fontCssSelectors(selector);
       if (selectors.length === 0) continue;
       let family = null;
       let sizePxs = null;
@@ -465,7 +501,13 @@ function collectUsedFontTuples(fontFaces) {
         const value = declaration.slice(colon + 1).trim();
         if (name === "font-family") family = firstFontFamily(value);
         else if (name === "font-size") sizePxs = parseFontSizes(value);
-        else if (name === "--gea-font-charset")
+        else if (name === "font") {
+          const shorthand = parseFontShorthand(value);
+          if (shorthand) {
+            family = shorthand.family;
+            sizePxs = shorthand.sizePxs;
+          }
+        } else if (name === "--gea-font-charset")
           charset = parseFontCharset(value);
       }
       // Accumulate every family/size a selector is ever assigned: repeated
@@ -1054,14 +1096,28 @@ function generatedCpp(fonts, families) {
     );
     for (const glyph of font.glyphs) {
       lines.push(
-        `    { ${glyph.codepoint}, ${glyph.sourceX}, ${glyph.sourceY}, ${glyph.width}, ${glyph.height}, ${glyph.advance}, ${glyph.bearingX}, ${glyph.bearingY} },`,
+        `    { ${glyph.codepoint}, ${glyph.sourceX}, ${glyph.sourceY}, ${glyph.width}, ${glyph.height}, ${glyph.advance}, ${glyph.bearingX}, ${glyph.bearingY}${glyph.advance16 === undefined ? "" : `, ${glyph.advance16}`} },`,
       );
     }
     lines.push("};");
     lines.push("");
 
+    let importedFields = "";
+    if (font.importedBitmap) {
+      if (font.kerning.length > 0) {
+        lines.push(
+          `static const gea::framework::graphics::FontKerningPair font_kerning_${font.id}[${font.kerning.length}] = {`,
+        );
+        for (const pair of font.kerning)
+          lines.push(
+            `    { ${pair.left}, ${pair.right}, ${pair.adjustment16} },`,
+          );
+        lines.push("};");
+      }
+      importedFields = `, 8, ${font.kerning.length}, ${font.kerning.length ? `font_kerning_${font.id}` : "nullptr"}, true, ${font.fallbackCodepoint}`;
+    }
     lines.push(
-      `static const RasterizedFontData font_data_${font.id} = { ${font.id}, ${font.sizePx}, ${font.lineHeight}, ${font.ascender}, ${font.descender}, ${font.glyphs.length}, font_glyphs_${font.id}, ${font.atlasWidth}, ${font.atlasHeight}, ${font.atlasSymbol}${atlasBitsInit} };`,
+      `static const RasterizedFontData font_data_${font.id} = { ${font.id}, ${font.sizePx}, ${font.lineHeight}, ${font.ascender}, ${font.descender}, ${font.glyphs.length}, font_glyphs_${font.id}, ${font.atlasWidth}, ${font.atlasHeight}, ${font.atlasSymbol}${font.importedBitmap ? importedFields : atlasBitsInit} };`,
     );
     lines.push("");
   }
@@ -1479,6 +1535,14 @@ function writeGeneratedFonts() {
       const fontPath = fontFaces.get(tuple.family);
       if (!fontPath)
         fail(`missing @font-face src for font family ${tuple.family}`);
+      const embedded = fontFaces.embeddedSources.get(tuple.family);
+      if (embedded) {
+        return buildBitmapFont(
+          loadBitmapFontSource(embedded),
+          { ...tuple, id: fontId++, familyId: familyIds.get(tuple.family) },
+          packGlyphAtlas,
+        );
+      }
       return rasterizeFont(
         opentype,
         fontPath,

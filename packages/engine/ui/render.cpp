@@ -476,6 +476,12 @@ int gLastScrollUiFrame = -1000;
 			return cp;
 		}
 
+		int followingProjectedTextCodepoint(const char *text, int textTransform, bool wordStart)
+		{
+			if (!text || !*text || *text == '\n') return 0;
+			return transformedTextCodepoint(nextUtf8Codepoint(text), textTransform, wordStart);
+		}
+
 		struct FilterBlurCacheEntry
 		{
 			// Colour buffers are native pixels — the blur runs in this board's colour
@@ -2704,7 +2710,8 @@ int gLastScrollUiFrame = -1000;
 				const int cp = transformedTextCodepoint(nextUtf8Codepoint(p), command.projectedText.textTransform, wordStart);
 				if (!font.glyph(cp, &glyph))
 				{
-					penX += font.sizePx() / 2;
+					penX += font.advance(
+						cp, followingProjectedTextCodepoint(p, command.projectedText.textTransform, wordStart));
 					continue;
 				}
 
@@ -2715,7 +2722,8 @@ int gLastScrollUiFrame = -1000;
 				{
 					return font.coverage(glyph, sourceY - gy, sourceX - gx);
 				}
-				penX += glyph.advance;
+				penX += font.advance(
+					cp, followingProjectedTextCodepoint(p, command.projectedText.textTransform, wordStart));
 			}
 			return 0;
 		}
@@ -2777,7 +2785,8 @@ int gLastScrollUiFrame = -1000;
 				const int cp = transformedTextCodepoint(nextUtf8Codepoint(p), command.projectedText.textTransform, wordStart);
 				if (!font.glyph(cp, &glyph))
 				{
-					penX += font.sizePx() / 2;
+					penX += font.advance(
+						cp, followingProjectedTextCodepoint(p, command.projectedText.textTransform, wordStart));
 					continue;
 				}
 				const int gx = penX + glyph.bearingX;
@@ -2808,7 +2817,8 @@ int gLastScrollUiFrame = -1000;
 						}
 					}
 				}
-				penX += glyph.advance;
+				penX += font.advance(
+					cp, followingProjectedTextCodepoint(p, command.projectedText.textTransform, wordStart));
 			}
 		}
 

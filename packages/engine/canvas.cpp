@@ -104,6 +104,11 @@ std::uint8_t gTextStampBackdrop = 15;
 
 namespace {
 int nextUtf8Codepoint(const char *&p);  // defined below (same anon namespace); used by the text sprite cache
+int peekUtf8Codepoint(const char *p)
+{
+	if (!p || !*p || *p == '\n') return 0;
+	return nextUtf8Codepoint(p);
+}
 #if GEA_PIXEL_STORAGE_PACKED_BITS == 4
 void glyphStampCacheReset();  // defined below (same anon namespace); used by setTextSolidBackdrop
 #endif
@@ -265,7 +270,6 @@ bool buildTextSprite(TextSprite &sprite, const char *text, const RasterizedFont 
 {
 	const int lineH = font.lineHeight();
 	const int ascender = font.ascender();
-	const int fallbackAdvance = font.sizePx() / 2;
 
 	// Pass 1: bbox of all glyph ink relative to the pen origin (0,0).
 	int penX = 0, penY = 0;
@@ -274,7 +278,7 @@ bool buildTextSprite(TextSprite &sprite, const char *text, const RasterizedFont 
 		const int cp = nextUtf8Codepoint(p);
 		if (cp == '\n') { penX = 0; penY += lineH; continue; }
 		Glyph glyph{};
-		if (!font.glyph(cp, &glyph)) { penX += fallbackAdvance; continue; }
+		if (!font.glyph(cp, &glyph)) { penX += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 		if (glyph.width > 0 && glyph.height > 0) {
 			const int gx = penX + glyph.bearingX;
 			const int gy = penY + ascender - glyph.bearingY;
@@ -283,7 +287,7 @@ bool buildTextSprite(TextSprite &sprite, const char *text, const RasterizedFont 
 			if (gx + glyph.width - 1 > maxLX) maxLX = gx + glyph.width - 1;
 			if (gy + glyph.height - 1 > maxLY) maxLY = gy + glyph.height - 1;
 		}
-		penX += glyph.advance;
+		penX += font.advance(cp, peekUtf8Codepoint(p));
 	}
 	if (maxLX < minLX || maxLY < minLY) return false;  // no ink
 
@@ -324,7 +328,7 @@ bool buildTextSprite(TextSprite &sprite, const char *text, const RasterizedFont 
 		const int cp = nextUtf8Codepoint(p);
 		if (cp == '\n') { penX = 0; penY += lineH; continue; }
 		Glyph glyph{};
-		if (!font.glyph(cp, &glyph)) { penX += fallbackAdvance; continue; }
+		if (!font.glyph(cp, &glyph)) { penX += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 		const int gx = penX + glyph.bearingX;
 		const int gy = penY + ascender - glyph.bearingY;
 		for (int row = 0; row < glyph.height; row++) {
@@ -341,7 +345,7 @@ bool buildTextSprite(TextSprite &sprite, const char *text, const RasterizedFont 
 				if (bx > sprite.rowX1[by]) sprite.rowX1[by] = static_cast<std::int16_t>(bx);
 			}
 		}
-		penX += glyph.advance;
+		penX += font.advance(cp, peekUtf8Codepoint(p));
 	}
 
 	sprite.minLX = minLX;
@@ -2626,7 +2630,7 @@ void Canvas::drawTextFontFamilyRotated90(const char *text, int lx, int ly, pixel
 		const int cp = nextUtf8Codepoint(p);
 		if (cp == '\n') { pen_x = lx; pen_y += font.lineHeight(); continue; }
 		Glyph glyph{};
-		if (!font.glyph(cp, &glyph)) { pen_x += font.sizePx() / 2; continue; }
+		if (!font.glyph(cp, &glyph)) { pen_x += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 		const int gx = pen_x + glyph.bearingX;
 		const int gy = pen_y + font.ascender() - glyph.bearingY;
 		const pixel::native_t c = color;
@@ -2650,7 +2654,7 @@ void Canvas::drawTextFontFamilyRotated90(const char *text, int lx, int ly, pixel
 #endif
 			}
 		}
-		pen_x += glyph.advance;
+		pen_x += font.advance(cp, peekUtf8Codepoint(p));
 	}
 }
 
@@ -2686,7 +2690,7 @@ void Canvas::drawTextFontFamilyOnBackground(const char *text, int x, int y, pixe
 
 		SolidGlyphCacheEntry *entry = solidGlyphCacheEntry(font, color, background, cp);
 		if (!entry) {
-			penX += font.sizePx() / 2;
+			penX += font.advance(cp, peekUtf8Codepoint(p));
 			continue;
 		}
 
@@ -2695,7 +2699,7 @@ void Canvas::drawTextFontFamilyOnBackground(const char *text, int x, int y, pixe
 		const int gy = penY + font.ascender() - glyph.bearingY;
 		if (gx > clipX1 || gy > clipY1 ||
 		    gx + glyph.width - 1 < clipX0 || gy + glyph.height - 1 < clipY0) {
-			penX += glyph.advance;
+			penX += font.advance(cp, peekUtf8Codepoint(p));
 			continue;
 		}
 
@@ -2741,7 +2745,7 @@ void Canvas::drawTextFontFamilyOnBackground(const char *text, int x, int y, pixe
 		}
 
 		if (dirtyX0 <= dirtyX1 && dirtyY0 <= dirtyY1) markDirty(dirtyX0, dirtyY0, dirtyX1, dirtyY1);
-		penX += glyph.advance;
+		penX += font.advance(cp, peekUtf8Codepoint(p));
 	}
 }
 
@@ -2996,7 +3000,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 		const int cp = nextUtf8Codepoint(p);
 		if (cp == '\n') { pen_x = x; pen_y += font.lineHeight(); continue; }
 		Glyph glyph{};
-		if (!font.glyph(cp, &glyph)) { pen_x += font.sizePx() / 2; continue; }
+		if (!font.glyph(cp, &glyph)) { pen_x += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 
 		int gx = pen_x + glyph.bearingX;
 		int gy = pen_y + font.ascender() - glyph.bearingY;
@@ -3004,7 +3008,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 		/* Skip glyph entirely if outside clip */
 		if (gx > clip->x1 || gy > clip->y1 ||
 		    gx + glyph.width - 1 < clip->x0 || gy + glyph.height - 1 < clip->y0) {
-			pen_x += glyph.advance;
+			pen_x += font.advance(cp, peekUtf8Codepoint(p));
 			continue;
 		}
 
@@ -3050,7 +3054,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 					stampPackedGlyphRow(packedRow(rowToPhysical(gy + row)), gx,
 					                    src + static_cast<std::size_t>(row) * rb, glyph.width);
 				markDirty(gx, gy, gx + glyph.width - 1, gy + glyph.height - 1);
-				pen_x += glyph.advance;
+				pen_x += font.advance(cp, peekUtf8Codepoint(p));
 				continue;
 			}
 		}
@@ -3093,7 +3097,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 		}
 		markDirty(gx + col_start, gy + row_start,
 		                        gx + col_end, gy + row_end);
-		pen_x += glyph.advance;
+		pen_x += font.advance(cp, peekUtf8Codepoint(p));
 	}
 }
 
@@ -3269,8 +3273,7 @@ void Canvas::measureTextFont(const char *text, int max_width, int font_id, int *
 			lines++;
 			continue;
 		}
-		Glyph glyph{};
-		int adv = font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
+		int adv = font.advance(cp, peekUtf8Codepoint(p));
 		int next_w = line_w + adv;
 		if (next_w > max_width && line_w > 0) {
 			if (line_w > max_line_w) max_line_w = line_w;
@@ -3308,7 +3311,7 @@ void Canvas::drawTextFontFamily(const char *text, int x, int y, pixel::native_t 
 			const int cp = nextUtf8Codepoint(p);
 			if (cp == '\n') { pen_x = x; pen_y += font.lineHeight(); continue; }
 			Glyph glyph{};
-			if (!font.glyph(cp, &glyph)) { pen_x += font.sizePx() / 2; continue; }
+			if (!font.glyph(cp, &glyph)) { pen_x += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 			const int gx = pen_x + glyph.bearingX;
 			const int gy = pen_y + font.ascender() - glyph.bearingY;
 			const pixel::native_t c = color;
@@ -3336,7 +3339,7 @@ void Canvas::drawTextFontFamily(const char *text, int x, int y, pixel::native_t 
 #endif
 				}
 			}
-			pen_x += glyph.advance;
+			pen_x += font.advance(cp, peekUtf8Codepoint(p));
 		}
 		return;
 	}
@@ -3362,7 +3365,7 @@ void Canvas::drawTextFontFamilyRotated90(const char *text, int lx, int ly, pixel
 		const int cp = nextUtf8Codepoint(p);
 		if (cp == '\n') { pen_x = lx; pen_y += font.lineHeight(); continue; }
 		Glyph glyph{};
-		if (!font.glyph(cp, &glyph)) { pen_x += font.sizePx() / 2; continue; }
+		if (!font.glyph(cp, &glyph)) { pen_x += font.advance(cp, peekUtf8Codepoint(p)); continue; }
 		const int gx = pen_x + glyph.bearingX;
 		const int gy = pen_y + font.ascender() - glyph.bearingY;
 		const pixel::native_t c = color;
@@ -3386,7 +3389,7 @@ void Canvas::drawTextFontFamilyRotated90(const char *text, int lx, int ly, pixel
 #endif
 			}
 		}
-		pen_x += glyph.advance;
+		pen_x += font.advance(cp, peekUtf8Codepoint(p));
 	}
 }
 
@@ -3421,10 +3424,9 @@ int Canvas::measureTextFontFamily(const char *text, int family_id, int size_px)
 			lineWidth = 0;
 			continue;
 		}
-		Glyph glyph{};
 		// Same fallback the draw loop uses for a missing glyph, so measure and
 		// draw agree rather than drifting apart on unmapped codepoints.
-		lineWidth += font.glyph(cp, &glyph) ? glyph.advance : font.sizePx() / 2;
+		lineWidth += font.advance(cp, peekUtf8Codepoint(p));
 	}
 	return lineWidth > width ? lineWidth : width;
 }

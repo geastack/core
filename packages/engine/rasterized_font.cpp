@@ -64,6 +64,15 @@ public:
 		for (int i = 0; i < font->glyphCount; i++) {
 			if (font->glyphs[i].codepoint == codepoint) return &font->glyphs[i];
 		}
+		if (font->strictGlyphLookup)
+		{
+			for (int i = 0; i < font->glyphCount; i++)
+			{
+				if (font->glyphs[i].codepoint == font->fallbackCodepoint)
+					return &font->glyphs[i];
+			}
+			return nullptr;
+		}
 		if (font->glyphCount > 0 && codepoint != '?') {
 			for (int i = 0; i < font->glyphCount; i++) {
 				if (font->glyphs[i].codepoint == '?') return &font->glyphs[i];
@@ -352,7 +361,8 @@ void ensureRuntimeGlyphMetrics(const RasterizedFontData *data, int codepoint)
 	slot->atlasRowHeight = std::max(slot->atlasRowHeight, glyph.height);
 	slot->atlasCursorX += glyph.width + kRuntimeAtlasPadding;
 	if (metricTraceCount <= 48) {
-		runtimeTtfTrace("glyph.metrics.ready family=%d size=%d cp=%d adv=%d box=%dx%d bearing=%d,%d src=%d,%d",
+		runtimeTtfTrace("glyph.metrics.ready family=%d size=%d cp=%d adv=%d "
+						"box=%dx%d bearing=%d,%d src=%d,%d",
 		    slot->familyId,
 		    slot->data.sizePx,
 		    codepoint,
@@ -464,6 +474,35 @@ bool RasterizedFont::glyph(int codepoint, Glyph *out) const
 	return true;
 }
 
+int RasterizedFont::advance(int codepoint, int nextCodepoint) const
+{
+	Glyph value{};
+	if (!glyph(codepoint, &value))
+		return data_ && data_->strictGlyphLookup ? 0 : sizePx() / 2;
+	if (value.advance16 < 0)
+		return value.advance;
+	int adjustment = 0;
+	int first = 0;
+	int last = data_->kerningCount;
+	while (first < last)
+	{
+		const int middle = first + (last - first) / 2;
+		const FontKerningPair &pair = data_->kerning[middle];
+		if (pair.left < codepoint ||
+			(pair.left == codepoint && pair.right < nextCodepoint))
+			first = middle + 1;
+		else
+			last = middle;
+	}
+	if (first < data_->kerningCount)
+	{
+		const FontKerningPair &pair = data_->kerning[first];
+		if (pair.left == codepoint && pair.right == nextCodepoint)
+			adjustment = pair.adjustment16;
+	}
+	return (value.advance16 + adjustment + 8) >> 4;
+}
+
 std::uint8_t RasterizedFont::coverage(const Glyph &glyph, int row, int col) const
 {
 	if (!data_ || !data_->atlas) return 0;
@@ -487,7 +526,8 @@ std::uint8_t RasterizedFont::coverage(const Glyph &glyph, int row, int col) cons
 	if (data_->atlasBits == 2) {
 		const int stride = (data_->atlasWidth + 3) >> 2;
 		const int level = (data_->atlas[y * stride + (x >> 2)] >> ((3 - (x & 3)) * 2)) & 0x3;
-#if defined(GEA_EMBEDDED_FONT_COVERAGE_PAPERS3) && GEA_EMBEDDED_FONT_COVERAGE_PAPERS3
+#if defined(GEA_EMBEDDED_FONT_COVERAGE_PAPERS3) && \
+	GEA_EMBEDDED_FONT_COVERAGE_PAPERS3
 		static constexpr std::uint8_t kCoverage[4] = {0, 144, 176, 255};
 		return kCoverage[level];
 #else

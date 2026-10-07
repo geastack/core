@@ -344,10 +344,17 @@ inline bool canBreakAfter(int cp)
 	return cp == '-' || cp == '/' || cp == 0x2010 || cp == 0x2013 || cp == 0x2014;
 }
 
+int followingTextCodepoint(const char *text)
+{
+	if (!text || !*text || *text == '\n') return 0;
+	return nextUtf8Codepoint(text);
+}
+
 // CSS white-space: normal/pre-line line breaking for the embedded renderer.
 // Break at legal word boundaries. An unbreakable word can overflow the line;
-// normal wrapping must never manufacture a break inside that word. `consumedBytes` includes discarded wrapping spaces or
-// an explicit newline, while `renderBytes` contains only the visible run.
+// normal wrapping must never manufacture a break inside that word.
+// `consumedBytes` includes discarded wrapping spaces or an explicit newline,
+// while `renderBytes` contains only the visible run.
 template <typename AdvanceForCodepoint>
 WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint advanceForCodepoint)
 {
@@ -362,19 +369,23 @@ WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint 
 	int breakConsumedBytes = -1;
 	int breakWidth = 0;
 	bool extendingSpaceBreak = false;
+	int previousCodepoint = 0;
+	int previousAdvance = 0;
 
-	while (*p) {
+	while (*p)
+	{
 		const char *glyphStart = p;
 		const int cp = nextUtf8Codepoint(p);
 		const int glyphBytes = static_cast<int>(p - glyphStart);
-		if (cp == '\n') {
+		if (cp == '\n')
+		{
 			line.renderBytes = bytes;
 			line.consumedBytes = bytes + glyphBytes;
 			line.width = width;
 			return line;
 		}
 
-		const int advance = advanceForCodepoint(cp);
+		const int advance = advanceForCodepoint(cp, followingTextCodepoint(p));
 		// A collapsible space at the end of a line HANGS: CSS trims it when the
 		// line is positioned, so it never overflows and never forces the break
 		// itself. Letting it break the line makes this wrapper non-idempotent —
@@ -386,7 +397,8 @@ WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint 
 		// more line than the box was tall and the run overlapped its next
 		// sibling (typography's specimen paragraphs).
 		// Leading collapsible spaces cannot be an empty soft-wrapped line.
-		if (!isWrappingSpace(cp) && width + advance > maxWidth && bytes > 0 && breakRenderBytes > 0) {
+		if (!isWrappingSpace(cp) && width + advance > maxWidth && bytes > 0 && breakRenderBytes > 0)
+		{
 			line.renderBytes = breakRenderBytes;
 			line.consumedBytes = breakConsumedBytes;
 			line.width = breakWidth;
@@ -398,21 +410,29 @@ WrappedLine nextWrappedLine(const char *text, int maxWidth, AdvanceForCodepoint 
 		width += advance;
 		bytes += glyphBytes;
 
-		if (isWrappingSpace(cp)) {
-			if (!extendingSpaceBreak) {
+		if (isWrappingSpace(cp))
+		{
+			if (!extendingSpaceBreak)
+			{
 				breakRenderBytes = bytesBefore;
-				breakWidth = widthBefore;
+				breakWidth =
+					widthBefore + (previousCodepoint ? advanceForCodepoint(previousCodepoint, 0) - previousAdvance : 0);
 			}
 			breakConsumedBytes = bytes;
 			extendingSpaceBreak = true;
-		} else {
+		}
+		else
+		{
 			extendingSpaceBreak = false;
-			if (canBreakAfter(cp)) {
+			if (canBreakAfter(cp))
+			{
 				breakRenderBytes = bytes;
 				breakConsumedBytes = bytes;
-				breakWidth = width;
+				breakWidth = width + advanceForCodepoint(cp, 0) - advance;
 			}
 		}
+		previousCodepoint = cp;
+		previousAdvance = advance;
 	}
 
 	line.renderBytes = bytes;
@@ -550,10 +570,8 @@ bool rasterizedTextInkBounds(const char *text,
 	const char *lineStart = text;
 	int penY = 0;
 	while (*lineStart) {
-		const WrappedLine line = nextWrappedLine(lineStart, maxWidth, [&](int cp) {
-			gea::framework::graphics::Glyph glyph{};
-			return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
-		});
+		const WrappedLine line =
+			nextWrappedLine(lineStart, maxWidth, [&](int cp, int nextCp) { return font.advance(cp, nextCp); });
 
 		int penX = alignedOffset(textAlign, containerWidth, line.width);
 		const int lineY = penY + lineBoxOffset;
@@ -564,8 +582,9 @@ bool rasterizedTextInkBounds(const char *text,
 			const int cp = nextUtf8Codepoint(glyphPtr);
 			consumed += static_cast<int>(glyphPtr - glyphStart);
 			gea::framework::graphics::Glyph glyph{};
-			if (!font.glyph(cp, &glyph)) {
-				penX += font.sizePx() / 2;
+			if (!font.glyph(cp, &glyph))
+			{
+				penX += font.advance(cp, consumed < line.renderBytes ? followingTextCodepoint(glyphPtr) : 0);
 				continue;
 			}
 			const int gx0 = penX + glyph.bearingX;
@@ -584,7 +603,7 @@ bool rasterizedTextInkBounds(const char *text,
 				if (gx1 > bx1) bx1 = gx1;
 				if (gy1 > by1) by1 = gy1;
 			}
-			penX += glyph.advance;
+			penX += font.advance(cp, consumed < line.renderBytes ? followingTextCodepoint(glyphPtr) : 0);
 		}
 
 		lineStart += line.consumedBytes;
@@ -718,9 +737,8 @@ bool recordProjectedRasterText(const Node &node, const char *text, uint8_t /*par
 
 	int lineWidth = 0;
 	for (const char *p = text; *p;) {
-		gea::framework::graphics::Glyph glyph{};
 		const int cp = nextUtf8Codepoint(p);
-		lineWidth += font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
+		lineWidth += font.advance(cp, followingTextCodepoint(p));
 	}
 
 	int bx0, by0, bx1, by1;
@@ -881,7 +899,7 @@ public:
 		if (maxWidth <= 0) maxWidth = 32767;
 		const char *lineStart = text;
 		while (*lineStart) {
-			const WrappedLine line = nextWrappedLine(lineStart, maxWidth, [&](int) { return glyphWidth; });
+			const WrappedLine line = nextWrappedLine(lineStart, maxWidth, [&](int, int) { return glyphWidth; });
 			if (line.width > maxLineWidth) maxLineWidth = line.width;
 			lineStart += line.consumedBytes;
 			if (*lineStart) lines++;
@@ -906,10 +924,8 @@ public:
 		if (maxWidth <= 0) maxWidth = 32767;
 		const char *lineStart = text;
 		while (*lineStart) {
-			const WrappedLine line = nextWrappedLine(lineStart, maxWidth, [&](int cp) {
-			gea::framework::graphics::Glyph glyph{};
-				return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
-			});
+			const WrappedLine line =
+				nextWrappedLine(lineStart, maxWidth, [&](int cp, int nextCp) { return font.advance(cp, nextCp); });
 			if (line.width > maxLineWidth) maxLineWidth = line.width;
 			lineStart += line.consumedBytes;
 			if (*lineStart) lines++;
@@ -935,15 +951,15 @@ struct GlyphAdvanceSource {
 #endif
 	int glyphWidth = 0;
 
-	int operator()(int cp) const
+	int operator()(int cp, int nextCp = 0) const
 	{
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 		if (rasterized) {
-			gea::framework::graphics::Glyph glyph{};
-			return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
+			return font.advance(cp, nextCp);
 		}
 #else
 		(void)cp;
+		(void)nextCp;
 #endif
 		return glyphWidth;
 	}
@@ -1089,14 +1105,18 @@ public:
 		for (const char *p = text; p && *p;) {
 			const int cp = nextUtf8Codepoint(p);
 			gea::framework::graphics::Glyph glyph{};
-			if (!font.glyph(cp, &glyph)) { penX += font.sizePx() / 2; continue; }
+			if (!font.glyph(cp, &glyph))
+			{
+				penX += font.advance(cp, followingTextCodepoint(p));
+				continue;
+			}
 			const int gx = penX + glyph.bearingX;
 			const int gy = y + font.ascender() - glyph.bearingY;
 			const int row = sink.screenY - gy;
 			if (row >= 0 && row < glyph.height)
 				for (int col = 0; col < glyph.width; ++col)
 					sink.add(gx + col, sink.screenY, font.coverage(glyph, row, col));
-			penX += glyph.advance;
+			penX += font.advance(cp, followingTextCodepoint(p));
 		}
 	}
 #endif
@@ -1224,10 +1244,8 @@ private:
 
 			const char *p = text;
 			while (*p && entry.lineCount < kMaxCachedLines) {
-				const WrappedLine line = nextWrappedLine(p, lineBudget_(entry.lineCount), [&](int cp) {
-					gea::framework::graphics::Glyph glyph{};
-					return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
-				});
+				const WrappedLine line = nextWrappedLine(p, lineBudget_(entry.lineCount),
+														 [&](int cp, int nextCp) { return font.advance(cp, nextCp); });
 				entry.renderBytes[entry.lineCount] = static_cast<std::uint16_t>(line.renderBytes > 65535 ? 65535 : line.renderBytes);
 				entry.consumedBytes[entry.lineCount] = static_cast<std::uint16_t>(line.consumedBytes > 65535 ? 65535 : line.consumedBytes);
 				entry.lineWidths[entry.lineCount] = static_cast<std::uint16_t>(line.width > 65535 ? 65535 : line.width);
@@ -1291,10 +1309,8 @@ private:
 			const int lineIndex = li;
 			li++;
 
-			const WrappedLine line = nextWrappedLine(lineStart, lineBudget_(lineIndex), [&](int cp) {
-				gea::framework::graphics::Glyph glyph{};
-				return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
-			});
+			const WrappedLine line = nextWrappedLine(lineStart, lineBudget_(lineIndex),
+													 [&](int cp, int nextCp) { return font.advance(cp, nextCp); });
 
 			const int lineBoxY = penY + lineBoxOffset;
 			if (lineBoxY + glyphHeight - 1 >= clipY0) {
@@ -1331,14 +1347,15 @@ private:
 		if (lineBoxY > clipY1 || lineBoxY + glyphHeight - 1 < clipY0) return;
 		if (maxWidth <= 0) maxWidth = 32767;
 
-		const auto advanceOf = [&font](int cp) {
-			gea::framework::graphics::Glyph glyph{};
-			return font.glyph(cp, &glyph) ? glyph.advance : (font.sizePx() / 2);
-		};
+		const auto advanceOf = [&font](int cp, int nextCp = 0) { return font.advance(cp, nextCp); };
 
 		// Full single-line advance width (stop at the first newline).
 		int fullWidth = 0;
-		for (const char *p = text; *p && *p != '\n';) fullWidth += advanceOf(nextUtf8Codepoint(p));
+		for (const char *p = text; *p && *p != '\n';)
+		{
+			const int cp = nextUtf8Codepoint(p);
+			fullWidth += advanceOf(cp, followingTextCodepoint(p));
+		}
 
 		char buf[256];
 		int len = 0;
@@ -1348,36 +1365,51 @@ private:
 		if (fullWidth <= maxWidth) {
 			for (const char *p = text; *p && *p != '\n' && len < kBufCap - 1; ++p) buf[len++] = *p;
 			drawnWidth = fullWidth;
-		} else if (ellipsis) {
-			const int dotAdvance = advanceOf('.');
-			const int ellipsisWidth = dotAdvance * 3;
-			const int budget = maxWidth > ellipsisWidth ? maxWidth - ellipsisWidth : 0;
+		}
+		else if (ellipsis)
+		{
+			const int ellipsisWidth = advanceOf('.', '.') * 2 + advanceOf('.');
 			int w = 0;
+			int previousCp = 0;
 			const char *p = text;
-			while (*p && *p != '\n') {
+			while (*p && *p != '\n')
+			{
 				const char *glyphStart = p;
-				const int advance = advanceOf(nextUtf8Codepoint(p));
-				if (w + advance > budget) break;
+				const int cp = nextUtf8Codepoint(p);
+				const int candidateWidth =
+					w + advanceOf(cp) + (previousCp ? advanceOf(previousCp, cp) - advanceOf(previousCp) : 0);
+				const int withEllipsis = candidateWidth - advanceOf(cp) + advanceOf(cp, '.') + ellipsisWidth;
+				if (withEllipsis > maxWidth) break;
 				const int bytes = static_cast<int>(p - glyphStart);
-				if (len + bytes > kBufCap - 4) break;  // leave room for "..." + NUL
-				for (int i = 0; i < bytes; ++i) buf[len++] = glyphStart[i];
-				w += advance;
+				if (len + bytes > kBufCap - 4) break; // leave room for "..." + NUL
+				for (int i = 0; i < bytes; ++i)
+					buf[len++] = glyphStart[i];
+				w = candidateWidth;
+				previousCp = cp;
 			}
 			buf[len++] = '.';
 			buf[len++] = '.';
 			buf[len++] = '.';
-			drawnWidth = w + ellipsisWidth;
-		} else {
+			drawnWidth = w + ellipsisWidth + (previousCp ? advanceOf(previousCp, '.') - advanceOf(previousCp) : 0);
+		}
+		else
+		{
 			int w = 0;
+			int previousCp = 0;
 			const char *p = text;
-			while (*p && *p != '\n') {
+			while (*p && *p != '\n')
+			{
 				const char *glyphStart = p;
-				const int advance = advanceOf(nextUtf8Codepoint(p));
-				if (w + advance > maxWidth && len > 0) break;
+				const int cp = nextUtf8Codepoint(p);
+				const int candidateWidth =
+					w + advanceOf(cp) + (previousCp ? advanceOf(previousCp, cp) - advanceOf(previousCp) : 0);
+				if (candidateWidth > maxWidth && len > 0) break;
 				const int bytes = static_cast<int>(p - glyphStart);
 				if (len + bytes > kBufCap - 1) break;
-				for (int i = 0; i < bytes; ++i) buf[len++] = glyphStart[i];
-				w += advance;
+				for (int i = 0; i < bytes; ++i)
+					buf[len++] = glyphStart[i];
+				w = candidateWidth;
+				previousCp = cp;
 			}
 			drawnWidth = w;
 		}
@@ -1409,7 +1441,8 @@ private:
 			// the inherited pen and has that much less room.
 			const int budget = lineIndex == 0 ? maxWidth - firstLineIndent : maxWidth;
 			const int lineOriginX = lineIndex == 0 ? x + firstLineIndent : x;
-			const WrappedLine line = nextWrappedLine(lineStart, budget < 1 ? 1 : budget, [&](int) { return glyphWidth; });
+			const WrappedLine line =
+				nextWrappedLine(lineStart, budget < 1 ? 1 : budget, [&](int, int) { return glyphWidth; });
 			lineIndex++;
 
 			if (penY + glyphHeight - 1 >= clipY0) {
@@ -1762,7 +1795,11 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 			const char *p = text;
 			const char *end = text + lead;
 			int width = 0;
-			while (p < end) width += advance(nextUtf8Codepoint(p));
+			while (p < end)
+			{
+				const int cp = nextUtf8Codepoint(p);
+				width += advance(cp, followingTextCodepoint(p));
+			}
 			out.firstLineIndentAdjust = -width;
 		}
 	}
@@ -1780,8 +1817,10 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 				const char *end = p + line.renderBytes;
 				for (const char *glyph = p; glyph < end;) {
 					const int cp = nextUtf8Codepoint(glyph);
-					out.firstLineTrailingSpace = isWrappingSpace(cp)
-					    ? out.firstLineTrailingSpace + advance(cp) : 0;
+					out.firstLineTrailingSpace =
+						isWrappingSpace(cp)
+							? out.firstLineTrailingSpace + advance(cp, glyph < end ? followingTextCodepoint(glyph) : 0)
+							: 0;
 				}
 			}
 		}
