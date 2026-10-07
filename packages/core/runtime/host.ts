@@ -34,7 +34,7 @@ import type {
   HttpModule,
   HttpServer,
   AudioContext,
-  WiFiController
+  WiFiController,
 } from '../index'
 
 // These 17 used to be declared HERE as well as in `../index`, byte for byte.
@@ -60,7 +60,7 @@ export type {
   CameraWhiteBalanceOptions,
   EmbeddedMemoryConfig,
   EmbeddedMemoryStats,
-  HttpReply
+  HttpReply,
 } from '../index'
 
 declare const apps: {
@@ -90,12 +90,12 @@ declare const navigator: {
     getCurrentPosition(
       success: (position: GeolocationPosition) => void,
       error?: (error: GeolocationPositionError) => void,
-      options?: PositionOptions
+      options?: PositionOptions,
     ): void
     watchPosition(
       success: (position: GeolocationPosition) => void,
       error?: (error: GeolocationPositionError) => void,
-      options?: PositionOptions
+      options?: PositionOptions,
     ): number
     clearWatch(id: number): void
   }
@@ -228,9 +228,11 @@ declare const __gea_Audio: {
   setVolume(volume: number): void
 }
 
-type EmbeddedDisplayOrientation = 'portrait-primary' | 'portrait-secondary' | 'landscape-primary' | 'landscape-secondary'
+type EmbeddedDisplayOrientation =
+  'portrait-primary' | 'portrait-secondary' | 'landscape-primary' | 'landscape-secondary'
 
-type EmbeddedDisplayOrientationSupport = EmbeddedDisplayOrientation | 'portrait' | 'landscape' | 'all'
+type EmbeddedDisplayOrientationSupport =
+  EmbeddedDisplayOrientation | 'portrait' | 'landscape' | 'all'
 
 type EmbeddedDisplayPixelFormat = 'rgb565' | 'rgb888' | 'rgb8888' | 'argb8888'
 
@@ -251,7 +253,9 @@ declare const __gea_Display: {
   getOrientation(): EmbeddedDisplayOrientation
   setOrientation(orientation: EmbeddedDisplayOrientation): void
   getSupportedOrientations(): EmbeddedDisplayOrientationSupport[]
-  setSupportedOrientations(orientations: EmbeddedDisplayOrientationSupport | EmbeddedDisplayOrientationSupport[]): void
+  setSupportedOrientations(
+    orientations: EmbeddedDisplayOrientationSupport | EmbeddedDisplayOrientationSupport[],
+  ): void
   getAutoRotate(): boolean
   setAutoRotate(enabled: boolean): void
   setVSync(on: boolean): void
@@ -416,13 +420,13 @@ export const defaults = {}
 export const touch = {
   read(): TouchSample {
     return { touching: false, x: 0, y: 0 }
-  }
+  },
 }
 
 export const Apps = {
   launch(appId: string): number {
     return apps.launch(appId)
-  }
+  },
 }
 
 // Case-variant aliases for host accessors. Keep these lazy: direct top-level
@@ -438,7 +442,7 @@ export const BLE: typeof navigator.bluetooth = {
     },
     up(): void {
       navigator.bluetooth.keyboard.up()
-    }
+    },
   },
   mouse: {
     move(dx: number, dy: number, buttons?: number, wheel?: number): void {
@@ -446,7 +450,7 @@ export const BLE: typeof navigator.bluetooth = {
     },
     click(button: number): void {
       navigator.bluetooth.mouse.click(button)
-    }
+    },
   },
   // BLE-MIDI (MIDI over GATT). `enable()` registers the MIDI service +
   // advertises its UUID; `send()` transmits ONE already-framed BLE-MIDI
@@ -483,7 +487,7 @@ export const BLE: typeof navigator.bluetooth = {
     },
     disconnect(): void {
       navigator.bluetooth.midi.disconnect()
-    }
+    },
   },
   // HID host role: this device is the central; a remote HID peripheral (a
   // keyboard/macro pad like the XPPen ACK05) is the input source. Raw input
@@ -527,7 +531,7 @@ export const BLE: typeof navigator.bluetooth = {
     },
     clearReports(): void {
       navigator.bluetooth.hidHost.clearReports()
-    }
+    },
   },
   // Live connection registry across every concurrent BLE role. kind: 0 =
   // HID central peer (desktop), 1 = MIDI central peer (DAW), 2 = HID
@@ -542,7 +546,7 @@ export const BLE: typeof navigator.bluetooth = {
     },
     nameAt(index: number): string {
       return navigator.bluetooth.connections.nameAt(index)
-    }
+    },
   },
   // Config service (custom GATT). A Web Bluetooth portal live-programs the
   // device: it reads the app's current config blob and, once paired with the
@@ -577,7 +581,7 @@ export const BLE: typeof navigator.bluetooth = {
     // highlight it live. No-op on the device when no portal is subscribed.
     pushActivity(index: number): void {
       navigator.bluetooth.config.pushActivity(index)
-    }
+    },
   },
   enabled(): boolean {
     return navigator.bluetooth.enabled()
@@ -608,7 +612,7 @@ export const BLE: typeof navigator.bluetooth = {
   },
   stopAdvertising(): void {
     navigator.bluetooth.stopAdvertising()
-  }
+  },
 }
 export const bluetooth = BLE
 export const WiFi: typeof navigator.wifi = {
@@ -675,7 +679,7 @@ export const WiFi: typeof navigator.wifi = {
   },
   scanSecuredAt(index: number): boolean {
     return navigator.wifi.scanSecuredAt(index)
-  }
+  },
 }
 export const wifi = WiFi
 
@@ -701,6 +705,7 @@ export const http = {
     if (typeof __gea_http !== 'undefined') __gea_http.close(handle)
   },
 }
+
 export const Geolocation: typeof navigator.geolocation = {
   hasFix(): boolean {
     return navigator.geolocation.hasFix()
@@ -723,20 +728,20 @@ export const Geolocation: typeof navigator.geolocation = {
   getCurrentPosition(
     success: (position: GeolocationPosition) => void,
     error?: (error: GeolocationPositionError) => void,
-    options?: PositionOptions
+    options?: PositionOptions,
   ): void {
     navigator.geolocation.getCurrentPosition(success, error, options)
   },
   watchPosition(
     success: (position: GeolocationPosition) => void,
     error?: (error: GeolocationPositionError) => void,
-    options?: PositionOptions
+    options?: PositionOptions,
   ): number {
     return navigator.geolocation.watchPosition(success, error, options)
   },
   clearWatch(id: number): void {
     navigator.geolocation.clearWatch(id)
-  }
+  },
 }
 export const geolocation = Geolocation
 // `__gea_Accelerometer` is only injected by the vite plugin when an app actually
@@ -747,7 +752,9 @@ export const geolocation = Geolocation
 // whether or not the global was injected, and apps that do use it still get the
 // real binding.
 export const Accelerometer =
-  typeof __gea_Accelerometer !== 'undefined' ? __gea_Accelerometer : (undefined as unknown as typeof __gea_Accelerometer)
+  typeof __gea_Accelerometer !== 'undefined'
+    ? __gea_Accelerometer
+    : (undefined as unknown as typeof __gea_Accelerometer)
 
 // Remembers the most recent recording sink so stopRecording can report it on
 // the resolved CameraClip (the host only returns a duration).
@@ -805,7 +812,7 @@ export const Camera = {
       orientation: __gea_Camera.orientation,
       dispose(): void {
         image.dispose(id)
-      }
+      },
     }
     return Promise.resolve(photo)
   },
@@ -839,13 +846,26 @@ export const Camera = {
     __gea_Camera.setMirror(mirror)
   },
   setExposure(options: CameraExposureOptions): void {
-    __gea_Camera.setExposure(options.mode ?? 'continuous', options.bias ?? 0, options.iso ?? 0, options.durationMs ?? 0)
+    __gea_Camera.setExposure(
+      options.mode ?? 'continuous',
+      options.bias ?? 0,
+      options.iso ?? 0,
+      options.durationMs ?? 0,
+    )
   },
   setWhiteBalance(options: CameraWhiteBalanceOptions): void {
-    __gea_Camera.setWhiteBalance(options.mode ?? 'auto', options.temperature ?? 0, options.tint ?? 0)
+    __gea_Camera.setWhiteBalance(
+      options.mode ?? 'auto',
+      options.temperature ?? 0,
+      options.tint ?? 0,
+    )
   },
   setFocus(options: CameraFocusOptions): void {
-    __gea_Camera.setFocus(options.mode ?? 'continuous', options.point?.x ?? 0, options.point?.y ?? 0)
+    __gea_Camera.setFocus(
+      options.mode ?? 'continuous',
+      options.point?.x ?? 0,
+      options.point?.y ?? 0,
+    )
   },
   setTorch(mode: 'off' | 'on' | 'auto', level?: number): void {
     __gea_Camera.setTorch(mode, level ?? 0)
@@ -860,11 +880,11 @@ export const Camera = {
     for (let i = 0; i < count; i++) {
       out.push({
         id: __gea_Camera.deviceIdAt(i),
-        facing: __gea_Camera.deviceFacingAt(i) as CameraFacing
+        facing: __gea_Camera.deviceFacingAt(i) as CameraFacing,
       })
     }
     return out
-  }
+  },
 }
 
 // Same guard as Accelerometer above: these embedded host globals are not injected
@@ -872,7 +892,9 @@ export const Camera = {
 // reference ReferenceErrors at module load and blanks the page. `typeof` keeps the
 // real binding on embedded targets where the plugin injects them.
 export const audioContext: AudioContext =
-  typeof __gea_audioContext !== 'undefined' ? __gea_audioContext : (undefined as unknown as AudioContext)
+  typeof __gea_audioContext !== 'undefined'
+    ? __gea_audioContext
+    : (undefined as unknown as AudioContext)
 // Method wrapper, NOT the `typeof … ? … : undefined as …` guard the
 // property-bearing host objects above use. Two reasons. (1) The guard exists
 // only to stop a bare top-level reference from ReferenceError-ing at module
@@ -890,9 +912,12 @@ export const Audio = {
   },
   setVolume(volume: number): void {
     __gea_Audio.setVolume(volume)
-  }
+  },
 }
-export const Display = typeof __gea_Display !== 'undefined' ? __gea_Display : (undefined as unknown as typeof __gea_Display)
+export const Display =
+  typeof __gea_Display !== 'undefined'
+    ? __gea_Display
+    : (undefined as unknown as typeof __gea_Display)
 export const Memory = {
   internalFree(): number {
     return __gea_Memory.internalFree()
@@ -969,7 +994,7 @@ export const Memory = {
       allocationSramBytes: __gea_Memory.allocationSramBytes(),
       allocationPsramBytes: __gea_Memory.allocationPsramBytes(),
       allocationSramPeakBytes: __gea_Memory.allocationSramPeakBytes(),
-      allocationPsramPeakBytes: __gea_Memory.allocationPsramPeakBytes()
+      allocationPsramPeakBytes: __gea_Memory.allocationPsramPeakBytes(),
     }
   },
   config(): EmbeddedMemoryConfig {
@@ -983,14 +1008,14 @@ export const Memory = {
       displayFlushBufferMaxBytes: __gea_Memory.displayFlushBufferMaxBytes(),
       displayFlushRows: __gea_Memory.displayFlushRows(),
       displayFlushDepth: __gea_Memory.displayFlushDepth(),
-      displayFlushBufferBytes: __gea_Memory.displayFlushBufferBytes()
+      displayFlushBufferBytes: __gea_Memory.displayFlushBufferBytes(),
     }
-  }
+  },
 }
 export const Input = {
   consumeBackButton(): boolean {
     return __gea_Input.consumeBackButton()
-  }
+  },
 }
 export const Gpio = {
   configureOutput(pin: number): boolean {
@@ -1004,7 +1029,7 @@ export const Gpio = {
   },
   read(pin: number): boolean {
     return __gea_Gpio.read(pin)
-  }
+  },
 }
 export const Led = {
   set(pin: number, r: number, g: number, b: number): boolean {
@@ -1024,7 +1049,7 @@ export const Led = {
   },
   detach(): void {
     __gea_Led.detach()
-  }
+  },
 }
 export const Clock = {
   setEpochMs(timestamp: number): boolean {
@@ -1071,12 +1096,12 @@ export const Notify = {
   },
   seq(): number {
     return __gea_Notify.seq()
-  }
+  },
 }
 export const DeviceControl = {
   exec(command: string): string {
     return __gea_DeviceControl.exec(command)
-  }
+  },
 }
 // Method wrapper for the same two reasons as `Audio`/`Profiler` above: a
 // reference inside a method body cannot ReferenceError at module load, and the
@@ -1109,5 +1134,5 @@ export const imageHost = {
   },
   dispose(id: number): void {
     image.dispose(id)
-  }
+  },
 }

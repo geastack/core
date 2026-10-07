@@ -2866,8 +2866,8 @@ export function createGeaHostShims(): HostShimDefinitions {
             },
           },
           // `http.createServer(handler)` yields the native HttpServer handle. The
-          // handler arg is a boxed callable (dynamic boundary, like a WebSocket
-          // callback); registering the return type keeps `const server = ...` a
+          // handler is adapted directly from its typed callable; registering the
+          // return type keeps `const server = ...` a
           // concrete `gea::host::HttpServer` instead of a gea_cpp_value record.
           http: {
             // create_server returns the numeric handle; wrap it in the HttpServer

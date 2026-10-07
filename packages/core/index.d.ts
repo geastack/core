@@ -194,8 +194,20 @@ declare global {
     // fillText anchors the top of the line box, which carries ascender and
     // descender the glyphs do not fill, so subtracting half the font size sags.
     measureTextInkCenter(text: string): number
-    drawImageCircle(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
-    drawImageRotated90CW(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
+    drawImageCircle(
+      image: GeaEmbeddedImage,
+      dx: number,
+      dy: number,
+      width: number,
+      height: number,
+    ): void
+    drawImageRotated90CW(
+      image: GeaEmbeddedImage,
+      dx: number,
+      dy: number,
+      width: number,
+      height: number,
+    ): void
     drawImageTiledX(image: GeaEmbeddedImage, dx: number, dy: number, width: number): void
   }
 
@@ -219,7 +231,8 @@ export type StyleLength =
   | `max(${string})`
   | `clamp(${string})`
 export type StyleBox = StyleLength | string
-export type StylePreferredSize = StyleLength | 'auto' | 'min-content' | 'max-content' | 'fit-content'
+export type StylePreferredSize =
+  StyleLength | 'auto' | 'min-content' | 'max-content' | 'fit-content'
 export type StyleOverflow = 'visible' | 'hidden' | 'clip' | 'scroll' | 'auto' | 'overlay'
 export type ClassMap = Record<string, string | number | boolean | null | undefined>
 export type ClassValue = string | ClassMap
@@ -334,7 +347,10 @@ export interface Event {
 }
 
 export interface EventTarget {
-  addEventListener<K extends keyof GeaEventMap>(type: K, listener: (event: GeaEventMap[K]) => void): void
+  addEventListener<K extends keyof GeaEventMap>(
+    type: K,
+    listener: (event: GeaEventMap[K]) => void,
+  ): void
   addEventListener(type: string, listener: (event: Event) => void): void
 }
 
@@ -637,7 +653,10 @@ export interface AudioProps extends DataAttributes {
   autoplay?: boolean | string | number
   controls?: boolean | string | number
   loop?: boolean | string | number
-  ref?: HTMLAudioElement | (typeof globalThis extends { HTMLAudioElement: { prototype: infer E } } ? E : never) | null
+  ref?:
+    | HTMLAudioElement
+    | (typeof globalThis extends { HTMLAudioElement: { prototype: infer E } } ? E : never)
+    | null
   autoPlay?: boolean
   children?: any
 }
@@ -651,7 +670,10 @@ export interface VideoProps extends DataAttributes {
   playsinline?: boolean
   autoPlay?: boolean
   playsInline?: boolean
-  ref?: HTMLVideoElement | (typeof globalThis extends { HTMLVideoElement: { prototype: infer E } } ? E : never) | null
+  ref?:
+    | HTMLVideoElement
+    | (typeof globalThis extends { HTMLVideoElement: { prototype: infer E } } ? E : never)
+    | null
 }
 
 export type ImageSource = string | ArrayBuffer | Uint8Array | GeaEmbeddedImage
@@ -713,7 +735,10 @@ export interface LoadImageOptions {
 // native `GeaEmbeddedImage` handle directly rather than a Promise — `await` still
 // works and keeps the value (and any `GeaEmbeddedImage[]` cache) a concrete
 // struct instead of a boxed gea_cpp_value.
-export declare function loadImage(src: string | ArrayBuffer | Uint8Array, options?: LoadImageOptions): GeaEmbeddedImage
+export declare function loadImage(
+  src: string | ArrayBuffer | Uint8Array,
+  options?: LoadImageOptions,
+): GeaEmbeddedImage
 export declare function loadImageWithOpaque(src: Uint8Array, opaque: boolean): GeaEmbeddedImage
 
 // Load + decode an image directly from a persistent-cache file (e.g. a microSD
@@ -826,7 +851,7 @@ export class Component<RootElement extends GeaElement = GeaElement, Props = void
 // reactive overhead. Extend this only when the component manages its own state.
 export class ReactiveComponent<
   RootElement extends GeaElement = GeaElement,
-  Props = void
+  Props = void,
 > extends Component<RootElement, Props> {}
 
 export interface BluetoothKeyboard {
@@ -997,9 +1022,28 @@ export interface CanvasRenderingContext2D {
   fillCircle(x: number, y: number, radius: number, fill?: string | number): void
   strokeCircle(x: number, y: number, radius: number): void
   fillCircleRgb565(x: number, y: number, radius: number, color: number): void
-  fillTriangleRgb565(x0: number, y0: number, x1: number, y1: number, x2: number, y2: number, color: number): void
-  fillCirclesRgb565(xs: ArrayLike<number>, ys: ArrayLike<number>, radius: number, colors: ArrayLike<number>, count?: number): void
-  fillCirclesRgb565Uniform(xs: ArrayLike<number>, ys: ArrayLike<number>, radius: number, color: number): void
+  fillTriangleRgb565(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    color: number,
+  ): void
+  fillCirclesRgb565(
+    xs: ArrayLike<number>,
+    ys: ArrayLike<number>,
+    radius: number,
+    colors: ArrayLike<number>,
+    count?: number,
+  ): void
+  fillCirclesRgb565Uniform(
+    xs: ArrayLike<number>,
+    ys: ArrayLike<number>,
+    radius: number,
+    color: number,
+  ): void
   /**
    * Batched opaque triangles as ONE recorded present command. `order[0..count)`
    * indexes the coordinate/colour arrays in paint (depth) order; colours are
@@ -1040,8 +1084,20 @@ export interface CanvasRenderingContext2D {
   // with no alpha plane: the blit skips the pixels outside the shape rather
   // than blending them. A square opaque tile would otherwise paint its
   // corners over whatever it overlaps.
-  drawImageCircle(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
-  drawImageRotated90CW(image: GeaEmbeddedImage, dx: number, dy: number, width: number, height: number): void
+  drawImageCircle(
+    image: GeaEmbeddedImage,
+    dx: number,
+    dy: number,
+    width: number,
+    height: number,
+  ): void
+  drawImageRotated90CW(
+    image: GeaEmbeddedImage,
+    dx: number,
+    dy: number,
+    width: number,
+    height: number,
+  ): void
   drawImageTiledX(image: GeaEmbeddedImage, dx: number, dy: number, width: number): void
   /**
    * An RGB565 pixel buffer the app writes directly:
@@ -1105,7 +1161,8 @@ export interface DisplayEpaperRefreshConfig {
   fullOnCover?: boolean
 }
 
-export type DisplayOrientation = 'portrait-primary' | 'portrait-secondary' | 'landscape-primary' | 'landscape-secondary'
+export type DisplayOrientation =
+  'portrait-primary' | 'portrait-secondary' | 'landscape-primary' | 'landscape-secondary'
 
 export type DisplayOrientationSupport = DisplayOrientation | 'portrait' | 'landscape' | 'all'
 
@@ -1132,7 +1189,9 @@ export interface DisplayController {
   getOrientation(): DisplayOrientation
   setOrientation(orientation: DisplayOrientation): void
   getSupportedOrientations(): DisplayOrientationSupport[]
-  setSupportedOrientations(orientations: DisplayOrientationSupport | DisplayOrientationSupport[]): void
+  setSupportedOrientations(
+    orientations: DisplayOrientationSupport | DisplayOrientationSupport[],
+  ): void
   getAutoRotate(): boolean
   setAutoRotate(enabled: boolean): void
   /**
@@ -1606,12 +1665,12 @@ export interface GeolocationController {
   getCurrentPosition(
     success: (position: GeolocationPosition) => void,
     error?: (error: GeolocationPositionError) => void,
-    options?: PositionOptions
+    options?: PositionOptions,
   ): void
   watchPosition(
     success: (position: GeolocationPosition) => void,
     error?: (error: GeolocationPositionError) => void,
-    options?: PositionOptions
+    options?: PositionOptions,
   ): number
   clearWatch(id: number): void
 }
@@ -1837,7 +1896,7 @@ export declare function fetchUploadFileAsync(
   contentType: string,
   prefix: string,
   filePath: string,
-  suffix: string
+  suffix: string,
 ): number
 
 /**
@@ -1866,7 +1925,7 @@ declare global {
     contentType: string,
     prefix: string,
     filePath: string,
-    suffix: string
+    suffix: string,
   ): number
   function fetchDownloadFileAsync(url: string, auth: string, destPath: string): number
   function fetchUploadProgress(id: number): number
@@ -2011,7 +2070,13 @@ export interface MediaStreamConstructor {
 }
 
 export interface MediaStreamConstraints {
-  audio?: boolean | { sampleRate?: number; channelCount?: number; echoCancellation?: boolean }
+  audio?:
+    | boolean
+    | {
+        sampleRate?: number
+        channelCount?: number
+        echoCancellation?: boolean
+      }
   video?: false
 }
 
@@ -2207,7 +2272,9 @@ export interface RTCDataChannelInit {
   negotiated?: boolean
   id?: number
 }
-export interface RTCDataChannelMessageEvent { readonly data: string | ArrayBuffer }
+export interface RTCDataChannelMessageEvent {
+  readonly data: string | ArrayBuffer
+}
 export interface RTCDataChannel {
   readonly label: string
   readonly protocol: string
@@ -2230,8 +2297,12 @@ export interface RTCRtpSender {
   readonly track: MediaStreamTrack | null
   replaceTrack(track: MediaStreamTrack | null): Promise<void>
 }
-export interface RTCRtpReceiver { readonly track: MediaStreamTrack | null }
-export interface RTCRtpTransceiverInit { direction?: 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive' }
+export interface RTCRtpReceiver {
+  readonly track: MediaStreamTrack | null
+}
+export interface RTCRtpTransceiverInit {
+  direction?: 'sendrecv' | 'sendonly' | 'recvonly' | 'inactive'
+}
 export interface RTCRtpTransceiver {
   readonly sender: RTCRtpSender
   readonly receiver: RTCRtpReceiver
@@ -2243,8 +2314,10 @@ export interface RTCRtpTransceiver {
 }
 
 export interface RTCPeerConnectionInstance {
-  readonly connectionState: 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed'
-  readonly iceConnectionState: 'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed'
+  readonly connectionState:
+    'new' | 'connecting' | 'connected' | 'disconnected' | 'failed' | 'closed'
+  readonly iceConnectionState:
+    'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed'
 
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null
   ontrack: ((event: RTCTrackEvent) => void) | null
@@ -2259,7 +2332,10 @@ export interface RTCPeerConnectionInstance {
   ondatachannel: ((event: { channel: RTCDataChannel }) => void) | null
   addTrack(track: MediaStreamTrack, stream?: MediaStream): RTCRtpSender
   removeTrack(sender: RTCRtpSender): void
-  addTransceiver(trackOrKind: MediaStreamTrack | 'audio', init?: RTCRtpTransceiverInit): RTCRtpTransceiver
+  addTransceiver(
+    trackOrKind: MediaStreamTrack | 'audio',
+    init?: RTCRtpTransceiverInit,
+  ): RTCRtpTransceiver
   getTransceivers(): RTCRtpTransceiver[]
   getSenders(): RTCRtpSender[]
   getReceivers(): RTCRtpReceiver[]
@@ -2280,7 +2356,6 @@ declare global {
   const RTCPeerConnection: RTCPeerConnectionConstructor
   function Image(props: ImageProps): GeaJsxElement
 }
-
 
 /** Streaming mono signed PCM16, little endian, carried as base64 text. */
 export interface PcmAudioStream {

@@ -2723,8 +2723,7 @@ int gLastScrollUiFrame = -1000;
 
 				const int gx = penX + glyph.bearingX;
 				const int gy = command.projectedText.srcY + font.ascender() - glyph.bearingY;
-				if (sourceX >= gx && sourceX < gx + glyph.width &&
-						sourceY >= gy && sourceY < gy + glyph.height)
+				if (sourceX >= gx && sourceX < gx + glyph.width && sourceY >= gy && sourceY < gy + glyph.height)
 				{
 					return font.coverage(glyph, sourceY - gy, sourceX - gx);
 				}
