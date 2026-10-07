@@ -216,6 +216,10 @@ void releaseRareData(int node);          // frees the block back to the pool
 // Caller must hold AppState::lock(). Returns false for canvas/present apps.
 bool renderRetainedSnapshotRgb565(std::uint16_t *dst, int width, int height);
 
+// Snapshot replay temporarily binds only the primary canvas to an offscreen
+// buffer. A worker canvas still addresses the display framebuffer.
+extern bool gSnapshotRasterActive;
+
 #if GEA_EMBEDDED_DISPLAY_BANDED_UI
 // Banded UI mode: the retained tree renders each dirty band straight into the
 // display's DMA staging buffers, so the PSRAM framebuffer does not hold the

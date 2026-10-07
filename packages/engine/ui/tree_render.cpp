@@ -1694,10 +1694,32 @@ namespace gea::embedded::ui
 	}
 #endif
 
+	bool gSnapshotRasterActive = false;
+
 	bool renderRetainedSnapshotRgb565(std::uint16_t *dst, int width, int height)
 	{
 		if (!dst || width <= 0 || height <= 0)
 			return false;
+		struct SnapshotRasterScope
+		{
+			bool previous = gSnapshotRasterActive;
+			bool rebound = false;
+#if GEA_EMBEDDED_DISPLAY_BANDED_UI
+			bool previousBanded = gBandedRasterActive;
+#endif
+
+			SnapshotRasterScope() { gSnapshotRasterActive = true; }
+
+			~SnapshotRasterScope()
+			{
+				if (rebound)
+					gea::platform::display::Display::rebindCanvasToFramebuffer();
+				gSnapshotRasterActive = previous;
+#if GEA_EMBEDDED_DISPLAY_BANDED_UI
+				gBandedRasterActive = previousBanded;
+#endif
+			}
+		} scope;
 #if GEA_EMBEDDED_DISPLAY_BANDED_UI
 		// A banded frame lives only on the panel: render it again the way the
 		// bands did — black base, the underlay, then the whole display list.
@@ -1710,6 +1732,7 @@ namespace gea::embedded::ui
 			PixT *base = reinterpret_cast<PixT *>(dst);
 			std::fill_n(base, static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
 			            gea::framework::graphics::pixel::fromRgb565(0x0000));
+			scope.rebound = true;
 			bandCanvas->bindPixels(base, width, height, width);
 			gea::platform::display::Display::resetClip();
 			gea::platform::display::Display::setAlpha(255);
@@ -1718,7 +1741,6 @@ namespace gea::embedded::ui
 			bandedReplayRegion(0, 0, width - 1, height - 1, /*direct=*/false);
 			gBandedRasterActive = false;
 			gea::platform::display::Display::popClip();
-			gea::platform::display::Display::rebindCanvasToFramebuffer();
 			const int pixels = width * height;
 			for (int i = 0; i < pixels; i++)
 				dst[i] = gea::framework::graphics::pixel::toRgb565(base[i]);
@@ -1732,6 +1754,9 @@ namespace gea::embedded::ui
 			return false;
 		using PixT = gea::framework::graphics::pixel::native_t;
 		PixT *base = reinterpret_cast<PixT *>(dst);
+		std::fill_n(base, static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
+		            gea::framework::graphics::pixel::fromRgb565(0x0000));
+		scope.rebound = true;
 		canvas->bindPixels(base, width, height, width);
 		gea::platform::display::Display::resetClip();
 		gea::platform::display::Display::setAlpha(255);
@@ -1747,8 +1772,6 @@ namespace gea::embedded::ui
 			DisplayList::instance().replayDirectDirtyRegions(&region, 1);
 		}
 		gea::platform::display::Display::popClip();
-		// Restore the shared canvas onto the real framebuffer before the frame task resumes.
-		gea::platform::display::Display::rebindCanvasToFramebuffer();
 		const int pixels = width * height;
 		for (int i = 0; i < pixels; i++)
 			dst[i] = gea::framework::graphics::pixel::toRgb565(base[i]);

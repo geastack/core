@@ -138,14 +138,13 @@ extern "C" __attribute__((weak)) void *gea_display_command_buffer(int *cap_comma
 	return nullptr;
 }
 
-// Banded UI mode (GEA_EMBEDDED_DISPLAY_BANDED_UI) replays into a DMA staging
-// chunk the shared canvas is temporarily bound to; the worker core's canvas
-// still addresses the framebuffer, so no replay/fill may split across cores
-// while a band rasterizes. Constant true everywhere else.
+// Offscreen snapshots and banded raster callbacks temporarily bind the primary
+// canvas to another buffer. The worker canvas still addresses the framebuffer,
+// so neither command replay nor individual fills may split across cores.
 #if GEA_EMBEDDED_DISPLAY_BANDED_UI
-#define GEA_RENDER_SPLIT_ALLOWED (!gea::embedded::ui::gBandedRasterActive)
+#define GEA_RENDER_SPLIT_ALLOWED (!gea::embedded::ui::gSnapshotRasterActive && !gea::embedded::ui::gBandedRasterActive)
 #else
-#define GEA_RENDER_SPLIT_ALLOWED 1
+#define GEA_RENDER_SPLIT_ALLOWED (!gea::embedded::ui::gSnapshotRasterActive)
 #endif
 
 // 2nd-core fill offload. The target may provide a worker pinned to the other CPU;

@@ -41,7 +41,9 @@ assert.match(render, /GEA_EMBEDDED_TRANSFORMED_GRADIENT_LUT_LOCK/, 'transformed-
 // never draws a transformed gradient reserves nothing. Still one bank per core.
 assert.match(render, /new FaceLutSlot\[kTransformedGradientLutBanks\]\[kTransformedGradientLutSlots\]\(\)/, 'transformed-gradient rasterizer should support per-core LUT banks')
 assert.match(render, /lutBank %= kTransformedGradientLutBanks/, 'transformed-gradient rasterizer should select a LUT bank from the render core id')
-assert.match(render, /GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && allowSplit/, 'renderer should let targets disable coarse dirty-region replay while keeping row-level core1 work')
+assert.match(render, /GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && GEA_RENDER_SPLIT_ALLOWED && allowSplit/, 'renderer should combine target and offscreen safety gates before coarse dirty-region replay')
+assert.match(render, /#define GEA_RENDER_SPLIT_ALLOWED \(!gea::embedded::ui::gSnapshotRasterActive && !gea::embedded::ui::gBandedRasterActive\)/, 'banded snapshots must keep workers away from the temporarily rebound canvas')
+assert.match(render, /#define GEA_RENDER_SPLIT_ALLOWED \(!gea::embedded::ui::gSnapshotRasterActive\)/, 'ordinary offscreen snapshots must also disable framebuffer worker replay')
 assert.match(render, /PaintOrder::compareNodes\(state\.drawNodeOrder\[j\], node\) > 0/, 'reproject draw-order sorting should reuse the recorder paint-order comparison (stack levels, depth, z-index) instead of a private key')
 assert.match(render, /GEA_RENDER_HOT_SRAM void drawProjectedText/, 'Tufty should keep visible projected cube labels in SRAM')
 assert.match(render, /sramCoveragePool\[kProjectedTextCacheBanks\]\[GEA_EMBEDDED_PROJECTED_TEXT_SRAM_CACHE_BYTES\]/, 'projected text should support target-gated SRAM coverage buffers')
