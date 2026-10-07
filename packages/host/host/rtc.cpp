@@ -220,7 +220,7 @@ std::unordered_map<NativeRtcPeerHandle, CallbackTable> &callbackTable() {
   return *table;
 }
 
-#if defined(ESP_PLATFORM) && !defined(GEA_EMBEDDED_WIFI_DISABLED)
+#if defined(ESP_PLATFORM) && !defined(GEA_EMBEDDED_WIFI_DISABLED) && !defined(GEA_EMBEDDED_RTC_UNUSED)
 void platform_request_description(NativeRtcPeerHandle, bool, std::shared_ptr<DescriptionResult>);
 void platform_create(NativeRtcPeerHandle, const RTCConfiguration &);
 void platform_direction(NativeRtcPeerHandle, const std::string&, const std::string&);

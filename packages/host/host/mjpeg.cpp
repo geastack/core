@@ -17,7 +17,7 @@ extern "C" void gea_mjpeg_link_bindings() {}
 #if defined(ESP_PLATFORM) && !defined(GEA_EMBEDDED_WIFI_DISABLED) && __has_include("esp_jpeg_dec.h")
 #include "esp_http_client.h"
 #include "esp_jpeg_dec.h"
-#if __has_include("esp_h264_dec_sw.h")
+#if !defined(GEA_EMBEDDED_H264_UNUSED) && __has_include("esp_h264_dec_sw.h")
 #include "host/rtc_h264.h"
 #define GEA_HAS_MULTIPART_H264 1
 #endif
