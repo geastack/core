@@ -253,6 +253,12 @@ public:
   static std::string ip();
   static std::string mac();
   static void configure(const std::string &ssid, const std::string &password);
+  static bool startAccessPoint(const std::string &ssid,
+                               const std::string &password);
+  static void stopAccessPoint();
+  static std::string accessPointMac();
+  static bool startCaptivePortal();
+  static void stopCaptivePortal();
   static bool waitForConnection(double timeoutMs);
   static void startScan();
   static bool scanning();

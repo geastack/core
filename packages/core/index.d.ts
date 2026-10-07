@@ -1594,6 +1594,12 @@ export declare const Geolocation: GeolocationController
 export declare const geolocation: GeolocationController
 
 export interface WiFiController {
+  accessPointMac(): string
+  startCaptivePortal(): boolean
+  stopCaptivePortal(): void
+  startAccessPoint(ssid: string, password?: string): boolean
+  stopAccessPoint(): void
+
   enabled(): boolean
   setEnabled(enabled: boolean): void
   connected(): boolean

@@ -26,6 +26,13 @@ public:
   virtual std::string mac() = 0;
   virtual void configure(const std::string &ssid,
                          const std::string &password) = 0;
+  virtual bool startAccessPoint(const std::string &, const std::string &) {
+    return false;
+  }
+  virtual void stopAccessPoint() {}
+  virtual std::string accessPointMac() { return {}; }
+  virtual bool startCaptivePortal() { return false; }
+  virtual void stopCaptivePortal() {}
   virtual void scan() = 0;
   virtual bool scanning() const = 0;
   virtual int scanCount() const = 0;
@@ -52,6 +59,12 @@ public:
   std::string ip() const;
   std::string mac() const;
   void configure(const std::string &ssid, const std::string &password) const;
+  bool startAccessPoint(const std::string &ssid,
+                        const std::string &password) const;
+  void stopAccessPoint() const;
+  std::string accessPointMac() const;
+  bool startCaptivePortal() const;
+  void stopCaptivePortal() const;
   void scan() const;
   bool scanning() const;
   int scanCount() const;

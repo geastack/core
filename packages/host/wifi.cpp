@@ -168,6 +168,18 @@ void WifiAdapter::configure(const std::string &ssid,
                             const std::string &password) const {
   driver()->configure(ssid, password);
 }
+bool WifiAdapter::startAccessPoint(const std::string &ssid,
+                                   const std::string &password) const {
+  return driver()->startAccessPoint(ssid, password);
+}
+void WifiAdapter::stopAccessPoint() const { driver()->stopAccessPoint(); }
+std::string WifiAdapter::accessPointMac() const {
+  return driver()->accessPointMac();
+}
+bool WifiAdapter::startCaptivePortal() const {
+  return driver()->startCaptivePortal();
+}
+void WifiAdapter::stopCaptivePortal() const { driver()->stopCaptivePortal(); }
 void WifiAdapter::scan() const { driver()->scan(); }
 bool WifiAdapter::scanning() const { return driver()->scanning(); }
 int WifiAdapter::scanCount() const { return driver()->scanCount(); }

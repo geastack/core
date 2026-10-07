@@ -30,7 +30,8 @@ import type {
   EmbeddedMemoryConfig,
   EmbeddedMemoryStats,
   HttpReply,
-  AudioContext
+  AudioContext,
+  WiFiController
 } from '../index'
 
 // These 17 used to be declared HERE as well as in `../index`, byte for byte.
@@ -95,23 +96,7 @@ declare const navigator: {
     ): number
     clearWatch(id: number): void
   }
-  wifi: {
-    enabled(): boolean
-    setEnabled(enabled: boolean): void
-    connected(): boolean
-    rssi(): number
-    ssid(): string
-    ip(): string
-    mac(): string
-    configure(ssid: string, password: string): void
-    waitForConnection(timeoutMs: number): boolean
-    startScan(): void
-    scanning(): boolean
-    scanCount(): number
-    scanSsidAt(index: number): string
-    scanRssiAt(index: number): number
-    scanSecuredAt(index: number): boolean
-  }
+  wifi: WiFiController
   bluetooth: {
     keyboard: {
       tap(hidCode: number): void
@@ -623,6 +608,25 @@ export const BLE: typeof navigator.bluetooth = {
 }
 export const bluetooth = BLE
 export const WiFi: typeof navigator.wifi = {
+  accessPointMac(): string {
+    return navigator.wifi.accessPointMac()
+  },
+
+  startCaptivePortal(): boolean {
+    return navigator.wifi.startCaptivePortal()
+  },
+
+  stopCaptivePortal(): void {
+    navigator.wifi.stopCaptivePortal()
+  },
+
+  startAccessPoint(ssid: string, password = ''): boolean {
+    return navigator.wifi.startAccessPoint(ssid, password)
+  },
+
+  stopAccessPoint(): void {
+    navigator.wifi.stopAccessPoint()
+  },
   enabled(): boolean {
     return navigator.wifi.enabled()
   },

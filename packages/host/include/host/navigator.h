@@ -113,6 +113,23 @@ public:
   void configure(const std::string &ssid, const std::string &password) const {
     gea::framework::network::WifiBackend::configure(ssid, password);
   }
+  bool startAccessPoint(const std::string &ssid,
+                        const std::string &password = {}) const {
+    return gea::framework::network::WifiBackend::startAccessPoint(ssid,
+                                                                  password);
+  }
+  void stopAccessPoint() const {
+    gea::framework::network::WifiBackend::stopAccessPoint();
+  }
+  std::string accessPointMac() const {
+    return gea::framework::network::WifiBackend::accessPointMac();
+  }
+  bool startCaptivePortal() const {
+    return gea::framework::network::WifiBackend::startCaptivePortal();
+  }
+  void stopCaptivePortal() const {
+    gea::framework::network::WifiBackend::stopCaptivePortal();
+  }
   bool waitForConnection(double timeoutMs) const {
     return gea::framework::network::WifiBackend::waitForConnection(timeoutMs);
   }

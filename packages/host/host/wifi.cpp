@@ -45,6 +45,19 @@ void WifiBackend::configure(const std::string &ssid,
   wifi().configure(ssid, password);
 }
 
+bool WifiBackend::startAccessPoint(const std::string &ssid,
+                                   const std::string &password) {
+  return wifi().startAccessPoint(ssid, password);
+}
+
+void WifiBackend::stopAccessPoint() { wifi().stopAccessPoint(); }
+
+std::string WifiBackend::accessPointMac() { return wifi().accessPointMac(); }
+
+bool WifiBackend::startCaptivePortal() { return wifi().startCaptivePortal(); }
+
+void WifiBackend::stopCaptivePortal() { wifi().stopCaptivePortal(); }
+
 bool WifiBackend::waitForConnection(double timeoutMs) {
   if (wifi().connected())
     return true;
