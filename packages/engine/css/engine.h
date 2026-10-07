@@ -46,6 +46,22 @@ public:
   {
     running_.eraseIf([&](const Running &r) { return r.handle == handle; });
   }
+  bool contains(int handle) const
+  {
+    for (std::size_t i = 0; i < running_.size(); ++i)
+      if (running_[i].handle == handle) return true;
+    return false;
+  }
+  void setPaused(int handle, bool paused, uint32_t nowMs)
+  {
+    for (std::size_t i = 0; i < running_.size(); ++i) {
+      Running &r = running_[i];
+      if (r.handle != handle || r.paused == paused) continue;
+      if (paused) r.pauseMs = nowMs;
+      else r.startMs += nowMs - r.pauseMs;
+      r.paused = paused;
+    }
+  }
   void cancelNode(int nodeId)  // cancel all animations targeting a node
   {
     running_.eraseIf([&](const Running &r) { return r.anim.nodeId == nodeId; });
@@ -65,7 +81,7 @@ public:
       const Progress pr = computeProgress(first.anim, elapsed);
       std::size_t groupEnd = i + 1;
       while (groupEnd < running_.size() && sameTimeline(first, running_[groupEnd])) ++groupEnd;
-      if (pr.active) {
+      if (pr.active && !first.paused) {
         for (std::size_t j = i; j < groupEnd; ++j) {
           const auto &a = running_[j].anim;
           if (!a.rotationAxes.empty())
@@ -75,7 +91,7 @@ public:
           else applyValue(a, sampleTrack(a, pr.p));
         }
       }
-      if (pr.done)
+      if (pr.done && !first.paused)
         running_.erase(i, groupEnd);
       else
         i = groupEnd;
@@ -89,6 +105,8 @@ private:
     Animation anim;
     uint32_t startMs;
     int handle;
+    bool paused = false;
+    uint32_t pauseMs = 0;
   };
 
   class RunningList {
@@ -195,7 +213,7 @@ private:
 
   static bool sameTimeline(const Running &a, const Running &b)
   {
-    return a.startMs == b.startMs && a.anim.durationMs == b.anim.durationMs &&
+    return a.paused == b.paused && a.startMs == b.startMs && a.anim.durationMs == b.anim.durationMs &&
            a.anim.delayMs == b.anim.delayMs && a.anim.iterations == b.anim.iterations &&
            a.anim.direction == b.anim.direction && a.anim.fill == b.anim.fill;
   }
@@ -237,6 +255,8 @@ public:
   static AnimationEngine &instance() { static AnimationEngine engine; return engine; }
   int start(Animation, uint32_t) = delete;
   void cancel(int) {}
+  bool contains(int) const { return false; }
+  void setPaused(int, bool, uint32_t) {}
   void cancelNode(int) {}
   void clear() {}
   bool active() const { return false; }

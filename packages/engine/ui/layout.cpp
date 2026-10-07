@@ -1540,6 +1540,7 @@ private:
 	bool zeroBasisGrowItem(const Node &childNode) const
 	{
 		if (hasFlexBasis(childNode) || childNode.computedStyle().flex <= 0) return false;
+		if (flexPercentageBasis() < 0) return false;
 		return !(isRow_ ? hasExplicitWidth(childNode) : hasExplicitHeight(childNode));
 	}
 
@@ -1550,6 +1551,9 @@ private:
 		// that result, including content sizing for an indefinite percentage.
 		if (hasFlexBasis(childNode)) return;
 		if (childNode.computedStyle().flex <= 0) return;
+		// The shorthand's zero percentage basis resolves to content when the
+		// container's main size is indefinite, including auto-height columns.
+		if (flexPercentageBasis() < 0) return;
 		if (isRow_) {
 			if (hasExplicitWidth(childNode)) return;
 			if (childNode.layout.width == 0) return;

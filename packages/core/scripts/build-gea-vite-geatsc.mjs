@@ -2087,7 +2087,6 @@ function cssIgnoredProperty(property) {
     'scroll-snap-type',
     'scrollbar-width',
     'text-shadow',
-    'transition',
     'cursor',
     '-webkit-tap-highlight-color',
   ]).has(property)

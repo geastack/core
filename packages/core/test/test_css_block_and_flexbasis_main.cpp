@@ -2739,21 +2739,23 @@ void testZeroTransformOrigins()
 {
 	for (const char *zero : {"0", "-0", "0px", "0em", "0%"}) {
 		resetNativeHost(); StyleSheet::instance().clear(); setViewportMetrics(300, 300, 1.0);
+		// Pixel origins use a tagged carrier; compare the used coordinate,
+		// which must be zero for all authored unit spellings.
 		const std::string origin = std::string(zero) + " " + zero;
 		StyleSheet::instance().registerRule("origin", "transform-origin", origin.c_str());
 		StyleSheet::instance().registerRule("origin", "perspective-origin", origin.c_str());
 		auto &tree = Tree::instance(); const int root = makeDiv(-1, nullptr), box = makeDiv(root, "origin");
 		NodeHandle(root).style().width(100); NodeHandle(box).style().width(20); NodeHandle(box).style().height(20);
 		tree.mount(root, 300, 300);
-		expectEqual(rstyle(tree.node(box).style).transform_origin_x, 0, "cached zero transform origin resolves to start");
-		expectEqual(rstyle(tree.node(box).style).transform_origin_y, 0, "cached zero transform origin resolves vertical start");
-		expectEqual(rstyle(tree.node(box).style).perspective_origin_x, 0, "zero perspective origin shares length handling");
+		expectEqual(resolveOriginOffset(rstyle(tree.node(box).style).transform_origin_x, 20), 0, "cached zero transform origin resolves to start");
+		expectEqual(resolveOriginOffset(rstyle(tree.node(box).style).transform_origin_y, 20), 0, "cached zero transform origin resolves vertical start");
+		expectEqual(resolveOriginOffset(rstyle(tree.node(box).style).perspective_origin_x, 20), 0, "zero perspective origin shares length handling");
 		auto s = NodeHandle(box).style(); s.setProperty("transform-origin", "center"); tree.refresh(root, 300, 300);
 		expectEqual(rstyle(tree.node(box).style).transform_origin_x, 500, "center origin remains percentage based");
 		s.setProperty("--origin", zero); s.setProperty("transform-origin", "var(--origin) var(--origin)"); tree.refresh(root, 300, 300);
-		expectEqual(rstyle(tree.node(box).style).transform_origin_x, 0, "dynamic origin zero matches compiled origin");
+		expectEqual(resolveOriginOffset(rstyle(tree.node(box).style).transform_origin_x, 20), 0, "dynamic origin zero matches compiled origin");
 		s.removeProperty("transform-origin"); tree.refresh(root, 300, 300);
-		expectEqual(rstyle(tree.node(box).style).transform_origin_x, 0, "removing origin override restores cached zero");
+		expectEqual(resolveOriginOffset(rstyle(tree.node(box).style).transform_origin_x, 20), 0, "removing origin override restores cached zero");
 	}
 }
 
@@ -5268,8 +5270,33 @@ void testFloatReferenceGeometry()
 
 }  // namespace
 
-int main()
+void testAutomaticFlexGrowIntrinsicSize()
 {
+	resetNativeHost(); StyleSheet::instance().clear(); setViewportMetrics(300, 400, 1.0);
+	auto &tree = Tree::instance();
+	const int root = makeDiv(-1, nullptr), card = makeDiv(root, nullptr);
+	NodeHandle(root).style().width(300);
+	auto box = NodeHandle(card).style(); box.width(180); box.setProperty("display", "flex");
+	box.setProperty("flex-direction", "column"); box.setProperty("padding", "10px"); box.setProperty("gap", "13px");
+	const int heading = makeDiv(card, nullptr), field = makeDiv(card, nullptr), footer = makeDiv(card, nullptr);
+	NodeHandle(heading).style().height(28); NodeHandle(footer).style().height(22);
+	auto grow = NodeHandle(field).style(); grow.setProperty("display", "flex");
+	grow.setProperty("flex-direction", "column"); grow.setProperty("gap", "7px"); grow.setProperty("flex", "1");
+	const int label = makeDiv(field, nullptr), input = makeDiv(field, nullptr);
+	NodeHandle(label).style().height(16); NodeHandle(input).style().height(34);
+	tree.mount(root, 300, 400);
+	expectEqual(tree.node(field).layout.height, 57, "auto-height growing item uses its content basis");
+	expectEqual(tree.node(card).layout.height, 153, "auto-height flex container includes zero-percent-basis content");
+	expectTrue(tree.node(footer).layout.y + tree.node(footer).layout.height + 10 <=
+	    tree.node(card).layout.y + tree.node(card).layout.height, "following controls fit inside auto-height card padding");
+}
+
+int main(int argc, char **argv)
+{
+	if (argc > 1 && std::strcmp(argv[1], "automatic-flex-size") == 0) {
+		testAutomaticFlexGrowIntrinsicSize();
+		return gFailures ? 1 : 0;
+	}
 	testBoxSizingAndDeferredCalc();
 	testBaselineAlignment();
 	testSelfRelativeAlignment();
@@ -5328,6 +5355,7 @@ int main()
 	testNestedFloatClearance();
 	testBlockInInlineFormatting();
 	testAutomaticFlexWrapBlockSize();
+	testAutomaticFlexGrowIntrinsicSize();
 	testFloatShrinkToFit();
 	testFloatFormattingContextHeight();
 	testEmptyBoxFloatPosition();

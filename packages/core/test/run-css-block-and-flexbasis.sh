@@ -17,4 +17,4 @@ gea_build_native_test \
   "$BUILD_DIR/css-block-and-flexbasis-test" \
   "$ROOT/packages/core/test/test_css_block_and_flexbasis_main.cpp"
 
-"$BUILD_DIR/css-block-and-flexbasis-test"
+"$BUILD_DIR/css-block-and-flexbasis-test" "$@"

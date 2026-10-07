@@ -27,6 +27,7 @@ fs.writeFileSync(path.join(appDir, 'styles.css'), `
 .ordered-rotation { transform: rotate(90deg) rotate3d(1,0,0,60deg); }
 .repeated-rotation { transform: rotate(45deg) rotate(45deg); }
 .scale-depth { transform: scaleZ(2) scaleZ(3); }
+.motion-control { transition: width 650ms ease, border-radius 650ms linear; animation-play-state: paused; }
 .shaded-border { border: 10px groove #000000; border-left: 8px ridge #804020; }
 
 .zoom:hover { background-color: #00ff00; }
@@ -165,6 +166,8 @@ assert.doesNotMatch(generated, /registerStaticRule\("scene",\s*"grid-template-co
 assert.doesNotMatch(generated, /registerStaticRule\("scene",\s*"mask-image"/)
 assert.doesNotMatch(generated, /registerStaticRule\("auto-box",\s*"width"/)
 assert.doesNotMatch(generated, /registerStaticRule\("auto-box",\s*"height"/)
+assert.match(generated, /registerStaticRule\("motion-control",\s*"transition",\s*"width 650ms ease, border-radius 650ms linear"/)
+assert.match(generated, /registerStaticRule\("motion-control",\s*"animation-play-state",\s*"paused"/)
 assert.doesNotMatch(generated, /registerStaticKeyframeRule\("turn",\s*0,\s*"rotate"/)
 assert.doesNotMatch(generated, /registerStaticKeyframeRule\("grow",\s*0,\s*"scale"/)
 assert.doesNotMatch(generated, /registerStaticKeyframeRule\("ink",\s*0,\s*"color"/)
@@ -196,3 +199,6 @@ assert.match(tapeGenerated, /static_cast<std::uint16_t>\(gea::embedded::ui::Stat
 assert.match(tapeGenerated, /registerStaticLengthRule\([^;]*"auto-box",\s*gea::embedded::ui::StaticStyleLengthProperty::Width,\s*gea::embedded::ui::StaticStyleLengthUnit::Auto,\s*0/)
 assert.match(tapeGenerated, /registerStaticLengthRule\([^;]*"auto-box",\s*gea::embedded::ui::StaticStyleLengthProperty::Height,\s*gea::embedded::ui::StaticStyleLengthUnit::Auto,\s*0/)
 assert.doesNotMatch(tapeGenerated, /registerStaticRule\("zoom",\s*"gap"/)
+assert.match(tapeGenerated, /"transition"/)
+assert.match(tapeGenerated, /"width 650ms ease, border-radius 650ms linear"/)
+assert.match(tapeGenerated, /"animation-play-state"/)

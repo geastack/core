@@ -36,6 +36,21 @@ inline constexpr int kMaxNodes = GEA_EMBEDDED_MAX_NODES;
 inline constexpr int kUnset = -32768;
 // Internal value carrier for CSS z-index:auto; numeric stack levels stay int16.
 inline constexpr int kZIndexAuto = INT32_MIN;
+// Origins keep percentage permille values unchanged; absolute pixel lengths
+// occupy a tagged range outside the former int16 representation.
+inline constexpr int kAbsoluteOriginTag = 1 << 30;
+
+inline int absoluteOriginPixels(int pixels)
+{
+	return kAbsoluteOriginTag + std::clamp(pixels, -(1 << 29), (1 << 29) - 1);
+}
+
+inline float resolveOriginOffset(int origin, int extent)
+{
+	return origin >= (1 << 29) ? static_cast<float>(origin - kAbsoluteOriginTag)
+	                          : static_cast<float>(extent) * origin * 0.001f;
+}
+
 // Dimension expression slots use nonnegative values for pooled expressions,
 // -1 for no expression, and these tags for intrinsic sizing keywords.
 inline constexpr int kSizeMinContent = -2;
@@ -248,11 +263,11 @@ struct RareStyle {
 	int16_t transform_scale_x = 1000;
 	int16_t transform_scale_y = 1000;
 	int16_t transform_scale_z = 1000;
-	int16_t transform_origin_x = 500;
-	int16_t transform_origin_y = 500;
+	int32_t transform_origin_x = 500;
+	int32_t transform_origin_y = 500;
 	int16_t perspective = 0;
-	int16_t perspective_origin_x = 500;
-	int16_t perspective_origin_y = 500;
+	int32_t perspective_origin_x = 500;
+	int32_t perspective_origin_y = 500;
 
 #else
 	static constexpr uint8_t transform_present = 0;
@@ -277,11 +292,11 @@ struct RareStyle {
 	static constexpr int16_t transform_scale_x = 1000;
 	static constexpr int16_t transform_scale_y = 1000;
 	static constexpr int16_t transform_scale_z = 1000;
-	static constexpr int16_t transform_origin_x = 500;
-	static constexpr int16_t transform_origin_y = 500;
+	static constexpr int32_t transform_origin_x = 500;
+	static constexpr int32_t transform_origin_y = 500;
 	static constexpr int16_t perspective = 0;
-	static constexpr int16_t perspective_origin_x = 500;
-	static constexpr int16_t perspective_origin_y = 500;
+	static constexpr int32_t perspective_origin_x = 500;
+	static constexpr int32_t perspective_origin_y = 500;
 #endif
 #if GEA_CSS_FILTERS
 	uint8_t filter_present = 0;
@@ -1421,11 +1436,11 @@ struct RenderState {
 	int16_t previous_transform_scale_x;
 	int16_t previous_transform_scale_y;
 	int16_t previous_transform_scale_z;
-	int16_t previous_transform_origin_x;
-	int16_t previous_transform_origin_y;
+	int32_t previous_transform_origin_x;
+	int32_t previous_transform_origin_y;
 	int16_t previous_perspective;
-	int16_t previous_perspective_origin_x;
-	int16_t previous_perspective_origin_y;
+	int32_t previous_perspective_origin_x;
+	int32_t previous_perspective_origin_y;
 	uint8_t previous_transformable_box;
 #else
 	static constexpr int16_t previous_rotate_angle = 0;
@@ -1452,11 +1467,11 @@ struct RenderState {
 	static constexpr int16_t previous_transform_scale_x = 1000;
 	static constexpr int16_t previous_transform_scale_y = 1000;
 	static constexpr int16_t previous_transform_scale_z = 1000;
-	static constexpr int16_t previous_transform_origin_x = 500;
-	static constexpr int16_t previous_transform_origin_y = 500;
+	static constexpr int32_t previous_transform_origin_x = 500;
+	static constexpr int32_t previous_transform_origin_y = 500;
 	static constexpr int16_t previous_perspective = 0;
-	static constexpr int16_t previous_perspective_origin_x = 500;
-	static constexpr int16_t previous_perspective_origin_y = 500;
+	static constexpr int32_t previous_perspective_origin_x = 500;
+	static constexpr int32_t previous_perspective_origin_y = 500;
 	static constexpr uint8_t previous_transformable_box = 0;
 #endif
 #if GEA_CSS_FILTERS

@@ -1012,8 +1012,8 @@ public:
 	{
 		const RareStyle &r = rstyle(node.computedStyle());
 		e.x = node.layout.x; e.y = node.layout.y; e.w = node.layout.width; e.h = node.layout.height;
-		e.ox = e.x + e.w * r.transform_origin_x * kInv1000f;
-		e.oy = e.y + e.h * r.transform_origin_y * kInv1000f;
+		e.ox = e.x + resolveOriginOffset(r.transform_origin_x, e.w);
+		e.oy = e.y + resolveOriginOffset(r.transform_origin_y, e.h);
 		if (!hasTransformableBox(node)) {
 			std::fill(std::begin(e.matrix), std::end(e.matrix), 0.0f);
 			e.matrix[0] = e.matrix[4] = e.matrix[8] = 1.0f;
@@ -1043,8 +1043,8 @@ public:
 			return;
 		}
 		const float w = node.layout.previous_width, h = node.layout.previous_height;
-		e.pOx = node.layout.previous_x + w*r.previous_transform_origin_x*kInv1000f;
-		e.pOy = node.layout.previous_y + h*r.previous_transform_origin_y*kInv1000f;
+		e.pOx = node.layout.previous_x + resolveOriginOffset(r.previous_transform_origin_x, w);
+		e.pOy = node.layout.previous_y + resolveOriginOffset(r.previous_transform_origin_y, h);
 		fillLinear(e.previousMatrix, r.previous_transform_rotate_x, r.previous_transform_rotate_y, r.previous_transform_rotate,
 		    r.previous_transform_scale_x, r.previous_transform_scale_y, r.previous_transform_scale_z);
 		auto shift = listTranslation({r.previous_transform_translate_x - r.previous_translate_x + w*(r.previous_transform_translate_x_percent-r.previous_translate_x_percent)*kInv1000f,
@@ -1168,8 +1168,8 @@ public:
 			const auto &parent = state.nodes[id];
 			const auto &rare = rstyle(parent.computedStyle());
 			if (hasTransformableBox(parent) && rare.perspective > 0) {
-				const float ox = parent.layout.x + parent.layout.width * rare.perspective_origin_x * 0.001f;
-				const float oy = parent.layout.y + parent.layout.height * rare.perspective_origin_y * 0.001f;
+				const float ox = parent.layout.x + resolveOriginOffset(rare.perspective_origin_x, parent.layout.width);
+				const float oy = parent.layout.y + resolveOriginOffset(rare.perspective_origin_y, parent.layout.height);
 				normal.z += (offset + normal.x * ox + normal.y * oy) / rare.perspective;
 			}
 			if (!hasTransformableBox(parent) || !preserves3D(parent.computedStyle())) break;
@@ -1272,8 +1272,8 @@ public:
 		const int originX = usePrevious ? node.render.previous_perspective_origin_x : rs.perspective_origin_x;
 		const int originY = usePrevious ? node.render.previous_perspective_origin_y : rs.perspective_origin_y;
 		if (perspective <= 0) return;
-		const float poX = static_cast<float>(x) + static_cast<float>(w) * static_cast<float>(originX) * kInv1000f;
-		const float poY = static_cast<float>(y) + static_cast<float>(h) * static_cast<float>(originY) * kInv1000f;
+		const float poX = static_cast<float>(x) + resolveOriginOffset(originX, w);
+		const float poY = static_cast<float>(y) + resolveOriginOffset(originY, h);
 		float scale = static_cast<float>(perspective) / (static_cast<float>(perspective) - p.z);
 		if (!std::isfinite(scale)) scale = 1.0f;
 		if (scale < 0.05f) scale = 0.05f;

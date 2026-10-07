@@ -1106,11 +1106,12 @@ CssDeclarationId classifyDeclaration(const char *property)
 	    std::strcmp(property, "scroll-snap-type") == 0 ||
 	    std::strcmp(property, "scrollbar-width") == 0 ||
 	    std::strcmp(property, "text-shadow") == 0 ||
-	    std::strcmp(property, "transition") == 0 ||
 	    std::strcmp(property, "cursor") == 0 ||
 	    std::strcmp(property, "-webkit-tap-highlight-color") == 0)
 		return CssDeclarationId::Ignored;
 	if (std::strcmp(property, "animation") == 0) return CssDeclarationId::Animation;
+	if (std::strcmp(property, "transition") == 0) return CssDeclarationId::Transition;
+	if (std::strcmp(property, "animation-play-state") == 0) return CssDeclarationId::AnimationPlayState;
 	if (std::strcmp(property, "font") == 0) return CssDeclarationId::Font;
 	if (std::strcmp(property, "display") == 0) return CssDeclarationId::Display;
 	if (std::strcmp(property, "flex-direction") == 0) return CssDeclarationId::FlexDirection;
@@ -1621,6 +1622,9 @@ void setStyleValue(NodeHandle node, Property property, int value, StyleApplicati
 struct ActiveRulePlan;
 #if GEA_CSS_ANIMATIONS
 void primeCssAnimationsForNode(int node, const ActiveRulePlan *activePlan = nullptr);
+void primeCssTransitionsForNode(int node, const ComputedStyle &before, const ActiveRulePlan &plan);
+bool inlineTransitionBefore(int node, Property property, double &before);
+void applyInlineTransition(int node, Property property, double before);
 #endif
 int parseOriginPart(const std::string &part, int fallback);
 
@@ -4170,6 +4174,8 @@ std::string firstColorToken(const std::string &value)
 // Parse to a RAW (pre-panel-swap) native style-value int. Callers route through
 // setStyleValue/pixelFromStyleValue (border fallback, keyframe colours), which
 // applies the panel byte-swap on 16-bit boards; identity on full-colour boards.
+ParsedCssColor parseCssColor(const std::string &value);
+
 int parseColorStyleValue(const std::string &value)
 {
 #if GEA_RECPROF
@@ -4178,9 +4184,8 @@ int parseColorStyleValue(const std::string &value)
 	struct ColorTimer { int64_t s; ~ColorTimer() { g_profColorUs += recNow() - s; } } _colorTimer{_ct};
 #endif
 	const std::string colorValue = firstColorToken(value);
-	ParsedCssColor parsed;
-	if (parseRgbFunction(colorValue, parsed)) return static_cast<int>(gea::framework::graphics::pixel::nativeStyleValue(parsed.r, parsed.g, parsed.b));
-	if (parseHexCssColor(colorValue, parsed)) return static_cast<int>(gea::framework::graphics::pixel::nativeStyleValue(parsed.r, parsed.g, parsed.b));
+	const ParsedCssColor parsed = parseCssColor(colorValue);
+	if (parsed.valid) return static_cast<int>(gea::framework::graphics::pixel::nativeStyleValue(parsed.r, parsed.g, parsed.b));
 	return static_cast<int>(gea::framework::graphics::pixel::nativeStyleValue(255, 255, 255));
 }
 
@@ -4199,6 +4204,167 @@ ParsedCssColor parseCssColor(const std::string &value)
 	ParsedCssColor parsed;
 	if (parseRgbFunction(colorValue, parsed)) return parsed;
 	if (parseHexCssColor(colorValue, parsed)) return parsed;
+	// CSS Color 4 named colors: https://www.w3.org/TR/css-color-4/#named-colors
+	static constexpr struct { const char *name; std::uint32_t rgb; } namedColors[] = {
+		{"aliceblue", 0xf0f8ff},
+		{"antiquewhite", 0xfaebd7},
+		{"aqua", 0x00ffff},
+		{"aquamarine", 0x7fffd4},
+		{"azure", 0xf0ffff},
+		{"beige", 0xf5f5dc},
+		{"bisque", 0xffe4c4},
+		{"black", 0x000000},
+		{"blanchedalmond", 0xffebcd},
+		{"blue", 0x0000ff},
+		{"blueviolet", 0x8a2be2},
+		{"brown", 0xa52a2a},
+		{"burlywood", 0xdeb887},
+		{"cadetblue", 0x5f9ea0},
+		{"chartreuse", 0x7fff00},
+		{"chocolate", 0xd2691e},
+		{"coral", 0xff7f50},
+		{"cornflowerblue", 0x6495ed},
+		{"cornsilk", 0xfff8dc},
+		{"crimson", 0xdc143c},
+		{"cyan", 0x00ffff},
+		{"darkblue", 0x00008b},
+		{"darkcyan", 0x008b8b},
+		{"darkgoldenrod", 0xb8860b},
+		{"darkgray", 0xa9a9a9},
+		{"darkgreen", 0x006400},
+		{"darkgrey", 0xa9a9a9},
+		{"darkkhaki", 0xbdb76b},
+		{"darkmagenta", 0x8b008b},
+		{"darkolivegreen", 0x556b2f},
+		{"darkorange", 0xff8c00},
+		{"darkorchid", 0x9932cc},
+		{"darkred", 0x8b0000},
+		{"darksalmon", 0xe9967a},
+		{"darkseagreen", 0x8fbc8f},
+		{"darkslateblue", 0x483d8b},
+		{"darkslategray", 0x2f4f4f},
+		{"darkslategrey", 0x2f4f4f},
+		{"darkturquoise", 0x00ced1},
+		{"darkviolet", 0x9400d3},
+		{"deeppink", 0xff1493},
+		{"deepskyblue", 0x00bfff},
+		{"dimgray", 0x696969},
+		{"dimgrey", 0x696969},
+		{"dodgerblue", 0x1e90ff},
+		{"firebrick", 0xb22222},
+		{"floralwhite", 0xfffaf0},
+		{"forestgreen", 0x228b22},
+		{"fuchsia", 0xff00ff},
+		{"gainsboro", 0xdcdcdc},
+		{"ghostwhite", 0xf8f8ff},
+		{"gold", 0xffd700},
+		{"goldenrod", 0xdaa520},
+		{"gray", 0x808080},
+		{"green", 0x008000},
+		{"greenyellow", 0xadff2f},
+		{"grey", 0x808080},
+		{"honeydew", 0xf0fff0},
+		{"hotpink", 0xff69b4},
+		{"indianred", 0xcd5c5c},
+		{"indigo", 0x4b0082},
+		{"ivory", 0xfffff0},
+		{"khaki", 0xf0e68c},
+		{"lavender", 0xe6e6fa},
+		{"lavenderblush", 0xfff0f5},
+		{"lawngreen", 0x7cfc00},
+		{"lemonchiffon", 0xfffacd},
+		{"lightblue", 0xadd8e6},
+		{"lightcoral", 0xf08080},
+		{"lightcyan", 0xe0ffff},
+		{"lightgoldenrodyellow", 0xfafad2},
+		{"lightgray", 0xd3d3d3},
+		{"lightgreen", 0x90ee90},
+		{"lightgrey", 0xd3d3d3},
+		{"lightpink", 0xffb6c1},
+		{"lightsalmon", 0xffa07a},
+		{"lightseagreen", 0x20b2aa},
+		{"lightskyblue", 0x87cefa},
+		{"lightslategray", 0x778899},
+		{"lightslategrey", 0x778899},
+		{"lightsteelblue", 0xb0c4de},
+		{"lightyellow", 0xffffe0},
+		{"lime", 0x00ff00},
+		{"limegreen", 0x32cd32},
+		{"linen", 0xfaf0e6},
+		{"magenta", 0xff00ff},
+		{"maroon", 0x800000},
+		{"mediumaquamarine", 0x66cdaa},
+		{"mediumblue", 0x0000cd},
+		{"mediumorchid", 0xba55d3},
+		{"mediumpurple", 0x9370db},
+		{"mediumseagreen", 0x3cb371},
+		{"mediumslateblue", 0x7b68ee},
+		{"mediumspringgreen", 0x00fa9a},
+		{"mediumturquoise", 0x48d1cc},
+		{"mediumvioletred", 0xc71585},
+		{"midnightblue", 0x191970},
+		{"mintcream", 0xf5fffa},
+		{"mistyrose", 0xffe4e1},
+		{"moccasin", 0xffe4b5},
+		{"navajowhite", 0xffdead},
+		{"navy", 0x000080},
+		{"oldlace", 0xfdf5e6},
+		{"olive", 0x808000},
+		{"olivedrab", 0x6b8e23},
+		{"orange", 0xffa500},
+		{"orangered", 0xff4500},
+		{"orchid", 0xda70d6},
+		{"palegoldenrod", 0xeee8aa},
+		{"palegreen", 0x98fb98},
+		{"paleturquoise", 0xafeeee},
+		{"palevioletred", 0xdb7093},
+		{"papayawhip", 0xffefd5},
+		{"peachpuff", 0xffdab9},
+		{"peru", 0xcd853f},
+		{"pink", 0xffc0cb},
+		{"plum", 0xdda0dd},
+		{"powderblue", 0xb0e0e6},
+		{"purple", 0x800080},
+		{"rebeccapurple", 0x663399},
+		{"red", 0xff0000},
+		{"rosybrown", 0xbc8f8f},
+		{"royalblue", 0x4169e1},
+		{"saddlebrown", 0x8b4513},
+		{"salmon", 0xfa8072},
+		{"sandybrown", 0xf4a460},
+		{"seagreen", 0x2e8b57},
+		{"seashell", 0xfff5ee},
+		{"sienna", 0xa0522d},
+		{"silver", 0xc0c0c0},
+		{"skyblue", 0x87ceeb},
+		{"slateblue", 0x6a5acd},
+		{"slategray", 0x708090},
+		{"slategrey", 0x708090},
+		{"snow", 0xfffafa},
+		{"springgreen", 0x00ff7f},
+		{"steelblue", 0x4682b4},
+		{"tan", 0xd2b48c},
+		{"teal", 0x008080},
+		{"thistle", 0xd8bfd8},
+		{"tomato", 0xff6347},
+		{"turquoise", 0x40e0d0},
+		{"violet", 0xee82ee},
+		{"wheat", 0xf5deb3},
+		{"white", 0xffffff},
+		{"whitesmoke", 0xf5f5f5},
+		{"yellow", 0xffff00},
+		{"yellowgreen", 0x9acd32},
+	};
+	const std::string lower = toLowerAscii(colorValue);
+	for (const auto &color : namedColors) {
+		if (lower != color.name) continue;
+		parsed.r = (color.rgb >> 16) & 255;
+		parsed.g = (color.rgb >> 8) & 255;
+		parsed.b = color.rgb & 255;
+		parsed.a = 255;
+		parsed.valid = true;
+		break;
+	}
 	return parsed;
 }
 
@@ -4904,10 +5070,7 @@ std::vector<std::string> splitFunctionAwareWords(const std::string &value)
 bool isBoxShadowColorToken(const std::string &token)
 {
 	const std::string lower = toLowerAscii(trimCssValue(token));
-	return lower == "transparent" ||
-	       lower.rfind("rgb(", 0) == 0 ||
-	       lower.rfind("rgba(", 0) == 0 ||
-	       (!lower.empty() && lower[0] == '#');
+	return parseCssColor(lower).valid;
 }
 
 struct ParsedBoxShadow {
@@ -5363,6 +5526,9 @@ int parseOriginPart(const std::string &part, int fallback)
 	char *end = nullptr;
 	double v = std::strtod(part.c_str(), &end);
 	if (part.find('%') != std::string::npos) return static_cast<int>(v * 10.0 + (v >= 0.0 ? 0.5 : -0.5));
+	if (end != part.c_str() && std::strcmp(end, "px") == 0 && std::isfinite(v)) {
+		return absoluteOriginPixels(parseLengthForNode(part, -1, LengthAxis::Horizontal));
+	}
 	// Zero lengths, including unitless CSS zero, have the same origin as 0%.
 	// Validate the length suffix so an unrecognized token is not treated as 0.
 	if (v == 0.0 && end != part.c_str()) {
@@ -6321,7 +6487,7 @@ bool compileBorderShorthandValue(const std::string &value, CssCompiledValue &com
 			continue;
 		}
 		if (token == "solid" || token == "dashed" || token == "dotted" || token == "double") continue;
-		if (part[0] == '#' || token.find("rgb") != std::string::npos || token == "transparent") continue;
+		if (parseCssColor(part).valid) continue;
 		if (foundWidth || isNegativeLengthLiteral(part)) return false;
 		if (token == "thin" || token == "medium" || token == "thick")
 			compiled.lengths[0] = {token == "thin" ? 1.0f : token == "medium" ? 3.0f : 5.0f, CssLengthUnit::Px};
@@ -6332,7 +6498,7 @@ bool compileBorderShorthandValue(const std::string &value, CssCompiledValue &com
 	compiled.aux = 0;
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
-		if (part[0] == '#' || part.find("rgb") != std::string::npos || toLowerAscii(part) == "transparent") {
+		if (parseCssColor(part).valid) {
 			const ParsedCssColor color = parseCssColor(part);
 			if (!color.valid) return false;
 			compiled.aux = 1;
@@ -8768,7 +8934,7 @@ void applyBorderShorthand(NodeHandle node, const std::string &value, StyleApplic
 		setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), compiled.values[2], source);
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
-		if (part[0] == '#' || part.find("rgb") != std::string::npos || toLowerAscii(part) == "transparent") {
+		if (parseCssColor(part).valid) {
 			const ParsedCssColor color = parseCssColor(part);
 			setStyleValue(node, Property::BorderColor, color.valid ? cssColorStyleValue(color) : parseColorStyleValue(value), source);
 			if (color.valid) {
@@ -8838,7 +9004,7 @@ void applyBorderSideShorthand(NodeHandle node, int side, const std::string &valu
 	setStyleValue(node, static_cast<Property>(static_cast<int>(Property::BorderTopRelief) + side), compiled.values[2], source);
 	for (const auto &part : parts) {
 		if (part.empty()) continue;
-		if (part[0] == '#' || part.find("rgb") != std::string::npos || toLowerAscii(part) == "transparent") {
+		if (parseCssColor(part).valid) {
 			applyBorderSideColorValue(node, side, part, source);
 			return;
 		}
@@ -9090,7 +9256,14 @@ bool resolveLayoutBoxLengths(int nodeId, int percentageBasis)
 void Style::set(Property property, int value) const
 {
 	if (nodeId_ < 0) return;
+	#if GEA_CSS_ANIMATIONS
+	double before = 0;
+	const bool transition = inlineTransitionBefore(nodeId_, property, before);
+	#endif
 	Tree::instance().setStyle(nodeId_, property, value);
+	#if GEA_CSS_ANIMATIONS
+	if (transition) applyInlineTransition(nodeId_, property, before);
+	#endif
 	// This element's cascaded lengths can depend on its own font too. Updating
 	// descendants alone leaves, for example, class padding in ch at old metrics.
 	if (isFontMetricProperty(property) || isLineHeightProperty(property)) recomputeSubtreeClassStyles(nodeId_);
@@ -9655,6 +9828,8 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::Ignored:
 	case CssDeclarationId::Content:
 	case CssDeclarationId::Animation:
+	case CssDeclarationId::Transition:
+	case CssDeclarationId::AnimationPlayState:
 		return true;
 	case CssDeclarationId::Width:
 		setSizeValue(node, Property::Width, Property::WidthPercent, value, LengthAxis::Horizontal, source);
@@ -11337,8 +11512,25 @@ bool removeInlineStyleProperties(int node, std::initializer_list<Property> prope
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return false;
 	bool changed = false;
-	if (NodeRareData *rd = rareDataFor(node))
-		for (const Property property : properties) changed = rd->inlineStyles.remove(property) || changed;
+	if (NodeRareData *rd = rareDataFor(node)) {
+		bool removedBackgroundPaint = false;
+		for (const Property property : properties) {
+			const bool removed = rd->inlineStyles.remove(property);
+			changed = removed || changed;
+			removedBackgroundPaint |= removed && (property == Property::BackgroundColor || property == Property::BackgroundImage);
+		}
+		// HasBackground accompanies color/image declarations. Once the last
+		// inline paint is removed, its flag must also fall back to the cascade.
+		if (removedBackgroundPaint) {
+			bool hasInlinePaint = false;
+			for (std::size_t i = 0; i < rd->inlineStyles.size(); ++i) {
+				const auto &entry = rd->inlineStyles.at(i);
+				hasInlinePaint |= entry.property == Property::BackgroundColor ||
+				    (entry.property == Property::BackgroundImage && entry.value >= 0);
+			}
+			if (!hasInlinePaint) changed = rd->inlineStyles.remove(Property::HasBackground) || changed;
+		}
+	}
 	if (changed) recomputeSubtreeClassStyles(node);
 	return changed;
 }
@@ -11954,7 +12146,8 @@ ParsedSimpleSelector staticSimpleSelectorForSpec(const StaticStyleSimpleSelector
 	ParsedSimpleSelector p;
 	if (spec.tag && spec.tag[0] != '\0') {
 		const std::string tag = toLowerAscii(spec.tag);
-		p.hasTag = true;
+		p.hasTag = tag != "*";
+		p.hasMatcher = tag == "*";
 		if (tag == "body" || tag == "html")
 			p.rootTag = true;
 		else
@@ -11970,7 +12163,7 @@ ParsedSimpleSelector staticSimpleSelectorForSpec(const StaticStyleSimpleSelector
 	p.wantsFirstChild = spec.wantsFirstChild;
 	p.wantsLastChild = spec.wantsLastChild;
 	p.wantsHover = spec.wantsHover;
-	p.hasMatcher = p.wantsRoot || p.wantsFirstChild || p.wantsLastChild || p.wantsHover ||
+	p.hasMatcher = p.hasMatcher || p.wantsRoot || p.wantsFirstChild || p.wantsLastChild || p.wantsHover ||
 	               p.hasTag || p.idAtom != kInvalidCssAtom || !p.classIds.empty();
 	p.valid = p.hasMatcher;
 	return p;
@@ -13075,6 +13268,7 @@ enum ActiveRuleBucket : std::uint8_t {
 #endif
 #if GEA_CSS_ANIMATIONS
 	kActiveAnimation,
+	kActiveMotion,
 #endif
 	kActiveRuleBucketCount
 };
@@ -15129,6 +15323,8 @@ void addCachedActiveCandidateRule(ActiveRulePlan &plan,
 	if (rule.propertyKind == CssRuleProperty::Animation &&
 	    rule.pseudoElement == CssRule::PseudoElement::None)
 		plan.push(kActiveAnimation, ruleIndex);
+	if ((rule.declaration == CssDeclarationId::Transition || rule.declaration == CssDeclarationId::AnimationPlayState) &&
+	    rule.pseudoElement == CssRule::PseudoElement::None) plan.push(kActiveMotion, ruleIndex);
 #endif
 }
 
@@ -15156,6 +15352,8 @@ void addActiveCandidateRule(ActiveRulePlan &plan,
 	if (rule.propertyKind == CssRuleProperty::Animation &&
 	    rule.pseudoElement == CssRule::PseudoElement::None)
 		plan.push(kActiveAnimation, ruleIndex);
+	if ((rule.declaration == CssDeclarationId::Transition || rule.declaration == CssDeclarationId::AnimationPlayState) &&
+	    rule.pseudoElement == CssRule::PseudoElement::None) plan.push(kActiveMotion, ruleIndex);
 #endif
 }
 
@@ -15739,6 +15937,7 @@ void recomputeNodeClassStyles(int node)
 #endif
 #if GEA_CSS_ANIMATIONS
 	primeCssAnimationsForNode(node, &activePlan);
+	primeCssTransitionsForNode(node, beforeStyle, activePlan);
 #endif
 	// A runtime `src` attribute's image id is NOT class-derived, so the reset
 	// above must not lose it: restore it unless a class rule supplied its own
@@ -16373,6 +16572,8 @@ struct NodeCssAnimation {
 	std::uint32_t startMs = 0;
 	bool started = false;
 	std::vector<int> handles;
+	bool paused = false;
+	std::uint32_t pauseMs = 0;
 };
 
 // Only nodes with animation declarations occupy storage. Style recomputation
@@ -16632,58 +16833,67 @@ CssAnimationSpec animationSpecForNodeFromActivePlan(const ActiveRulePlan &plan)
 	return spec;
 }
 
-double currentStyleValue(const Node &node, Property property)
+double currentStyleValue(const ComputedStyle &style, Property property)
 {
 	switch (property) {
 #if GEA_CSS_TRANSFORMS
-	case Property::TransformRotate: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate) / 10.0;
-	case Property::TransformRotateX: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate_x) / 10.0;
-	case Property::TransformRotateY: return static_cast<double>(rstyle(node.computedStyle()).transform_rotate_y) / 10.0;
-	case Property::TransformTranslateOuterAxes: return rstyle(node.computedStyle()).transform_translate_outer_axes;
-	case Property::RotateAngle: return static_cast<double>(rstyle(node.computedStyle()).rotate_angle) / 10.0;
-	case Property::RotateAxisX: return rstyle(node.computedStyle()).rotate_axis_x;
-	case Property::RotateAxisY: return rstyle(node.computedStyle()).rotate_axis_y;
-	case Property::RotateAxisZ: return rstyle(node.computedStyle()).rotate_axis_z;
-	case Property::ScaleX: return rstyle(node.computedStyle()).scale_x;
-	case Property::ScaleY: return rstyle(node.computedStyle()).scale_y;
-	case Property::ScaleZ: return rstyle(node.computedStyle()).scale_z;
-	case Property::RotatePresent: return rstyle(node.computedStyle()).rotate_present;
-	case Property::ScalePresent: return rstyle(node.computedStyle()).scale_present;
-	case Property::TranslatePresent: return rstyle(node.computedStyle()).translate_present;
-	case Property::TranslateX: return rstyle(node.computedStyle()).translate_x;
-	case Property::TranslateY: return rstyle(node.computedStyle()).translate_y;
-	case Property::TranslateZ: return rstyle(node.computedStyle()).translate_z;
-	case Property::TranslateXPercent: return rstyle(node.computedStyle()).translate_x_percent;
-	case Property::TranslateYPercent: return rstyle(node.computedStyle()).translate_y_percent;
-	case Property::TransformTranslateX: return rstyle(node.computedStyle()).transform_translate_x;
-	case Property::TransformTranslateY: return rstyle(node.computedStyle()).transform_translate_y;
-	case Property::TransformTranslateZ: return rstyle(node.computedStyle()).transform_translate_z;
-	case Property::TransformTranslateXPercent: return rstyle(node.computedStyle()).transform_translate_x_percent;
-	case Property::TransformTranslateYPercent: return rstyle(node.computedStyle()).transform_translate_y_percent;
-	case Property::TransformScaleX: return rstyle(node.computedStyle()).transform_scale_x;
-	case Property::TransformScaleY: return rstyle(node.computedStyle()).transform_scale_y;
-	case Property::TransformScaleZ: return rstyle(node.computedStyle()).transform_scale_z;
+	case Property::TransformRotate: return static_cast<double>(rstyle(style).transform_rotate) / 10.0;
+	case Property::TransformRotateX: return static_cast<double>(rstyle(style).transform_rotate_x) / 10.0;
+	case Property::TransformRotateY: return static_cast<double>(rstyle(style).transform_rotate_y) / 10.0;
+	case Property::TransformTranslateOuterAxes: return rstyle(style).transform_translate_outer_axes;
+	case Property::RotateAngle: return static_cast<double>(rstyle(style).rotate_angle) / 10.0;
+	case Property::RotateAxisX: return rstyle(style).rotate_axis_x;
+	case Property::RotateAxisY: return rstyle(style).rotate_axis_y;
+	case Property::RotateAxisZ: return rstyle(style).rotate_axis_z;
+	case Property::ScaleX: return rstyle(style).scale_x;
+	case Property::ScaleY: return rstyle(style).scale_y;
+	case Property::ScaleZ: return rstyle(style).scale_z;
+	case Property::RotatePresent: return rstyle(style).rotate_present;
+	case Property::ScalePresent: return rstyle(style).scale_present;
+	case Property::TranslatePresent: return rstyle(style).translate_present;
+	case Property::TranslateX: return rstyle(style).translate_x;
+	case Property::TranslateY: return rstyle(style).translate_y;
+	case Property::TranslateZ: return rstyle(style).translate_z;
+	case Property::TranslateXPercent: return rstyle(style).translate_x_percent;
+	case Property::TranslateYPercent: return rstyle(style).translate_y_percent;
+	case Property::TransformTranslateX: return rstyle(style).transform_translate_x;
+	case Property::TransformTranslateY: return rstyle(style).transform_translate_y;
+	case Property::TransformTranslateZ: return rstyle(style).transform_translate_z;
+	case Property::TransformTranslateXPercent: return rstyle(style).transform_translate_x_percent;
+	case Property::TransformTranslateYPercent: return rstyle(style).transform_translate_y_percent;
+	case Property::TransformScaleX: return rstyle(style).transform_scale_x;
+	case Property::TransformScaleY: return rstyle(style).transform_scale_y;
+	case Property::TransformScaleZ: return rstyle(style).transform_scale_z;
 #endif
-	case Property::FilterBlur: return (GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0);
-	case Property::Opacity: return node.computedStyle().opacity;
-	case Property::Width: return node.computedStyle().width;
-	case Property::Height: return node.computedStyle().height;
-	case Property::WidthPercent: return node.computedStyle().width_percent == kUnset ? 0 : node.computedStyle().width_percent;
-	case Property::HeightPercent: return node.computedStyle().height_percent == kUnset ? 0 : node.computedStyle().height_percent;
-	case Property::LineHeight: return node.computedStyle().line_height;
-	case Property::FontWeight: return node.computedStyle().font_weight;
-	case Property::Top: return GEA_CSS_POSITION_PX_0(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_0(node.computedStyle());
-	case Property::Right: return GEA_CSS_POSITION_PX_1(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_1(node.computedStyle());
-	case Property::Bottom: return GEA_CSS_POSITION_PX_2(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_2(node.computedStyle());
-	case Property::Left: return GEA_CSS_POSITION_PX_3(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PX_3(node.computedStyle());
-	case Property::TopPercent: return GEA_CSS_POSITION_PERCENT_0(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_0(node.computedStyle());
-	case Property::RightPercent: return GEA_CSS_POSITION_PERCENT_1(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_1(node.computedStyle());
-	case Property::BottomPercent: return GEA_CSS_POSITION_PERCENT_2(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_2(node.computedStyle());
-	case Property::LeftPercent: return GEA_CSS_POSITION_PERCENT_3(node.computedStyle()) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_3(node.computedStyle());
-	case Property::BackgroundColor: return node.computedStyle().bg_color;
-	case Property::Color: return node.computedStyle().text_color;
+	case Property::FilterBlur: return (GEA_CSS_FILTERS ? rstyle(style).filter_blur_radius : 0);
+	case Property::Opacity: return style.opacity;
+	case Property::Width: return style.width;
+	case Property::Height: return style.height;
+	case Property::WidthPercent: return style.width_percent == kUnset ? 0 : style.width_percent;
+	case Property::HeightPercent: return style.height_percent == kUnset ? 0 : style.height_percent;
+	case Property::LineHeight: return style.line_height;
+	case Property::FontWeight: return style.font_weight;
+	case Property::Top: return GEA_CSS_POSITION_PX_0(style) == kUnset ? 0 : GEA_CSS_POSITION_PX_0(style);
+	case Property::Right: return GEA_CSS_POSITION_PX_1(style) == kUnset ? 0 : GEA_CSS_POSITION_PX_1(style);
+	case Property::Bottom: return GEA_CSS_POSITION_PX_2(style) == kUnset ? 0 : GEA_CSS_POSITION_PX_2(style);
+	case Property::Left: return GEA_CSS_POSITION_PX_3(style) == kUnset ? 0 : GEA_CSS_POSITION_PX_3(style);
+	case Property::TopPercent: return GEA_CSS_POSITION_PERCENT_0(style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_0(style);
+	case Property::RightPercent: return GEA_CSS_POSITION_PERCENT_1(style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_1(style);
+	case Property::BottomPercent: return GEA_CSS_POSITION_PERCENT_2(style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_2(style);
+	case Property::LeftPercent: return GEA_CSS_POSITION_PERCENT_3(style) == kUnset ? 0 : GEA_CSS_POSITION_PERCENT_3(style);
+	case Property::BackgroundColor: return style.bg_color;
+	case Property::Color: return style.text_color;
+	case Property::BorderRadiusTopLeft: return style.border_radius[GEA_CSS_RADIUS_INDEX(0)];
+	case Property::BorderRadiusTopRight: return style.border_radius[GEA_CSS_RADIUS_INDEX(1)];
+	case Property::BorderRadiusBottomRight: return style.border_radius[GEA_CSS_RADIUS_INDEX(2)];
+	case Property::BorderRadiusBottomLeft: return style.border_radius[GEA_CSS_RADIUS_INDEX(3)];
 	default: return 0;
 	}
+}
+
+double currentStyleValue(const Node &node, Property property)
+{
+	return currentStyleValue(node.computedStyle(), property);
 }
 
 struct CssAnimationTrack {
@@ -17108,6 +17318,161 @@ void applyPrimedAnimationValue(const gea::css::Animation &animation, double valu
 	}
 }
 
+// Motion declarations keep their authored text and their cascade order in a
+// separate active bucket: they are timing metadata, not paint properties.
+std::string motionDeclaration(const ActiveRulePlan &plan, CssDeclarationId declaration)
+{
+	std::string value;
+	const auto &list = rules();
+	auto visit = [&](int index) {
+		const auto &rule = list[index];
+		if (rule.declaration == declaration) value = cssRuleTextForHandle(rule.valueText).str();
+	};
+	if (plan.cachedEntry) {
+		const auto bucket = activeRulePlanCachedRuleSpan(plan, kActiveMotion);
+		for (std::size_t i = 0; i < bucket.count; ++i) visit(bucket.data[i].ruleIndex);
+	} else {
+		const auto bucket = activeRulePlanBucketSpan(plan, kActiveMotion);
+		for (std::size_t i = 0; i < bucket.count; ++i) visit(bucket.data[i]);
+	}
+	return value;
+}
+
+struct NodeCssTransition {
+	int node;
+	Property property;
+	double target;
+	int handle = 0;
+	std::uint32_t duration = 0, delay = 0;
+	gea::css::Easing easing = gea::css::Easing::ease();
+};
+std::vector<NodeCssTransition> &nodeCssTransitions()
+{
+	static std::vector<NodeCssTransition> transitions;
+	return transitions;
+}
+
+bool inlineTransitionBefore(int node, Property property, double &before)
+{
+	if (node < 0 || node >= treeState().nodeCount) return false;
+	// Initial JSX props establish the first rendered frame, without animating
+	// out of the element's uninitialized/default geometry.
+	if (treeState().nodes[node].layout.width <= 0) return false;
+	for (const auto &entry : nodeCssTransitions()) {
+		if (entry.node != node || entry.property != property || entry.duration == 0) continue;
+		before = currentStyleValue(treeState().nodes[node], property);
+		return true;
+	}
+	return false;
+}
+
+void applyInlineTransition(int node, Property property, double before)
+{
+	for (auto &entry : nodeCssTransitions()) {
+		if (entry.node != node || entry.property != property) continue;
+		const double target = currentStyleValue(treeState().nodes[node], property);
+		if (target == entry.target && gea::css::AnimationEngine::instance().contains(entry.handle)) {
+			applyPrimedAnimationValue(gea::css::Animation::transition(node, property, before, target, entry.duration), before);
+			return;
+		}
+		gea::css::AnimationEngine::instance().cancel(entry.handle);
+		entry.handle = 0;
+		entry.target = target;
+		if (target == before || target == kUnset || before == kUnset) return;
+		auto animation = gea::css::Animation::transition(node, property, before, target, entry.duration, entry.easing, entry.delay);
+		animation.fill = gea::css::Fill::Both;
+		applyPrimedAnimationValue(animation, before);
+		entry.handle = gea::css::AnimationEngine::instance().start(std::move(animation), g_cssAnimationNowMs);
+		return;
+	}
+}
+
+void clearNodeCssTransitions(int node)
+{
+	auto &entries = nodeCssTransitions();
+	entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const NodeCssTransition &entry) {
+		if (entry.node != node) return false;
+		gea::css::AnimationEngine::instance().cancel(entry.handle);
+		return true;
+	}), entries.end());
+}
+
+void primeCssTransitionsForNode(int node, const ComputedStyle &before, const ActiveRulePlan &plan)
+{
+	const std::string declaration = motionDeclaration(plan, CssDeclarationId::Transition);
+	if (declaration.empty() || declaration == "none" || isDisplayNone(treeState().nodes[node].computedStyle())) {
+		clearNodeCssTransitions(node);
+		return;
+	}
+	struct Timing { Property property; std::uint32_t duration, delay; gea::css::Easing easing; };
+	std::vector<Timing> timings;
+	const Property supported[] = {Property::Width, Property::Height, Property::Left, Property::Top,
+		Property::Opacity, Property::BackgroundColor, Property::Color,
+		Property::BorderRadiusTopLeft, Property::BorderRadiusTopRight,
+		Property::BorderRadiusBottomRight, Property::BorderRadiusBottomLeft,
+		Property::TransformRotate, Property::TransformRotateX, Property::TransformRotateY,
+		Property::TransformTranslateX, Property::TransformTranslateY, Property::TransformTranslateZ,
+		Property::TransformScaleX, Property::TransformScaleY, Property::TransformScaleZ};
+	for (const auto &item : splitTopLevel(declaration, ',')) {
+		std::string name = "all";
+		std::uint32_t duration = 0, delay = 0;
+		bool sawDuration = false;
+		auto easing = gea::css::Easing::ease();
+		for (const auto &token : splitCssTokens(item)) {
+			std::uint32_t ms;
+			if (parseTimeMs(token, ms)) {
+				if (!sawDuration) { duration = ms; sawDuration = true; } else delay = ms;
+			} else if (token == "linear" || token == "ease" || token == "ease-in" || token == "ease-out" ||
+			           token == "ease-in-out" || startsWith(token, "cubic-bezier(") || startsWith(token, "steps(")) easing = easingFromCss(token);
+			else name = token;
+		}
+		for (Property property : supported) {
+			bool matches = name == "all";
+			if (name == "width") matches = property == Property::Width;
+			else if (name == "height") matches = property == Property::Height;
+			else if (name == "left") matches = property == Property::Left;
+			else if (name == "top") matches = property == Property::Top;
+			else if (name == "opacity") matches = property == Property::Opacity;
+			else if (name == "background-color") matches = property == Property::BackgroundColor;
+			else if (name == "color") matches = property == Property::Color;
+			else if (name == "border-radius") matches = property >= Property::BorderRadiusTopLeft && property <= Property::BorderRadiusBottomLeft;
+			else if (name == "transform") matches = property >= Property::TransformRotate && property <= Property::TransformScaleZ;
+			if (!matches) continue;
+			timings.erase(std::remove_if(timings.begin(), timings.end(), [&](const Timing &timing) { return timing.property == property; }), timings.end());
+			timings.push_back({property, duration, delay, easing});
+		}
+	}
+	auto &entries = nodeCssTransitions();
+	entries.erase(std::remove_if(entries.begin(), entries.end(), [&](const NodeCssTransition &entry) {
+		if (entry.node != node) return false;
+		for (const auto &timing : timings) if (entry.property == timing.property) return false;
+		gea::css::AnimationEngine::instance().cancel(entry.handle);
+		return true;
+	}), entries.end());
+	for (const auto &timing : timings) {
+		const double target = currentStyleValue(treeState().nodes[node], timing.property);
+		auto it = std::find_if(entries.begin(), entries.end(), [&](const NodeCssTransition &entry) {
+			return entry.node == node && entry.property == timing.property;
+		});
+		// The first computed style is a baseline, never an entrance transition.
+		if (it == entries.end()) { entries.push_back({node, timing.property, target, 0, timing.duration, timing.delay, timing.easing}); continue; }
+		it->duration = timing.duration; it->delay = timing.delay; it->easing = timing.easing;
+		const double from = currentStyleValue(before, timing.property);
+		if (it->target == target && timing.duration > 0 && gea::css::AnimationEngine::instance().contains(it->handle)) {
+			applyPrimedAnimationValue(gea::css::Animation::transition(node, timing.property, from, target, timing.duration), from);
+			continue;
+		}
+		gea::css::AnimationEngine::instance().cancel(it->handle);
+		it->handle = 0;
+		it->target = target;
+		if (from == target || timing.duration == 0 || target == kUnset || from == kUnset) continue;
+		auto animation = gea::css::Animation::transition(node, timing.property, from, target, timing.duration, timing.easing, timing.delay);
+		animation.fill = gea::css::Fill::Both;
+		applyPrimedAnimationValue(animation, from);
+		it->handle = gea::css::AnimationEngine::instance().start(std::move(animation), g_cssAnimationNowMs);
+	}
+}
+
 void primeCssAnimationsForNode(int node, const ActiveRulePlan *activePlan)
 {
 	const CssAnimationSpec spec = activePlan ? animationSpecForNodeFromActivePlan(*activePlan) : animationSpecForNode(node);
@@ -17127,8 +17492,15 @@ void primeCssAnimationsForNode(int node, const ActiveRulePlan *activePlan)
 		animations.push_back({node, spec});
 		it = animations.end() - 1;
 	}
+	const bool paused = activePlan && trimCssValue(motionDeclaration(*activePlan, CssDeclarationId::AnimationPlayState)) == "paused";
+	if (it->paused != paused) {
+		if (paused) it->pauseMs = g_cssAnimationNowMs;
+		else it->startMs += g_cssAnimationNowMs - it->pauseMs;
+		it->paused = paused;
+		for (int handle : it->handles) gea::css::AnimationEngine::instance().setPaused(handle, paused, g_cssAnimationNowMs);
+	}
 	const double elapsed = it->started
-	    ? static_cast<double>(static_cast<std::int32_t>(g_cssAnimationNowMs - it->startMs)) : 0.0;
+	    ? static_cast<double>(static_cast<std::int32_t>((it->paused ? it->pauseMs : g_cssAnimationNowMs) - it->startMs)) : 0.0;
 	CssAnimationTrackList tracks;
 	buildAnimationTracksForNode(node, spec, tracks);
 	for (std::size_t i = 0, n = tracks.size(); i < n; ++i) {
@@ -17151,11 +17523,13 @@ void startAnimationForNode(NodeCssAnimation &entry, std::uint32_t nowMs)
 	buildAnimationTracksForNode(entry.node, entry.spec, tracks);
 	entry.startMs = nowMs;
 	entry.started = true;
+	if (entry.paused) entry.pauseMs = nowMs;
 	for (std::size_t i = 0, n = tracks.size(); i < n; ++i) {
 		const CssAnimationTrack &track = tracks.at(i);
 		if (isRotationAxisTrack(track.property)) continue;
 		gea::css::Animation animation = animationFromTrack(entry.node, entry.spec, track, tracks);
 		entry.handles.push_back(gea::css::AnimationEngine::instance().start(std::move(animation), nowMs));
+		if (entry.paused) gea::css::AnimationEngine::instance().setPaused(entry.handles.back(), true, nowMs);
 	}
 }
 
@@ -17412,6 +17786,7 @@ void forgetNodeCssAnimations(int node)
 {
 #if GEA_CSS_ANIMATIONS
 	cancelNodeCssAnimation(node);
+	clearNodeCssTransitions(node);
 	gea::css::AnimationEngine::instance().cancelNode(node);
 #else
 	(void)node;
@@ -17424,6 +17799,7 @@ void StyleSheet::clear()
 #if GEA_CSS_ANIMATIONS
 	keyframeRules().clear();
 	nodeCssAnimations().clear();
+	nodeCssTransitions().clear();
 	g_cssAnimationNowMs = 0;
 #endif
 	g_ruleRegistrationBatchDepth = 0;

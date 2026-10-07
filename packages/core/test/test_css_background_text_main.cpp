@@ -184,6 +184,52 @@ int main()
 	Document::instance().refresh(root, 180, 120);
 	ok &= expectPixel(10, 10, kBlue, "clip toggle restores full border-box background");
 
+	// Live debugger edits use ordinary CSS names, including mixed case and shorthands.
+	for (const auto &sample : std::vector<std::pair<const char *, std::uint16_t>>{
+		{"red", kRed}, {"BLUE", kBlue}, {"lime", kGreen},
+		{"rebeccapurple", pixel::nativeColor(102, 51, 153)},
+		{"aliceblue", pixel::nativeColor(240, 248, 255)}}) {
+		clipped.style().setProperty("background", sample.first);
+		Document::instance().refresh(root, 180, 120);
+		ok &= expectPixel(10, 10, sample.second, sample.first);
+	}
+	clipped.style().setProperty("background-color", "red");
+	clipped.style().setProperty("border", "2px solid blue");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(10, 10, kRed, "named background longhand");
+	ok &= expectPixel(5, 5, kBlue, "named border shorthand");
+	clipped.style().setProperty("background-color", "not-a-color");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(10, 10, kRed, "invalid color retains previous value");
+
+	// Removing a longhand must discard its companion paint flag, retain other
+	// inline background layers, and expose the authored cascade underneath.
+	ordinary.style().setProperty("background-color", "red");
+	ordinary.style().removeProperty("background-color");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kWhite, "removing final background-color restores transparency");
+	ordinary.style().setProperty("background-color", "red");
+	ordinary.style().setProperty("background-image", "linear-gradient(blue, blue)");
+	ordinary.style().removeProperty("background-color");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kBlue, "removing color preserves inline gradient");
+	ordinary.style().removeProperty("background-image");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kWhite, "removing final image restores transparency");
+	ordinary.style().setProperty("background-color", "red");
+	ordinary.style().setProperty("background-image", "linear-gradient(blue, blue)");
+	ordinary.style().removeProperty("background-image");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kRed, "removing image preserves inline color");
+	ordinary.style().removeProperty("background-color");
+	sheet.registerSelectorRule(".fallback-background", "background-color", "blue");
+	ordinary.classList().set("fallback-background");
+	ordinary.style().setProperty("background-color", "red");
+	ordinary.style().removeProperty("background-color");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kBlue, "removed inline color exposes class background");
+	ordinary.classList().set("");
+
 	// The compositor's exact write path must remain an overwrite at alpha zero.
 	auto *canvas = gea::platform::display::Display::canvas();
 	if (!canvas) {

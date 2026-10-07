@@ -331,7 +331,9 @@ enum class StyleDeclaration : std::uint8_t {
 	BackgroundRepeat,
 	BackgroundAttachment,
 	BackgroundOrigin,
-	MarginTrim
+	MarginTrim,
+	Transition,
+	AnimationPlayState
 };
 
 class Style {

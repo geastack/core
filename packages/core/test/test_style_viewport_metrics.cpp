@@ -61,6 +61,76 @@ int findDirectChildByTag(int parent, const char *tag)
 	return -1;
 }
 
+bool testUniversalSelectorPlans()
+{
+	using namespace gea::embedded::ui;
+	for (bool staticPlans : {false, true}) {
+		Tree::instance().clear();
+		auto &sheet = StyleSheet::instance();
+		sheet.clear();
+		setViewportMetrics(200, 200, 1.0);
+		if (staticPlans) {
+			// These are the selector specs emitted for compiled CSS, rather than
+			// the runtime text parser used by the first pass through this fixture.
+			sheet.registerStaticSelectorPlan("*", {{{"*"}, false}});
+			sheet.registerStaticSelectorPlan("*.qualified", {{{"*", nullptr, {"qualified"}}, false}});
+			sheet.registerStaticSelectorPlan("*.equal", {{{"*", nullptr, {"equal"}}, false}});
+		}
+		// A type selector outranks a later universal selector. Conversely,
+		// *.equal and .equal have equal specificity, so the later class wins.
+		sheet.registerStaticElementRule("div", "box-sizing", "content-box");
+		sheet.registerStaticPropertyRule(StaticStyleSelectorKind::Selector, "*", Property::BoxSizing, 1);
+		sheet.registerStaticPropertyRule(StaticStyleSelectorKind::Selector, "*.qualified", Property::BoxSizing, 0);
+		sheet.registerStaticPropertyRule(StaticStyleSelectorKind::Selector, "*.equal", Property::BoxSizing, 0);
+		sheet.registerStaticRule("equal", "box-sizing", "border-box");
+		sheet.registerStaticRule("probe-box", "width", "40px");
+		sheet.registerStaticRule("probe-box", "height", "30px");
+		sheet.registerStaticRule("probe-box", "padding", "5px");
+		sheet.registerStaticRule("probe-box", "border", "2px solid #ffffff");
+
+		const int rootId = Tree::instance().createView();
+		NodeHandle(rootId).setTagName("main");
+		const int universalId = Tree::instance().createView();
+		const int qualifiedId = Tree::instance().createView();
+		const int equalId = Tree::instance().createView();
+		const int typedId = Tree::instance().createView();
+		NodeHandle(universalId).setTagName("section");
+		NodeHandle(qualifiedId).setTagName("aside");
+		NodeHandle(equalId).setTagName("article");
+		NodeHandle(typedId).setTagName("div");
+		NodeHandle(universalId).classList().set("probe-box");
+		NodeHandle(qualifiedId).classList().set("probe-box qualified");
+		NodeHandle(equalId).classList().set("probe-box equal");
+		NodeHandle(typedId).classList().set("probe-box");
+		for (int child : {universalId, qualifiedId, equalId, typedId})
+			NodeHandle(rootId).appendChild(NodeHandle(child));
+		Tree::instance().mount(rootId, 200, 200);
+		Tree::instance().computeLayout(rootId, 200, 200);
+
+		const auto &universal = Tree::instance().node(universalId);
+		const auto &qualified = Tree::instance().node(qualifiedId);
+		const auto &equal = Tree::instance().node(equalId);
+		const auto &typed = Tree::instance().node(typedId);
+		if (!expectEqual(universal.computedStyle().box_sizing, 1, "universal selector border-box") ||
+		    !expectEqual(universal.layout.width, 40, "universal border-box outer width includes padding and border") ||
+		    !expectEqual(universal.layout.height, 30, "universal border-box outer height includes padding and border") ||
+		    !expectEqual(qualified.computedStyle().box_sizing, 0, "qualified universal matches its class") ||
+		    !expectEqual(qualified.layout.width, 54, "qualified universal content-box outer width") ||
+		    !expectEqual(qualified.layout.height, 44, "qualified universal content-box outer height") ||
+		    !expectEqual(equal.computedStyle().box_sizing, 1, "qualified universal has the same specificity as its class") ||
+		    !expectEqual(equal.layout.width, 40, "later class rule wins over qualified universal") ||
+		    !expectEqual(typed.computedStyle().box_sizing, 0, "type selector outranks later universal") ||
+		    !expectEqual(typed.layout.width, 54, "universal selector contributes no type specificity")) {
+			std::fprintf(stderr, "[test_style_viewport_metrics] selector fixture used %s plans\n",
+			             staticPlans ? "compiled static" : "runtime parsed");
+			return false;
+		}
+	}
+	Tree::instance().clear();
+	StyleSheet::instance().clear();
+	return true;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -69,6 +139,11 @@ int main(int argc, char **argv)
 	using namespace gea::embedded::ui;
 
 	resetNativeHost();
+	if (!testUniversalSelectorPlans()) return 1;
+	if (argc > 1 && std::strcmp(argv[1], "--static-universal") == 0) {
+		std::puts("Native universal CSS selectors: static and parsed matching, specificity and box sizing agree");
+		return 0;
+	}
 	StyleSheet::instance().clear();
 	gea::embedded::ui::setViewportMetrics(410, 502, 1.5);
 
