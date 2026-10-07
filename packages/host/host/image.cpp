@@ -25,10 +25,16 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <dirent.h>
 #include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
+
+// Bare-metal newlib (RP2350's arm-none-eabi) ships a <dirent.h> that #errors;
+// there is no directory API to list there.
+#if defined(ESP_PLATFORM) || defined(__unix__) || defined(__APPLE__)
+#define GEA_HOST_HAS_DIRENT 1
+#include <dirent.h>
+#endif
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
@@ -275,6 +281,7 @@ std::string ImageService::listFiles(const std::string &path) const {
   gea::platform::onInternalStack([&] {
     if (path.empty() || !gea::platform::storage::ensureMounted())
       return;
+#ifdef GEA_HOST_HAS_DIRENT
     DIR *dir = opendir(path.c_str());
     if (!dir)
       return;
@@ -294,6 +301,7 @@ std::string ImageService::listFiles(const std::string &path) const {
       out += entry->d_name;
     }
     closedir(dir);
+#endif
   });
   return out;
 }
