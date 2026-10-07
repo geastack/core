@@ -407,6 +407,15 @@ bool Runtime::boot(const RuntimeOptions &options)
 	(void)options;
 	services::RuntimeLog::appStarted(networkReady);
 #else
+#if defined(GEA_EMBEDDED_BOOT_STAGING_RESERVE) && GEA_EMBEDDED_BOOT_STAGING_RESERVE
+	// Opt-in (an app sets GEA_EMBEDDED_BOOT_STAGING_RESERVE=1 in gea.defines).
+	// TS initialization can start flash workers and audio before the event loop
+	// is available to resize staging. Lend surplus DMA staging now, retaining
+	// the panel's minimum pipeline until application and runtime tasks exist.
+	gea::platform::display::Display::reserveInternal(
+	    static_cast<std::size_t>(gea::platform::display::Display::flushBufferBytes()));
+	gea::platform::display::Display::applyPendingInternalReserve();
+#endif
 	if (!services::AppRunner::initApplication(options.width, options.height)) return false;
 	services::HeapProbe::log("runtime:after_app_init");
 	services::StackProbe::logCurrentTask("runtime:after_app_init");
@@ -419,7 +428,11 @@ bool Runtime::boot(const RuntimeOptions &options)
 	services::HeapProbe::log("runtime:after_frame_start");
 	services::StackProbe::logCurrentTask("runtime:after_frame_start");
 	services::HeapTaskSummary::log("runtime:after_frame_start");
-#if GEA_EMBEDDED_WIFI_EARLY_CONNECT
+#if defined(GEA_EMBEDDED_BOOT_STAGING_RESERVE) && GEA_EMBEDDED_BOOT_STAGING_RESERVE
+	// Initialization owns its allocations now. Grow staging into the remaining
+	// heap when the event loop resumes; allocation retains the DMA reserve.
+	gea::platform::display::Display::reserveInternal(0);
+#elif GEA_EMBEDDED_WIFI_EARLY_CONNECT
 	// The early-connect loan protects radio, app, and task initialization.
 	// They now own their allocations; let the frame task grow staging into
 	// the remaining heap instead of retaining the two-row boot floor forever.
