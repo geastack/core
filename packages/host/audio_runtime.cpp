@@ -2,6 +2,7 @@
 #define GEA_AUDIO_DRIVER_INTERNAL 1
 #include "audio.h"
 #include "audio_stream.h"
+#include "audio_oscillator.h"
 
 #include <algorithm>
 #include <atomic>
@@ -20,11 +21,15 @@
 #include "freertos/task.h"
 #include "platform/file_cache.h"
 
+// Optional build-embedded asset registry supplied by the native app pipeline.
+extern "C" bool gea_embedded_asset_lookup(const char*, const unsigned char**, unsigned long*)
+    __attribute__((weak));
+
 namespace audio = gea::platform::audio;
 
 namespace {
 
-constexpr int kSampleRate = 16000;
+constexpr int kSampleRate = audio::deviceSampleRate;
 constexpr int kChannels = 2;
 constexpr int kQueueDepth = 16;
 // ESP-IDF sizes a task stack in BYTES (`StackType_t` is `uint8_t` on this
@@ -134,29 +139,21 @@ public:
   void startOscillator(audio::NativeAudioHandle handle, double when) {
     auto *osc = oscillator(handle);
     if (!osc) return;
-    if (when <= 0.0) when = currentTime();
-    osc->startTime = when;
-    osc->started = true;
+    osc->schedule.start(when, currentTime());
   }
 
   void stopOscillator(audio::NativeAudioHandle handle, double when) {
     auto *osc = oscillator(handle);
     if (!osc || !osc->connected) return;
 
-    const double now = currentTime();
-    const double startTime = osc->started ? osc->startTime : now;
-    if (when <= 0.0) when = now;
-    if (when < startTime) when = startTime;
-
-    const int durationMs = static_cast<int>((when - startTime) * 1000.0 + 0.5);
-    const int delayMs = startTime > now ? static_cast<int>((startTime - now) * 1000.0 + 0.5) : 0;
-    if (durationMs <= 0) return;
+    const auto timing = osc->schedule.stop(when, currentTime());
+    if (!timing) return;
 
     submitTone(Tone{
         osc->type,
         osc->frequencyHz,
-        durationMs,
-        delayMs,
+        timing->durationMs,
+        timing->delayMs,
     });
   }
 
@@ -228,8 +225,7 @@ private:
     audio::OscillatorType type = audio::OscillatorType::Sine;
     double frequencyHz = 440.0;
     bool connected = false;
-    bool started = false;
-    double startTime = 0.0;
+    audio::FiniteOscillatorSchedule schedule;
   };
 
   struct ActiveTone {
@@ -694,7 +690,8 @@ bool playPcmSync(const std::int16_t *samples, std::size_t sampleCount, int sampl
     const std::size_t frames = std::min<std::size_t>(kPlaybackChunkFrames, frameCount - frame);
     if (channels == 2) {
       const std::size_t src = frame * 2;
-      if (!audio::OutputDriver::write(samples + src, frames * 2, kPlaybackWriteTimeoutMs)) return false;
+      std::copy_n(samples + src, frames * 2, stereo.data());
+      if (!audio::OutputDriver::write(stereo.data(), frames * 2, kPlaybackWriteTimeoutMs)) return false;
     } else {
       for (std::size_t i = 0; i < frames; ++i) {
         const std::size_t src = (frame + i) * static_cast<std::size_t>(channels);
@@ -708,93 +705,175 @@ bool playPcmSync(const std::int16_t *samples, std::size_t sampleCount, int sampl
   return true;
 }
 
+// Play imported WAV assets without opening a filesystem path or writing into
+// read-only flash. Codec software volume may modify its input buffer.
+bool playEmbeddedWav(const unsigned char* bytes, std::size_t length) {
+  if (length < 12 || std::memcmp(bytes, "RIFF", 4) || std::memcmp(bytes + 8, "WAVE", 4)) return false;
+  const auto le16 = [](const unsigned char* p) { return unsigned(p[0]) | unsigned(p[1]) << 8; };
+  const auto le32 = [](const unsigned char *p) {
+	  return std::uint32_t(p[0]) | std::uint32_t(p[1]) << 8 | std::uint32_t(p[2]) << 16 |
+			 std::uint32_t(p[3]) << 24;
+  };
+  unsigned channels = 0, format = 0, bits = 0;
+  std::uint32_t rate = 0;
+  const unsigned char *pcm = nullptr;
+  std::size_t pcmBytes = 0;
+  for (std::size_t offset = 12; offset <= length && length - offset >= 8;) {
+	  const auto size = le32(bytes + offset + 4);
+	  const auto payload = offset + 8;
+	  if (size > length - payload) {
+		  return false;
+	  }
+	  if (!std::memcmp(bytes + offset, "fmt ", 4) && size >= 16) {
+		  format = le16(bytes + payload);
+		  channels = le16(bytes + payload + 2);
+		  rate = le32(bytes + payload + 4);
+		  bits = le16(bytes + payload + 14);
+	  } else if (!std::memcmp(bytes + offset, "data", 4)) {
+		  pcm = bytes + payload;
+		  pcmBytes = size;
+	  }
+	  offset = payload + size + (size & 1u);
+  }
+  if (!pcm || format != 1 || bits != 16 || channels < 1 || channels > 2 || !rate || pcmBytes == 0 ||
+	  pcmBytes % (channels * 2)) {
+	  return false;
+  }
+  ExclusivePlaybackScope playbackScope;
+  if (!audio::OutputDriver::open(static_cast<int>(rate), 2, 16)) {
+	  return false;
+  }
+  OutputCloseScope closeOutput{true};
+  std::vector<std::int16_t> stereo(kPlaybackChunkFrames * 2);
+  const auto frameCount = pcmBytes / (channels * 2);
+  for (std::size_t frame = 0; frame < frameCount;) {
+	  const auto count = std::min<std::size_t>(kPlaybackChunkFrames, frameCount - frame);
+	  for (std::size_t index = 0; index < count; ++index) {
+		  const auto *source = pcm + (frame + index) * channels * 2;
+		  stereo[index * 2] = static_cast<std::int16_t>(le16(source));
+		  stereo[index * 2 + 1] =
+			  channels == 1 ? stereo[index * 2] : static_cast<std::int16_t>(le16(source + 2));
+	  }
+	  if (!audio::OutputDriver::write(stereo.data(), count * 2, kPlaybackWriteTimeoutMs)) {
+		  return false;
+	  }
+	  frame += count;
+  }
+  return true;
+}
+
 // Stream a 16-bit PCM WAV from disk to the output driver in bounded chunks.
 // Playback memory stays ~constant (one small chunk buffer) regardless of file
 // length. The previous path loaded the ENTIRE file into a std::vector first,
 // which OOM-crashed on long recordings — a 20-minute 16 kHz mono clip is
 // ~38 MB, far past available PSRAM. Parses the header (must be PCM 16-bit),
 // then reads+plays the data chunk incrementally.
-bool streamPcm16File(const std::string &path)
-{
-  if (path.empty() || !gea::platform::storage::ensureMounted()) return false;
-  FILE *file = std::fopen(path.c_str(), "rb");
-  if (!file) return false;
+bool streamPcm16File(const std::string &path) {
+	if (path.empty() || !gea::platform::storage::ensureMounted()) {
+		return false;
+	}
+	FILE *file = std::fopen(path.c_str(), "rb");
+	if (!file) {
+		return false;
+	}
 
-  bool ok = false;
-  do {
-    if (!readTag(file, "RIFF")) break;
-    (void)readLe32(file);
-    if (!readTag(file, "WAVE")) break;
+	bool ok = false;
+	do {
+		if (!readTag(file, "RIFF")) {
+			break;
+		}
+		(void)readLe32(file);
+		if (!readTag(file, "WAVE")) {
+			break;
+		}
 
-    std::uint16_t audioFormat = 0;
-    std::uint16_t channels = 0;
-    std::uint32_t sampleRate = 0;
-    std::uint16_t bitsPerSample = 0;
-    long dataStart = -1;
-    std::uint32_t dataSize = 0;
+		std::uint16_t audioFormat = 0;
+		std::uint16_t channels = 0;
+		std::uint32_t sampleRate = 0;
+		std::uint16_t bitsPerSample = 0;
+		long dataStart = -1;
+		std::uint32_t dataSize = 0;
 
-    while (!std::feof(file)) {
-      char chunkId[4] = {};
-      if (std::fread(chunkId, 1, sizeof(chunkId), file) != sizeof(chunkId)) break;
-      const std::uint32_t chunkSize = readLe32(file);
-      const long payloadStart = std::ftell(file);
-      if (payloadStart < 0) break;
-      if (std::memcmp(chunkId, "fmt ", 4) == 0 && chunkSize >= 16) {
-        audioFormat = readLe16(file);
-        channels = readLe16(file);
-        sampleRate = readLe32(file);
-        (void)readLe32(file);
-        (void)readLe16(file);
-        bitsPerSample = readLe16(file);
-      } else if (std::memcmp(chunkId, "data", 4) == 0 && chunkSize >= 2) {
-        dataStart = payloadStart;
-        dataSize = chunkSize;
-        break;  // stream the data chunk below rather than loading it
-      }
-      const long next = payloadStart + static_cast<long>(chunkSize) + static_cast<long>(chunkSize & 1u);
-      if (std::fseek(file, next, SEEK_SET) != 0) break;
-    }
+		while (!std::feof(file)) {
+			char chunkId[4] = {};
+			if (std::fread(chunkId, 1, sizeof(chunkId), file) != sizeof(chunkId))
+				break;
+			const std::uint32_t chunkSize = readLe32(file);
+			const long payloadStart = std::ftell(file);
+			if (payloadStart < 0)
+				break;
+			if (std::memcmp(chunkId, "fmt ", 4) == 0 && chunkSize >= 16) {
+				audioFormat = readLe16(file);
+				channels = readLe16(file);
+				sampleRate = readLe32(file);
+				(void)readLe32(file);
+				(void)readLe16(file);
+				bitsPerSample = readLe16(file);
+			} else if (std::memcmp(chunkId, "data", 4) == 0 && chunkSize >= 2) {
+				dataStart = payloadStart;
+				dataSize = chunkSize;
+				break; // stream the data chunk below rather than loading it
+			}
+			const long next =
+				payloadStart + static_cast<long>(chunkSize) + static_cast<long>(chunkSize & 1u);
+			if (std::fseek(file, next, SEEK_SET) != 0)
+				break;
+		}
 
-    if (audioFormat != 1 || bitsPerSample != 16 || dataStart < 0 || dataSize < 2) break;
-    if (channels == 0) channels = 1;
-    const int outSampleRate = sampleRate == 0 ? kSampleRate : static_cast<int>(sampleRate);
-    if (std::fseek(file, dataStart, SEEK_SET) != 0) break;
+		if (audioFormat != 1 || bitsPerSample != 16 || dataStart < 0 || dataSize < 2)
+			break;
+		if (channels == 0)
+			channels = 1;
+		const int outSampleRate = sampleRate == 0 ? kSampleRate : static_cast<int>(sampleRate);
+		if (std::fseek(file, dataStart, SEEK_SET) != 0)
+			break;
 
-    ExclusivePlaybackScope playbackScope;
-    if (!audio::OutputDriver::open(outSampleRate, 2, 16)) break;
-    OutputCloseScope closeOutput{true};
+		ExclusivePlaybackScope playbackScope;
+		if (!audio::OutputDriver::open(outSampleRate, 2, 16))
+			break;
+		OutputCloseScope closeOutput{true};
 
-    const std::size_t ch = static_cast<std::size_t>(channels);
-    std::size_t framesLeft = dataSize / (sizeof(std::int16_t) * ch);
-    std::vector<std::int16_t> in(kPlaybackChunkFrames * ch);
-    std::vector<std::int16_t> stereo(kPlaybackChunkFrames * 2);
-    bool wrote = true;
-    while (framesLeft > 0) {
-      const std::size_t frames = std::min<std::size_t>(kPlaybackChunkFrames, framesLeft);
-      const std::size_t want = frames * ch;
-      // WAV PCM is little-endian and the ESP32 is little-endian, so raw int16
-      // reads need no byte swap.
-      const std::size_t got = std::fread(in.data(), sizeof(std::int16_t), want, file);
-      const std::size_t framesGot = got / ch;
-      if (framesGot == 0) break;
-      if (channels == 2) {
-        if (!audio::OutputDriver::write(in.data(), framesGot * 2, kPlaybackWriteTimeoutMs)) { wrote = false; break; }
-      } else {
-        for (std::size_t i = 0; i < framesGot; ++i) {
-          const std::size_t src = i * ch;
-          stereo[i * 2] = in[src];
-          stereo[i * 2 + 1] = channels == 1 ? in[src] : in[src + 1];
-        }
-        if (!audio::OutputDriver::write(stereo.data(), framesGot * 2, kPlaybackWriteTimeoutMs)) { wrote = false; break; }
-      }
-      framesLeft -= framesGot;
-      if (got < want) break;  // short read = EOF
-    }
-    ok = wrote;
-  } while (false);
+		const std::size_t ch = static_cast<std::size_t>(channels);
+		std::size_t framesLeft = dataSize / (sizeof(std::int16_t) * ch);
+		std::vector<std::int16_t> in(kPlaybackChunkFrames * ch);
+		std::vector<std::int16_t> stereo(kPlaybackChunkFrames * 2);
+		bool wrote = true;
+		while (framesLeft > 0) {
+			const std::size_t frames = std::min<std::size_t>(kPlaybackChunkFrames, framesLeft);
+			const std::size_t want = frames * ch;
+			// WAV PCM is little-endian and the ESP32 is little-endian, so raw int16
+			// reads need no byte swap.
+			const std::size_t got = std::fread(in.data(), sizeof(std::int16_t), want, file);
+			const std::size_t framesGot = got / ch;
+			if (framesGot == 0)
+				break;
+			if (channels == 2) {
+				if (!audio::OutputDriver::write(in.data(), framesGot * 2,
+												kPlaybackWriteTimeoutMs)) {
+					wrote = false;
+					break;
+				}
+			} else {
+				for (std::size_t i = 0; i < framesGot; ++i) {
+					const std::size_t src = i * ch;
+					stereo[i * 2] = in[src];
+					stereo[i * 2 + 1] = channels == 1 ? in[src] : in[src + 1];
+				}
+				if (!audio::OutputDriver::write(stereo.data(), framesGot * 2,
+												kPlaybackWriteTimeoutMs)) {
+					wrote = false;
+					break;
+				}
+			}
+			framesLeft -= framesGot;
+			if (got < want)
+				break; // short read = EOF
+		}
+		ok = wrote;
+	} while (false);
 
-  std::fclose(file);
-  return ok;
+	std::fclose(file);
+	return ok;
 }
 
 }  // namespace
@@ -876,6 +955,12 @@ void audio::AudioSystem::setVolume(int volumePercent) {
 bool audio::AudioSystem::playFile(const std::string &path) {
   // Stream from disk in bounded chunks — never load the whole file (a long
   // recording is tens of MB and would exhaust PSRAM).
+  const unsigned char* embedded = nullptr;
+  unsigned long embeddedBytes = 0;
+  if (gea_embedded_asset_lookup &&
+      gea_embedded_asset_lookup(path.c_str(), &embedded, &embeddedBytes)) {
+    return playEmbeddedWav(embedded, embeddedBytes);
+  }
   if (!streamPcm16File(path)) {
     ESP_LOGW("gea_audio", "Unable to play WAV file: %s", path.c_str());
     return false;

@@ -45,7 +45,7 @@ struct NodeControl {
 };
 
 struct NodeState {
-  explicit NodeState(int rate) : capture(16000, rate) {}
+  explicit NodeState(int rate) : capture(gea::platform::audio::deviceSampleRate, rate) {}
   std::weak_ptr<ContextState> context;
   std::shared_ptr<AudioWorkletProcessor> processor;
   MessagePort processorPort;
@@ -63,10 +63,13 @@ struct NodeState {
   std::uint64_t captureDropped = 0;
   bool connected = false, alive = true;
   unsigned numberOfInputs = 1;
+  bool processingActive() const {
+    return alive && (connected || (outputs.empty() && reader && inputTrack.readyState() == "live"));
+  }
 };
 
 struct ContextState : std::enable_shared_from_this<ContextState> {
-  explicit ContextState(int rate) : rate(rate), playback(rate, 16000) {}
+  explicit ContextState(int rate) : rate(rate), playback(rate, gea::platform::audio::deviceSampleRate) {}
   ~ContextState() {
     if (output) gea::platform::audio::AudioSystem::stopPcmStream(output);
     if (realm) realm->stop();
@@ -171,7 +174,7 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
       // Reserve a whole hardware quantum before process() advances playback
       // or capture. Codec startup and mixer scheduling may temporarily fill
       // this queue; yield until the consumer pulls, without dropping samples.
-      const auto required = (renderQuantum * 16000 + rate - 1) / rate;
+      const auto required = (renderQuantum * gea::platform::audio::deviceSampleRate + rate - 1) / rate;
       std::lock_guard lock(outputMutex);
       if (required > outputPcm.size() - outputCount) {
 #ifdef ESP_PLATFORM
@@ -187,7 +190,7 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
     bool waitingForInput = false;
     inputClockActive = false;
     for (const auto& node : nodes) {
-      if (!node->alive || !node->connected || !node->reader) continue;
+      if (!node->processingActive() || !node->reader) continue;
       node->captureInputLive = node->inputTrack.enabled() && node->inputTrack.readyState() == "live";
       if (!node->captureInputLive) {
         // Disabled/ended tracks represent silence, not a stalled device clock.
@@ -218,7 +221,7 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
         while (node->inputCount < renderQuantum) {
           std::array<std::int16_t, 128> pcm{};
           const auto wanted = std::min<std::size_t>(pcm.size(),
-              ((renderQuantum - node->inputCount) * 16000 + rate - 1) / rate);
+              ((renderQuantum - node->inputCount) * gea::platform::audio::deviceSampleRate + rate - 1) / rate);
           const auto count = node->reader->read(pcm.data(), wanted);
           if (!count) break;
 #ifdef ESP_PLATFORM
@@ -241,8 +244,8 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
     mix.fill(0);
     bool hasDestination = false;
     for (const auto& node : nodes) {
-      if (!node->alive || !node->connected) continue;
-      hasDestination = true;
+      if (!node->processingActive()) continue;
+      hasDestination |= node->connected;
       for (auto& output : node->outputs)
         for (auto& channel : output) std::fill(channel.begin(), channel.end(), 0.0f);
       if (node->reader) {
@@ -271,9 +274,11 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
         processSumUs += processUs;
         ++processCalls;
 #endif
-        const auto& channel = node->outputs.at(0).at(0);
-        if (channel.size() != renderQuantum) throw std::runtime_error("AudioWorklet changed render quantum geometry");
-        for (std::size_t i = 0; i < renderQuantum; ++i) mix[i] += channel[i];
+        if (!node->outputs.empty()) {
+          const auto& channel = node->outputs.at(0).at(0);
+          if (channel.size() != renderQuantum) throw std::runtime_error("AudioWorklet changed render quantum geometry");
+          for (std::size_t i = 0; i < renderQuantum; ++i) mix[i] += channel[i];
+        }
         if (!keep) node->alive = false;
       } catch (const std::exception& error) { fail(node, error.what()); }
       catch (...) { fail(node, "AudioWorklet processor failed"); }
@@ -336,12 +341,14 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
       { std::lock_guard lock(self->readyMutex); self->ready = true; }
       self->readySignal.notify_all();
       const auto quantum = std::chrono::nanoseconds(128000000000LL / self->rate);
+      constexpr unsigned maxCatchupQuanta = 4;
+      const auto batchBudget = quantum * maxCatchupQuanta;
       auto next = Clock::now();
       while (!self->closed && !self->realm->stopped()) {
         self->realm->runPending(0.5);
         const auto now = Clock::now();
         unsigned catchup = 0;
-        while ((self->inputClockActive || now >= next) && catchup++ < 4) {
+        while ((self->inputClockActive || Clock::now() >= next) && catchup++ < maxCatchupQuanta) {
 #ifdef ESP_PLATFORM
           const auto renderStart = esp_timer_get_time();
           const auto framesBefore = self->frames.load();
@@ -362,9 +369,11 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
           // and the bounded loop still protect the DAC and lower-priority tasks.
           if (self->inputClockActive) next = Clock::now() + quantum;
           else next += quantum;
-          // A slow processor must not monopolize this high-priority task with
-          // four overdue calls. Retain remaining deadlines for the next wake.
-          if (Clock::now() - now >= quantum) break;
+          // FFT and other block processors alternate expensive and cheap
+          // quanta. Amortize the cooperative tick yield across a bounded batch
+          // instead of taxing every expensive quantum with another tick.
+          // Retain output deadlines if a batch exhausts its work budget.
+          if (Clock::now() - now >= batchBudget) break;
         }
         // Output-only graphs retain missed timer deadlines. Capture graphs
         // resume with the next complete hardware quantum on a later wake.
@@ -429,7 +438,7 @@ std::shared_ptr<ContextState> createContext(double rate) {
 // Report a conservative processing delay from the configured queue capacity.
 // currentTime is a render clock; neither property claims a DAC timestamp.
 double contextBaseLatency(const std::shared_ptr<ContextState>& context) {
-  return context ? double(outputCapacity) / 16000 + gea::platform::audio::AudioSystem::processingLatency() : 0;
+  return context ? double(outputCapacity) / gea::platform::audio::deviceSampleRate + gea::platform::audio::AudioSystem::processingLatency() : 0;
 }
 double contextTime(const std::shared_ptr<ContextState>& context) {
   // Legacy oscillator-only contexts retain their platform scheduler's clock.
@@ -511,8 +520,9 @@ void AudioWorklet::addModule(const std::string& url) const {
 AudioWorkletNode::AudioWorkletNode(const AudioContext& context, const std::string& name)
     : AudioWorkletNode(context, name, AudioWorkletNodeOptions{}) {}
 AudioWorkletNode::AudioWorkletNode(const AudioContext& context, const std::string& name, const AudioWorkletNodeOptions& options) {
-  if (options.numberOfInputs > 1 || options.numberOfOutputs != 1 || options.channelCount != 1)
-    throw std::invalid_argument("Embedded AudioWorklet supports zero or one mono input and one mono output");
+  if (options.numberOfInputs > 1 || options.numberOfOutputs > 1 || options.channelCount != 1 ||
+      (!options.numberOfInputs && !options.numberOfOutputs))
+    throw std::invalid_argument("Embedded AudioWorklet requires at least one mono input or output, at most one of each");
   const auto owner = context.workletContext();
   workers::MessageChannel channel;
   port = channel.port1;
@@ -525,6 +535,7 @@ AudioWorkletNode::AudioWorkletNode(const AudioContext& context, const std::strin
   node->processorPort = channel.port2.transfer();
   node->numberOfInputs = options.numberOfInputs;
   if (!options.numberOfInputs) node->inputs.clear();
+  if (!options.numberOfOutputs) node->outputs.clear();
   owner->invoke([owner, node, name] {
     if (owner->nodes.size() >= audio_worklet::maxNodes) throw std::runtime_error("AudioContext node limit exceeded");
     const auto factory = owner->factories.find(name);
@@ -541,6 +552,7 @@ AudioWorkletNode::AudioWorkletNode(const AudioContext& context, const std::strin
 }
 AudioDestinationNode AudioWorkletNode::connect(AudioDestinationNode destination) const {
   if (!state_) throw std::logic_error("Null AudioWorkletNode");
+  if (state_->outputs.empty()) throw std::invalid_argument("AudioWorkletNode has no outputs");
   auto context = state_->context.lock();
   if (!context || context != destination.context) throw std::invalid_argument("Audio nodes belong to different contexts");
   const auto node = state_;

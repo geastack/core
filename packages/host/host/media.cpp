@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "host/media.h"
+#include "audio.h"
 #include "host/pcm_stream.h"
 
 #include <algorithm>
@@ -106,7 +107,7 @@ struct RecorderState {
   std::string path;
   std::string mimeType = "audio/wav";
   std::vector<std::int16_t> pcm;
-  double sampleRate = 16000.0;
+  double sampleRate = gea::platform::audio::deviceSampleRate;
   double channels = 1.0;
   FILE *file = nullptr;
   std::size_t samplesWritten = 0;
@@ -156,12 +157,12 @@ std::string formatHandleId(const char *prefix, std::uint32_t handle) {
 }
 
 constexpr std::size_t kCaptureChunkSamples = 2048;
-// Eight seconds at the capture driver's 16 kHz. Storage grows only when a
-// consumer falls behind and uses PSRAM rather than starving I2S DMA memory.
-constexpr std::size_t kMaxRingBufferSamples = 8 * 16000;
+// Eight seconds at the capture driver's configured device rate. Storage grows
+// only when a consumer falls behind, using PSRAM instead of I2S DMA memory.
+constexpr std::size_t kMaxRingBufferSamples = 8 * gea::platform::audio::deviceSampleRate;
 constexpr std::size_t kRecorderFlushSamples = kCaptureChunkSamples;
 constexpr unsigned kMaxDefaultRecordingNames = 1000;
-constexpr double kDefaultRecorderSampleRate = 16000.0;
+constexpr double kDefaultRecorderSampleRate = gea::platform::audio::deviceSampleRate;
 
 #ifdef ESP_PLATFORM
 constexpr const char *kMediaLogTag = "gea_media";

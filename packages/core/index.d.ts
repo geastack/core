@@ -6,6 +6,7 @@ export type * from './audio-worklet'
 export declare function flushAudioWorkletOutput(): void
 export type * from './typed-arrays'
 import type { AudioContextOptions, AudioWorklet, MediaStreamAudioSourceNode } from './audio-worklet'
+export type * from './audio-worklet'
 
 // Opt-in native 64-bit integer. Structurally a `number` (assign/read without
 // casts), but where a binding, parameter, field, or return is annotated `int`,
@@ -1373,9 +1374,17 @@ export interface AudioBuffer {
   readonly length: number
   readonly duration: number
   readonly numberOfChannels: number
-  copyFromChannel(destination: Float32Array<ArrayBuffer>, channelNumber: number, bufferOffset?: number): void
-  copyToChannel(source: Float32Array<ArrayBuffer>, channelNumber: number, bufferOffset?: number): void
-  getChannelData(channel: number): Float32Array<ArrayBuffer>
+  copyFromChannel(
+    destination: Float32Array<ArrayBufferLike>,
+    channelNumber: number,
+    bufferOffset?: number,
+  ): void
+  copyToChannel(
+    source: Float32Array<ArrayBufferLike>,
+    channelNumber: number,
+    bufferOffset?: number,
+  ): void
+  getChannelData(channel: number): Float32Array<ArrayBufferLike>
 }
 
 export interface AudioBufferSourceNode {
@@ -1404,6 +1413,7 @@ export interface AudioContext {
   readonly currentTime: number
   readonly destination: AudioDestinationNode
   createOscillator(): OscillatorNode
+  createBuffer(numberOfChannels: number, length: number, sampleRate: number): AudioBuffer
   createBufferSource(): AudioBufferSourceNode
   decodeAudioData(audioData: ArrayBuffer | Uint8Array | GeaAudioBlob): Promise<AudioBuffer>
   createMediaStreamSource(stream: MediaStream): MediaStreamAudioSourceNode

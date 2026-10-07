@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "audio.h"
+#include "audio_oscillator.h"
 #include "host/audio_level.h"
 #include "host/pcm_stream.h"
 #include "host/websocket.h"
@@ -18,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 #include <stdexcept>
+#include <limits>
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #endif
@@ -77,8 +79,10 @@ namespace gea::host {
 namespace {
 
 std::uint16_t le16(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
-  if (offset + 2 > bytes.size()) return 0;
-  return static_cast<std::uint16_t>(bytes[offset] | (static_cast<std::uint16_t>(bytes[offset + 1]) << 8));
+  if (offset + 2 > bytes.size())
+    return 0;
+  return static_cast<std::uint16_t>(
+      bytes[offset] | (static_cast<std::uint16_t>(bytes[offset + 1]) << 8));
 }
 
 std::uint32_t le32(const std::vector<std::uint8_t> &bytes, std::size_t offset) {
@@ -135,7 +139,7 @@ AudioBuffer decodePcm16Wav(const std::vector<std::uint8_t> &bytes) {
   return AudioBuffer(std::move(samples), sampleRate, channels);
 }
 
-}  // namespace
+} // namespace
 
 AudioDestinationProperty::operator AudioDestinationNode() const {
   AudioDestinationNode result(gea::framework::host::AudioHost::context().destination().nativeId());
@@ -209,10 +213,20 @@ void OscillatorNode::connect(double destinationHandle) const {
 }
 
 void OscillatorNode::start(double when) const {
+  if (context) {
+    clockOffset = gea::framework::host::AudioHost::context().currentTime() - audio_worklet::contextTime(context);
+    clockAligned = true;
+    if (when > 0) when += clockOffset;
+  }
   gea::framework::host::AudioHost::oscillator(nativeHandle).start(when);
 }
 
 void OscillatorNode::stop(double when) const {
+  if (context && when > 0) {
+    if (clockAligned) when += clockOffset;
+    else when = gea::platform::audio::physicalAudioDeadline(when, audio_worklet::contextTime(context),
+        gea::framework::host::AudioHost::context().currentTime());
+  }
   gea::framework::host::AudioHost::oscillator(nativeHandle).stop(when);
 }
 
@@ -231,8 +245,13 @@ AudioDestinationNode AudioBufferSourceNode::connect(double destinationHandle) co
 
 void AudioBufferSourceNode::start(double when) const {
   (void)when;
-  if (!connected || buffer.samples.empty()) return;
-  gea::platform::audio::AudioSystem::playPcm(buffer.samples.data(), buffer.samples.size(), buffer.sampleRate, buffer.channels);
+  if (!connected)
+    return;
+  const auto &samples = buffer.pcmSamples();
+  if (samples.empty())
+    return;
+  gea::platform::audio::AudioSystem::playPcm(
+      samples.data(), samples.size(), buffer.sampleRate, buffer.channels);
 }
 
 void AudioBufferSourceNode::stop(double when) const {
@@ -241,14 +260,17 @@ void AudioBufferSourceNode::stop(double when) const {
 }
 
 OscillatorNode AudioContext::createOscillator() const {
-  return OscillatorNode(gea::framework::host::AudioHost::context().createOscillator().nativeId());
+  OscillatorNode oscillator(gea::framework::host::AudioHost::context().createOscillator().nativeId());
+  oscillator.context = state_;
+  return oscillator;
 }
 
 AudioBufferSourceNode AudioContext::createBufferSource() const {
-  return AudioBufferSourceNode{};
+  return AudioBufferSourceNode(true);
 }
 
-AudioBuffer AudioContext::decodeAudioData(const std::vector<std::uint8_t> &bytes) const {
+AudioBuffer
+AudioContext::decodeAudioData(const std::vector<std::uint8_t> &bytes) const {
   return decodePcm16Wav(bytes);
 }
 
@@ -392,7 +414,7 @@ void HTMLAudioElement::setAutoplay(bool enabled) const {
   if (enabled && state_->source.nativeHandle && state_->paused) (void)play();
 }
 
-}  // namespace gea::host
+} // namespace gea::host
 
 namespace gea::host {
 namespace {
@@ -403,7 +425,9 @@ std::uint32_t pcmNowMs() {
 }
 
 struct PcmAudioStream::State {
-  explicit State(int rate) : capture(16000, rate), playback(rate, 16000), wireRate(rate) {}
+  explicit State(int rate)
+      : capture(gea::platform::audio::deviceSampleRate, rate),
+        playback(rate, gea::platform::audio::deviceSampleRate), wireRate(rate) {}
   ~State() { if (output) gea::platform::audio::AudioSystem::stopPcmStream(output); }
   std::shared_ptr<media::TrackPcmReader> reader;
   std::mutex captureMutex;
@@ -424,8 +448,8 @@ struct PcmAudioStream::State {
 };
 
 PcmAudioStream PcmAudioStream::create(double sampleRate) {
-  if (sampleRate != 16000 && sampleRate != 24000 && sampleRate != 48000)
-    throw std::invalid_argument("PCM sample rate must be 16000, 24000 or 48000");
+  if (sampleRate != 16000 && sampleRate != 24000 && sampleRate != 44100 && sampleRate != 48000)
+    throw std::invalid_argument("PCM sample rate must be 16000, 24000, 44100 or 48000");
   PcmAudioStream result;
   result.state_ = std::make_shared<State>(static_cast<int>(sampleRate));
   const std::weak_ptr<State> weak = result.state_;
@@ -524,16 +548,15 @@ std::string PcmAudioStream::readBase64() const {
   const auto started = pcmNowMs();
   if (!state_) return {};
   std::lock_guard<std::mutex> lock(state_->captureMutex);
-  // Match the device/bridge's 20 ms cadence. At 16 kHz, the encoded JSON
-  // envelope stays below one TCP MSS instead of splitting a 40 ms payload.
-  constexpr std::size_t captureFrames = 320;
+  // Match the capture driver's 20 ms cadence at its configured device rate.
+  constexpr std::size_t captureFrames = gea::platform::audio::deviceSampleRate / 50;
   if (state_->closed || !state_->reader || state_->reader->pendingSamples() < captureFrames) return {};
   std::int16_t input[captureFrames];
   const auto count = state_->reader->read(input, captureFrames);
   const auto readAt = pcmNowMs();
-  // The native bridge already supplies 16 kHz PCM. Encode the capture block
+  // When the network and device clocks match, encode the capture block
   // directly rather than allocating and visiting a resampler for each sample.
-  if (state_->wireRate == 16000) return pcm::encode(input, count);
+  if (state_->wireRate == gea::platform::audio::deviceSampleRate) return pcm::encode(input, count);
   std::vector<std::int16_t> wire;
   wire.reserve(1920);
   for (std::size_t i = 0; i < count; ++i)
@@ -555,10 +578,10 @@ void PcmAudioStream::writeBase64(const std::string &data) const {
   const auto decodedAt = pcmNowMs();
   // Resampling and allocation never hold the real-time mixer's queue mutex.
   State::Block block;
-  if (state_->wireRate == 16000) {
+  if (state_->wireRate == gea::platform::audio::deviceSampleRate) {
     block.assign(wire.begin(), wire.end());
   } else {
-    block.reserve(wire.size() * 16000 / state_->wireRate + 2);
+    block.reserve(wire.size() * gea::platform::audio::deviceSampleRate / state_->wireRate + 2);
     for (auto sample : wire)
       state_->playback.push(sample, [&](std::int16_t value) { block.push_back(value); });
   }
@@ -567,7 +590,7 @@ void PcmAudioStream::writeBase64(const std::string &data) const {
     std::lock_guard<std::mutex> lock(state_->mutex);
     // Generated output may run faster than playback. Never silently overwrite
     // the unplayed tail (MediaStream's live capture ring has different semantics).
-    if (state_->queuedSamples + block.size() > 16000 * 30)
+    if (state_->queuedSamples + block.size() > gea::platform::audio::deviceSampleRate * 30)
       throw std::runtime_error("PCM playback exceeded 30 second queue limit");
     if (!block.empty()) {
       state_->startGate.pushed(pcmNowMs());
@@ -575,7 +598,7 @@ void PcmAudioStream::writeBase64(const std::string &data) const {
       state_->queue.push_back(std::move(block));
     }
     packets = ++state_->receivedPackets;
-    queuedMs = unsigned(state_->queuedSamples * 1000 / 16000);
+    queuedMs = unsigned(state_->queuedSamples * 1000 / gea::platform::audio::deviceSampleRate);
   }
   // Console formatting and sinks must never hold the speaker's queue lock.
 #ifdef ESP_PLATFORM
@@ -614,7 +637,7 @@ void PcmAudioStream::close() const {
 double PcmAudioStream::queuedMs() const {
   if (!state_) return 0;
   std::lock_guard<std::mutex> lock(state_->mutex);
-  return state_->queuedSamples / 16.0;
+  return state_->queuedSamples * 1000.0 / gea::platform::audio::deviceSampleRate;
 }
 
 double PcmAudioStream::playedMs() const {
@@ -624,7 +647,7 @@ double PcmAudioStream::playedMs() const {
   // This conservative bound never reports queued network data as heard audio.
   const auto elapsed = static_cast<std::uint32_t>(pcmNowMs() - state_->lastPull);
   const double inFlight = elapsed >= 122 ? 0 : 122 - elapsed;
-  return std::max(0.0, state_->pulled / 16.0 - inFlight);
+  return std::max(0.0, state_->pulled * 1000.0 / gea::platform::audio::deviceSampleRate - inFlight);
 }
 
 bool PcmAudioStream::drained() const {
@@ -642,7 +665,7 @@ double PcmAudioStream::audioLevel() const { return state_ ? state_->level.read(p
 double PcmAudioStream::capturePendingMs() const {
   if (!state_) return 0;
   std::lock_guard<std::mutex> lock(state_->captureMutex);
-  return state_->reader ? state_->reader->pendingSamples() / 16.0 : 0;
+  return state_->reader ? state_->reader->pendingSamples() * 1000.0 / gea::platform::audio::deviceSampleRate : 0;
 }
 double PcmAudioStream::captureDroppedSamples() const {
   if (!state_) return 0;

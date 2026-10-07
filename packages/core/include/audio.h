@@ -7,7 +7,17 @@
 #include <string>
 #include <functional>
 
+// Physical capture/mixer clock shared by the board driver and native hosts.
+// AudioContext and network PCM may use other rates through their resamplers.
+#ifndef GEA_AUDIO_DEVICE_SAMPLE_RATE
+#define GEA_AUDIO_DEVICE_SAMPLE_RATE 16000
+#endif
+
 namespace gea::platform::audio {
+
+inline constexpr int deviceSampleRate = GEA_AUDIO_DEVICE_SAMPLE_RATE;
+static_assert(deviceSampleRate >= 8000 && deviceSampleRate <= 48000,
+              "Audio device sample rate must be between 8000 and 48000 Hz");
 
 enum class OscillatorType {
 	Sine = 0,
@@ -74,7 +84,7 @@ public:
 	static bool playPcm(const std::int16_t *samples, std::size_t sample_count, int sample_rate, int channels);
 	static void stopPlayback();
 	static void flushPlayback();
-	// Continuous 16 kHz mono source; zero means the platform could not attach it.
+	// Continuous mono source at deviceSampleRate; zero means the platform could not attach it.
 	static std::uint64_t playPcmStream(std::function<std::size_t(std::int16_t*, std::size_t)> pull);
 	static void stopPcmStream(std::uint64_t stream);
 	static bool pcmStreamSettled(std::uint64_t stream);

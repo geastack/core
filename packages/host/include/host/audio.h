@@ -13,6 +13,11 @@
 #include <utility>
 #include <vector>
 
+namespace gea {
+template <typename T> struct Ref;
+template <typename T> class TypedArray;
+} // namespace gea
+
 namespace gea::embedded::ui {
 class NodeHandle;
 }
@@ -53,14 +58,60 @@ struct AudioContextCurrentTimeProperty {
   operator double() const;
 };
 
+struct AudioBufferStorage;
+
 struct AudioBuffer {
   std::vector<std::int16_t> samples;
   int sampleRate = 16000;
   int channels = 1;
+  mutable std::shared_ptr<AudioBufferStorage> storage;
 
-  constexpr AudioBuffer() = default;
+  AudioBuffer() = default;
   AudioBuffer(std::vector<std::int16_t> pcm, int rate, int channelCount)
-      : samples(std::move(pcm)), sampleRate(rate), channels(channelCount) {}
+      : samples(std::move(pcm)), sampleRate(rate), channels(channelCount) {
+    ensureStorage();
+  }
+
+  double getLength() const;
+  double getDuration() const;
+  double getNumberOfChannels() const;
+  gea::Ref<gea::TypedArray<float>> getChannelData(double channel) const;
+  const std::vector<std::int16_t> &pcmSamples() const;
+
+  template <typename Source>
+  void copyToChannel(const Source &source, double channel,
+                     double offset = 0) const {
+    if constexpr (requires {
+                    source.get();
+                    *source;
+                  }) {
+      copyToChannel(*source, channel, offset);
+    } else {
+      copyToChannelValues(source.data(), source.size(), channel, offset);
+    }
+  }
+
+  template <typename Destination>
+  void copyFromChannel(const Destination &destination, double channel,
+                       double offset = 0) const {
+    if constexpr (requires {
+                    destination.get();
+                    *destination;
+                  }) {
+      copyFromChannelValues(destination->data(), destination->size(), channel,
+                            offset);
+    } else {
+      copyFromChannelValues(destination.data(), destination.size(), channel,
+                            offset);
+    }
+  }
+
+private:
+  void ensureStorage() const;
+  void copyToChannelValues(const float *source, std::size_t count,
+                           double channel, double offset) const;
+  void copyFromChannelValues(float *destination, std::size_t count,
+                             double channel, double offset) const;
 };
 
 struct AudioParamValueProperty {
@@ -100,12 +151,15 @@ struct OscillatorTypeProperty {
 
 struct OscillatorNode {
   NativeAudioHandle nativeHandle = 0;
+  std::shared_ptr<audio_worklet::ContextState> context;
+  mutable double clockOffset = 0;
+  mutable bool clockAligned = false;
   mutable AudioParam frequency;
   mutable OscillatorTypeProperty type;
 
-  constexpr OscillatorNode() = default;
-  explicit constexpr OscillatorNode(NativeAudioHandle oscillator) : nativeHandle(oscillator), frequency(oscillator), type(oscillator) {}
-  explicit constexpr OscillatorNode(double oscillator) : nativeHandle(static_cast<NativeAudioHandle>(oscillator)), frequency(oscillator), type(oscillator) {}
+  OscillatorNode() = default;
+  explicit OscillatorNode(NativeAudioHandle oscillator) : nativeHandle(oscillator), frequency(oscillator), type(oscillator) {}
+  explicit OscillatorNode(double oscillator) : nativeHandle(static_cast<NativeAudioHandle>(oscillator)), frequency(oscillator), type(oscillator) {}
 
   constexpr operator double() const { return static_cast<double>(nativeHandle); }
 
@@ -117,6 +171,15 @@ struct OscillatorNode {
 };
 
 struct AudioBufferSourceNode {
+private:
+  bool present_ = false;
+  explicit AudioBufferSourceNode(bool present) : present_(present) {}
+  friend struct AudioContext;
+
+public:
+  AudioBufferSourceNode() = default;
+  explicit operator bool() const { return present_; }
+  bool operator==(std::nullptr_t) const { return !present_; }
   mutable AudioBuffer buffer;
   mutable bool connected = false;
 
@@ -139,7 +202,7 @@ struct AudioContext {
   bool operator==(std::nullptr_t) const { return !state_; }
   template <typename Options>
   explicit AudioContext(const Options& options) : AudioContext(sampleRateOption(options)) {}
-  double sampleRate = 16000;
+  double sampleRate = gea::platform::audio::deviceSampleRate;
   AudioDestinationProperty destination;
   AudioContextCurrentTimeProperty currentTime;
   AudioWorklet audioWorklet;
@@ -155,19 +218,27 @@ struct AudioContext {
 
   OscillatorNode createOscillator() const;
   AudioBufferSourceNode createBufferSource() const;
+  AudioBuffer createBuffer(double channels, double length, double rate) const;
   AudioBuffer decodeAudioData(const std::vector<std::uint8_t> &bytes) const;
  private:
   template <typename Options>
   static double sampleRateOption(const Options& options) {
-    if constexpr (requires { options.has_value(); *options; })
-      return options.has_value() ? sampleRateOption(*options) : 16000;
-    else if constexpr (requires { options.get(); *options; })
-      return options.get() ? sampleRateOption(*options) : 16000;
+    if constexpr (requires {
+                    options.has_value();
+                    *options;
+                  })
+      return options.has_value() ? sampleRateOption(*options)
+                                 : gea::platform::audio::deviceSampleRate;
+    else if constexpr (requires {
+                         options.get();
+                         *options;
+                       })
+      return options.get() ? sampleRateOption(*options) : gea::platform::audio::deviceSampleRate;
     else if constexpr (requires { options.sampleRate; })
       return sampleRateOption(options.sampleRate);
     else if constexpr (requires { static_cast<double>(options); })
       return static_cast<double>(options);
-    else return 16000;
+    else return gea::platform::audio::deviceSampleRate;
   }
 };
 
@@ -204,7 +275,7 @@ class HTMLAudioElement {
 };
 
 // Streaming mono PCM transport independent of any speech provider. Wire PCM
-// uses sampleRate; capture/playback use the device's 16 kHz audio clock.
+// uses sampleRate; capture/playback use the configured device audio clock.
 class WebSocket;
 class PcmAudioStream {
  public:
@@ -238,7 +309,7 @@ struct AudioFacade {
 };
 
 inline const AudioContext& sharedAudioContext() {
-  static const AudioContext context(16000.0);
+  static const AudioContext context{double(gea::platform::audio::deviceSampleRate)};
   return context;
 }
 inline constexpr AudioFacade Audio{};

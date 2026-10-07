@@ -4686,7 +4686,7 @@ if (nativeModules.size) {
     if (!fs.existsSync(module.stagedEntry)) fail(`missing ${module.kind} module: ${module.entry}`)
     if (module.kind === 'worklet') {
       const implementation = path.join(coreRoot, 'runtime/audio-worklet.ts')
-      const bindings = `import { AudioWorkletProcessor, registerProcessor } from ${JSON.stringify(implementation)}\n`
+      const bindings = `import { AudioWorkletProcessor, registerProcessor } from ${JSON.stringify(implementation.slice(0, -3))}\n`
       const source = fs.readFileSync(module.stagedEntry, 'utf8')
       fs.writeFileSync(module.stagedEntry, bindings + source)
       const compilerRequire = createRequire(pathToFileURL(geatscBin))

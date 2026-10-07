@@ -194,6 +194,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ['gea::host::sharedAudioContext()', geaHostDeclarations],
       ['gea::host::sharedAudioContext().createOscillator', geaHostDeclarations],
       ['gea::host::sharedAudioContext().createBufferSource', geaHostDeclarations],
+      ['gea::host::sharedAudioContext().createBuffer', geaHostDeclarations],
       ['gea::host::sharedAudioContext().decodeAudioData', geaHostDeclarations],
       ['gea::host::sharedAudioContext().currentTime', geaHostDeclarations],
       ['gea::host::sharedAudioContext().destination', geaHostDeclarations],

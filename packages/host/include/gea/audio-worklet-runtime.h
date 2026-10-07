@@ -12,7 +12,7 @@ gea::Promise<void> workletPromise(Action action) {
 }
 inline gea::host::AudioContext createAudioContext() {
   hostworker::installRealmRuntime();
-  return gea::host::AudioContext(16000.0);
+  return gea::host::AudioContext(double(gea::platform::audio::deviceSampleRate));
 }
 template <typename Options>
 gea::host::AudioContext createAudioContext(const Options& options) {
@@ -59,8 +59,9 @@ gea::host::AudioWorkletNodeOptions workletOptions(const Options& options) {
     if constexpr (requires { options.outputChannelCount; }) {
       hostworker::present(options.outputChannelCount, [&](const auto& counts) {
         const auto& values = [&]() -> const auto& { if constexpr (requires { counts->size(); }) return *counts; else return counts; }();
-        if (values.size() != result.numberOfOutputs || values.size() != 1 || values.at(0) != 1)
-          throw std::invalid_argument("Embedded AudioWorklet requires one mono output");
+        if (values.size() != result.numberOfOutputs || values.size() > 1 ||
+            (values.size() == 1 && values.at(0) != 1))
+          throw std::invalid_argument("Embedded AudioWorklet output channel counts must match zero or one mono output");
       });
     }
   }

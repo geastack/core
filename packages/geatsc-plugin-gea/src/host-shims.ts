@@ -1166,6 +1166,7 @@ export function createGeaHostShims(): HostShimDefinitions {
               "gea::host::sharedAudioContext().createOscillator",
             createBufferSource:
               "gea::host::sharedAudioContext().createBufferSource",
+            createBuffer: "gea::host::sharedAudioContext().createBuffer",
             decodeAudioData: "gea::host::sharedAudioContext().decodeAudioData",
           },
           audioContext: {
@@ -1173,6 +1174,7 @@ export function createGeaHostShims(): HostShimDefinitions {
               "gea::host::sharedAudioContext().createOscillator",
             createBufferSource:
               "gea::host::sharedAudioContext().createBufferSource",
+            createBuffer: "gea::host::sharedAudioContext().createBuffer",
             decodeAudioData: "gea::host::sharedAudioContext().decodeAudioData",
           },
           __gea_Audio: {
@@ -2260,6 +2262,27 @@ export function createGeaHostShims(): HostShimDefinitions {
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
             },
           ],
+          length: [
+            {
+              emit: "({receiver}).getLength()",
+              returnType: "double",
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+            },
+          ],
+          duration: [
+            {
+              emit: "({receiver}).getDuration()",
+              returnType: "double",
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+            },
+          ],
+          numberOfChannels: [
+            {
+              emit: "({receiver}).getNumberOfChannels()",
+              returnType: "double",
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+            },
+          ],
           buffer: [
             {
               emit: "static_cast<gea::host::AudioBuffer>(({receiver}).buffer)",
@@ -2764,6 +2787,10 @@ export function createGeaHostShims(): HostShimDefinitions {
               emit: "gea::host::sharedAudioContext().createOscillator({args})",
               returnType: "gea::host::OscillatorNode",
             },
+            createBuffer: {
+              emit: "gea::host::sharedAudioContext().createBuffer({args})",
+              returnType: "gea::host::AudioBuffer",
+            },
             createBufferSource: {
               emit: "gea::host::sharedAudioContext().createBufferSource({args})",
               returnType: "gea::host::AudioBufferSourceNode",
@@ -2777,6 +2804,10 @@ export function createGeaHostShims(): HostShimDefinitions {
             createOscillator: {
               emit: "gea::host::sharedAudioContext().createOscillator({args})",
               returnType: "gea::host::OscillatorNode",
+            },
+            createBuffer: {
+              emit: "gea::host::sharedAudioContext().createBuffer({args})",
+              returnType: "gea::host::AudioBuffer",
             },
             createBufferSource: {
               emit: "gea::host::sharedAudioContext().createBufferSource({args})",
@@ -3345,6 +3376,34 @@ export function createGeaHostShims(): HostShimDefinitions {
               receiverTypes: ["gea::host::AudioContext", "AudioContext"],
               emit: "({receiver}).createOscillator({args})",
               returnType: "gea::host::OscillatorNode",
+            },
+          ],
+          getChannelData: [
+            {
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+              emit: "({receiver}).getChannelData({args})",
+              returnType: "gea::Ref<gea::TypedArray<float>>",
+            },
+          ],
+          copyToChannel: [
+            {
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+              emit: "({receiver}).copyToChannel({args})",
+              returnType: "void",
+            },
+          ],
+          copyFromChannel: [
+            {
+              receiverTypes: ["gea::host::AudioBuffer", "AudioBuffer"],
+              emit: "({receiver}).copyFromChannel({args})",
+              returnType: "void",
+            },
+          ],
+          createBuffer: [
+            {
+              receiverTypes: ["gea::host::AudioContext", "AudioContext"],
+              emit: "({receiver}).createBuffer({args})",
+              returnType: "gea::host::AudioBuffer",
             },
           ],
           createBufferSource: [

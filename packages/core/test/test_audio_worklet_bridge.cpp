@@ -49,6 +49,16 @@ bool invokeTyped(void*, gea::Ref<TypedProcessor> processor, WorkletBus input, Wo
 }
 
 void testAudioWorkletTypedBridge() {
+  struct SinkOptions {
+    double numberOfOutputs = 0;
+    std::vector<double> outputChannelCount;
+  };
+  const auto sinkOptions = workletOptions(SinkOptions{});
+  assert(sinkOptions.numberOfInputs == 1 && sinkOptions.numberOfOutputs == 0);
+  bool invalidChannels = false;
+  try { (void)workletOptions(SinkOptions{0, {1}}); }
+  catch (const std::invalid_argument&) { invalidChannels = true; }
+  assert(invalidChannels);
   gea::runtime::hostworker::installRealmRuntime();
   gea::host::audio_worklet::registerModule("/typed-audio.js", [] {
     // This Ref capture represents a compiled constructor's closure. Both it and

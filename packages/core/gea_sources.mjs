@@ -88,7 +88,7 @@ export function cxxSources(env = process.env) {
     ...cpp(host, ['input', 'wifi', 'bluetooth', 'geolocation']),
     ...cpp(join(host, 'host'), [
       'timers', 'worker', 'input', 'device', 'display', 'fetch', 'media', 'rtc', 'websocket', 'http', 'wifi',
-      'ble', 'apps', 'audio', 'audio_worklet', 'video', 'mjpeg', 'image', 'touch', 'imu', 'memory', 'camera', 'geolocation',
+      'ble', 'apps', 'audio', 'audio_worklet', 'audio_buffer_runtime', 'video', 'mjpeg', 'image', 'touch', 'imu', 'memory', 'camera', 'geolocation',
       'tile_loader'
     ]),
     // framework services (built on the platform abstraction — no target-specific deps)
