@@ -24,6 +24,7 @@ NODE_TESTS=(
 )
 
 NATIVE_TESTS=(
+  run-debugger-picker.sh
   run-packed-copy-overlap.sh
   run-bouncing-balls-regressions.sh
   run-text-sprite-cache.sh

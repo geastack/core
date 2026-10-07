@@ -1573,6 +1573,11 @@ public:
 #endif
 
 struct Node {
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	// Debug-only lifetime identity: recycled engine slots must never retarget
+	// a DevTools node handle. Production node size is unchanged.
+	uint32_t debugger_identity = 0;
+#endif
 #if GEA_EMBEDDED_SHARED_STYLES
 	NodeStyleStorage sharedStyle_;
 	// Group the four-byte ownership handles before the two-byte fields.

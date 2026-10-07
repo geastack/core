@@ -4,8 +4,21 @@
 #include <cstdint>
 #include <initializer_list>
 #include <string>
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+#include <vector>
+#endif
 
 namespace gea::embedded::ui {
+
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+struct DebuggerCssRule {
+	std::string selector, property, value, media;
+	bool userAgent;
+};
+std::vector<DebuggerCssRule> debuggerMatchedCssRules(int nodeId);
+std::vector<DebuggerCssRule> debuggerCssRules();
+bool debuggerSetCssRule(const std::string &selector, const std::string &media, const std::string &property, const std::string &value);
+#endif
 
 int resolveLayoutSizeExpression(int nodeId, int expression, bool horizontal);
 int resolveLineHeightExpression(int nodeId, int expression);

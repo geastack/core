@@ -1544,6 +1544,9 @@ struct CssRule {
 	std::uint16_t valueText;
 	std::uint16_t mediaText;
 	bool userAgent = false;
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	std::string debuggerSelector;
+#endif
 };
 
 struct CssKeyframeRule {
@@ -2500,6 +2503,10 @@ CssRule makeCssRule(CssRule::SelectorType selectorType,
 	    : kNoCompiledCssAnimationSpec;
 #endif
 	const std::uint16_t mediaPlan = compileMediaConditionPlan(media);
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	const bool keepValueText = true;
+	const bool keepPropertyText = true;
+#else
 	const bool keepValueText =
 	    declaration == CssDeclarationId::Custom ||
 #if GEA_CSS_ANIMATIONS
@@ -2511,21 +2518,30 @@ CssRule makeCssRule(CssRule::SelectorType selectorType,
 	    keepValueText &&
 	    declaration != CssDeclarationId::Custom &&
 	    declaration != CssDeclarationId::Animation;
+#endif
 	const std::uint16_t propertyText = keepPropertyText
 	    ? storeCssRuleText(std::move(property))
 	    : kNoCssRuleText;
 	const std::uint16_t valueText = keepValueText
 	    ? storeCssRuleText(std::move(value))
 	    : kNoCssRuleText;
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	const std::uint16_t mediaText = storeCssRuleText(std::move(media));
+#else
 	const std::uint16_t mediaText = mediaPlan == kNoMediaConditionPlan
 	    ? storeCssRuleText(std::move(media))
 	    : kNoCssRuleText;
+#endif
 	CssRule rule{selectorType, pseudoElement, rulePropertyKind(declaration), declaration, compiledValue,
 #if GEA_CSS_ANIMATIONS
 	             compiledAnimationSpec,
 #endif
 	             selectorAtom, propertyAtom, selectorTagId, selectorPlan, mediaPlan,
 	             propertyText, valueText, mediaText};
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	rule.debuggerSelector = selector.str();
+	if (selectorType == CssRule::SelectorType::Class) rule.debuggerSelector.insert(0, ".");
+#endif
 	return rule;
 }
 
@@ -18810,5 +18826,75 @@ extern "C" void gea_style_set_viewport_size(int width, int height)
 {
 	gea::embedded::ui::setViewportMetrics(width, height, 1.0);
 }
+
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+// Edit the real cascade, retaining declaration order and selector identity.
+bool debuggerSetCssRule(const std::string &selector, const std::string &media,
+                        const std::string &property, const std::string &value)
+{
+	auto &list = rules();
+	int found = -1, owner = -1;
+	for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+		const auto &rule = list[i];
+		if (rule.userAgent || rule.debuggerSelector != selector || cssRuleTextForHandle(rule.mediaText).str() != media) continue;
+		owner = i;
+		if (cssRuleTextForHandle(rule.propertyText).str() == property) found = i;
+	}
+	if (owner < 0) return false;
+	if (value.empty()) {
+		list.erase(std::remove_if(list.begin(), list.end(), [&](const CssRule &rule) {
+			return !rule.userAgent && rule.debuggerSelector == selector &&
+			       cssRuleTextForHandle(rule.mediaText).str() == media &&
+			       cssRuleTextForHandle(rule.propertyText).str() == property;
+		}), list.end());
+		// An empty CSS block remains a matched, editable rule. Keep a no-op
+		// declaration so its selector/media identity survives the last deletion.
+		const bool remains = std::any_of(list.begin(), list.end(), [&](const CssRule &rule) {
+			return !rule.userAgent && rule.debuggerSelector == selector && cssRuleTextForHandle(rule.mediaText).str() == media;
+		});
+		if (!remains) {
+			const auto slice = selectorTextWithoutPseudo(selector.c_str(), selector.size());
+			list.insert(list.begin() + std::min(owner, static_cast<int>(list.size())),
+			    makeCssRule(CssRule::SelectorType::Selector, slice.pseudo,
+			        CssText::copy(std::string(slice.data, slice.length)), CssText::copy(std::string()),
+			        CssText::copy(std::string()), CssText::copy(media)));
+		}
+	} else {
+		const auto slice = selectorTextWithoutPseudo(selector.c_str(), selector.size());
+		auto replacement = makeCssRule(CssRule::SelectorType::Selector, slice.pseudo,
+		    CssText::copy(std::string(slice.data, slice.length)), CssText::copy(property),
+		    CssText::copy(value), CssText::copy(media));
+		if (found >= 0) list[found] = std::move(replacement);
+		else list.insert(list.begin() + owner + 1, std::move(replacement));
+	}
+	noteStyleRuleRegistrationChanged();
+	return true;
+}
+
+std::vector<DebuggerCssRule> debuggerMatchedCssRules(int nodeId)
+{
+	std::vector<DebuggerCssRule> out;
+	rebuildRuleIndexIfNeeded();
+	const auto &list = rules();
+	for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+		const auto &rule = list[i];
+		if (!ruleMatchesNode(rule, nodeId) || !ruleMediaMatchesIndex(i) || rule.debuggerSelector.empty()) continue;
+		out.push_back({rule.debuggerSelector, cssRuleTextForHandle(rule.propertyText).str(),
+		               cssRuleTextForHandle(rule.valueText).str(), cssRuleTextForHandle(rule.mediaText).str(), rule.userAgent});
+	}
+	return out;
+}
+
+std::vector<DebuggerCssRule> debuggerCssRules()
+{
+	std::vector<DebuggerCssRule> out;
+	for (const auto &rule : rules()) {
+		if (rule.debuggerSelector.empty()) continue;
+		out.push_back({rule.debuggerSelector, cssRuleTextForHandle(rule.propertyText).str(),
+		    cssRuleTextForHandle(rule.valueText).str(), cssRuleTextForHandle(rule.mediaText).str(), rule.userAgent});
+	}
+	return out;
+}
+#endif
 
 }  // namespace gea::embedded::ui

@@ -8,6 +8,7 @@
 #include "ui/node.h"
 #include "ui/style.h"
 #include "ui/tree_internal.h"
+#include "ui/debugger_overlay.h"
 
 #include <cstdio>
 #include <vector>
@@ -229,6 +230,68 @@ int main()
 	Document::instance().refresh(root, 180, 120);
 	ok &= expectPixel(65, 20, kBlue, "removed inline color exposes class background");
 	ordinary.classList().set("");
+
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	// Editing an authored rule changes every matched node while inline overrides win.
+	clipped.classList().set("native-editable"); ordinary.classList().set("native-editable");
+	clipped.style().removeProperty("background"); clipped.style().removeProperty("background-color");
+	sheet.registerSelectorRule(".native-editable", "background-color", "red");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(15, 20, kRed, "authored rule before debugger edit");
+	ok &= debuggerSetCssRule(".native-editable", "", "background-color", "lime");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(15, 20, kGreen, "edited rule first matched node");
+	ok &= expectPixel(65, 20, kGreen, "edited rule second matched node");
+	ordinary.style().setProperty("background-color", "blue");
+	ok &= debuggerSetCssRule(".native-editable", "", "background-color", "red");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(65, 20, kBlue, "inline override survives rule edit");
+	ordinary.style().removeProperty("background-color");
+	ok &= debuggerSetCssRule(".native-editable", "", "background-color", "");
+	ok &= debuggerSetCssRule(".native-editable", "", "background", "red");
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(15, 20, kRed, "new shorthand in authored rule");
+	ok &= expectPixel(65, 20, kRed, "new shorthand affects every match");
+	for (const auto &rule : debuggerMatchedCssRules(ordinary.id()))
+		if (rule.selector == ".native-editable" && rule.property == "background") ok &= rule.value == "red";
+	ok &= !debuggerSetCssRule(".missing-rule", "", "color", "red");
+
+	// The inspector layer changes pixels without adding nodes or modifying styles.
+	auto &tree = Tree::instance();
+	const int nodeCount = tree.nodeCount();
+	const auto originalStyle = tree.node(ordinary.id()).computedStyle().bg_color;
+	const auto outline = pixel::nativeColor(0, 200, 255);
+	debuggerOverlay.set(ordinary.id(), outline);
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(55, 5, outline, "native debugger outline");
+	std::vector<std::uint16_t> snapshot(180 * 120);
+	auto *displayCanvas = gea::platform::display::Display::canvas();
+	auto *displayPixels = displayCanvas->pixels();
+	ok &= renderRetainedSnapshotRgb565(snapshot.data(), 180, 120);
+	if (snapshot[5 * 180 + 55] != pixel::toRgb565(outline)) {
+		std::fprintf(stderr, "[css_background_text] native snapshot omitted debugger outline\n");
+		ok = false;
+	}
+	// The host test display has no platform framebuffer rebind hook.
+	displayCanvas->bindPixels(displayPixels, 180, 120);
+	ok &= tree.nodeCount() == nodeCount;
+	ok &= tree.node(ordinary.id()).computedStyle().bg_color == originalStyle;
+	ordinary.style().left(90);
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(95, 5, outline, "outline follows moved node");
+	ok &= expectPixel(55, 5, kWhite, "old outline repaired after move");
+	debuggerOverlay.set(-1, outline);
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(95, 5, originalStyle, "hiding outline restores native pixels");
+	debuggerOverlay.set(ordinary.id(), outline);
+	tree.frame(3000);
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(95, 5, originalStyle, "host lease expires without leaving overlay pixels");
+	debuggerOverlay.set(ordinary.id(), outline);
+	tree.removeNode(ordinary.id());
+	Document::instance().refresh(root, 180, 120);
+	ok &= expectPixel(95, 5, kWhite, "removed element clears overlay");
+#endif
 
 	// The compositor's exact write path must remain an overwrite at alpha zero.
 	auto *canvas = gea::platform::display::Display::canvas();

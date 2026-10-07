@@ -253,7 +253,18 @@ function copyCompatSourceTree(srcDir, dstDir, envDefines = {}) {
         for (const module of native.modules) {
           nativeModules.set(`${module.kind}:${module.url}`, { ...module, stagedEntry: path.resolve(path.dirname(dst), path.relative(path.dirname(src), module.entry)) })
         }
-        fs.writeFileSync(dst, inlineProcessEnv(transformGeaEmbeddedCompatSource(inlineJsonImports(native.code, src), src), envDefines))
+        let debugMap
+        const preparedSource = inlineJsonImports(native.code, src)
+        const transformed = transformGeaEmbeddedCompatSource(preparedSource, src,
+          process.env.GEA_NATIVE_DEBUGGER === '1' ? map => { debugMap = map } : undefined)
+        fs.writeFileSync(dst, inlineProcessEnv(transformed, envDefines))
+        if (process.env.GEA_NATIVE_DEBUGGER === '1') {
+          fs.writeFileSync(dst + '.gea-source.json', JSON.stringify({
+            source: src, original: code, staged: fs.readFileSync(dst, 'utf8'),
+            map: debugMap || null, prepared: preparedSource,
+            unmappedTransforms: preparedSource !== code || transformed !== inlineProcessEnv(transformed, envDefines)
+          }))
+        }
       } else {
         fs.copyFileSync(src, dst)
         if (path.extname(entry.name) === '.css') copyCssUrlAssets(src, dst)
@@ -4657,6 +4668,7 @@ if (cxxStandard) geatscArgs.push('--cxx-standard', cxxStandard)
 if (hasFlag('--allow-any') || compilerSettings.allowAny) geatscArgs.push('--allow-any')
 if (entrySymbol) geatscArgs.push('--entry-symbol', entrySymbol)
 if (hasFlag('--isolate-symbols')) geatscArgs.push('--isolate-symbols')
+if (process.env.GEA_NATIVE_DEBUGGER === '1') geatscArgs.push('--debug-source')
 // One C++ unit per source module plus a shared header, instead of one unit for
 // the whole program. Every target already reads `geatsc-sources.txt` as a LIST,
 // so nothing downstream changes; see the compiler's docs/TRANSLATION-UNITS.md

@@ -65,6 +65,12 @@ public:
 	static int frameIntervalMs();
 	static void setFrameRate(double fps);
 	static double frameRate();
+#if defined(ESP_PLATFORM) && defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	// Debug cap applies to timer, TE and input-driven frames. Application FPS
+	// changes cannot exceed it; zero restores normal scheduling.
+	static void setDebuggerFrameRate(int fps);
+	static int debuggerFrameRate();
+#endif
 	static int nowMs();
 };
 

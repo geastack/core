@@ -14,6 +14,7 @@ CPP
 gea_build_native_test \
   "$BUILD_DIR" \
   "$BUILD_DIR/css-background-text" \
-  "$ROOT/packages/core/test/test_css_background_text_main.cpp"
+  "$ROOT/packages/core/test/test_css_background_text_main.cpp" \
+  -DGEA_NATIVE_DEBUGGER=1
 
 "$BUILD_DIR/css-background-text"

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "absolute_leaf_refresh.h"
 #include "dirty_regions.h"
+#include "debugger_overlay.h"
 #include "canvas_element.h"
 #include "display.h"
 #include "display_underlay.h"
@@ -1770,8 +1771,17 @@ namespace gea::embedded::ui
 		// (rows recorded beyond the scroll viewport printed above it in every
 		// snapshot, reading as a phantom on-screen ghost during debugging).
 		{
-			const DisplayReplayRegion region{0, 0, width - 1, height - 1, -1};
-			DisplayList::instance().replayDirectDirtyRegions(&region, 1);
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+			// Highlights append commands outside node paint ranges. Their forced
+			// full record includes ancestor clips, so replay that complete stream.
+			if (debuggerOverlay.slot >= 0)
+				DisplayList::instance().replay();
+			else
+#endif
+			{
+				const DisplayReplayRegion region{0, 0, width - 1, height - 1, -1};
+				DisplayList::instance().replayDirectDirtyRegions(&region, 1);
+			}
 		}
 		gea::platform::display::Display::popClip();
 		const int pixels = width * height;
@@ -2068,6 +2078,9 @@ namespace gea::embedded::ui
 		auto &state = treeState();
 		if (root < 0 || root >= state.nodeCount)
 			return;
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+		debuggerOverlay.prepare();
+#endif
 		const bool viewportChanged = gLayoutViewportRoot != root ||
 		    gLayoutViewportWidth != width || gLayoutViewportHeight != height;
 		if (viewportChanged) {
@@ -2587,6 +2600,10 @@ namespace gea::embedded::ui
 			GEA_REFRESH_PERF(perf.treeRecordedNodes += state.nodeCount);
 			GEA_REFRESH_PERF(perf.treeRecordedCommands += DisplayList::instance().commandCount());
 		}
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+		if (displayListFullRecord)
+			debuggerOverlay.record(root, width, height);
+#endif
 		if (displayListFullRecord)
 			GEA_REFRESH_PERF(perf.treeFullRecords++);
 		if (reprojected)
@@ -3483,6 +3500,9 @@ namespace gea::embedded::ui
 		if (timestamp_ms < 0)
 			timestamp_ms = 0;
 		state.lastFrameMs = timestamp_ms;
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+		debuggerOverlay.prepare();
+#endif
 
 		if (state.inputTickRequired)
 			tickInput(timestamp_ms);

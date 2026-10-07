@@ -8,6 +8,7 @@
 #include "touch.h"
 #include "ui/tree_internal.h"
 #include "ui/virtual_keyboard.h"
+#include "ui/debugger_picker.h"
 
 #include <cstring>
 
@@ -99,6 +100,17 @@ public:
 	// at the same coordinates) returns false so a static hold can't busy-render.
 	bool dispatch(const Event &event)
 	{
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+		auto &picker = gea::embedded::ui::debuggerPicker;
+		if (picker.capturesInput()) {
+			int x = event.x, y = event.y;
+			if (event.touchPhase == TouchPhase::Move && event.pointerId == 0) {
+				gea::platform::touch::Touchscreen::consumeLatestMove(&x, &y);
+				TouchRuntime::transformTouchToLogical(&x, &y);
+			}
+			if (picker.consume(event.touchPhase, x, y, event.pointerId)) return true;
+		}
+#endif
 		// Immediate-mode apps (Display.ctx games) mount no UI tree: hitTestNode
 		// returns -1 and there is no root to bind document listeners onto, so the
 		// tree dispatch below can never reach the app. Deliver pointer events

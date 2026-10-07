@@ -349,6 +349,12 @@ void Node::resetComputedStyle() { NodeLifecycle::resetStyle(style); }
 
 void NodeLifecycle::init(Node *n, NodeType type)
 {
+#if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+	static uint32_t nextDebuggerIdentity = 0;
+	// Two protocol ids per native node (element and optional text child).
+	if (nextDebuggerIdentity >= 0x3fffffff) std::abort();
+	n->debugger_identity = ++nextDebuggerIdentity;
+#endif
 	n->type = type;
 #if GEA_EMBEDDED_SHARED_STYLES && !GEA_CSS_CUSTOM_PROPERTIES
 	n->class_style_tracked = false;

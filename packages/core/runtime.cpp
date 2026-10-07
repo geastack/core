@@ -198,6 +198,9 @@ void dispatch_event(const events::Event &event, const RuntimeOptions &options)
 		// A finger held still posts no moves, so gestureActiveWithin() lapses to
 		// false after the window and the loop quiesces — no busy-render on a hold.
 		for (;;) {
+#if defined(ESP_PLATFORM) && defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
+			if (services::FrameScheduler::debuggerFrameRate() > 0) break;
+#endif
 			const bool catchUp = services::FrameScheduler::takeCatchUpRequest();
 			const bool activeDrag =
 				GEA_EMBEDDED_CONTINUOUS_TOUCH_FRAMES &&

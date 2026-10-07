@@ -212,7 +212,7 @@ function transformTopLevelStatement(stmt) {
   return { changed: false, nodes: [stmt] }
 }
 
-export function transformGeaEmbeddedCompatSource(code, filename) {
+export function transformGeaEmbeddedCompatSource(code, filename, onSourceMap) {
   if ((!code.includes('<') || !code.includes('>')) && !code.includes('@geastack/core') && !code.includes('@geajs/core')) return code
 
   const ast = parser.parse(code, {
@@ -246,7 +246,9 @@ export function transformGeaEmbeddedCompatSource(code, filename) {
     ensureComponentImport(ast, statesProps)
   }
 
-  return generate(ast, { retainLines: true }, code).code
+  const result = generate(ast, { retainLines: true, sourceMaps: !!onSourceMap, sourceFileName: filename }, code)
+  if (onSourceMap) onSourceMap(result.map)
+  return result.code
 }
 
 // ─── JSON-import constant folding ────────────────────────────────────────────
