@@ -769,6 +769,7 @@ export function createGeaHostShims(): HostShimDefinitions {
             loadFileOpaque: "gea::host::image.loadFileOpaque",
             loadAssetPath: "gea::host::image.loadAssetPath",
             writeFile: "gea::host::image.writeFile",
+            removeFile: "gea::host::image.removeFile",
             readFile: "gea::host::image.readFile",
             readMapArchive: "gea::host::image.readMapArchive",
             readFileRange: "gea::host::image.readFileRange",

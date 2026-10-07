@@ -71,6 +71,7 @@ public:
   bool writeFile(const std::string &path, const std::vector<std::uint8_t> &bytes) const;
   // Read a whole file's raw bytes (e.g. a .pmtiles on microSD) into memory.
   // Empty vector when the file is missing or no storage is mounted.
+  bool removeFile(const std::string &path) const;
   std::vector<std::uint8_t> readFile(const std::string &path) const;
   // Read a .pmtiles archive flashed into the spare ota_1 partition (esptool),
   // sized from its header. Empty off-esp32 or when absent/invalid.

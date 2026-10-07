@@ -15,4 +15,7 @@ bool ensureMounted();
 // wired from app_main).
 void setMountProvider(bool (*provider)());
 
+// Used by built-in flash storage only when no target-specific provider exists.
+void setFallbackMountProvider(bool (*provider)());
+
 } // namespace gea::platform::storage

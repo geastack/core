@@ -20,6 +20,7 @@ declare const image: {
   writeFile(path: string, bytes: Uint8Array): boolean
   // Read a whole file's raw bytes (e.g. a .pmtiles on microSD). Empty when the
   // file is missing or no storage is mounted.
+  removeFile(path: string): boolean
   readFile(path: string): Uint8Array
   // Read a .pmtiles archive flashed into the spare ota_1 partition. Empty when
   // none present (or off-device).
@@ -126,4 +127,8 @@ export function fetchText(url: string): string {
 // is invalid.
 export function imageFromId(id: number): GeaEmbeddedImage {
   return image.make(id)
+}
+
+export function removeCacheFile(path: string): boolean {
+  return image.removeFile(path)
 }

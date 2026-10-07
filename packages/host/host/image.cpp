@@ -12,7 +12,9 @@
 #include "gea/embedded-host.h"
 #include "host/fetch.h" // gea::host::fetch for fetchBytes/fetchText (WiFi tile download)
 #include "image.h"
+#include "platform/atomic_file.h"
 #include "platform/file_cache.h"
+#include "platform/internal_stack.h"
 
 #ifdef GEA_IMAGE_RESTORE_CPP_VALUE_AVAILABLE
 #define GEA_CPP_VALUE_AVAILABLE 1
@@ -43,9 +45,17 @@ namespace gea::platform::storage {
 // keeps the provider's TU linked.
 namespace {
 bool (*g_mount_provider)() = nullptr;
-}
+bool (*g_fallback_mount_provider)() = nullptr;
+} // namespace
 void setMountProvider(bool (*provider)()) { g_mount_provider = provider; }
-bool ensureMounted() { return g_mount_provider ? g_mount_provider() : false; }
+void setFallbackMountProvider(bool (*provider)()) {
+  g_fallback_mount_provider = provider;
+}
+bool ensureMounted() {
+  auto provider =
+      g_mount_provider ? g_mount_provider : g_fallback_mount_provider;
+  return provider ? provider() : false;
+}
 } // namespace gea::platform::storage
 
 namespace gea::host {
@@ -180,9 +190,7 @@ double ImageService::loadAssetPath(const char *path) const {
 }
 
 double ImageService::loadFile(const std::string &path) const {
-  if (path.empty() || !gea::platform::storage::ensureMounted())
-    return -1.0;
-  const std::vector<std::uint8_t> bytes = readWholeFile(path);
+  const std::vector<std::uint8_t> bytes = readFile(path);
   if (bytes.empty())
     return -1.0;
   return static_cast<double>(
@@ -190,9 +198,7 @@ double ImageService::loadFile(const std::string &path) const {
 }
 
 double ImageService::loadFileOpaque(const std::string &path) const {
-  if (path.empty() || !gea::platform::storage::ensureMounted())
-    return -1.0;
-  const std::vector<std::uint8_t> bytes = readWholeFile(path);
+  const std::vector<std::uint8_t> bytes = readFile(path);
   if (bytes.empty())
     return -1.0;
   return static_cast<double>(
@@ -201,22 +207,35 @@ double ImageService::loadFileOpaque(const std::string &path) const {
 
 bool ImageService::writeFile(const std::string &path,
                              const std::vector<std::uint8_t> &bytes) const {
-  if (path.empty() || bytes.empty() || !gea::platform::storage::ensureMounted())
-    return false;
-  makeParentDirs(path);
-  std::FILE *f = std::fopen(path.c_str(), "wb");
-  if (!f)
-    return false;
-  const std::size_t wrote = std::fwrite(bytes.data(), 1, bytes.size(), f);
-  std::fclose(f);
-  return wrote == bytes.size();
+  bool result = false;
+  gea::platform::onInternalStack([&] {
+    if (path.empty() || bytes.empty() ||
+        !gea::platform::storage::ensureMounted())
+      return;
+    makeParentDirs(path);
+    gea::platform::storage::FileOperations files;
+    result = gea::platform::storage::writeFileAtomically(path, bytes, files);
+  });
+  return result;
+}
+
+bool ImageService::removeFile(const std::string &path) const {
+  bool result = false;
+  gea::platform::onInternalStack([&] {
+    if (!path.empty() && gea::platform::storage::ensureMounted())
+      result = std::remove(path.c_str()) == 0;
+  });
+  return result;
 }
 
 std::vector<std::uint8_t>
 ImageService::readFile(const std::string &path) const {
-  if (path.empty() || !gea::platform::storage::ensureMounted())
-    return {};
-  return readWholeFile(path);
+  std::vector<std::uint8_t> result;
+  gea::platform::onInternalStack([&] {
+    if (!path.empty() && gea::platform::storage::ensureMounted())
+      result = readWholeFile(path);
+  });
+  return result;
 }
 
 std::vector<std::uint8_t>
@@ -234,48 +253,48 @@ std::string ImageService::fetchText(const std::string &url) const {
 std::vector<std::uint8_t> ImageService::readFileRange(const std::string &path,
                                                       double offset,
                                                       double length) const {
-  // Read just [offset, offset+length) — PMTiles' random-access pattern: the
-  // directory + each tile are small ranges, so the whole archive never loads
-  // into RAM. SD reads (fopen/fread) don't disable the flash cache, so this is
-  // safe straight from the app task.
-  if (path.empty() || length <= 0 || !gea::platform::storage::ensureMounted())
-    return {};
-  std::FILE *f = std::fopen(path.c_str(), "rb");
-  if (!f)
-    return {};
-  std::vector<std::uint8_t> out(static_cast<std::size_t>(length));
-  std::fseek(f, static_cast<long>(offset), SEEK_SET);
-  const std::size_t got = std::fread(out.data(), 1, out.size(), f);
-  std::fclose(f);
-  out.resize(got);
+  std::vector<std::uint8_t> out;
+  gea::platform::onInternalStack([&] {
+    if (path.empty() || offset < 0 || length <= 0 ||
+        !gea::platform::storage::ensureMounted())
+      return;
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f)
+      return;
+    if (std::fseek(f, static_cast<long>(offset), SEEK_SET) == 0) {
+      out.resize(static_cast<std::size_t>(length));
+      out.resize(std::fread(out.data(), 1, out.size(), f));
+    }
+    std::fclose(f);
+  });
   return out;
 }
 
 std::string ImageService::listFiles(const std::string &path) const {
-  if (path.empty() || !gea::platform::storage::ensureMounted())
-    return {};
-  DIR *dir = opendir(path.c_str());
-  if (!dir)
-    return {};
   std::string out;
-  while (const dirent *entry = readdir(dir)) {
-    // Some VFS drivers (e.g. FATFS on ESP-IDF) don't fill d_type; stat the
-    // entry when the type is unknown so directories stay excluded either way.
-    if (entry->d_name[0] == '.')
-      continue;
-    bool regular = entry->d_type == DT_REG;
-    if (entry->d_type == DT_UNKNOWN) {
-      struct stat st{};
-      const std::string full = path + "/" + entry->d_name;
-      regular = stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+  gea::platform::onInternalStack([&] {
+    if (path.empty() || !gea::platform::storage::ensureMounted())
+      return;
+    DIR *dir = opendir(path.c_str());
+    if (!dir)
+      return;
+    while (const dirent *entry = readdir(dir)) {
+      if (entry->d_name[0] == '.')
+        continue;
+      bool regular = entry->d_type == DT_REG;
+      if (entry->d_type == DT_UNKNOWN) {
+        struct stat st{};
+        const std::string full = path + "/" + entry->d_name;
+        regular = stat(full.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+      }
+      if (!regular)
+        continue;
+      if (!out.empty())
+        out += '\n';
+      out += entry->d_name;
     }
-    if (!regular)
-      continue;
-    if (!out.empty())
-      out += '\n';
-    out += entry->d_name;
-  }
-  closedir(dir);
+    closedir(dir);
+  });
   return out;
 }
 

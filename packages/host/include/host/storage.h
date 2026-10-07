@@ -2,6 +2,7 @@
 #pragma once
 
 #include "services/storage_service.h"
+#include "platform/internal_stack.h"
 
 #include <cstdint>
 #include <cstring>
@@ -21,11 +22,10 @@ namespace gea::host {
 // setItem / removeItem / clear / key / length is a pure in-memory operation —
 // safe from ANY task, at any time (a store constructor, init(), tick(), or an
 // event handler). A mutation only flips a dirty flag; the actual flash write is
-// deferred to flushPending(), which the runtime calls once per frame from the
-// main frame task (gea_main, whose stack is in internal RAM). SPI flash — which
-// momentarily disables the flash cache and would fault a PSRAM-stack task — is
-// therefore only ever touched from that one safe task. load() likewise runs
-// once at boot from the frame task.
+// deferred to flushPending(), which the runtime calls once per frame. Flash
+// writes run on the shared internal-stack worker when the runtime stack is in
+// PSRAM, so a cache-disabled flash operation cannot invalidate its own stack.
+// load() runs during boot on the internal bring-up stack.
 //
 // Persistence is delegated to gea::framework::services::StorageService, which
 // stores the whole set as one opaque blob (an NVS blob on esp32, RAM elsewhere),
@@ -86,7 +86,10 @@ struct StorageFacade {
   // from the main frame task — the only context that is allowed to touch flash.
   void flushPending() {
     if (!dirty_) return;
-    gea::framework::services::StorageService::saveKv(serialize());
+    const auto blob = serialize();
+    gea::platform::onInternalStack([&] {
+      gea::framework::services::StorageService::saveKv(blob);
+    });
     dirty_ = false;
   }
 

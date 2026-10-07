@@ -37,6 +37,7 @@ export const geaVirtualListRowHeightEmit =
   'static_cast<double>(gea::embedded::ui::VirtualListRenderer::rowHeight(({receiver}).id()))'
 export const geaHostHeaderDeclarationToken = '__gea_cpp_api_header'
 const geaImageHostMethods = [
+  'removeFile',
   'loadBytes',
   'loadBytesOpaque',
   'draw',

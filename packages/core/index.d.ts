@@ -738,6 +738,9 @@ export declare function writeCacheFile(path: string, bytes: Uint8Array): boolean
 // pushed to /sdcard). Empty Uint8Array when the file is absent / no storage.
 export declare function readCacheFile(path: string): Uint8Array
 
+/** Delete a persistent-cache file. */
+export declare function removeCacheFile(path: string): boolean
+
 // Read a .pmtiles archive flashed into the spare ota_1 partition over USB
 // (esptool). Empty Uint8Array when none present (or off-device).
 export declare function readMapArchive(): Uint8Array
