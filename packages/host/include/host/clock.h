@@ -7,6 +7,10 @@
 #include <sys/time.h>
 #endif
 
+namespace gea::platform::clock {
+bool setEpochMs(double timestamp);
+}
+
 namespace gea::host {
 
 // Wall-clock access for app code.
@@ -27,6 +31,8 @@ namespace gea::host {
 // gea/embedded.h without needing a new entry in the protected
 // idf_component_register(SRCS ...) list.
 struct ClockFacade {
+  bool setEpochMs(double timestamp) const { return gea::platform::clock::setEpochMs(timestamp); }
+
   double epochMs() const {
 #if defined(_WIN32)
     return std::chrono::duration<double, std::milli>(

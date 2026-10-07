@@ -18,8 +18,18 @@ struct BatteryFacade {
   double level() const {
     return static_cast<double>(gea::platform::power::Power::batteryPercent());
   }
+
+  bool charging() const { return gea::platform::power::Power::charging(); }
 };
 
 inline constexpr BatteryFacade Battery{};
+
+struct HapticsFacade {
+  bool vibrate(double durationMs, double strength = 100) const {
+    return gea::platform::power::Power::vibrate(durationMs, static_cast<int>(strength));
+  }
+};
+
+inline constexpr HapticsFacade Haptics{};
 
 }  // namespace gea::host

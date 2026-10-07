@@ -375,6 +375,7 @@ declare const __gea_Led: {
   detach(): void
 }
 declare const __gea_Clock: {
+  setEpochMs(timestamp: number): boolean
   // Milliseconds since the Unix epoch from the platform real-time clock
   // (gettimeofday). Reflects a host-set time (GEADEV SETTIME); unlike
   // Date.now() — monotonic on this ESP32 build — it tracks real wall-clock
@@ -384,8 +385,14 @@ declare const __gea_Clock: {
 declare const __gea_Profiler: {
   // Monotonic microseconds from the platform high-resolution timer.
   nowUs(): number
+  // Hardware cycle count on ESP32; nanoseconds on desktop hosts.
+  nowCycles(): number
+}
+declare const __gea_Haptics: {
+  vibrate(durationMs: number, strength: number): boolean
 }
 declare const __gea_Battery: {
+  charging(): boolean
   // Battery charge percentage (0-100) from the platform PMU.
   level(): number
 }
@@ -1016,9 +1023,13 @@ export const Led = {
   }
 }
 export const Clock = {
+  setEpochMs(timestamp: number): boolean {
+    return __gea_Clock.setEpochMs(timestamp)
+  },
+
   epochMs(): number {
     return __gea_Clock.epochMs()
-  }
+  },
 }
 // Same method-wrapper reasoning as `Audio` above: the host global is only
 // touched when the method runs, and the conditional form has no plannable
@@ -1028,12 +1039,27 @@ export const Profiler = {
   nowUs(): number {
     if (typeof __gea_Profiler === 'undefined') return Date.now() * 1000
     return __gea_Profiler.nowUs()
-  }
+  },
+
+  nowCycles(): number {
+    // Desktop native hosts also expose nanoseconds instead of CPU cycles.
+    if (typeof __gea_Profiler === 'undefined') return Date.now() * 1000000
+    return __gea_Profiler.nowCycles()
+  },
+}
+export const Haptics = {
+  vibrate(durationMs: number, strength = 100): boolean {
+    return __gea_Haptics.vibrate(durationMs, strength)
+  },
 }
 export const Battery = {
+  charging(): boolean {
+    return __gea_Battery.charging()
+  },
+
   level(): number {
     return __gea_Battery.level()
-  }
+  },
 }
 export const Notify = {
   text(): string {

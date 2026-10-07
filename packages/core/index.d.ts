@@ -1267,6 +1267,9 @@ export interface LedController {
 export declare const Led: LedController
 
 export interface ClockController {
+  /** Set wall time and persist to the board RTC when present. */
+  setEpochMs(timestamp: number): boolean
+
   // Milliseconds since the Unix epoch from the platform real-time clock
   // (gettimeofday). Reflects a host-set time (GEADEV SETTIME / the companion
   // app on launch). Unlike Date.now() — which reads a monotonic clock on
@@ -1306,11 +1309,20 @@ declare global {
 }
 
 export interface BatteryController {
+  /** External power is present. */
+  charging(): boolean
+
   // Battery charge percentage (0-100) read from the platform PMU.
   level(): number
 }
 
 export declare const Battery: BatteryController
+
+export interface HapticsController {
+  vibrate(durationMs: number, strength?: number): boolean
+}
+
+export declare const Haptics: HapticsController
 
 export interface NotifyController {
   // Transient host->app notification channel (e.g. pushed from the companion

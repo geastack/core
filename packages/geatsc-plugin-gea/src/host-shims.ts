@@ -570,6 +570,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           Gpio: "gea::host::Gpio",
           Led: "gea::host::Led",
           Clock: "gea::host::Clock",
+          Haptics: "gea::host::Haptics",
           Profiler: "gea::host::Profiler",
           Battery: "gea::host::Battery",
           Notify: "gea::host::Notify",
@@ -585,6 +586,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Gpio: "gea::host::Gpio",
           __gea_Led: "gea::host::Led",
           __gea_Clock: "gea::host::Clock",
+          __gea_Haptics: "gea::host::Haptics",
           __gea_Profiler: "gea::host::Profiler",
           __gea_Battery: "gea::host::Battery",
           __gea_Notify: "gea::host::Notify",
@@ -1376,9 +1378,11 @@ export function createGeaHostShims(): HostShimDefinitions {
             detach: "gea::host::Led.detach",
           },
           Clock: {
+            setEpochMs: "gea::host::Clock.setEpochMs",
             epochMs: "gea::host::Clock.epochMs",
           },
           __gea_Clock: {
+            setEpochMs: "gea::host::Clock.setEpochMs",
             epochMs: "gea::host::Clock.epochMs",
           },
           Profiler: {
@@ -1396,10 +1400,18 @@ export function createGeaHostShims(): HostShimDefinitions {
             clear: "gea::host::Storage.clear",
             key: "gea::host::Storage.key",
           },
+          Haptics: {
+            vibrate: "gea::host::Haptics.vibrate",
+          },
           Battery: {
+            charging: "gea::host::Battery.charging",
             level: "gea::host::Battery.level",
           },
+          __gea_Haptics: {
+            vibrate: "gea::host::Haptics.vibrate",
+          },
           __gea_Battery: {
+            charging: "gea::host::Battery.charging",
             level: "gea::host::Battery.level",
           },
           Notify: {
@@ -1433,8 +1445,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Led: ["set", "off", "attach", "setPixel", "show", "detach"],
           Clock: ["epochMs"],
           __gea_Clock: ["epochMs"],
-          Profiler: ["nowUs"],
-          __gea_Profiler: ["nowUs"],
+          Profiler: ["nowUs", "nowCycles"],
+          __gea_Profiler: ["nowUs", "nowCycles"],
           Battery: ["level"],
           __gea_Battery: ["level"],
           Notify: ["seq"],
@@ -2650,14 +2662,34 @@ export function createGeaHostShims(): HostShimDefinitions {
               noThrow: true,
             },
           },
+          Haptics: {
+            vibrate: {
+              emit: "gea::host::Haptics.vibrate({args})",
+              returnType: "bool",
+            },
+          },
           Battery: {
+            charging: {
+              emit: "gea::host::Battery.charging({args})",
+              returnType: "bool",
+            },
             level: {
               emit: "gea::host::Battery.level({args})",
               returnType: "double",
               noThrow: true,
             },
           },
+          __gea_Haptics: {
+            vibrate: {
+              emit: "gea::host::Haptics.vibrate({args})",
+              returnType: "bool",
+            },
+          },
           __gea_Battery: {
+            charging: {
+              emit: "gea::host::Battery.charging({args})",
+              returnType: "bool",
+            },
             level: {
               emit: "gea::host::Battery.level({args})",
               returnType: "double",
@@ -2670,10 +2702,20 @@ export function createGeaHostShims(): HostShimDefinitions {
               returnType: "double",
               noThrow: true,
             },
+            nowCycles: {
+              emit: "gea::host::Profiler.nowCycles({args})",
+              returnType: "double",
+              noThrow: true,
+            },
           },
           __gea_Profiler: {
             nowUs: {
               emit: "gea::host::Profiler.nowUs({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+            nowCycles: {
+              emit: "gea::host::Profiler.nowCycles({args})",
               returnType: "double",
               noThrow: true,
             },

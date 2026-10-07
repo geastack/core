@@ -64,10 +64,10 @@ const geaGeolocationHostMethods = [
 const geaInputHostMethods = ['consumeBackButton']
 const geaGpioHostMethods = ['configureOutput', 'configureInput', 'write', 'read']
 const geaLedHostMethods = ['set', 'off', 'attach', 'setPixel', 'show', 'detach']
-const geaClockHostMethods = ['epochMs']
+const geaClockHostMethods = ['epochMs', 'setEpochMs']
 const geaProfilerHostMethods = ['nowUs', 'nowCycles']
 const geaStorageHostMethods = ['getItem', 'setItem', 'removeItem', 'clear', 'key']
-const geaBatteryHostMethods = ['level']
+const geaBatteryHostMethods = ['level', 'charging']
 const geaNotifyHostMethods = ['text', 'seq']
 const geaDeviceControlHostMethods = ['exec']
 const geaNativeBenchHostMethods = [
@@ -170,6 +170,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ['gea::host::websocket::create_handle', geaHostDeclarations],
       ['gea::host::WebSocket', geaHostDeclarations],
       ['gea::host::http::create_server', geaHostDeclarations],
+      ['gea::host::Haptics.vibrate', geaHostDeclarations],
       ['gea::host::HttpServer', geaHostDeclarations],
       ['gea::host::media::get_user_media_audio', geaHostDeclarations],
       ...geaGeolocationHostMethods.map((method): [string, string[]] => [`gea::host::navigator.geolocation.${method}`, geaHostDeclarations]),
