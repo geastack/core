@@ -3,6 +3,7 @@
 #include "image.h"
 
 #include <image.h>
+#include <algorithm>
 
 namespace gea::embedded::ui {
 
@@ -135,11 +136,41 @@ void ImageRenderer::record(const Node &node)
 	if (iw <= 0 || ih <= 0) return;
 
 	ImageFitRect fit = ImageFitResolver::resolve(*n, iw, ih);
-	applyAxisAlignedTransform(*n, fit);
+	if (!applyAxisAlignedTransform(*n, fit)) {
+		DisplayCommand *cmd = DisplayList::instance().append();
+		if (!cmd) return;
+		DisplayList::instance().retainImage(n->image_id);
+		cmd->type = DisplayCommandType::BlitImageProjected;
+		auto &image = cmd->projectedBlit;
+		image.pixels = pixels;
+		image.alpha = alpha;
+		image.sourceWidth = iw;
+		image.sourceHeight = ih;
+		image.x = fit.x;
+		image.y = fit.y;
+		image.width = fit.width;
+		image.height = fit.height;
+		image.tl = n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(0)];
+		image.tr = n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(1)];
+		image.br = n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(2)];
+		image.bl = n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(3)];
+		image.backfaceHidden = n->computedStyle().backface_hidden;
+		ViewRenderer::transformedRectCorners(*n, false, fit.x, fit.y, fit.width, fit.height, image.xs, image.ys);
+		int x0 = image.xs[0], x1 = x0, y0 = image.ys[0], y1 = y0;
+		for (int corner = 1; corner < 4; ++corner) {
+			x0 = std::min(x0, int(image.xs[corner]));
+			x1 = std::max(x1, int(image.xs[corner]));
+			y0 = std::min(y0, int(image.ys[corner]));
+			y1 = std::max(y1, int(image.ys[corner]));
+		}
+		cmd->bx = x0; cmd->by = y0; cmd->bw = x1 - x0; cmd->bh = y1 - y0;
+		return;
+	}
 
 	if (iw == fit.width && ih == fit.height && !hasImageRadius(*n)) {
 		DisplayCommand *cmd = DisplayList::instance().append();
 		if (!cmd) return;
+		DisplayList::instance().retainImage(n->image_id);
 		cmd->type = DisplayCommandType::BlitImage;
 		cmd->bx = fit.x; cmd->by = fit.y; cmd->bw = fit.width; cmd->bh = fit.height;
 		cmd->blit.pixels = pixels;
@@ -154,6 +185,7 @@ void ImageRenderer::record(const Node &node)
 
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
+	DisplayList::instance().retainImage(n->image_id);
 	cmd->type = DisplayCommandType::BlitImageScaled;
 	cmd->bx = fit.x; cmd->by = fit.y; cmd->bw = fit.width; cmd->bh = fit.height;
 	cmd->scaledBlit.pixels = pixels;

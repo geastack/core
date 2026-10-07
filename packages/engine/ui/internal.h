@@ -68,6 +68,7 @@ void rootScrollImageHoldTick();
 		DrawText,
 		BlitImage,
 		BlitImageScaled,
+		BlitImageProjected,
 		BeginFilterBlur,
 		ApplyFilterBlur,
 		FillTransformedLinearGradient,
@@ -275,6 +276,15 @@ void rootScrollImageHoldTick();
 			} scaledBlit;
 			struct
 			{
+				const gea::framework::graphics::pixel::native_t *pixels;
+				const uint8_t *alpha;
+				int16_t sourceWidth, sourceHeight, x, y, width, height;
+				int16_t xs[4], ys[4];
+				int16_t tl, tr, br, bl;
+				uint8_t backfaceHidden;
+			} projectedBlit;
+			struct
+			{
 				int16_t nodeId;
 				int16_t radius;
 				int16_t radiusX;
@@ -301,6 +311,8 @@ void rootScrollImageHoldTick();
 		DisplayCommand *append();
 		int setRecordingTextClipOwner(int owner);
 		void clear();
+		void retainImage(int id);
+		void pruneImageReferences();
 		void resetStorage();
 		// allowSkipStatic: caller guarantees this frame will use the direct
 		// (backdrop-blit) replay path, so recordNode may skip re-recording fully-static

@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "canvas.h"
+#include <image.h>
 #include "node.h"
 
 #include <cstdint>
@@ -53,6 +54,7 @@ enum class CanvasPresentCommandType : std::uint8_t {
 };
 
 struct CanvasPresentCommand {
+	gea::framework::graphics::ImageReference imageReference;
 	CanvasPresentCommandType type = CanvasPresentCommandType::Clear;
 	gea::framework::graphics::pixel::native_t clearColor = 0;
 	gea::framework::graphics::pixel::native_t color = 0;

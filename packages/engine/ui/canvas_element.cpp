@@ -251,6 +251,8 @@ CanvasPresentCommand &CanvasRenderingContext2D::appendPresentCommand(CanvasPrese
 
 void CanvasRenderingContext2D::resetPresentCommands()
 {
+	for (std::size_t i = 0; i < state_->presentCommandCount_; ++i)
+		state_->presentCommands_[i].imageReference = gea::framework::graphics::ImageReference{};
 	state_->presentCommandCount_ = 0;
 }
 
@@ -512,6 +514,8 @@ void CanvasRenderingContext2D::appendPresentDrawImage(const gea::framework::grap
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImage);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;
@@ -534,6 +538,8 @@ void CanvasRenderingContext2D::appendPresentDrawImageScaled(const gea::framework
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0 || w <= 0 || h <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImageScaled);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;
@@ -1221,6 +1227,8 @@ void CanvasRenderingContext2D::appendPresentDrawImage(const gea::framework::grap
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImage);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;
@@ -1243,6 +1251,8 @@ void CanvasRenderingContext2D::appendPresentDrawImageScaled(const gea::framework
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0 || w <= 0 || h <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImageScaled);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;
@@ -1267,6 +1277,8 @@ void CanvasRenderingContext2D::appendPresentDrawImageRotated90CW(const gea::fram
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0 || w <= 0 || h <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImageRotated90CW);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;
@@ -1289,6 +1301,8 @@ void CanvasRenderingContext2D::appendPresentDrawImageTiledX(const gea::framework
 {
 	if (!pixels || srcWidth <= 0 || srcHeight <= 0 || w <= 0) return;
 	CanvasPresentCommand &command = appendPresentCommand(CanvasPresentCommandType::DrawImageTiledX);
+	command.imageReference = gea::framework::graphics::ImageReference(
+		gea::framework::graphics::ImageStore::instance().idForPixels(pixels));
 	command.pixels = pixels;
 	command.alphaPixels = alphaPixels;
 	command.srcWidth = srcWidth;

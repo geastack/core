@@ -10,6 +10,7 @@
 #include "tree_state.h"
 #include "tree_internal.h"
 #include "internal.h"
+#include <image.h>
 #include "css/engine.h"
 #include "refresh_perf.h"
 
@@ -8178,7 +8179,14 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 		return true;
 #endif
 #if GEA_UI_IMAGE_NODES
-	case Property::ImageId: target.image_id = value; return true;
+	case Property::ImageId:
+		if (target.image_id != value) {
+			auto &images = gea::framework::graphics::ImageStore::instance();
+			images.retain(value);
+			images.release(target.image_id);
+			target.image_id = value;
+		}
+		return true;
 #endif
 #if GEA_CSS_IMAGE_FIT
 	case Property::ImageFit: style.image_fit = value; return true;
@@ -15672,6 +15680,7 @@ void recomputeNodeClassStyles(int node)
 #endif
 	int16_t staleRareStyle = beforeStyle.rare_style;
 	const int beforeImageId = state.nodes[node].image_id;
+	gea::framework::graphics::ImageReference previousImage(beforeImageId);
 	state.styleInvalidationSuppressionDepth++;
 	// Record this node's custom-property dependencies fresh (lookupCustomProperty
 	// appends into g_nodeRefs[g_recordingNode] for every var() resolved here,
@@ -15738,8 +15747,10 @@ void recomputeNodeClassStyles(int node)
 	// every recompute of the node or any ancestor.)
 #if GEA_UI_IMAGE_NODES
 	if (state.nodes[node].type == NodeType::Image && state.nodes[node].image_id < 0 &&
-	    beforeImageId >= 0 && Tree::instance().hasAttribute(node, "src"))
+	    beforeImageId >= 0 && Tree::instance().hasAttribute(node, "src")) {
+		gea::framework::graphics::ImageStore::instance().retain(beforeImageId);
 		state.nodes[node].image_id = beforeImageId;
+	}
 #endif
 	state.styleInvalidationSuppressionDepth--;
 	markClassRecomputeStyleDiff(node, beforeStyle, beforeImageId, firstLineChanged);

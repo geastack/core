@@ -869,10 +869,38 @@ bool ImageStore::rotate90(int id)
 	return true;
 }
 
+bool ImageStore::retain(int id)
+{
+	if (id < 0 || id >= kImageMax) return false;
+	ImageStoreLock lock(slotMutex_);
+	if (!slot(id)) return false;
+	++references_[id];
+	return true;
+}
+
+void ImageStore::release(int id)
+{
+	if (id < 0 || id >= kImageMax) return;
+	ImageStoreLock lock(slotMutex_);
+	if (!slot(id) || references_[id] == 0) return;
+	if (--references_[id] == 0 && retired_[id]) disposeLocked(id);
+}
+
+int ImageStore::idForPixels(const pixel::native_t *pixels) const
+{
+	if (!pixels) return -1;
+	ImageStoreLock lock(slotMutex_);
+	for (int id = 0; id < kImageMax; ++id)
+		if (used_[id] && images_[id].pixels == pixels) return id;
+	return -1;
+}
+
 void ImageStore::dispose(int id)
 {
 	ImageStoreLock lock(slotMutex_);
-	disposeLocked(id);
+	if (!slot(id)) return;
+	retired_[id] = true;
+	if (references_[id] == 0) disposeLocked(id);
 }
 
 void ImageStore::disposeLocked(int id)
@@ -889,13 +917,18 @@ void ImageStore::disposeLocked(int id)
 	ImageMemory::release(image->alpha);
 	*image = ImageSlot{};
 	used_[id] = false;
+	references_[id] = 0;
+	retired_[id] = false;
 }
 
 void ImageStore::disposeAll()
 {
 	ImageStoreLock lock(slotMutex_);
 	for (int i = 0; i < kImageMax; i++) {
-		if (used_[i]) disposeLocked(i);
+		if (used_[i]) {
+			retired_[i] = true;
+			if (references_[i] == 0) disposeLocked(i);
+		}
 	}
 }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "display_invalidation.h"
+#include <image.h>
 #include "internal.h"
 #include "node_lifecycle.h"
 #include "refresh_perf.h"
@@ -1052,7 +1053,15 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	}
 #endif
 #if GEA_UI_IMAGE_NODES
-	case Property::ImageId:         if (n->image_id != value) { n->image_id = value; changed = 1; } break;
+	case Property::ImageId:
+		if (n->image_id != value) {
+			auto &images = gea::framework::graphics::ImageStore::instance();
+			images.retain(value);
+			images.release(n->image_id);
+			n->image_id = value;
+			changed = 1;
+		}
+		break;
 #endif
 #if GEA_CSS_IMAGE_FIT
 	case Property::ImageFit:        if (style.image_fit != value) { style.image_fit = value; changed = 1; } break;
@@ -1315,6 +1324,7 @@ void Tree::resetStyleForClassRecompute(int node)
 
 	state.nodes[node].resetComputedStyle();
 #if GEA_UI_IMAGE_NODES
+	gea::framework::graphics::ImageStore::instance().release(state.nodes[node].image_id);
 	state.nodes[node].image_id = -1;
 #endif
 	if (state.styleInvalidationSuppressionDepth > 0) return;

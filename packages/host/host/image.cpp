@@ -396,3 +396,24 @@ void GeaEmbeddedImage::dispose() const { store().dispose(id); }
 extern "C" double gea_host_image_load_asset_path(const char *path) {
   return gea::host::image.loadAssetPath(path);
 }
+
+// The src loader owns filesystem decodes only until the node takes its pin.
+// Bundled decodes remain in the stable flash-asset cache.
+extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned) {
+  *owned = false;
+  if (!path) return -1.0;
+  if (gea::host::gea_embedded_asset_lookup) {
+    const unsigned char *data = nullptr;
+    unsigned long length = 0;
+    if (gea::host::gea_embedded_asset_lookup(path, &data, &length))
+      return gea::host::image.loadBytesPtr(data, length);
+  }
+  if (path[0] != '/') return -1.0;
+  const int id = static_cast<int>(gea::host::image.loadFile(path));
+  auto &images = gea::framework::graphics::ImageStore::instance();
+  if (id >= 0 && images.retain(id)) {
+    *owned = true;
+    images.dispose(id);
+  }
+  return id;
+}

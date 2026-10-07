@@ -97,6 +97,7 @@ struct HeapCapsFree {
 static constexpr int kInlineCircleEntryCapacity = 32;
 
 struct Command {
+	gea::framework::graphics::ImageReference imageReference;
 	using CircleEntry = gea::framework::graphics::CircleEntry;
 
 	gea::platform::display::DisplayPresentCommandType type =
@@ -571,6 +572,8 @@ inline bool extractFrame(const gea::platform::display::DisplayPresentCommand *co
 			out.alpha = command.fillText.alpha;
 			break;
 		}
+		out.imageReference = gea::framework::graphics::ImageReference(
+			gea::framework::graphics::ImageStore::instance().idForPixels(out.pixels));
 		frame.commands.push_back(std::move(out));
 	}
 	return true;

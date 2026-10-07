@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "renderer_features.h"
-#include "internal.h"
-#include "state_init.h"
 #include "canvas.h"
+#include <image.h>
+#include "canvas_element.h"
 #include "display.h"
 #include "graphics/font.h"
+#include "internal.h"
 #include "memory.h"
-#include "tree_state.h"
+#include "renderer_features.h"
+#include "state_init.h"
 #include "style_values.h"
+#include "tree_state.h"
 #include <pixel.h>
 
 #include <algorithm>
@@ -329,6 +331,8 @@ int gLastScrollUiFrame = -1000;
 					return "BlitImage";
 				case DisplayCommandType::BlitImageScaled:
 					return "BlitImageScaled";
+				case DisplayCommandType::BlitImageProjected:
+					return "BlitImageProjected";
 				case DisplayCommandType::BeginFilterBlur:
 					return "BeginFilterBlur";
 				case DisplayCommandType::ApplyFilterBlur:
@@ -533,6 +537,7 @@ int gLastScrollUiFrame = -1000;
 			int commandCapacity = 0;
 			bool commandsExternal = false;
 			int commandCount = 0;
+			bool imageReferences[gea::framework::graphics::kImageMax]{};
 			bool textClippedBackgrounds = false;
 			// Sticky: an append() was dropped because the command buffer is full.
 			// Reset by clear(); lets a caller detect a truncated record.
@@ -4939,6 +4944,85 @@ int gLastScrollUiFrame = -1000;
 			canvas->markDirty(x0, y0, x1, y1);
 		}
 
+		void drawProjectedImage(const DisplayCommand &command)
+		{
+			auto *canvas = gea::platform::display::Display::canvas();
+			const auto &image = command.projectedBlit;
+			if (!canvas || !image.pixels || image.sourceWidth <= 0 || image.sourceHeight <= 0 ||
+				image.width <= 0 || image.height <= 0)
+				return;
+			if (image.backfaceHidden)
+			{
+				long area = 0;
+				for (int i = 0; i < 4; ++i)
+				{
+					const int next = (i + 1) % 4;
+					area += long(image.xs[i]) * image.ys[next] - long(image.xs[next]) * image.ys[i];
+				}
+				if (area <= 0)
+					return;
+			}
+			double coefficients[8]{};
+			if (!screenToLocalRectHomography(image.xs, image.ys, 0, 0, image.sourceWidth, image.sourceHeight,
+											 coefficients))
+				return;
+			float h[8];
+			for (int i = 0; i < 8; ++i)
+				h[i] = static_cast<float>(coefficients[i]);
+			const bool affine = std::abs(h[6]) < 0.000000001f && std::abs(h[7]) < 0.000000001f;
+			const bool rounded = image.tl || image.tr || image.br || image.bl;
+			const float localScaleX = float(image.width) / image.sourceWidth;
+			const float localScaleY = float(image.height) / image.sourceHeight;
+			int x0, y0, x1, y1;
+			gea::platform::display::Display::clip(&x0, &y0, &x1, &y1);
+			x0 = std::max({x0, 0, int(command.bx)});
+			y0 = std::max({y0, 0, int(command.by)});
+			x1 = std::min({x1, canvas->width() - 1, command.bx + command.bw - 1});
+			y1 = std::min({y1, canvas->height() - 1, command.by + command.bh - 1});
+			const int globalAlpha = canvas->globalAlpha();
+			for (int y = y0; y <= y1; ++y)
+			{
+				const float py = y + 0.5f;
+				for (int x = x0; x <= x1; ++x)
+				{
+					const float px = x + 0.5f;
+					const float divisor = affine ? 1.0f : h[6] * px + h[7] * py + 1.0f;
+					if (std::abs(divisor) < 0.000001f)
+						continue;
+					const float inverse = affine ? 1.0f : 1.0f / divisor;
+					const float sx = (h[0] * px + h[1] * py + h[2]) * inverse;
+					const float sy = (h[3] * px + h[4] * py + h[5]) * inverse;
+					if (!(sx >= 0 && sx < image.sourceWidth && sy >= 0 && sy < image.sourceHeight))
+						continue;
+					if (rounded)
+					{
+						const float lx = sx * localScaleX;
+						const float ly = sy * localScaleY;
+						const bool right = lx >= image.width / 2.0f;
+						const bool bottom = ly >= image.height / 2.0f;
+						const int radius =
+							bottom ? (right ? image.br : image.bl) : (right ? image.tr : image.tl);
+						const float r = std::min(float(radius), std::min(image.width, image.height) / 2.0f);
+						const float cx = right ? image.width - lx : lx;
+						const float cy = bottom ? image.height - ly : ly;
+						if (r > 0 && cx < r && cy < r && (cx - r) * (cx - r) + (cy - r) * (cy - r) > r * r)
+							continue;
+					}
+					const int source = int(sy) * image.sourceWidth + int(sx);
+					const int alpha = ((image.alpha ? image.alpha[source] : 255) * globalAlpha) / 255;
+					if (!alpha)
+						continue;
+					const auto color = alpha == 255
+										   ? image.pixels[source]
+										   : gea::framework::graphics::pixel::blendNative(
+												 image.pixels[source], canvas->readPixelNative(x, y), alpha);
+					canvas->writePixelNativeExact(x, y, color);
+				}
+			}
+			if (x0 <= x1 && y0 <= y1)
+				canvas->markDirty(x0, y0, x1, y1);
+		}
+
 		void drawTransformedRoundedRect(const DisplayCommand &command)
 		{
 			auto *canvas = gea::platform::display::Display::canvas();
@@ -5361,6 +5445,14 @@ int gLastScrollUiFrame = -1000;
 					c->projectedText.y2 += dy;
 					c->projectedText.x3 += dx;
 					c->projectedText.y3 += dy;
+					break;
+				case DisplayCommandType::BlitImageProjected:
+					c->projectedBlit.x += dx;
+					c->projectedBlit.y += dy;
+					for (int corner = 0; corner < 4; ++corner) {
+						c->projectedBlit.xs[corner] += dx;
+						c->projectedBlit.ys[corner] += dy;
+					}
 					break;
 				case DisplayCommandType::BlitImage:
 					c->blit.dx += dx;
@@ -6758,6 +6850,9 @@ int gLastScrollUiFrame = -1000;
 					gea::platform::display::Display::blitImage(c.blit.pixels, c.blit.alpha, c.blit.sourceWidth, c.blit.sourceHeight,
 																										 c.blit.dx, c.blit.dy);
 					break;
+				case DisplayCommandType::BlitImageProjected:
+					drawProjectedImage(c);
+					break;
 				case DisplayCommandType::BlitImageScaled:
 #if GEA_PIXEL_STORAGE_PACKED
 					if (gScrollStripReplayActive) {
@@ -6849,6 +6944,7 @@ int gLastScrollUiFrame = -1000;
 					GEA_REFRESH_PERF(__perf.treeReplayGradientUs += __replayDt);
 					break;
 				case DisplayCommandType::BlitImage:
+				case DisplayCommandType::BlitImageProjected:
 				case DisplayCommandType::BlitImageScaled:
 					GEA_REFRESH_PERF(__perf.treeReplayImageUs += __replayDt);
 					break;
@@ -9617,6 +9713,34 @@ int gLastScrollUiFrame = -1000;
 		return command;
 	}
 
+	void DisplayList::retainImage(int id)
+	{
+		auto &images = gea::framework::graphics::ImageStore::instance();
+		if (id >= 0 && id < gea::framework::graphics::kImageMax && !state.imageReferences[id])
+			state.imageReferences[id] = images.retain(id);
+	}
+
+	void DisplayList::pruneImageReferences()
+	{
+		bool referenced[gea::framework::graphics::kImageMax]{};
+		auto &images = gea::framework::graphics::ImageStore::instance();
+		for (int i = 0; i < state.commandCount; ++i) {
+			const auto &command = state.commands[i];
+			const gea::framework::graphics::pixel::native_t *pixels = nullptr;
+			if (command.type == DisplayCommandType::BlitImage) pixels = command.blit.pixels;
+			else if (command.type == DisplayCommandType::BlitImageScaled) pixels = command.scaledBlit.pixels;
+			else if (command.type == DisplayCommandType::BlitImageProjected) pixels = command.projectedBlit.pixels;
+			const int id = images.idForPixels(pixels);
+			if (id >= 0) referenced[id] = true;
+		}
+		for (int id = 0; id < gea::framework::graphics::kImageMax; ++id) {
+			if (state.imageReferences[id] && !referenced[id]) {
+				state.imageReferences[id] = false;
+				images.release(id);
+			}
+		}
+	}
+
 	void DisplayList::clear()
 	{
 		Tree &tree = Tree::instance();
@@ -9626,6 +9750,7 @@ int gLastScrollUiFrame = -1000;
 		state.filterBlurCacheHits = 0;
 		state.filterBlurCacheMisses = 0;
 		state.commandCount = 0;
+		pruneImageReferences();
 		state.textClippedBackgrounds = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
@@ -9641,6 +9766,7 @@ int gLastScrollUiFrame = -1000;
 	void DisplayList::resetStorage()
 	{
 		state.resetStorage();
+		pruneImageReferences();
 		invalidateStaticBackdrop();
 	}
 
@@ -10038,6 +10164,15 @@ int gLastScrollUiFrame = -1000;
 					c.quad.x3 = xs[3];
 					c.quad.y3 = ys[3];
 				}
+				else if (c.type == DisplayCommandType::BlitImageProjected)
+				{
+					ViewRenderer::transformedRectCorners(n, false, c.projectedBlit.x, c.projectedBlit.y,
+					    c.projectedBlit.width, c.projectedBlit.height, xs, ys);
+					for (int corner = 0; corner < 4; ++corner) {
+						c.projectedBlit.xs[corner] = xs[corner];
+						c.projectedBlit.ys[corner] = ys[corner];
+					}
+				}
 				else if (c.type == DisplayCommandType::DrawProjectedText)
 				{
 					ViewRenderer::transformedRectCorners(n, false, c.projectedText.srcX, c.projectedText.srcY,
@@ -10396,6 +10531,12 @@ int gLastScrollUiFrame = -1000;
 				c.blit.alpha = nullptr;
 				c.bw = 0;
 				c.bh = 0;
+			}
+			else if (c.type == DisplayCommandType::BlitImageProjected && c.projectedBlit.pixels == pixels)
+			{
+				c.projectedBlit.pixels = nullptr;
+				c.projectedBlit.alpha = nullptr;
+				c.bw = c.bh = 0;
 			}
 			else if (c.type == DisplayCommandType::BlitImageScaled && c.scaledBlit.pixels == pixels)
 			{
@@ -11480,6 +11621,7 @@ int gLastScrollUiFrame = -1000;
 			case DisplayCommandType::DrawProjectedText:
 			case DisplayCommandType::DrawText:
 			case DisplayCommandType::BlitImage:
+			case DisplayCommandType::BlitImageProjected:
 			case DisplayCommandType::BlitImageScaled:
 			case DisplayCommandType::FillTransformedLinearGradient:
 			case DisplayCommandType::FillTransformedRoundedRect:
@@ -12757,6 +12899,7 @@ int gLastScrollUiFrame = -1000;
 			state.nodeDrawEnd[node] = -1;
 		}
 		state.shiftNodeDrawRangesAfter(end, delta, node);
+		pruneImageReferences();
 		return true;
 	}
 

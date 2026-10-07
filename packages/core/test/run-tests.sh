@@ -34,6 +34,7 @@ NATIVE_TESTS=(
   run-position-storage.sh
   run-canvas-overlay.sh
   run-native-jpeg.sh
+  run-image-lifetime.sh
   run-gea-retained-absolute-subtree.sh
 )
 

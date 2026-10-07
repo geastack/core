@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
+#include <image.h>
 #include "display.h"
 #include "host/display_orientation.h"
 #include "mirror.h"
@@ -99,6 +100,9 @@ void resetNodeSlot(TreeState &state, int id)
 {
 	if (id < 0 || id >= kMaxNodes) return;
 	forgetNodeCssAnimations(id);
+#if GEA_UI_IMAGE_NODES
+	gea::framework::graphics::ImageStore::instance().release(state.nodes[id].image_id);
+#endif
 	// The node's text buffer dies with the slot; retained display commands hold
 	// a raw pointer into it (see DisplayList::scrubNodeText) — neutralize them
 	// before NodeLifecycle::init frees the string, or a stale-list replay in the
@@ -181,7 +185,12 @@ void Tree::clear()
 	// and resets to an empty SSO state, while still zeroing all the
 	// POD fields. Slightly slower than memset but runs once per app
 	// switch and bounded at kMaxNodes (~512).
-	for (int i = 0; i < kMaxNodes; i++) state.nodes[i] = Node{};
+	for (int i = 0; i < kMaxNodes; i++) {
+#if GEA_UI_IMAGE_NODES
+		if (i < state.nodeCount) gea::framework::graphics::ImageStore::instance().release(state.nodes[i].image_id);
+#endif
+		state.nodes[i] = Node{};
+	}
 	state.nodeCount = 0;
 	state.fixedPositionUsed = false;
 	state.mountedRoot = -1;
@@ -260,6 +269,7 @@ int Tree::cloneNode(int sourceId, bool deep)
 	clone.text = source.text;
 #if GEA_UI_IMAGE_NODES
 	clone.image_id = source.image_id;
+	gea::framework::graphics::ImageStore::instance().retain(clone.image_id);
 #endif
 	clone.tag_id = source.tag_id;  // interned tag id — just copy the handle
 	// Copy attributes + custom properties (DOM cloneNode semantics) but NOT

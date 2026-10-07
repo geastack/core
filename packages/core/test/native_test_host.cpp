@@ -448,10 +448,12 @@ std::uint16_t presentedPixelAt(int x, int y)
 
 	}  // namespace gea::embedded::test
 
+#ifndef GEA_NATIVE_TEST_REAL_IMAGE_HOST
 namespace gea::platform::storage {
 void setMountProvider(bool (*)(void)) {}
 bool ensureMounted() { return false; }
 }  // namespace gea::platform::storage
+#endif
 
 namespace gea::platform::power {
 int Power::batteryPercent() { return 100; }
@@ -546,6 +548,7 @@ void HTMLAudioElement::setSrc(const std::string &src) {
 bool HTMLAudioElement::play() const { return true; }
 void HTMLAudioElement::pause() const {}
 
+#ifndef GEA_NATIVE_TEST_REAL_IMAGE_HOST
 double ImageService::loadBytes(std::vector<std::uint8_t> /*bytes*/) const { return loadSyntheticImage(); }
 double ImageService::loadBytesOpaque(std::vector<std::uint8_t> /*bytes*/) const { return loadSyntheticImage(); }
 double ImageService::loadBytesPtr(const std::uint8_t *data, std::size_t length) const
@@ -606,6 +609,8 @@ GeaEmbeddedImage ImageService::make(double id) const
 	return handle;
 }
 
+#endif
+
 double Apps::launch(const std::string &appId) const
 {
 	gLastLaunchedApp = appId;
@@ -614,10 +619,18 @@ double Apps::launch(const std::string &appId) const
 
 }  // namespace gea::host
 
+#ifndef GEA_NATIVE_TEST_REAL_IMAGE_HOST
 extern "C" double gea_host_image_load_asset_path(const char *path)
 {
 	return gea::host::image.loadAssetPath(path);
 }
+
+extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned)
+{
+	if (owned) *owned = false;
+	return gea::host::image.loadAssetPath(path);
+}
+#endif
 
 namespace gea::framework::app {
 void Application::init(int width, int height, double devicePixelRatio)

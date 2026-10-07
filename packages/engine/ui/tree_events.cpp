@@ -2,6 +2,7 @@
 #include "tree_events.h"
 
 #include "audio.h"
+#include <image.h>
 #include "internal.h"
 #include "tree_internal.h"
 #include "tree_state.h"
@@ -14,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-extern "C" double gea_host_image_load_asset_path(const char *path);
+extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned);
 
 namespace gea::embedded::ui {
 
@@ -614,9 +615,11 @@ void Tree::setAttribute(int node, const char *name, const char *value)
 	}
 	ensureRareData(node).attributes.set(name, value);
 	if (state.nodes[node].type == NodeType::Image && sameName(name, "src")) {
-		const int imageId = static_cast<int>(gea_host_image_load_asset_path(value ? value : ""));
-		if (imageId >= 0) {
+		bool owned = false;
+		const int imageId = static_cast<int>(gea_host_image_acquire_asset_path(value ? value : "", &owned));
+		{
 			setStyleFromClass(node, Property::ImageId, imageId);
+			if (owned) gea::framework::graphics::ImageStore::instance().release(imageId);
 			// A runtime src swap makes the image node emit a blit command it
 			// didn't have before (its initial record, with no image, produced
 			// nothing) — a structural change to the display list. Mark it
@@ -666,6 +669,10 @@ void Tree::removeAttribute(int node, const char *name)
 	if (!rd) return;  // no rare-data block → no attributes to remove
 	const bool hadAttribute = rd->attributes.remove(name);
 	if (!hadAttribute) return;
+	if (state.nodes[node].type == NodeType::Image && sameName(name, "src")) {
+		setStyleFromClass(node, Property::ImageId, -1);
+		markDisplayListDirty();
+	}
 #if GEA_UI_NODE_ATTRIBUTES
 	if (sameName(name, "data-press-id")) rd->attributes.pressId = -1;
 	if (sameName(name, "data-press-value")) rd->attributes.pressValue = -1;
