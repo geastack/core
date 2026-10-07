@@ -1309,3 +1309,12 @@ test('streaming PCM playback independently enables the audio capability', (t) =>
   const entry = app(t, { 'index.tsx': 'const output = new PcmAudioStream(24000); output.writeBase64("AAA=")' })
   assert.ok(analyzeSourceHostBindings(entry).bindings.includes('audio'))
 })
+
+test('gea.moduleAliases redirect the scan to the module the build compiles', (t) => {
+  const entry = app(t, {
+    'package.json': JSON.stringify({ gea: { moduleAliases: { 'host-audio': 'silent-audio.ts' } } }),
+    'index.tsx': "import { createContext } from 'host-audio'\ncreateContext()\n",
+    'silent-audio.ts': "export function createContext() { return new WebSocket('ws://device.local/stream') }\n",
+  })
+  assert.deepEqual(analyzeSourceHostBindings(entry).bindings, ['websocket'])
+})

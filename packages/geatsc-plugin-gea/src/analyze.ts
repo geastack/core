@@ -191,11 +191,89 @@ function addBindingsForEmbeddedHostNames(text: string, bindings: Set<string>): v
   if (documentHostRegex.test(text)) bindings.add('dom')
 }
 
+// The aliases the native build applies to the application's imports
+// (core/scripts/build-gea-vite-geatsc.mjs: resolveAppModuleAliases and
+// resolveGeaThreeAliasModules, applied by gea-vite-module-graph-plugin.mjs).
+// The scan must walk the program the build compiles: an app that opts into
+// the port (`"gea": { "geaThreejs": true }`, as skytail does) compiles its
+// `three/src/*.js` imports against @geastack/gea-threejs, and
+// scanning upstream three's loaders instead read their `fetch(` as a network
+// binding and linked the whole Wi-Fi/WebRTC stack into a game with no network.
+interface SourceAlias {
+  readonly find: RegExp | string
+  readonly replacement: (match: RegExpMatchArray) => string
+}
+
+function applicationDir(entry: string): string | null {
+  let dir = path.dirname(path.resolve(entry))
+  for (;;) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+function buildSourceAliases(entry: string): SourceAlias[] {
+  const appDir = applicationDir(entry)
+  if (!appDir) return []
+  const aliases: SourceAlias[] = []
+  let geaThreejs = false
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')) as {
+      gea?: { moduleAliases?: unknown; geaThreejs?: unknown }
+    }
+    geaThreejs = manifest.gea?.geaThreejs === true
+    const raw = manifest.gea?.moduleAliases
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [specifier, target] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof target !== 'string' || !target) continue
+        const replacement = path.resolve(appDir, target)
+        aliases.push({ find: specifier, replacement: () => replacement })
+      }
+    }
+  } catch {
+    // An unreadable manifest names no aliases; the build reports it.
+  }
+  // The three.js redirect is opt-in, exactly as in the build.
+  if (!geaThreejs) return aliases
+  const appRequire = createRequire(path.join(appDir, 'package.json'))
+  let geaThreeSrcDir = ''
+  try {
+    geaThreeSrcDir = path.join(path.dirname(fs.realpathSync(appRequire.resolve('@geastack/gea-threejs/package.json'))), 'src')
+  } catch {
+    return aliases
+  }
+  aliases.push({ find: /^three$/, replacement: () => path.join(geaThreeSrcDir, 'Three.ts') })
+  aliases.push({ find: /^three\/src\/(.+)\.js$/, replacement: (m) => path.join(geaThreeSrcDir, `${m[1]}.ts`) })
+  try {
+    appRequire.resolve('troika-three-text')
+    const troika = fs.realpathSync(appRequire.resolve('@geastack/native-webgl-angle/troika-three-text'))
+    aliases.push({ find: /^troika-three-text$/, replacement: () => troika })
+  } catch {
+    // No troika, or no native text module: the build fails on the latter itself.
+  }
+  return aliases
+}
+
+function aliasedModule(aliases: readonly SourceAlias[], specifier: string): string | null {
+  for (const alias of aliases) {
+    if (typeof alias.find === 'string') {
+      if (specifier === alias.find) return alias.replacement([specifier])
+      continue
+    }
+    const match = specifier.match(alias.find)
+    if (match) return alias.replacement(match)
+  }
+  return null
+}
+
 function discoverSourceFiles(entry: string): { files: string[]; unknown: boolean; runtimeUnknown: boolean } {
   const visited = new Set<string>()
   const files: string[] = []
   let unknown = false
   let runtimeUnknown = false
+  const aliases = buildSourceAliases(entry)
 
   function visit(file: string): void {
     const resolved = path.resolve(file)
@@ -226,7 +304,8 @@ function discoverSourceFiles(entry: string): { files: string[]; unknown: boolean
       // Framework host imports do not inject renderer instructions. Other
       // external code may supply styles/components we cannot inspect here.
       if (/^(?:gea-embedded|@geastack\/(?:core|engine)|@geajs\/core)(?:\/|$)/.test(specifier)) continue
-      const dependency = specifier.startsWith('.') ? resolveRelativeModule(resolved, specifier) : resolvePackageModule(resolved, specifier)
+      const aliased = aliasedModule(aliases, specifier)
+      const dependency = aliased ?? (specifier.startsWith('.') ? resolveRelativeModule(resolved, specifier) : resolvePackageModule(resolved, specifier))
       if (dependency) visit(dependency)
       else unknown = true
     }

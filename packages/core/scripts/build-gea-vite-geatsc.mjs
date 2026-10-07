@@ -451,7 +451,72 @@ function resolveAppleNativeAliasModules(appDir) {
   return { threeSrcDir, threeUtilsModule, threeWebGLAnimationModule, threeWebXRManagerModule, troikaThreeTextModule }
 }
 
-function writeCompatViteConfig({ configPath, compatSrcDir, appDir, entry, viteOutDir, geaIrPath, appleNative, moduleGraphOutDir, envDefines }) {
+// `gea.moduleAliases` in the application's package.json: exact import
+// specifiers redirected to files inside the application, for a module whose
+// host exists on one target only (an app's macOS audio host, say) and that
+// another target replaces with its own implementation.
+// Each replacement names the app's STAGED copy when there is one: the compat
+// build compiles the staged tree, so an alias into the app directory itself
+// pulled a second copy of every module the replacement imports (skytail's
+// mosaico kit index brought its own kit-types.ts, and the two KitCategory
+// records refused to convert).
+function resolveAppModuleAliases(appDir, stagedAppDir = appDir) {
+  let manifest = {}
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).gea ?? {}
+  } catch {
+    return []
+  }
+  const raw = manifest.moduleAliases
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+  const aliases = []
+  for (const [specifier, target] of Object.entries(raw)) {
+    if (typeof target !== 'string' || !target) fail(`gea.moduleAliases["${specifier}"] must name a file inside the application`)
+    if (!fs.existsSync(path.resolve(appDir, target))) fail(`gea.moduleAliases["${specifier}"] does not exist: ${target}`)
+    aliases.push({ specifier, replacement: path.resolve(stagedAppDir, target) })
+  }
+  return aliases
+}
+
+// The gea-threejs port, when the application depends on it: its src/ directory,
+// and the native troika text module when the application uses troika.
+// Opt-in: an application that sets `"gea": { "geaThreejs": true }` in its
+// package.json. Depending on the port is not enough on its own, so an app that
+// installs it for some other reason keeps compiling three.js itself.
+function resolveGeaThreeAliasModules(appDir) {
+  const appRequire = createRequire(path.join(appDir, 'package.json'))
+  let geaThreeSrcDir = ''
+  let troikaThreeTextModule = ''
+  let optedIn = false
+  try {
+    optedIn = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).gea?.geaThreejs === true
+  } catch {
+    // An unreadable manifest opts into nothing; the build reports it elsewhere.
+  }
+  if (!optedIn) return { geaThreeSrcDir, troikaThreeTextModule }
+  try {
+    geaThreeSrcDir = path.join(path.dirname(fs.realpathSync(appRequire.resolve('@geastack/gea-threejs/package.json'))), 'src')
+  } catch {
+    return { geaThreeSrcDir, troikaThreeTextModule }
+  }
+  try {
+    appRequire.resolve('troika-three-text')
+  } catch {
+    return { geaThreeSrcDir, troikaThreeTextModule }
+  }
+  try {
+    troikaThreeTextModule = fs.realpathSync(appRequire.resolve('@geastack/native-webgl-angle/troika-three-text'))
+  } catch {
+    fail(
+      `This build resolved "troika-three-text" and "@geastack/gea-threejs" from ${appDir}, but could not resolve ` +
+      '"@geastack/native-webgl-angle/troika-three-text", the native text module that replaces it. ' +
+      'Install @geastack/native-webgl-angle in the application.'
+    )
+  }
+  return { geaThreeSrcDir, troikaThreeTextModule }
+}
+
+function writeCompatViteConfig({ configPath, compatSrcDir, appDir, stagedAppDir, entry, viteOutDir, geaIrPath, appleNative, moduleGraphOutDir, envDefines }) {
   const engineComponentsPath = path.join(engineRoot, 'components/index.ts')
   const engineComponentSubpath = path.join(engineRoot, 'components/$1')
   const elementsPath = path.join(elementsRoot, 'components/index.ts')
@@ -467,7 +532,13 @@ function writeCompatViteConfig({ configPath, compatSrcDir, appDir, entry, viteOu
   const { threeSrcDir, threeUtilsModule, threeWebGLAnimationModule, threeWebXRManagerModule, troikaThreeTextModule } = appleNative
     ? resolveAppleNativeAliasModules(appDir)
     : { threeSrcDir: '', threeUtilsModule: '', threeWebGLAnimationModule: '', threeWebXRManagerModule: '', troikaThreeTextModule: '' }
+  // Apple-native keeps three.js itself (it renders through ANGLE).
+  const geaThree = appleNative ? { geaThreeSrcDir: '', troikaThreeTextModule: '' } : resolveGeaThreeAliasModules(appDir)
   const q = (value) => JSON.stringify(value)
+  const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  const appModuleAliases = resolveAppModuleAliases(appDir, stagedAppDir)
+    .map(({ specifier, replacement }) => `      { find: new RegExp(${q('^' + escapeRegExp(specifier) + '$')}), replacement: ${q(replacement)} },\n`)
+    .join('')
   // Compile the @geajs/core reactive runtime (Component/Store/compiler-runtime)
   // from its TYPED SOURCE, not the minified dist. The minified build reuses short
   // identifiers across nested scopes, which the C++ symbol collector cannot
@@ -496,7 +567,7 @@ function writeCompatViteConfig({ configPath, compatSrcDir, appDir, entry, viteOu
   const config = `import { resolve } from 'node:path'
 import { geaPlugin } from ${q(geaPluginResolved)}
 import { geaNativeStylePlugin } from ${q(path.join(coreRoot, 'scripts/gea-native-style-plugin.mjs'))}
-import { geaAppleNativeModuleAliases, geaModuleGraphPlugins } from ${q(moduleGraphPluginPath)}
+import { geaAppleNativeModuleAliases, geaModuleGraphPlugins, geaThreeModuleAliases } from ${q(moduleGraphPluginPath)}
 
 const root = ${q(compatSrcDir)}
 const geaModuleGraph = geaModuleGraphPlugins({ outDir: ${q(moduleGraphOutDir || '')}, entryReachableOnly: true })
@@ -507,6 +578,10 @@ const geaAppleNativeAliases = geaAppleNativeModuleAliases({
   threeWebXRManagerModule: ${q(threeWebXRManagerModule)},
   troikaThreeTextModule: ${q(troikaThreeTextModule)},
 })
+const geaThreeAliases = geaThreeModuleAliases({
+  geaThreeSrcDir: ${q(geaThree.geaThreeSrcDir)},
+  troikaThreeTextModule: ${q(geaThree.troikaThreeTextModule)},
+})
 
 export default {
   root,
@@ -516,6 +591,7 @@ ${defineEntries}
   plugins: [geaNativeStylePlugin({ runtimeEntry: ${q(compilerRuntimeEntry)} }), geaPlugin({ ir: { enabled: true, outFile: ${q(geaIrPath)} } }), ...geaModuleGraph],
   resolve: {
     alias: [
+${appModuleAliases}      ...geaThreeAliases,
 ${compilerRuntimeAlias}
       { find: new RegExp('^@geastack/core$'), replacement: ${q(runtimePath)} },
       { find: new RegExp('^@geastack/engine$'), replacement: ${q(engineComponentsPath)} },
@@ -4428,7 +4504,7 @@ if (geaEmbeddedCompat) {
   }
   stagedEntryFile = path.join(compatSrcDir, compatEntry)
   fontSourceDir = compatSrcDir
-  writeCompatViteConfig({ configPath: viteConfig, compatSrcDir, appDir, entry: compatEntry, viteOutDir, geaIrPath, appleNative, moduleGraphOutDir, envDefines })
+  writeCompatViteConfig({ configPath: viteConfig, compatSrcDir, appDir, stagedAppDir: path.join(compatSrcDir, path.relative(stagingRoot, appDir)), entry: compatEntry, viteOutDir, geaIrPath, appleNative, moduleGraphOutDir, envDefines })
 } else if (appleNative) {
   const baseViteConfig = viteConfig
   viteConfig = path.join(outDir, 'gea-apple-native.vite.config.mjs')
