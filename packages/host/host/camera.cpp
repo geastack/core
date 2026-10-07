@@ -2,10 +2,18 @@
 #include "camera.h"
 #include "gea/embedded-host.h"
 #include "ui/camera_element.h"
+#include "host/worker.h"
 
+#include <cstdint>
+#include <mutex>
 #include <string>
 
 namespace gea::framework::camera {
+
+namespace {
+std::mutex cameraOwnershipMutex;
+std::uint64_t cameraGeneration = 0;
+}
 
 bool CameraBackend::isAvailable() {
 	return gea::platform::camera::Camera::isAvailable();
@@ -20,10 +28,31 @@ bool CameraBackend::requestPermission() {
 }
 
 bool CameraBackend::open(const std::string &facing, double preferredWidth, double preferredHeight) {
-	return gea::platform::camera::Camera::open(facing, static_cast<int>(preferredWidth), static_cast<int>(preferredHeight));
+	std::lock_guard guard(cameraOwnershipMutex);
+	if (!gea::platform::camera::Camera::open(facing, static_cast<int>(preferredWidth), static_cast<int>(preferredHeight))) return false;
+	const auto generation = ++cameraGeneration;
+	const auto owner = gea::host::workers::Context::current();
+	if (!owner->isMain()) {
+		try {
+			owner->addCleanup([generation] {
+				std::lock_guard cleanupGuard(cameraOwnershipMutex);
+				// An old realm must not shut down a camera reopened by its successor.
+				if (cameraGeneration != generation) return;
+				++cameraGeneration;
+				gea::platform::camera::Camera::close();
+			});
+		} catch (...) {
+			++cameraGeneration;
+			gea::platform::camera::Camera::close();
+			throw;
+		}
+	}
+	return true;
 }
 
 void CameraBackend::close() {
+	std::lock_guard guard(cameraOwnershipMutex);
+	++cameraGeneration;
 	gea::platform::camera::Camera::close();
 }
 
@@ -76,6 +105,10 @@ double CameraBackend::capture() {
 
 double CameraBackend::captureMirrored() {
 	return static_cast<double>(gea::platform::camera::Camera::capture(true));
+}
+
+std::string CameraBackend::captureFrame() {
+	return gea::platform::camera::Camera::captureFrame();
 }
 
 void CameraBackend::setFlash(const std::string &mode) {

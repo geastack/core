@@ -1542,6 +1542,8 @@ export interface CameraController {
   /** Capture a still frame. `capturePhoto` is the preferred alias of `capture`. */
   capture(options?: CameraCaptureOptions): Promise<CameraPhoto>
   capturePhoto(options?: CameraCaptureOptions): Promise<CameraPhoto>
+  /** Take the newest encoded JPEG data URL without waiting; empty when no fresh frame is ready. */
+  captureFrame(): string
   /** Record a video clip (esp32-p4: Motion-JPEG; iOS movie: later). */
   startRecording(options: CameraRecordOptions): Promise<void>
   stopRecording(): Promise<CameraClip>

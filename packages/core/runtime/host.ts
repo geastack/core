@@ -197,6 +197,7 @@ declare const __gea_Camera: {
   draw(x: number, y: number, destWidth: number, destHeight: number): void
   capture(): number
   captureMirrored(): number
+  captureFrame(): string
   startRecording(path: string, fps: number): boolean
   stopRecording(): number
   isRecording(): boolean
@@ -810,6 +811,9 @@ export const Camera = {
   },
   capturePhoto(options?: CameraCaptureOptions): Promise<CameraPhoto> {
     return this.capture(options)
+  },
+  captureFrame(): string {
+    return __gea_Camera.captureFrame()
   },
   startRecording(options: CameraRecordOptions): Promise<void> {
     cameraRecordingPath = options.path

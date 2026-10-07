@@ -1123,6 +1123,7 @@ export function createGeaHostShims(): HostShimDefinitions {
             // forms remain on the __gea_Camera table for the runtime shim's own use.
             capture: "gea::host::Camera.capturePhoto",
             capturePhoto: "gea::host::Camera.capturePhoto",
+            captureFrame: "gea::host::Camera.captureFrame",
             captureMirrored: "gea::host::Camera.captureMirrored",
             startRecording: "gea::host::Camera.startRecording",
             stopRecording: "gea::host::Camera.stopRecordingClip",
@@ -1147,6 +1148,7 @@ export function createGeaHostShims(): HostShimDefinitions {
             isOpen: "gea::host::Camera.isOpen",
             draw: "gea::host::Camera.draw",
             capture: "gea::host::Camera.capture",
+            captureFrame: "gea::host::Camera.captureFrame",
             captureMirrored: "gea::host::Camera.captureMirrored",
             startRecording: "gea::host::Camera.startRecording",
             stopRecording: "gea::host::Camera.stopRecording",

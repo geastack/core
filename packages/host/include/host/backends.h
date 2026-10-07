@@ -57,6 +57,7 @@ public:
   // Capture a still image; returns the ImageStore id or -1 on failure.
   static double capture();
   static double captureMirrored();
+  static std::string captureFrame();
 
   // Video recording (esp32-p4: MJPEG). startRecording returns true on success;
   // stopRecording returns the clip duration in ms, or -1 on failure.

@@ -1,9 +1,11 @@
 #include "host/media.h"
+#include "host/worker.h"
 
 #include <cassert>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <stdexcept>
 #include <utility>
 #include <thread>
 #include <vector>
@@ -18,6 +20,36 @@ namespace gea::platform::storage { bool ensureMounted() { return false; } }
 #endif
 
 int main() {
+  {
+    const auto before = detached;
+    auto owner = gea::host::workers::Context::create("microphone-owner");
+    gea::host::NativeMediaStreamHandle stream = 0;
+    {
+      gea::host::workers::ContextScope scope(owner);
+      stream = gea::host::media::get_user_media_audio();
+      assert(gea::host::MediaStream(stream).active());
+    }
+    owner->finish();
+    assert(!gea::host::MediaStream(stream).active());
+    assert(detached == before + 1);
+    owner->finish();
+    assert(detached == before + 1);
+    // Keep the pre-existing lifecycle census independent of this scenario.
+    attached = detached = 0;
+  }
+  {
+    auto owner = gea::host::workers::Context::create("stopped-microphone-owner");
+    owner->stop();
+    bool rejected = false;
+    try {
+      gea::host::workers::ContextScope scope(owner);
+      gea::host::media::get_user_media_audio();
+    } catch (const std::runtime_error &) {
+      rejected = true;
+    }
+    assert(rejected && attached == 1 && detached == 1);
+    attached = detached = 0;
+  }
   auto empty = gea::host::media::create_media_stream();
   assert(!empty.id().empty() && empty.nativeHandle != 0);
   assert(empty.getTracks().empty() && empty.getVideoTracks().empty() && !empty.active());

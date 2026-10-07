@@ -332,6 +332,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ['gea::host::Camera.draw', geaHostDeclarations],
       ['gea::host::Camera.capture', geaHostDeclarations],
       ['gea::host::Camera.captureMirrored', geaHostDeclarations],
+      ['gea::host::Camera.captureFrame', geaHostDeclarations],
       ['gea::host::Camera.setFlash', geaHostDeclarations],
       ['gea::host::Camera.setZoom', geaHostDeclarations],
       ['gea::host::Camera.setMirror', geaHostDeclarations]

@@ -131,6 +131,7 @@ public:
   // Returns image id of a still capture, suitable to pass to image.draw().
   double capture() const { return gea::framework::camera::CameraBackend::capture(); }
   double captureMirrored() const { return gea::framework::camera::CameraBackend::captureMirrored(); }
+  std::string captureFrame() const { return gea::framework::camera::CameraBackend::captureFrame(); }
 
   // Single-arg form accepting an options record. Reads `mirror` to choose
   // the path; ignores unknown fields. Lets call sites use the same shape

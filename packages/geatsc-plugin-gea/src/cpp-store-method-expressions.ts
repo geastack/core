@@ -968,6 +968,7 @@ function lowerHostFacadeCall(context: StoreMethodLowerContext, path: string | nu
     'Camera.draw': { target: 'gea::host::Camera.draw', hints: ['number', 'number', 'number', 'number'] },
     'Camera.capture': { target: 'gea::host::Camera.capture', optionsRecord: true },
     'Camera.captureMirrored': { target: 'gea::host::Camera.captureMirrored' },
+    'Camera.captureFrame': { target: 'gea::host::Camera.captureFrame' },
     'Camera.setFlash': { target: 'gea::host::Camera.setFlash', hints: ['string'] },
     'Camera.setZoom': { target: 'gea::host::Camera.setZoom', hints: ['number'] },
     'Camera.setMirror': { target: 'gea::host::Camera.setMirror', hints: ['boolean'] },

@@ -3,6 +3,7 @@
 #include "pixel.h"
 
 #include <cstdint>
+#include <atomic>
 #include <string>
 
 namespace gea::platform::camera {
@@ -20,6 +21,14 @@ struct DeviceInfo {
 	int sensorHeight = 0;
 };
 
+// Optional encoded-frame producer. The device owns capture/encoding on its
+// worker; reading a frame never waits for a sensor or codec on the UI thread.
+class CameraFrameProvider {
+public:
+	virtual ~CameraFrameProvider() = default;
+	virtual std::string takeFrameDataUrl() = 0;
+};
+
 // Static facade — one active camera at a time on the device. The platform
 // layer maintains the live preview buffer and exposes a small surface that
 // the host bridge forwards into.
@@ -35,6 +44,12 @@ public:
 	static bool open(const std::string &facingHint, int preferredWidth, int preferredHeight);
 	static void close();
 	static bool isOpen();
+
+	static void setFrameProvider(CameraFrameProvider *provider) { frameProvider().store(provider); }
+	static std::string captureFrame() {
+		auto *provider = frameProvider().load();
+		return provider ? provider->takeFrameDataUrl() : std::string();
+	}
 
 	static int width();
 	static int height();
@@ -102,6 +117,12 @@ public:
 	static void setWhiteBalance(const std::string &mode, double temperatureK, double tint);
 	static void setFocus(const std::string &mode, double pointX, double pointY);
 	static void setTorch(const std::string &mode, double level);
+
+private:
+	static std::atomic<CameraFrameProvider *> &frameProvider() {
+		static std::atomic<CameraFrameProvider *> provider{nullptr};
+		return provider;
+	}
 };
 
 }  // namespace gea::platform::camera

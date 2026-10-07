@@ -2,6 +2,7 @@
 #include "host/media.h"
 #include "audio.h"
 #include "host/pcm_stream.h"
+#include "host/worker.h"
 
 #include <algorithm>
 #include <atomic>
@@ -657,7 +658,17 @@ void TrackPcmReader::beginDrain() {
 }
 
 NativeMediaStreamHandle get_user_media_audio() {
-  return create_stream();
+  const auto handle = create_stream();
+  const auto owner = workers::Context::current();
+  if (!owner->isMain()) {
+    try {
+      owner->addCleanup([handle] { destroy_stream(handle); });
+    } catch (...) {
+      destroy_stream(handle);
+      throw;
+    }
+  }
+  return handle;
 }
 
 NativeMediaRecorderHandle create_recorder(NativeMediaStreamHandle stream, const std::string &path, const std::string &mimeType) {
