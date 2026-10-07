@@ -1466,6 +1466,8 @@ struct RenderState {
 #endif
 
 	uint8_t dirty : 1;
+	// Only owned canvas pixels changed; style and geometry invalidation clear this.
+	uint8_t canvas_pixels_only_dirty : 1;
 #if GEA_CSS_SCROLLING
 	uint8_t scroll_dirty : 1;
 #else

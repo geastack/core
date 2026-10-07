@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "absolute_leaf_refresh.h"
 #include "dirty_regions.h"
+#include "canvas_element.h"
 #include "display.h"
 #include "display_underlay.h"
 #include "document.h"
@@ -1669,6 +1670,7 @@ namespace gea::embedded::ui
 			state.canvases.forEach([](CanvasSurfaceState &surface)
 														 {
 		if (auto *canvas = surface.canvas()) canvas->resetDirty(); });
+		CanvasRenderingContext2D::clearRetainedCanvasDamage();
 			GEA_REFRESH_PERF(refreshPerfStatsMutable().treePanReplayCalls++);
 			if (directRegions > 0)
 				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeDirectReplayCalls++);
@@ -1879,6 +1881,7 @@ namespace gea::embedded::ui
 		state.canvases.forEach([](CanvasSurfaceState &surface)
 													 {
 		if (auto *canvas = surface.canvas()) canvas->resetDirty(); });
+		CanvasRenderingContext2D::clearRetainedCanvasDamage();
 		LayoutSnapshot::capture();
 	}
 
@@ -2648,9 +2651,67 @@ namespace gea::embedded::ui
 			int canvas_x0 = 0, canvas_y0 = 0, canvas_x1 = -1, canvas_y1 = -1;
 			const auto *canvas_surface = n->type == NodeType::Canvas ? state.canvases.find(i) : nullptr;
 			const auto *canvas = canvas_surface ? canvas_surface->canvas() : nullptr;
-			const bool canvas_dirty = canvas_surface &&
-																canvas &&
-																canvas->dirty(&canvas_x0, &canvas_y0, &canvas_x1, &canvas_y1);
+			const bool bitmap_canvas_dirty =
+				canvas_surface && canvas && canvas->dirty(&canvas_x0, &canvas_y0, &canvas_x1, &canvas_y1);
+			int retained_x0, retained_y0, retained_x1, retained_y1;
+			const bool retained_canvas_dirty =
+				n->type == NodeType::Canvas && CanvasRenderingContext2D::retainedCanvasDamage(
+												   i, retained_x0, retained_y0, retained_x1, retained_y1);
+			bool canvas_dirty = bitmap_canvas_dirty || retained_canvas_dirty;
+
+			// Drawing into an unchanged owned bitmap cannot spill beyond its pixels.
+			// CSS antialiasing guards belong to style/geometry changes, not this damage.
+			bool exactCanvasPixelDamage =
+				canvas_dirty &&
+				(retained_canvas_dirty || (canvas_surface && !canvas_surface->displayBacked())) &&
+				n->render.canvas_pixels_only_dirty && !n->render.layout_dirty && !n->render.transform_dirty &&
+				n->first_child < 0 && n->layout.x == n->layout.previous_x &&
+				n->layout.y == n->layout.previous_y && n->layout.width == n->layout.previous_width &&
+				n->layout.height == n->layout.previous_height &&
+				(retained_canvas_dirty ||
+				 (canvas && canvas->width() == n->layout.width && canvas->height() == n->layout.height)) &&
+				!ViewRenderer::anyTransformActive();
+			int canvasAncestorSteps = 0;
+			for (int ancestor = i; exactCanvasPixelDamage && ancestor >= 0;
+				 ancestor = state.nodes[ancestor].parent)
+			{
+				if (ancestor >= state.nodeCount || ++canvasAncestorSteps > state.nodeCount)
+				{
+					exactCanvasPixelDamage = false;
+					break;
+				}
+				const auto &owner = state.nodes[ancestor];
+				const auto &style = owner.computedStyle();
+				exactCanvasPixelDamage = !hasAnyBorder(style) && style.mask_right_fade_width == 0 &&
+										 (GEA_CSS_FILTERS ? rstyle(style).filter_blur_radius : 0) <= 0 &&
+										 owner.render.previous_filter_blur_radius <= 0 &&
+										 (GEA_CSS_BOX_SHADOW ? rstyle(style).box_shadow_alpha : 0) == 0;
+			}
+
+			if (retained_canvas_dirty && exactCanvasPixelDamage)
+			{
+				if (bitmap_canvas_dirty)
+				{
+					canvas_x0 = std::min(canvas_x0, retained_x0);
+					canvas_y0 = std::min(canvas_y0, retained_y0);
+					canvas_x1 = std::max(canvas_x1, retained_x1);
+					canvas_y1 = std::max(canvas_y1, retained_y1);
+				}
+				else
+				{
+					canvas_x0 = retained_x0;
+					canvas_y0 = retained_y0;
+					canvas_x1 = retained_x1;
+					canvas_y1 = retained_y1;
+				}
+			}
+			if (canvas_dirty && !exactCanvasPixelDamage)
+			{
+				// A style/geometry invalidation is not a content-only repaint. Both
+				// bitmap and retained hints must yield to full previous/current boxes;
+				// otherwise a moved canvas leaves its old fringe behind.
+				canvas_dirty = false;
+			}
 
 			// Glyph-incremental text dirty: setText found that only a middle run of glyphs
 			// changed within an unchanged box. Flush just that run across the node's height
@@ -2920,7 +2981,8 @@ namespace gea::embedded::ui
 			// replaying overlapping siblings, such as overlay labels, in the
 			// original draw order.
 			const DirtyRegions::Rect dirtyRect =
-					dirtyRectWithRasterGuard(*n, DirtyRegions::Rect{dr_x0, dr_y0, dr_x1, dr_y1, i});
+					exactCanvasPixelDamage ? DirtyRegions::Rect{dr_x0, dr_y0, dr_x1, dr_y1, i}
+														: dirtyRectWithRasterGuard(*n, DirtyRegions::Rect{dr_x0, dr_y0, dr_x1, dr_y1, i});
 			addDirtyRegion(rects, &rect_count, dirtyRect, width, height);
 			if (!unifiedRectPath)
 				addDirtyRegion(flush_rects, &flush_rect_count, dirtyRect, width, height);
@@ -3391,6 +3453,7 @@ namespace gea::embedded::ui
 		state.canvases.forEach([](CanvasSurfaceState &surface)
 													 {
 		if (auto *canvas = surface.canvas()) canvas->resetDirty(); });
+		CanvasRenderingContext2D::clearRetainedCanvasDamage();
 #if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 		// displayCanvas is only declared when the direct-canvas context is off (see the
 		// guard at its declaration above); with direct canvas it is always null, so the

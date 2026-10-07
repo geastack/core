@@ -69,6 +69,7 @@ void rootScrollImageHoldTick();
 		BlitImage,
 		BlitImageScaled,
 		BlitImageProjected,
+		ReplayCanvasBatch,
 		BeginFilterBlur,
 		ApplyFilterBlur,
 		FillTransformedLinearGradient,
@@ -109,6 +110,7 @@ void rootScrollImageHoldTick();
 				int16_t x, y, w, h;
 				gea::framework::graphics::pixel::native_t color;
 			} fill;
+			struct { int16_t nodeId, x, y, width, height; std::uint32_t identity; } canvasBatch;
 			struct
 			{
 				int16_t cx, cy, r;

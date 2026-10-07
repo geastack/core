@@ -2,9 +2,13 @@
 #pragma once
 
 #include <memory>
+#include <algorithm>
+#include <cmath>
+#include <type_traits>
 
 #include "canvas.h"
 #include <image.h>
+#include "display.h"
 #include "node.h"
 
 #include <cstdint>
@@ -12,7 +16,53 @@
 #include <string>
 #include <vector>
 
+namespace gea::framework::display_present { struct Frame; }
+
 namespace gea::embedded::ui {
+
+// Borrow numeric containers for the duration of one draw call. Typed arrays
+// need no temporary vectors; only the retained triangle command owns a copy.
+class CanvasNumericArrayView {
+public:
+	template <typename Container>
+	CanvasNumericArrayView(const Container &values)
+	    : source_(&values), size_(values.size()),
+	      read_(+[](const void *source, std::size_t index, bool truncate) {
+		      const auto &container = *static_cast<const Container *>(source);
+		      using Element = std::remove_cvref_t<decltype(container[index])>;
+		      static_assert(std::is_arithmetic_v<Element>,
+		                    "Canvas arrays must contain numeric values");
+		      if constexpr (std::is_floating_point_v<Element>) {
+			      const auto value = container[index];
+			      if (!std::isfinite(value))
+				      return std::int64_t{0};
+			      if constexpr (std::is_same_v<Element, float>) {
+				      // Keep ordinary Float32 coordinates on the hardware float path.
+				      if (value >= -2147483648.0f && value < 2147483520.0f)
+					      return static_cast<std::int64_t>(static_cast<std::int32_t>(
+					          truncate ? std::trunc(value) : std::round(value)));
+			      }
+			      return static_cast<std::int64_t>(
+			          std::clamp(truncate ? std::trunc(static_cast<double>(value))
+			                              : std::round(static_cast<double>(value)),
+			                     -2147483648.0, 4294967295.0));
+		      } else {
+			      return static_cast<std::int64_t>(container[index]);
+		      }
+	      }) {}
+
+	std::size_t size() const { return size_; }
+
+	std::int64_t operator[](std::size_t index) const { return read_(source_, index, false); }
+
+	// Integer order and packed RGBA values retain integer conversion semantics.
+	std::int64_t truncated(std::size_t index) const { return read_(source_, index, true); }
+
+private:
+	const void *source_;
+	std::size_t size_;
+	std::int64_t (*read_)(const void *, std::size_t, bool);
+};
 
 struct CanvasPerfStats {
 	std::int64_t canvasLookupUs = 0;
@@ -97,6 +147,14 @@ void canvasTotalsRead(int *begin, int *end, int *fillRect, int *drawImage, int *
 // object each time, so a context passed to a helper (a by-value copy in
 // generated code) must draw into, and style, the same batch as the original.
 struct CanvasContextState {
+	std::uint32_t identity_ = 0;
+	std::shared_ptr<gea::framework::display_present::Frame> retainedFrame_;
+	std::shared_ptr<gea::framework::display_present::Frame> pendingRetainedFrame_;
+	int retainedWidth_ = 0;
+	int retainedHeight_ = 0;
+	int retainedDamageX0_ = 0, retainedDamageY0_ = 0;
+	int retainedDamageX1_ = -1, retainedDamageY1_ = -1;
+	bool retainedBatchChanged_ = false;
 	gea::framework::graphics::Canvas *batchCanvas_ = nullptr;
 	std::vector<CanvasPresentCommand> presentCommands_;
 	std::size_t presentCommandCount_ = 0;
@@ -144,6 +202,11 @@ public:
 	static std::shared_ptr<CanvasContextState> stateFor(int nodeId);
 	// Drops canvas `nodeId`'s state, so a node id reused later starts clean.
 	static void releaseState(int nodeId);
+	static void materializeRetainedCanvas(int nodeId);
+	static bool replayRetainedCanvas(int nodeId, std::uint32_t identity, int x, int y, int width, int height);
+	static bool hasRetainedCanvas(int nodeId);
+	static bool retainedCanvasDamage(int nodeId, int &x0, int &y0, int &x1, int &y1);
+	static void clearRetainedCanvasDamage();
 
 	bool valid() const { return nodeId_ >= 0; }
 	// The absence state `valid()` already answers, in the spelling a test uses.
@@ -225,14 +288,14 @@ public:
 	// 0xRRGGBBAA app values (converted to native pixels during packing). This
 	// replaces per-triangle fillTriangleRgb565 calls whose per-command record +
 	// replay dispatch dominated at a few hundred triangles per frame.
-	void fillTrianglesRgb565Sorted(const std::vector<std::int32_t> &x0s,
-	                               const std::vector<std::int32_t> &y0s,
-	                               const std::vector<std::int32_t> &x1s,
-	                               const std::vector<std::int32_t> &y1s,
-	                               const std::vector<std::int32_t> &x2s,
-	                               const std::vector<std::int32_t> &y2s,
-	                               const std::vector<std::uint32_t> &colors,
-	                               const std::vector<std::int32_t> &order,
+	void fillTrianglesRgb565Sorted(const CanvasNumericArrayView &x0s,
+	                               const CanvasNumericArrayView &y0s,
+	                               const CanvasNumericArrayView &x1s,
+	                               const CanvasNumericArrayView &y1s,
+	                               const CanvasNumericArrayView &x2s,
+	                               const CanvasNumericArrayView &y2s,
+	                               const CanvasNumericArrayView &colors,
+	                               const CanvasNumericArrayView &order,
 	                               int count);
 	void beginPath();
 	void arc(double x, double y, double radius, double startAngle, double endAngle);
@@ -280,6 +343,9 @@ private:
 	gea::framework::graphics::Canvas *canvas();
 	gea::framework::graphics::Canvas *drawingCanvas();
 	bool recordingPresentBatch() const;
+	void prepareBitmapOnlyDraw();
+	bool retainNumericBatch();
+	std::vector<gea::platform::display::DisplayPresentCommand> displayPresentCommands() const;
 	void appendPresentClear(gea::framework::graphics::pixel::native_t color);
 	void appendPresentFillRect(int x, int y, int w, int h, gea::framework::graphics::pixel::native_t color);
 	void appendPresentStrokeRect(int x, int y, int w, int h, gea::framework::graphics::pixel::native_t color);
@@ -316,14 +382,14 @@ private:
 	                                 const std::vector<std::uint16_t> &ys,
 	                                 int radius,
 	                                 gea::framework::graphics::pixel::native_t color);
-	void appendPresentTriangles(const std::vector<std::int32_t> &x0s,
-	                            const std::vector<std::int32_t> &y0s,
-	                            const std::vector<std::int32_t> &x1s,
-	                            const std::vector<std::int32_t> &y1s,
-	                            const std::vector<std::int32_t> &x2s,
-	                            const std::vector<std::int32_t> &y2s,
-	                            const std::vector<std::uint32_t> &colors,
-	                            const std::vector<std::int32_t> &order,
+	void appendPresentTriangles(const CanvasNumericArrayView &x0s,
+	                            const CanvasNumericArrayView &y0s,
+	                            const CanvasNumericArrayView &x1s,
+	                            const CanvasNumericArrayView &y1s,
+	                            const CanvasNumericArrayView &x2s,
+	                            const CanvasNumericArrayView &y2s,
+	                            const CanvasNumericArrayView &colors,
+	                            const CanvasNumericArrayView &order,
 	                            int count);
 	void appendPresentDrawImage(const gea::framework::graphics::pixel::native_t *pixels,
 	                            const std::uint8_t *alphaPixels,

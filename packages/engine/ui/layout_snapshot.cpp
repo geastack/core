@@ -72,6 +72,7 @@ void LayoutSnapshot::capture()
 		state.nodes[i].render.previous_filter_blur_radius = rs.filter_blur_radius;
 #endif
 		state.nodes[i].render.dirty = 0;
+		state.nodes[i].render.canvas_pixels_only_dirty = 0;
 		state.nodes[i].render.layout_dirty = 0;
 #if GEA_CSS_SCROLLING
 		state.nodes[i].render.scroll_dirty = 0;

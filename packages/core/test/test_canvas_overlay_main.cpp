@@ -10,6 +10,7 @@
 #include "ui/style.h"
 #include "ui/tree_internal.h"
 
+#include <cassert>
 #include <cstdio>
 #include <vector>
 
@@ -151,4 +152,59 @@ static int checkOverlay(bool nativeImage, int split = 0)
 	return 0;
 }
 
-int main() { return checkOverlay(false) || checkOverlay(true) || checkOverlay(true, 1) || checkOverlay(true, 2); }
+static int checkExactCanvasDamage()
+{
+	constexpr int width = 80, height = 80, side = 40;
+	resetNativeHost();
+	setNativeDisplaySize(width, height);
+	StyleSheet::instance().clear();
+	auto &document = Document::instance();
+	auto root = document.createView();
+	root.style().width(width); root.style().height(height);
+	root.style().backgroundColor(pixel::nativeColor(20, 30, 40));
+	auto bitmap = document.createCanvas();
+	bitmap.style().position(1); bitmap.style().left(20); bitmap.style().top(20);
+	bitmap.style().width(side); bitmap.style().height(side);
+	// This unchanged rounded CSS background used to add a guard around every
+	// bitmap update even though all owned raster writes stay inside the surface.
+	bitmap.style().backgroundColor(pixel::nativeColor(60, 70, 80));
+	bitmap.style().setProperty("border-radius", "8px");
+	root.appendChild(bitmap);
+	document.mount(root, width, height);
+	auto context = bitmap.getContext2D();
+	context.setFillStyleRgb565(pixel::nativeColor(240, 20, 30));
+	context.fillRect(0, 0, side, side);
+	document.refresh(root, width, height);
+	const auto outside = displayPixelAt(19, 19);
+	int previousPixels = flushPixelCount();
+	refreshPerfStatsReset();
+	context.setFillStyleRgb565(pixel::nativeColor(20, 240, 30));
+	context.fillRect(0, 0, side, side);
+	document.refresh(root, width, height);
+	assert(flushPixelCount() - previousPixels == side * side);
+	assert(displayPixelAt(19, 19) == outside);
+	assert(displayPixelAt(20, 20) == pixel::nativeColor(20, 240, 30));
+	assert(displayPixelAt(59, 59) == pixel::nativeColor(20, 240, 30));
+	// Both mutation orders must preserve non-pixel invalidation.
+	for (int order = 0; order < 2; ++order) {
+		previousPixels = flushPixelCount();
+		if (order == 0) bitmap.style().setProperty("border-radius", "10px");
+		context.setFillStyleRgb565(pixel::nativeColor(20, 40, 230 + order));
+		context.fillRect(0, 0, side, side);
+		if (order == 1) bitmap.style().setProperty("border-radius", "12px");
+		document.refresh(root, width, height);
+		assert(flushPixelCount() - previousPixels > side * side);
+	}
+	bitmap.style().setProperty("background-color", "transparent");
+	document.refresh(root, width, height);
+	refreshPerfStatsReset();
+	context.setFillStyleRgb565(pixel::nativeColor(30, 220, 30));
+	context.fillRect(0, 0, side, side);
+	document.refresh(root, width, height);
+	assert(refreshPerfStatsRead().treeReplayFillRectCommands == 0);
+	assert(displayPixelAt(19, 19) == outside);
+	std::puts("PASS: owned canvas pixel damage is exact, mixed style updates retain guards, and opaque bitmap-only replay culls the root background");
+	return 0;
+}
+
+int main() { return checkExactCanvasDamage() || checkOverlay(false) || checkOverlay(true) || checkOverlay(true, 1) || checkOverlay(true, 2); }

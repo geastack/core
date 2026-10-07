@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -1621,7 +1622,10 @@ void Canvas::clear(pixel::native_t color)
 #if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
 	if (landscapeRot_) clearPixels = static_cast<std::size_t>(stride_) * width_;
 #endif
-	std::fill_n(pixels_, clearPixels, color);
+	if (clearPixels <= static_cast<std::size_t>(std::numeric_limits<int>::max()))
+		pixel::fillNative(pixels_, static_cast<int>(clearPixels), color);
+	else
+		std::fill_n(pixels_, clearPixels, color);
 #endif
 	markDirty(0, 0, width_ - 1, height_ - 1);
 }
@@ -1752,6 +1756,17 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 		}
 #endif
 #if !GEA_PIXEL_STORAGE_PACKED
+		// Entire physical rows are one contiguous span. In particular, an owned
+		// canvas background needs one PIE pattern setup rather than one per row.
+		const std::size_t fillPixels = static_cast<std::size_t>(count) * (y1 - y0 + 1);
+		if (x0 == 0 && count == stride_ && regionH_ <= 0 &&
+		    fillPixels >= static_cast<std::size_t>(width_) * height_ / 4 &&
+		    fillPixels <= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+			pixel::fillNative(pixels_ + static_cast<std::size_t>(y0) * stride_,
+			                  static_cast<int>(fillPixels), c);
+			markDirty(x0, y0, x1, y1);
+			return;
+		}
 		// Large opaque fills (e.g. a full-screen page/paper background) skip the
 		// per-pixel occlusion scan below. That scan READS every pixel just to
 		// minimize the dirty rect — worth it for a small changed region, but pure
@@ -1912,6 +1927,16 @@ void Canvas::fillRectOpaque(int x, int y, int w, int h, pixel::native_t color)
 #endif
 
 	const int count = x1 - x0 + 1;
+#if !GEA_PIXEL_STORAGE_PACKED
+	const std::size_t fillPixels = static_cast<std::size_t>(count) * (y1 - y0 + 1);
+	if (x0 == 0 && count == stride_ && regionH_ <= 0 &&
+	    fillPixels <= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+		pixel::fillNative(pixels_ + static_cast<std::size_t>(y0) * stride_,
+		                  static_cast<int>(fillPixels), color);
+		markDirty(x0, y0, x1, y1);
+		return;
+	}
+#endif
 	for (int row = y0; row <= y1; row++) {
 		fillSpanColor(rowToPhysical(row), x0, count, color);
 	}
@@ -2214,14 +2239,127 @@ void Canvas::drawArc(int cx, int cy, int r, int start_deg, int end_deg, pixel::n
 	}
 }
 
+namespace {
+
+#ifndef GEA_EMBEDDED_TRIANGLE_RATIO_CACHE
+#ifdef ESP_PLATFORM
+#define GEA_EMBEDDED_TRIANGLE_RATIO_CACHE 1
+#else
+#define GEA_EMBEDDED_TRIANGLE_RATIO_CACHE 0
+#endif
+#endif
+
+#if GEA_EMBEDDED_TRIANGLE_RATIO_CACHE
+// Float division is a software call on embedded targets. Cache the exact
+// quotient bits, not a reciprocal: changing the rounding changes edge pixels.
+// The triangular table is bounded to 32.8 KiB and never uses internal ESP RAM.
+constexpr int kTriangleRatioMaxDenominator = 128;
+constexpr std::size_t kTriangleRatioCount =
+	kTriangleRatioMaxDenominator * (kTriangleRatioMaxDenominator + 3) / 2;
+// Publication states live in internal RAM. Published PSRAM rows are immutable;
+// no atomic operations (or concurrent writes) ever touch the PSRAM allocation.
+std::atomic<float *> s_triangleRatios{nullptr};
+std::atomic<unsigned> s_triangleRatioRows[kTriangleRatioMaxDenominator + 1]{};
+// 0: uninitialized, 1: initializing, 2: ready, 3: allocation unavailable.
+std::atomic<unsigned> s_triangleRatioState{0};
+
+float *triangleRatioTable()
+{
+	if (auto *table = s_triangleRatios.load(std::memory_order_acquire))
+		return table;
+	if (s_triangleRatioState.load(std::memory_order_relaxed) != 0)
+		return nullptr;
+	unsigned state = 0;
+	if (!s_triangleRatioState.compare_exchange_strong(state, 1, std::memory_order_relaxed))
+		return nullptr;
+	void *storage = nullptr;
+#ifndef GEA_TEST_TRIANGLE_RATIO_ALLOCATION_FAILURE
+#ifdef ESP_PLATFORM
+	storage =
+		heap_caps_malloc(kTriangleRatioCount * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+	storage = std::malloc(kTriangleRatioCount * sizeof(float));
+#endif
+#endif
+	if (!storage)
+	{
+		s_triangleRatioState.store(3, std::memory_order_relaxed);
+		return nullptr;
+	}
+	auto *table = static_cast<float *>(storage);
+	s_triangleRatios.store(table, std::memory_order_release);
+	s_triangleRatioState.store(2, std::memory_order_relaxed);
+	return table;
+}
+#endif
+
+float triangleRatio(int numerator, int denominator)
+{
+#if GEA_EMBEDDED_TRIANGLE_RATIO_CACHE
+	if (denominator > 0 && denominator <= kTriangleRatioMaxDenominator && numerator >= 0 &&
+		numerator <= denominator)
+	{
+		if (auto *table = triangleRatioTable())
+		{
+			const std::size_t offset = denominator * (denominator + 1) / 2 - 1;
+			auto &state = s_triangleRatioRows[denominator];
+			if (state.load(std::memory_order_acquire) == 2)
+				return table[offset + numerator];
+			unsigned empty = 0;
+			if (state.compare_exchange_strong(empty, 1, std::memory_order_relaxed))
+			{
+				for (int n = 0; n <= denominator; ++n)
+					table[offset + n] = static_cast<float>(n) / denominator;
+				state.store(2, std::memory_order_release);
+				return table[offset + numerator];
+			}
+			// Another raster thread is filling this row. It owns all writes;
+			// retain the exact division until the immutable row is published.
+		}
+	}
+#endif
+	return static_cast<float>(numerator) / denominator;
+}
+
+// All triangle entry points share the public canvas pixel definition. Truncate
+// the interpolated displacement toward zero, rather than flooring an absolute
+// fixed-point position: those differ on descending/negative triangle edges.
+void triangleRowSpan(int x0, int y0, int x1, int y1, int x2, int y2, int y, int &ax, int &bx)
+{
+	const bool second = y >= y1;
+	const int segmentHeight = std::max(1, second ? y2 - y1 : y1 - y0);
+	const float alpha = triangleRatio(y - y0, y2 - y0);
+	const float beta = triangleRatio(y - (second ? y1 : y0), segmentHeight);
+	ax = x0 + static_cast<int>((x2 - x0) * alpha);
+	bx = second ? x1 + static_cast<int>((x2 - x1) * beta) : x0 + static_cast<int>((x1 - x0) * beta);
+	if (ax > bx)
+		std::swap(ax, bx);
+}
+
+} // namespace
+
 void Canvas::fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, pixel::native_t color)
 {
-	if (!pixels_) return;
-	if (y0 > y1) { std::swap(x0, x1); std::swap(y0, y1); }
-	if (y0 > y2) { std::swap(x0, x2); std::swap(y0, y2); }
-	if (y1 > y2) { std::swap(x1, x2); std::swap(y1, y2); }
+	if (!pixels_)
+		return;
+	if (y0 > y1)
+	{
+		std::swap(x0, x1);
+		std::swap(y0, y1);
+	}
+	if (y0 > y2)
+	{
+		std::swap(x0, x2);
+		std::swap(y0, y2);
+	}
+	if (y1 > y2)
+	{
+		std::swap(x1, x2);
+		std::swap(y1, y2);
+	}
 	int total_h = y2 - y0;
-	if (total_h == 0) {
+	if (total_h == 0)
+	{
 		int mn = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
 		int mx = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
 		fillRect(mn, y0, mx - mn + 1, 1, color);
@@ -2232,77 +2370,110 @@ void Canvas::fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, pixel:
 	const ClipRect *clip = &clipStack_[clipDepth_];
 	int draw_y0 = y0;
 	int draw_y1 = y2;
-	if (draw_y0 < clip->y0) draw_y0 = clip->y0;
-	if (draw_y1 > clip->y1) draw_y1 = clip->y1;
-	if (draw_y0 < 0) draw_y0 = 0;
-	if (draw_y1 >= height_) draw_y1 = height_ - 1;
-	if (draw_y0 > draw_y1) return;
-	if (globalAlpha_ != 255 && globalAlpha_ != 0) markDirtyClipped(min_x, y0, max_x, y2);
-	for (int y = draw_y0; y <= draw_y1; y++) {
-		int second = (y >= y1);
-		int seg_h = second ? (y2 - y1) : (y1 - y0);
-		if (seg_h == 0) seg_h = 1;
-		float al = (float)(y - y0) / total_h;
-		float beta = second ? (float)(y - y1) / seg_h : (float)(y - y0) / seg_h;
-		int ax = x0 + (int)((x2 - x0) * al);
-		int bx = second ? x1 + (int)((x2 - x1) * beta) : x0 + (int)((x1 - x0) * beta);
-		if (ax > bx) { int t = ax; ax = bx; bx = t; }
-		if (ax < clip->x0) ax = clip->x0;
-		if (bx > clip->x1) bx = clip->x1;
-		if (ax < 0) ax = 0;
-		if (bx >= width_) bx = width_ - 1;
-		if (ax > bx) continue;
+	if (draw_y0 < clip->y0)
+		draw_y0 = clip->y0;
+	if (draw_y1 > clip->y1)
+		draw_y1 = clip->y1;
+	if (draw_y0 < 0)
+		draw_y0 = 0;
+	if (draw_y1 >= height_)
+		draw_y1 = height_ - 1;
+	if (draw_y0 > draw_y1)
+		return;
+	if (globalAlpha_ != 255 && globalAlpha_ != 0)
+		markDirtyClipped(min_x, y0, max_x, y2);
+	for (int y = draw_y0; y <= draw_y1; y++)
+	{
+		int ax, bx;
+		triangleRowSpan(x0, y0, x1, y1, x2, y2, y, ax, bx);
+		if (ax < clip->x0)
+			ax = clip->x0;
+		if (bx > clip->x1)
+			bx = clip->x1;
+		if (ax < 0)
+			ax = 0;
+		if (bx >= width_)
+			bx = width_ - 1;
+		if (ax > bx)
+			continue;
 		const pixel::native_t c = color;
 #if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
-		if (landscapeRot_) {
-			if (globalAlpha_ == 255) {
-				for (int px = ax; px <= bx; px++) rotSet(px, y, c);
+		if (landscapeRot_)
+		{
+			if (globalAlpha_ == 255)
+			{
+				for (int px = ax; px <= bx; px++)
+					rotSet(px, y, c);
 				markDirty(ax, y, bx, y);
-			} else if (globalAlpha_ != 0) {
+			}
+			else if (globalAlpha_ != 0)
+			{
 				const int a = globalAlpha_;
-				for (int px = ax; px <= bx; px++) rotBlend(px, y, c, a);
+				for (int px = ax; px <= bx; px++)
+					rotBlend(px, y, c, a);
 			}
 			continue;
 		}
 #endif
 #if GEA_PIXEL_STORAGE_PACKED
 		std::uint8_t *dnib = packedRow(rowToPhysical(y));
-		if (globalAlpha_ == 255) {
+		if (globalAlpha_ == 255)
+		{
 			const int count = bx - ax + 1;
 			int runStart = -1;
-			for (int i = 0; i < count; i++) {
-				if (pixel::packed::get(dnib, ax + i) == c) {
-					if (runStart >= 0) { markDirty(ax + runStart, y, ax + i - 1, y); runStart = -1; }
-					continue;
-				}
-				if (runStart < 0) runStart = i;
-				pixel::packed::set(dnib, ax + i, c);
-			}
-			if (runStart >= 0) markDirty(ax + runStart, y, bx, y);
-		} else if (globalAlpha_ != 0) {
-			const int a = globalAlpha_;
-			for (int px = ax; px <= bx; px++) pixel::packed::blendPixel(dnib, px, c, a);
-		}
-#else
-		pixel::native_t *dst = &pixels_[rowToPhysical(y) * stride_ + ax];
-		if (globalAlpha_ == 255) {
-			const int count = bx - ax + 1;
-			int runStart = -1;
-			for (int i = 0; i < count; i++) {
-				if (dst[i] == c) {
-					if (runStart >= 0) {
+			for (int i = 0; i < count; i++)
+			{
+				if (pixel::packed::get(dnib, ax + i) == c)
+				{
+					if (runStart >= 0)
+					{
 						markDirty(ax + runStart, y, ax + i - 1, y);
 						runStart = -1;
 					}
 					continue;
 				}
-				if (runStart < 0) runStart = i;
+				if (runStart < 0)
+					runStart = i;
+				pixel::packed::set(dnib, ax + i, c);
+			}
+			if (runStart >= 0)
+				markDirty(ax + runStart, y, bx, y);
+		}
+		else if (globalAlpha_ != 0)
+		{
+			const int a = globalAlpha_;
+			for (int px = ax; px <= bx; px++)
+				pixel::packed::blendPixel(dnib, px, c, a);
+		}
+#else
+		pixel::native_t *dst = &pixels_[rowToPhysical(y) * stride_ + ax];
+		if (globalAlpha_ == 255)
+		{
+			const int count = bx - ax + 1;
+			int runStart = -1;
+			for (int i = 0; i < count; i++)
+			{
+				if (dst[i] == c)
+				{
+					if (runStart >= 0)
+					{
+						markDirty(ax + runStart, y, ax + i - 1, y);
+						runStart = -1;
+					}
+					continue;
+				}
+				if (runStart < 0)
+					runStart = i;
 				dst[i] = c;
 			}
-			if (runStart >= 0) markDirty(ax + runStart, y, bx, y);
-		} else if (globalAlpha_ != 0) {
+			if (runStart >= 0)
+				markDirty(ax + runStart, y, bx, y);
+		}
+		else if (globalAlpha_ != 0)
+		{
 			const int a = globalAlpha_;
-			for (int px = ax; px <= bx; px++, dst++) *dst = pixel::blendNative(c, *dst, a);
+			for (int px = ax; px <= bx; px++, dst++)
+				*dst = pixel::blendNative(c, *dst, a);
 		}
 #endif
 	}
@@ -2311,15 +2482,23 @@ void Canvas::fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, pixel:
 // Present-replay variant: each flush chunk starts from scratch, so fillTriangle's
 // persistent-surface bookkeeping (per-pixel dst-compare + run-based markDirty)
 // is pure overhead there — flat span fills, one bbox markDirty.
-// Edges step incrementally in 48.16 fixed point: one divide per edge instead of
-// two float divides per scanline. The present replay rasterizes thousands of
-// triangle rows per frame and those divides dominated the raster time. 64-bit
-// accumulators keep arbitrary int coordinates overflow-safe.
-void Canvas::fillTriangleOpaque(int x0, int y0, int x1, int y1, int x2, int y2, pixel::native_t color)
+// Span geometry shares fillTriangle's floating interpolation and truncation;
+// opaque replay skips persistent-surface comparisons and dirty run tracking.
+void Canvas::fillTriangleOpaque(int x0, int y0, int x1, int y1, int x2, int y2,
+								pixel::native_t color)
 {
-	if (!pixels_) return;
-	if (y0 > y1) { std::swap(x0, x1); std::swap(y0, y1); }
-	if (y0 > y2) { std::swap(x0, x2); std::swap(y0, y2); }
+	if (!pixels_)
+		return;
+	if (y0 > y1)
+	{
+		std::swap(x0, x1);
+		std::swap(y0, y1);
+	}
+	if (y0 > y2)
+	{
+		std::swap(x0, x2);
+		std::swap(y0, y2);
+	}
 	if (y1 > y2) { std::swap(x1, x2); std::swap(y1, y2); }
 	const int total_h = y2 - y0;
 	if (total_h == 0) {
@@ -2340,43 +2519,15 @@ void Canvas::fillTriangleOpaque(int x0, int y0, int x1, int y1, int x2, int y2, 
 	int clip_x1 = clip->x1 >= width_ ? width_ - 1 : clip->x1;
 	if (clip_x0 > clip_x1) return;
 
-	// Long edge y0→y2 spans both segments with one continuous accumulator, so
-	// the two mesh triangles sharing it rasterize identical columns (no cracks).
-	const std::int64_t stepA = ((static_cast<std::int64_t>(x2) - x0) << 16) / total_h;
-	std::int64_t accA = (static_cast<std::int64_t>(x0) << 16) + stepA * (draw_y0 - y0);
-
 	int dirty_x0 = width_;
 	int dirty_x1 = -1;
-	auto rasterRows = [&](int yStart, int yEnd, std::int64_t accB, std::int64_t stepB) {
-		for (int y = yStart; y <= yEnd; y++) {
-			int ax = static_cast<int>(accA >> 16);
-			int bx = static_cast<int>(accB >> 16);
-			accA += stepA;
-			accB += stepB;
-			if (ax > bx) { const int t = ax; ax = bx; bx = t; }
-			if (ax < clip_x0) ax = clip_x0;
-			if (bx > clip_x1) bx = clip_x1;
-			if (ax > bx) continue;
-			fillSpanColor(rowToPhysical(y), ax, bx - ax + 1, color);
-			if (ax < dirty_x0) dirty_x0 = ax;
-			if (bx > dirty_x1) dirty_x1 = bx;
-		}
-	};
-
-	if (draw_y0 < y1) {
-		// Upper segment rows [y0, y1): draw_y0 < y1 with draw_y0 >= y0 implies y1 > y0.
-		const int yEnd = draw_y1 < y1 - 1 ? draw_y1 : y1 - 1;
-		const std::int64_t stepB = ((static_cast<std::int64_t>(x1) - x0) << 16) / (y1 - y0);
-		const std::int64_t accB = (static_cast<std::int64_t>(x0) << 16) + stepB * (draw_y0 - y0);
-		rasterRows(draw_y0, yEnd, accB, stepB);
-	}
-	if (draw_y1 >= y1) {
-		// Lower segment rows [y1, y2]; accA is already positioned at yStart.
-		const int yStart = draw_y0 > y1 ? draw_y0 : y1;
-		const int segh = y2 - y1;
-		const std::int64_t stepB = segh > 0 ? ((static_cast<std::int64_t>(x2) - x1) << 16) / segh : 0;
-		const std::int64_t accB = (static_cast<std::int64_t>(x1) << 16) + stepB * (yStart - y1);
-		rasterRows(yStart, draw_y1, accB, stepB);
+	for (int y = draw_y0; y <= draw_y1; ++y) {
+		int ax, bx;
+		triangleRowSpan(x0, y0, x1, y1, x2, y2, y, ax, bx);
+		ax = std::max(ax, clip_x0); bx = std::min(bx, clip_x1);
+		if (ax > bx) continue;
+		fillSpanColor(rowToPhysical(y), ax, bx - ax + 1, color);
+		dirty_x0 = std::min(dirty_x0, ax); dirty_x1 = std::max(dirty_x1, bx);
 	}
 	if (dirty_x1 >= dirty_x0) markDirty(dirty_x0, draw_y0, dirty_x1, draw_y1);
 }
@@ -2475,33 +2626,11 @@ void Canvas::fillTrianglesOpaqueOccluded(const TriangleEntry *tris, int count, i
 			if (mn <= mx) fillCovered(y0, mn, mx, color);
 			continue;
 		}
-		const std::int64_t stepA = ((static_cast<std::int64_t>(x2) - x0) << 16) / total_h;
-		std::int64_t accA = (static_cast<std::int64_t>(x0) << 16) + stepA * (dy0 - y0);
-		auto walk = [&](int yStart, int yEnd, std::int64_t accB, std::int64_t stepB) {
-			for (int y = yStart; y <= yEnd; y++) {
-				int ax = static_cast<int>(accA >> 16);
-				int bx = static_cast<int>(accB >> 16);
-				accA += stepA;
-				accB += stepB;
-				if (ax > bx) { const int t = ax; ax = bx; bx = t; }
-				if (ax < clip_x0) ax = clip_x0;
-				if (bx > clip_x1) bx = clip_x1;
-				if (ax > bx) continue;
-				fillCovered(y, ax, bx, color);
-			}
-		};
-		if (dy0 < y1) {
-			const int yEnd = dy1 < y1 - 1 ? dy1 : y1 - 1;
-			const std::int64_t stepB = ((static_cast<std::int64_t>(x1) - x0) << 16) / (y1 - y0);
-			const std::int64_t accB = (static_cast<std::int64_t>(x0) << 16) + stepB * (dy0 - y0);
-			walk(dy0, yEnd, accB, stepB);
-		}
-		if (dy1 >= y1) {
-			const int yStart = dy0 > y1 ? dy0 : y1;
-			const int segh = y2 - y1;
-			const std::int64_t stepB = segh > 0 ? ((static_cast<std::int64_t>(x2) - x1) << 16) / segh : 0;
-			const std::int64_t accB = (static_cast<std::int64_t>(x1) << 16) + stepB * (yStart - y1);
-			walk(yStart, dy1, accB, stepB);
+		for (int y = dy0; y <= dy1; ++y) {
+			int ax, bx;
+			triangleRowSpan(x0, y0, x1, y1, x2, y2, y, ax, bx);
+			ax = std::max(ax, clip_x0); bx = std::min(bx, clip_x1);
+			if (ax <= bx) fillCovered(y, ax, bx, color);
 		}
 	}
 	if (dirty_x1 >= dirty_x0 && dirty_y1 >= dirty_y0) markDirty(dirty_x0, dirty_y0, dirty_x1, dirty_y1);

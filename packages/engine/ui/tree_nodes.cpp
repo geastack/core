@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
 #include <image.h>
+#include "canvas_element.h"
 #include "display.h"
 #include "host/display_orientation.h"
 #include "mirror.h"
@@ -337,6 +338,7 @@ int Tree::createVirtualList() { return createNode(NodeType::VirtualList); }
 
 gea::framework::graphics::Canvas *Tree::ensureCanvas(int id, int width, int height)
 {
+	CanvasRenderingContext2D::materializeRetainedCanvas(id);
 	auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount) return nullptr;
 	Node &node = state.nodes[id];
@@ -455,6 +457,7 @@ gea::framework::graphics::Canvas *Tree::ensureCameraSurface(int id, int width, i
 
 const gea::framework::graphics::Canvas *Tree::canvas(int id) const
 {
+	CanvasRenderingContext2D::materializeRetainedCanvas(id);
 	const auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount) return nullptr;
 	const auto *slot = state.canvases.find(id);
@@ -494,6 +497,7 @@ void Tree::markCanvasDirty(int id)
 	// It used to be set here, and a canvas redrawn every frame (Ember's heat
 	// arc) then cost a full relayout of the whole screen per frame (~5.5 ms of
 	// 163 layout calls on the S31) for a box that never moved.
+	const bool pixelsOnly = !state.nodes[id].render.dirty || state.nodes[id].render.canvas_pixels_only_dirty;
 	state.nodes[id].render.dirty = 1;
 #if GEA_CSS_SCROLLING
 	state.nodes[id].render.non_scroll_dirty = 1;
@@ -506,6 +510,7 @@ void Tree::markCanvasDirty(int id)
 	// reach the display (same trap as the per-frame <camera> preview repaint
 	// in tree_render.cpp, which uses the content-dirty mark for this reason).
 	markNodeDisplayCommandsDirty(id);
+	state.nodes[id].render.canvas_pixels_only_dirty = pixelsOnly;
 }
 
 // A reparent that puts `parent` under `child` closes a cycle in the parent chain.

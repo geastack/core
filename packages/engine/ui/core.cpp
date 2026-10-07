@@ -39,6 +39,7 @@ void Tree::markNodeDisplayCommandsDirty(int node)
 	if (node < 0 || node >= kMaxNodes) return;
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeMarkNodeCommandDirtyCalls++);
 	auto &state = treeState();
+	if (node < state.nodeCount) state.nodes[node].render.canvas_pixels_only_dirty = 0;
 	state.nodeCommandDirty[node] = 1;
 	const int root = state.mountedRoot;
 	if (root >= 0 && root < state.nodeCount && node < state.nodeCount && isDocumentCanvasRoot(state.nodes[root]) &&

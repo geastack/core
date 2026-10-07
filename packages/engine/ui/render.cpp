@@ -333,6 +333,8 @@ int gLastScrollUiFrame = -1000;
 					return "BlitImageScaled";
 				case DisplayCommandType::BlitImageProjected:
 					return "BlitImageProjected";
+				case DisplayCommandType::ReplayCanvasBatch:
+					return "ReplayCanvasBatch";
 				case DisplayCommandType::BeginFilterBlur:
 					return "BeginFilterBlur";
 				case DisplayCommandType::ApplyFilterBlur:
@@ -5446,6 +5448,10 @@ int gLastScrollUiFrame = -1000;
 					c->projectedText.x3 += dx;
 					c->projectedText.y3 += dy;
 					break;
+				case DisplayCommandType::ReplayCanvasBatch:
+					c->canvasBatch.x += dx;
+					c->canvasBatch.y += dy;
+					break;
 				case DisplayCommandType::BlitImageProjected:
 					c->projectedBlit.x += dx;
 					c->projectedBlit.y += dy;
@@ -6850,6 +6856,10 @@ int gLastScrollUiFrame = -1000;
 					gea::platform::display::Display::blitImage(c.blit.pixels, c.blit.alpha, c.blit.sourceWidth, c.blit.sourceHeight,
 																										 c.blit.dx, c.blit.dy);
 					break;
+				case DisplayCommandType::ReplayCanvasBatch:
+					CanvasRenderingContext2D::replayRetainedCanvas(c.canvasBatch.nodeId, c.canvasBatch.identity,
+					    c.canvasBatch.x, c.canvasBatch.y, c.canvasBatch.width, c.canvasBatch.height);
+					break;
 				case DisplayCommandType::BlitImageProjected:
 					drawProjectedImage(c);
 					break;
@@ -6944,6 +6954,7 @@ int gLastScrollUiFrame = -1000;
 					GEA_REFRESH_PERF(__perf.treeReplayGradientUs += __replayDt);
 					break;
 				case DisplayCommandType::BlitImage:
+				case DisplayCommandType::ReplayCanvasBatch:
 				case DisplayCommandType::BlitImageProjected:
 				case DisplayCommandType::BlitImageScaled:
 					GEA_REFRESH_PERF(__perf.treeReplayImageUs += __replayDt);
@@ -11621,6 +11632,7 @@ int gLastScrollUiFrame = -1000;
 			case DisplayCommandType::DrawProjectedText:
 			case DisplayCommandType::DrawText:
 			case DisplayCommandType::BlitImage:
+			case DisplayCommandType::ReplayCanvasBatch:
 			case DisplayCommandType::BlitImageProjected:
 			case DisplayCommandType::BlitImageScaled:
 			case DisplayCommandType::FillTransformedLinearGradient:

@@ -1164,6 +1164,7 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		GEA_REFRESH_PERF(perf.treeSetStylePaintChanged++);
 	if (state.styleInvalidationSuppressionDepth > 0) return;
 	if (!nodeParticipatesInMountedTree(state, node)) return;
+	n->render.canvas_pixels_only_dirty = 0;
 	const bool hadRecolor = n->render.bg_recolor_pending;
 	const bool canRecolor = !n->render.dirty || hadRecolor;
 	n->render.text_partial_dirty = 0;

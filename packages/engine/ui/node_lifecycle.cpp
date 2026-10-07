@@ -421,6 +421,7 @@ void NodeLifecycle::init(Node *n, NodeType type)
 #endif
 	n->render.inline_baseline = 0;
 	n->render.dirty = 0;
+	n->render.canvas_pixels_only_dirty = 0;
 #if GEA_CSS_SCROLLING
 	n->render.scroll_dirty = 0;
 #endif
