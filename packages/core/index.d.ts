@@ -427,7 +427,9 @@ export interface PressEvent extends PointerEvent {
   readonly currentTarget: PressEventTarget
 }
 
-export type PressEventArgument = number & PressEvent
+// Native listeners receive the engine event. Numeric press metadata is exposed
+// through pressId/pressValue; the event itself is not an arithmetic value.
+export type PressEventArgument = PressEvent
 export type PressHandler = (event: PressEventArgument) => void
 
 export interface TouchPoint {
@@ -474,9 +476,8 @@ export interface RotaryEvent extends Event {
  * `keydown` is the engine's hardware-button/shortcut event and carries a
  * `KeyEvent`; `input` carries an `InputEvent`. Both are dispatched off-tree by
  * the runtime (`dispatch_key_input`, and `virtual_keyboard.cpp`'s synthetic
- * pair). `keyup` and `pointercancel` are deliberately ABSENT: `eventTypeIndex`
- * returns -1 for both, so `addEventListener` drops them and the handler would
- * never run. Declaring them would promise a callback the engine does not make.
+ * pair). Hardware button releases dispatch `keyup` with the same KeyEvent.
+ * `pointercancel` remains unsupported by the native event dispatcher.
  */
 export interface GeaEventMap {
   click: PressEvent
@@ -488,6 +489,7 @@ export interface GeaEventMap {
   pointerup: PointerEvent
   input: InputEvent
   keydown: KeyEvent
+  keyup: KeyEvent
   rotary: RotaryEvent
   scroll: Event
 }
@@ -517,6 +519,7 @@ export interface NativeEventAttributes extends NativeTouchEventAttributes {
   onClick?: PressHandler
   onPress?: PressHandler
   onKeyDown?: (event: KeyEvent) => void
+  onKeyUp?: (event: KeyEvent) => void
   onRotary?: RotaryEventHandler
 }
 
@@ -1690,10 +1693,12 @@ export interface InputElementProps {
   onFocus?: () => void
   onBlur?: () => void
   onKeyDown?: (event: KeyEvent) => void
+  onKeyUp?: (event: KeyEvent) => void
   input?: (value: string) => void
   focus?: () => void
   blur?: () => void
   keydown?: (keyCode: number) => void
+  keyup?: (keyCode: number) => void
 }
 
 export interface NativeInputElementProps extends InputElementProps {

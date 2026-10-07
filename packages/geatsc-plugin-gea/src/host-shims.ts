@@ -45,6 +45,8 @@ const EVENT_RECEIVER_TYPES = [
   // `EventTarget.addEventListener(type, listener)` declare.
   "Event",
   "PointerEvent",
+  "PressEvent",
+  "PressEventArgument",
   "TouchEvent",
   "RotaryEvent",
   // `InputEvent` and `KeyEvent` (index.d.ts) are the same one runtime struct:
@@ -78,6 +80,7 @@ const RTC_PEER_CONNECTION_RECEIVER_TYPES = [
 const EVENT_TARGET_RECEIVER_TYPES = [
   "gea::framework::events::EventTarget",
   "InputEventTarget",
+  "PressEventTarget",
 ];
 
 // Receiver type names for a concrete `gea::host::GeaEmbeddedImage` value: the
@@ -343,6 +346,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           // never reached it either. A wrapper `<div>`'s drag handlers received
           // nothing, silently, and the app just did not respond.
           PointerEvent: "gea::framework::events::PointerEvent",
+          PressEvent: "gea::framework::events::PointerEvent",
+          PressEventArgument: "gea::framework::events::PointerEvent",
           TouchEvent: "gea::framework::events::PointerEvent",
           RotaryEvent: "gea::framework::events::PointerEvent",
           // The base interface, for `onScroll={e => ...}` and any listener typed by
@@ -372,6 +377,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           // attribute). v1 emitted exactly this:
           // `event.currentTarget.getAttribute("value")`.
           InputEventTarget: "gea::framework::events::EventTarget",
+          PressEventTarget: "gea::framework::events::EventTarget",
           // gea-embedded's own element interfaces (index.d.ts) — without these a
           // `Component<GeaCanvasElement>`'s `this.el` lowers to a record-alias struct
           // of std::functions whose boxed form has no `__gea_node_id`, so
@@ -1752,6 +1758,20 @@ export function createGeaHostShims(): HostShimDefinitions {
           pointerId: [
             {
               emit: "static_cast<double>(({receiver}).pointerId)",
+              returnType: "double",
+              receiverTypes: EVENT_RECEIVER_TYPES,
+            },
+          ],
+          pressId: [
+            {
+              emit: "static_cast<double>(({receiver}).pressId)",
+              returnType: "double",
+              receiverTypes: EVENT_RECEIVER_TYPES,
+            },
+          ],
+          pressValue: [
+            {
+              emit: "static_cast<double>(({receiver}).pressValue)",
               returnType: "double",
               receiverTypes: EVENT_RECEIVER_TYPES,
             },

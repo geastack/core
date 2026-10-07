@@ -88,10 +88,11 @@ void dispatch_rotary_input()
 void dispatch_key_input()
 {
 	auto &tree = gea::embedded::ui::Tree::instance();
-	for (int keyCode = input::consumeKeyDown(); keyCode != 0; keyCode = input::consumeKeyDown()) {
+	input::HardwareKeyEvent key{};
+	while (input::consumeKeyEvent(key)) {
 		events::PointerEvent event{};
-		event.type = events::PointerEventType::KeyDown;
-		event.keyCode = keyCode;
+		event.type = key.pressed ? events::PointerEventType::KeyDown : events::PointerEventType::KeyUp;
+		event.keyCode = key.keyCode;
 		event.bubbles = true;
 		event.cancelable = true;
 
@@ -105,7 +106,8 @@ void dispatch_key_input()
 		}
 		if (!stopped) {
 			event.propagationStopped = false;
-			gea::embedded::ui::dispatchDocumentKeyDown(event);
+			if (key.pressed) gea::embedded::ui::dispatchDocumentKeyDown(event);
+			else gea::embedded::ui::dispatchDocumentKeyUp(event);
 		}
 	}
 }

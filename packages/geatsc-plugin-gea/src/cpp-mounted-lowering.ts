@@ -1421,7 +1421,7 @@ function lowerRootEvent(
   // and the runtime dispatches them off-tree.
   const isDocumentLevel =
     eventType === 'rotary' ||
-    (eventType === 'keydown' && rootTag !== undefined && rootTag.toLowerCase() !== 'input')
+    ((eventType === 'keydown' || eventType === 'keyup') && rootTag !== undefined && rootTag.toLowerCase() !== 'input')
   if (isDocumentLevel) {
     const docCaptures = [
       ...(hoisted.handler.some((line) => new RegExp(`\\b${varName}\\b`).test(line)) ? [varName] : []),

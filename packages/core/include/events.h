@@ -15,7 +15,8 @@ enum class PointerEventType {
 	Input,
 	KeyDown,
 	Rotary,
-	Scroll
+	Scroll,
+	KeyUp
 };
 
 enum class EventPhase {

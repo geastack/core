@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 import { createGeaHostShims } from "../dist/host-shims.js";
 
@@ -13,6 +15,8 @@ test("every declared event parameter type lowers to the engine event, including 
   for (const name of [
     "Event",
     "PointerEvent",
+    "PressEvent",
+    "PressEventArgument",
     "TouchEvent",
     "RotaryEvent",
     "InputEvent",
@@ -38,6 +42,69 @@ test("every declared event parameter type lowers to the engine event, including 
       `Event.${method}() must be a native member call`,
     );
   }
+});
+
+test("click callbacks receive an event with native methods and explicit numeric press metadata", () => {
+  const declaration = fileURLToPath(
+    new URL("../../core/index.d.ts", import.meta.url),
+  );
+  const program = ts.createProgram([declaration], {
+    strict: true,
+    skipLibCheck: true,
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(declaration);
+  const exports = checker.getExportsOfModule(
+    checker.getSymbolAtLocation(source),
+  );
+  const handler = exports.find((symbol) => symbol.name === "PressHandler");
+  const signature = checker
+    .getDeclaredTypeOfSymbol(handler)
+    .getCallSignatures()[0];
+  const argument = checker.getTypeOfSymbolAtLocation(
+    signature.parameters[0],
+    source,
+  );
+
+  assert.equal(
+    checker.isTypeAssignableTo(argument, checker.getNumberType()),
+    false,
+    "a click event cannot be used as an arithmetic value",
+  );
+  for (const method of ["preventDefault", "stopPropagation"]) {
+    const property = checker.getPropertyOfType(argument, method);
+    assert.equal(
+      checker.getTypeOfSymbolAtLocation(property, source).getCallSignatures()
+        .length,
+      1,
+    );
+  }
+  const definitions = createGeaHostShims();
+  for (const member of ["pressId", "pressValue"]) {
+    const property = checker.getPropertyOfType(argument, member);
+    assert.ok(
+      checker.isTypeAssignableTo(
+        checker.getTypeOfSymbolAtLocation(property, source),
+        checker.getNumberType(),
+      ),
+    );
+    assert.ok(
+      definitions.nativeMemberPropertyGetters?.[member]?.some((row) =>
+        row.receiverTypes?.includes("PressEvent"),
+      ),
+    );
+  }
+  for (const method of ["preventDefault", "stopPropagation"]) {
+    assert.ok(
+      definitions.nativeMemberMethods?.[method]?.some((row) =>
+        row.receiverTypes?.includes("PressEvent"),
+      ),
+    );
+  }
+  assert.equal(
+    definitions.nativeTypes?.PressEventTarget,
+    "gea::framework::events::EventTarget",
+  );
 });
 
 test("geolocation snapshot operations publish their non-throwing physical contract", () => {

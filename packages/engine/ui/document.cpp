@@ -355,7 +355,7 @@ void Document::addEventListener(const char *type, gea::framework::events::EventL
 	// `rotary` (and `keydown` bound on a non-input) is a genuine document-level
 	// event — it has no element target, so it is stored off-tree as a singleton
 	// and dispatched directly by the runtime, never bound to a node.
-	if (std::strcmp(type, "rotary") == 0 || std::strcmp(type, "keydown") == 0) {
+	if (std::strcmp(type, "rotary") == 0 || std::strcmp(type, "keydown") == 0 || std::strcmp(type, "keyup") == 0) {
 		setDocumentEventListener(type, std::move(listener));
 		return;
 	}

@@ -37,7 +37,7 @@ export function addNodeAuxFeatures(file: string, text: string, features: Set<str
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, /\.[jt]sx$/i.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
   const unknown = (): void => addUnknownNodeAux(features)
   const token = (name: string): void => {
-    if (/^(?:addEventListener|removeEventListener|setEventListener|dispatchEvent|on[A-Z].*|on(?:click|pointer.*|touch.*|input|keydown|scroll)|click|touchstart|touchmove|touchend|pointerdown|pointermove|pointerup|input|keydown|scroll)$/.test(name)) features.add('node-listeners')
+    if (/^(?:addEventListener|removeEventListener|setEventListener|dispatchEvent|on[A-Z].*|on(?:click|pointer.*|touch.*|input|keydown|keyup|scroll)|click|touchstart|touchmove|touchend|pointerdown|pointermove|pointerup|input|keydown|keyup|scroll)$/.test(name)) features.add('node-listeners')
     if (/^(?:id|dataset|attributes|getElementById|querySelector|querySelectorAll|ensureAppRoot|setAttribute|getAttribute|removeAttribute|hasAttribute|toggleAttribute|setPressId|setPressValue|pressId|pressValue|data-press-id|data-press-value)$/.test(name)) features.add('node-attributes')
     if (name === 'setDefaultStyle') features.add('node-default-styles')
     if (/^(?:eval|Function|Reflect|Proxy|Object|DOMParser|innerHTML|outerHTML|insertAdjacentHTML|createElement|createElementNS|parseFromString|createContextualFragment|__gea_.*)$/.test(name) && name !== '__gea_Display') unknown()

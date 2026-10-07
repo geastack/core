@@ -58,7 +58,7 @@ void applyAudioAttribute(Tree &tree, int node, const char *name, const char *val
 // Index order mirrors NodeEventListeners' slots and is kept in sync by
 // setEventListener (on the empty->set transition) and NodeEventListeners::clear()
 // (which every removal path calls).
-constexpr int kEventTypeCount = 7;
+constexpr int kEventTypeCount = 8;
 #if GEA_UI_NODE_LISTENERS
 int g_listenerTypeCounts[kEventTypeCount] = {};
 EventListenerId g_nextEventListenerId = 1;
@@ -79,6 +79,7 @@ int eventTypeIndex(const char *type)
 	if (sameName(type, "input")) return 4;
 	if (sameName(type, "keydown")) return 5;
 	if (sameName(type, "scroll")) return 6;
+	if (sameName(type, "keyup")) return 7;
 	return -1;
 }
 
@@ -90,6 +91,7 @@ int eventTypeIndex(const char *type)
 // never by the tree walk. Reset on app switch via resetDocumentEventListeners().
 gea::framework::events::EventListener g_documentRotaryListener;
 gea::framework::events::EventListener g_documentKeyDownListener;
+gea::framework::events::EventListener g_documentKeyUpListener;
 
 void chainDocumentListener(gea::framework::events::EventListener &slot,
                            gea::framework::events::EventListener listener)
@@ -113,6 +115,7 @@ void resetDocumentEventListeners()
 {
 	g_documentRotaryListener = {};
 	g_documentKeyDownListener = {};
+	g_documentKeyUpListener = {};
 }
 
 // Register a document-level handler. Only "rotary" and "keydown" are
@@ -127,6 +130,9 @@ void setDocumentEventListener(const char *type, gea::framework::events::EventLis
 	}
 	if (sameName(type, "keydown")) {
 		chainDocumentListener(g_documentKeyDownListener, std::move(listener));
+	}
+	if (sameName(type, "keyup")) {
+		chainDocumentListener(g_documentKeyUpListener, std::move(listener));
 	}
 }
 
@@ -152,6 +158,13 @@ bool dispatchDocumentKeyDown(gea::framework::events::PointerEvent &event)
 	return true;
 }
 
+bool dispatchDocumentKeyUp(gea::framework::events::PointerEvent &event)
+{
+	if (!g_documentKeyUpListener) return false;
+	g_documentKeyUpListener(event);
+	return true;
+}
+
 // ---- NodeRareData pool ------------------------------------------------------
 //
 // Cold/optional per-node state (currently event listeners) lives here instead
@@ -174,11 +187,12 @@ NodeAuxiliaryStorageUsage nodeAuxiliaryStorageUsage()
     result.text = NodeText::storageUsage();
     result.dependencies = styleDependencyStorageUsage();
     auto &usage = result.rare;
-    usage.staticBytes = sizeof(g_rareDataPool) + sizeof(g_rareDataFreeList) + sizeof(g_documentKeyDownListener) + sizeof(g_documentRotaryListener);
+    usage.staticBytes = sizeof(g_rareDataPool) + sizeof(g_rareDataFreeList) + sizeof(g_documentKeyUpListener) + sizeof(g_documentKeyDownListener) + sizeof(g_documentRotaryListener);
 #if GEA_UI_NODE_LISTENERS
     usage.staticBytes += sizeof(g_listenerTypeCounts) + sizeof(g_nextEventListenerId);
 #endif
     if (g_documentKeyDownListener) ++usage.untrackedOwners;
+    if (g_documentKeyUpListener) ++usage.untrackedOwners;
     if (g_documentRotaryListener) ++usage.untrackedOwners;
     usage.addVector(g_rareDataPool);
     usage.addVector(g_rareDataFreeList);
@@ -389,7 +403,7 @@ void NodeAttributeStore::set(const char *name, const char *)
 void NodeEventListeners::clear()
 {
 #if GEA_UI_NODE_LISTENERS
-	for (int type = 0; type < 7; ++type)
+	for (int type = 0; type < kEventTypeCount; ++type)
 		if (hasType(type) && g_listenerTypeCounts[type] > 0) --g_listenerTypeCounts[type];
 	entries.clear();
 	types = 0;

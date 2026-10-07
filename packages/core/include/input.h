@@ -27,6 +27,17 @@ int consumeRotaryDelta();
 // `keydown` event. keyCode 0 is ignored.
 void queueKeyDown(int keyCode);
 
+// Queue a release in the same ordered stream as key presses.
+void queueKeyUp(int keyCode);
+
+struct HardwareKeyEvent {
+  int keyCode;
+  bool pressed;
+};
+
+// Consume the oldest press or release without changing their order.
+bool consumeKeyEvent(HardwareKeyEvent &event);
+
 // Reads and clears the oldest pending key press. Returns 0 when none pending.
 int consumeKeyDown();
 

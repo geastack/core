@@ -171,6 +171,7 @@ private:
 void setDocumentEventListener(const char *type, gea::framework::events::EventListener listener);
 void dispatchDocumentRotary(int delta);
 bool dispatchDocumentKeyDown(gea::framework::events::PointerEvent &event);
+bool dispatchDocumentKeyUp(gea::framework::events::PointerEvent &event);
 void resetDocumentEventListeners();
 void resetDocumentDelegatedEventListeners();
 

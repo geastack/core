@@ -1,3 +1,6 @@
+#define GEA_HOST_DECLARED 1
+#include "gea/embedded.h"
+#include "gea_runtime.h"
 #include "native_test_harness.h"
 
 #include "ui/internal.h"
@@ -5,6 +8,7 @@
 #include "ui/style.h"
 #include "ui/tree_internal.h"
 
+#include <cassert>
 #include <cstdio>
 
 namespace gea::framework::app::generated {
@@ -20,6 +24,25 @@ int main() {
   using namespace gea::embedded::ui;
 
   resetNativeHost();
+  int releaseCount = 0;
+  setDocumentEventListener("keyup",
+                           [&](gea::framework::events::PointerEvent &event) {
+                             assert(event.keyCode == 39);
+                             ++releaseCount;
+                             event.stopPropagation();
+                           });
+  setDocumentEventListener(
+      "keyup", [&](gea::framework::events::PointerEvent &) {
+        assert(false && "stopped release must not reach the next handler");
+      });
+  gea::framework::events::PointerEvent release{};
+  release.type = gea::framework::events::PointerEventType::KeyUp;
+  release.keyCode = 39;
+  assert(dispatchDocumentKeyUp(release));
+  assert(releaseCount == 1);
+  assert(release.typeName() == std::string("keyup"));
+  resetDocumentEventListeners();
+  assert(!dispatchDocumentKeyUp(release));
   StyleSheet::instance().clear();
   setNativeDisplaySize(120, 120);
   gea::embedded::ui::setViewportMetrics(120, 120, 1.0);
@@ -27,6 +50,37 @@ int main() {
   Tree &tree = Tree::instance();
   const int rootId = tree.createView();
   const int buttonId = tree.createButton();
+  NodeHandle rootHandle(rootId);
+  assert(gea::jsx::detail::isDocumentLevelEvent(rootHandle, "keyup"));
+  const auto inputHandle = Document::instance().createElement("input");
+  assert(!gea::jsx::detail::isDocumentLevelEvent(inputHandle, "keyup"));
+  int jsxReleases = 0;
+  gea::jsx::prop(
+      rootHandle, "onKeyUp",
+      gea::CallableObject<void(gea::framework::events::PointerEvent)>{
+          [](void *context, gea::framework::events::PointerEvent event) {
+            assert(event.keyCode == 39);
+            ++*static_cast<int *>(context);
+          },
+          &jsxReleases});
+  release.propagationStopped = false;
+  assert(dispatchDocumentKeyUp(release));
+  assert(jsxReleases == 1);
+  resetDocumentEventListeners();
+
+  int nodeReleases = 0;
+  tree.setEventListener(buttonId, "keyup",
+                        [&](gea::framework::events::PointerEvent &event) {
+                          assert(event.keyCode == 37);
+                          ++nodeReleases;
+                        });
+  gea::framework::events::PointerEvent nodeRelease{};
+  nodeRelease.type = gea::framework::events::PointerEventType::KeyUp;
+  nodeRelease.targetId = buttonId;
+  nodeRelease.keyCode = 37;
+  tree.dispatchEvent(nodeRelease);
+  assert(nodeReleases == 1);
+
   NodeHandle(rootId).appendChild(NodeHandle(buttonId));
 
   Node &root = tree.node(rootId);

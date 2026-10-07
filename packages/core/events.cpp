@@ -46,6 +46,8 @@ const char *PointerEvent::typeName() const
 		return "click";
 	case PointerEventType::Input:
 		return "input";
+	case PointerEventType::KeyUp:
+		return "keyup";
 	case PointerEventType::KeyDown:
 		return "keydown";
 	case PointerEventType::Rotary:
