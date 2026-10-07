@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Scans an app directory for binary assets (images/fonts) and emits a C++ translation
+// Scans an app directory for binary assets (images/fonts/audio) and emits a C++ translation
 // unit that embeds each one as a named, externally-visible `.rodata` symbol.
 //
 // This is the build half of "store images as files, read them as files": the
@@ -23,6 +23,7 @@
 // an asset filename; the linker keeps one copy.
 
 import { describeStaticAsset } from './gea-static-asset.mjs'
+import { compileTimeOnlyAssetPaths } from './gea-embedded-asset-policy.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -44,8 +45,19 @@ function fail(message) {
 
 const appDir = path.resolve(readOption('--app-dir') ?? fail('missing --app-dir <dir>'))
 const outCpp = path.resolve(readOption('--out-cpp') ?? fail('missing --out-cpp <file>'))
+const manifestPath = path.join(appDir, 'package.json')
+const compileTimeOnly = compileTimeOnlyAssetPaths(
+  fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {},
+)
 
-const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ttf', '.otf'])
+for (const relative of compileTimeOnly) {
+  const file = path.join(appDir, relative)
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    fail(`compile-time-only asset is not a file: ${relative}`)
+  }
+}
+
+const ASSET_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.ttf', '.otf', '.wav'])
 // Launcher/package icons are metadata, not runtime `<Image>` assets. If an app
 // wants to render one, keep a copy under `public/` so the reference is explicit.
 const PRUNE_DIRS = new Set(['node_modules', 'dist', 'build'])
@@ -83,7 +95,9 @@ function collectAssets(dir) {
         const rel = path.relative(appDir, full).split(path.sep).join('/')
         if (!PRUNE_DIRS.has(entry.name) && !entry.name.startsWith('.') && rel !== 'icons') walk(full)
       } else if (entry.isFile() && ASSET_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        found.push(full)
+        if (!compileTimeOnly.has(relPath(full))) {
+          found.push(full)
+        }
       }
     }
   }
