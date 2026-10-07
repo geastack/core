@@ -56,3 +56,26 @@ test("geolocation snapshot operations publish their non-throwing physical contra
     );
   }
 });
+
+test("Profiler cycle clock is present in native and aliased host surfaces", () => {
+  const definitions = createGeaHostShims();
+  for (const namespace of ["Profiler", "__gea_Profiler"]) {
+    assert.equal(
+      definitions.hostNamespaceMethods?.[namespace]?.nowCycles,
+      "gea::host::Profiler.nowCycles",
+    );
+    assert.ok(
+      definitions.hostNamespaceNoThrowMethods?.[namespace]?.includes(
+        "nowCycles",
+      ),
+    );
+    assert.deepEqual(
+      definitions.nativeNamespaceMethods?.[namespace]?.nowCycles,
+      {
+        emit: "gea::host::Profiler.nowCycles({args})",
+        returnType: "double",
+        noThrow: true,
+      },
+    );
+  }
+});
