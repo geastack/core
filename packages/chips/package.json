@@ -1,6 +1,6 @@
 {
   "name": "@geastack/chips",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Reusable native chip drivers for Geastack embedded targets.",
   "license": "GPL-3.0-only",
   "repository": {

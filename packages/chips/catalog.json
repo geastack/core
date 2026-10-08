@@ -241,8 +241,86 @@
       "headers": [
         "displays/sh8601/sh8601.h"
       ],
-      "adapters": {},
-      "configuration": []
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/displays/sh8601.cpp"
+          ],
+          "requires": [
+            "esp_lcd_sh8601"
+          ]
+        }
+      },
+      "configuration": [
+        {
+          "path": "width",
+          "label": "Display width",
+          "type": "integer",
+          "min": 1,
+          "max": 4096
+        },
+        {
+          "path": "height",
+          "label": "Display height",
+          "type": "integer",
+          "min": 1,
+          "max": 4096
+        },
+        {
+          "path": "spiHost",
+          "label": "SPI host",
+          "type": "choice",
+          "values": [
+            "spi2",
+            "spi3"
+          ],
+          "default": "spi2"
+        },
+        {
+          "path": "pins.cs",
+          "label": "Chip-select pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.pclk",
+          "label": "Pixel-clock pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.data0",
+          "label": "QSPI data 0 pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.data1",
+          "label": "QSPI data 1 pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.data2",
+          "label": "QSPI data 2 pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.data3",
+          "label": "QSPI data 3 pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.reset",
+          "label": "Display reset pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.te",
+          "label": "Tearing-effect pin",
+          "type": "pin",
+          "optional": true
+        }
+      ]
     },
     "rm690b0": {
       "label": "RM690B0 AMOLED display controller",
