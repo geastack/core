@@ -1935,7 +1935,7 @@ int gLastScrollUiFrame = -1000;
 					const std::int64_t dy = static_cast<std::int64_t>(qy[j]) - qy[i];
 					const std::int64_t spanX = std::max(std::llabs(static_cast<std::int64_t>(x0) - qx[i]), std::llabs(static_cast<std::int64_t>(x1) - qx[i])) + 1;
 					const std::int64_t spanY = std::max(std::llabs(static_cast<std::int64_t>(y0) - qy[i]), std::llabs(static_cast<std::int64_t>(y1) - qy[i])) + 1;
-					worst = std::max(worst, std::llabs(dx) * spanY + std::llabs(dy) * spanX);
+					worst = std::max<std::int64_t>(worst, std::llabs(dx) * spanY + std::llabs(dy) * spanX);
 					a[i] = static_cast<int>(-dy);
 					b[i] = static_cast<int>(dx);
 				}
