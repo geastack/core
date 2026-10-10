@@ -1127,7 +1127,34 @@ void gea::platform::display::Display::flushStatsReset()
 }
 const char *gea::platform::display::Display::flushStageName() { return "idle"; }
 int gea::platform::display::Display::flushStageChunk() { return 0; }
-void gea::platform::display::Display::rebindCanvasToFramebuffer() {}
+void gea::platform::display::Display::rebindCanvasToFramebuffer() {
+  gDisplayCanvas.bindPixels(gDisplayPixels.data(), gDisplayWidth, gDisplayHeight);
+}
+void gea::platform::display::Display::flushRectsRasterized(const DisplayFlushRect *rects, int count, DisplayStreamRasterFn raster, void *user, bool) {
+  if (!rects || !raster || count <= 0) return;
+  ++gFlushCalls;
+  for (int i = 0; i < count; ++i) {
+    const int x0 = std::max(0, rects[i].x0);
+    const int x1 = std::min(gDisplayWidth - 1, rects[i].x1);
+    const int y0 = std::max(0, rects[i].y0);
+    const int y1 = std::min(gDisplayHeight - 1, rects[i].y1);
+    if (x1 < x0 || y1 < y0) continue;
+    const int width = x1 - x0 + 1;
+    for (int y = y0; y <= y1; y += 16) {
+      const int height = std::min(16, y1 - y + 1);
+      // DMA staging starts with old garbage, and never updates the PSRAM canvas.
+      std::vector<std::uint16_t> chunk(width * height, 0xa55a);
+      raster(chunk.data(), width, height, x0, y, user);
+      for (int row = 0; row < height; ++row)
+        std::copy_n(chunk.data() + row * width, width,
+                    gPresentedPixels.data() + (y + row) * gDisplayWidth + x0);
+      rebindCanvasToFramebuffer();
+    }
+    ++gFlushRects;
+    gFlushPixels += width * (y1 - y0 + 1);
+  }
+  gDisplayCanvas.resetDirty();
+}
 void gea::platform::display::Display::flushRects(const gea::platform::display::DisplayFlushRect *rects, int count, bool)
 {
 	if (!rects || count <= 0) return;

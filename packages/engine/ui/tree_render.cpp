@@ -2103,7 +2103,7 @@ namespace gea::embedded::ui
 		// that must take the framebuffer path after banded ones first repaints the
 		// whole viewport into it: a structural rebuild does exactly that.
 		const bool banded = bandedUiEligible();
-		const bool framebufferReadable = !banded && !gBandedFramebufferStaleFlag;
+		const bool framebufferReadable = !GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_FLUSH && !banded && !gBandedFramebufferStaleFlag;
 		if (!banded && gBandedFramebufferStaleFlag)
 		{
 			state.displayListDirty = true;
@@ -2114,7 +2114,7 @@ namespace gea::embedded::ui
 		}
 #else
 		constexpr bool banded = false;
-		constexpr bool framebufferReadable = true;
+		constexpr bool framebufferReadable = !GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_FLUSH;
 #endif
 		const bool textClipDependencies = DisplayList::instance().hasTextClippedBackgrounds();
 		if (textClipDependencies) {
@@ -2132,6 +2132,27 @@ namespace gea::embedded::ui
 		}
 		if (framebufferReadable && !textClipDependencies && state.pendingScrollIntoViewNode < 0 && RootScrollOnlyRefresh::refresh(root, width, height))
 			return;
+
+		bool scrollFallbackRepaint = false;
+#if GEA_CSS_SCROLLING
+		// A rejected scroll blit still moves every descendant's geometry during
+		// layout. The reflow guard deliberately leaves those descendants clean
+		// when their movement equals the ancestor scroll delta, so their retained
+		// commands cannot be left unchanged on this fallback path. Re-record the
+		// existing tree and repaint its underlay: a transparent scroller has no
+		// background command capable of erasing the previous content. Fused flush
+		// also cannot blit its stale PSRAM framebuffer; it draws directly into DMA.
+		for (int i = 0; i < state.nodeCount; ++i) {
+			const Node &node = state.nodes[i];
+			if (node.render.scroll_dirty &&
+			    (node.layout.scroll_x != node.layout.previous_scroll_x ||
+			     node.layout.scroll_y != node.layout.previous_scroll_y)) {
+				markDisplayListContentDirty();
+				scrollFallbackRepaint = true;
+				break;
+			}
+		}
+#endif
 
 		// This frame is NOT a pure scroll, so the software scroll register's
 		// circular row rotation (engaged by Display::scrollRect during the fast
@@ -2626,6 +2647,12 @@ namespace gea::embedded::ui
 		int flush_rect_count = 0;
 		bool preserveFlushOnlyRecolorRegions = false;
 		const std::int64_t dirtyCollectStartUs = refreshPerfNowUs();
+		// A fresh content-only recording is just as replayable as retained
+		// commands. Re-evaluate the compositing guard after recording rather
+		// than forcing unrelated static content into the general path merely
+		// because an empty image range needed its first command.
+		if (displayListFullRecord && !display_list_was_structural)
+			direct_replay = DisplayList::instance().canReplayDirectDirtyRegions(width, height);
 		if (framebuffer_was_dirty)
 			direct_replay = 0;
 		const int transformedShapeCount = transformedLeafDirtyShapeCount();
@@ -3004,8 +3031,9 @@ namespace gea::embedded::ui
 			if (!unifiedRectPath)
 				addDirtyRegion(flush_rects, &flush_rect_count, dirtyRect, width, height);
 		}
-		if (display_list_was_dirty && display_list_was_structural && width > 0 && height > 0)
+		if (((display_list_was_dirty && display_list_was_structural) || scrollFallbackRepaint) && width > 0 && height > 0)
 		{
+			// A scroll fallback must erase old content through its root underlay.
 			// A STRUCTURAL command-list rebuild can change draw order, alpha scopes,
 			// or which commands exist. Repaint the viewport once so the framebuffer
 			// matches the rebuilt scene instead of relying on stale incremental
@@ -3136,8 +3164,14 @@ namespace gea::embedded::ui
 		}
 #endif
 		const bool hasFlushOnlyRecolorRegions = preserveFlushOnlyRecolorRegions && flush_rect_count > 0;
+		DisplayReplayRegion simpleTransferRegions[DirtyRegions::kMaxRects];
+		for (int i = 0; i < flush_rect_count; ++i)
+		{
+			const auto &r = flush_rects[i];
+			simpleTransferRegions[i] = DisplayReplayRegion{r.x0, r.y0, r.x1, r.y1, -1};
+		}
 		const bool simpleDirtyReplayAvailable =
-				direct_replay && unifiedRectPath && DisplayList::instance().canReplaySimpleDirtyRegions(width, height);
+				direct_replay && unifiedRectPath && DisplayList::instance().canReplaySimpleDirtyRegions(width, height, simpleTransferRegions, flush_rect_count);
 		const bool simpleUnifiedReplay = simpleDirtyReplayAvailable && rect_count > 0 && !hasFlushOnlyRecolorRegions;
 		const bool interleavedUnifiedFlush =
 				direct_replay && unifiedRectPath && rect_count > 0 && !simpleDirtyReplayAvailable && !hasFlushOnlyRecolorRegions;

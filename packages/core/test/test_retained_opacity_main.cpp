@@ -1,4 +1,5 @@
 #include "display.h"
+#include "canvas.h"
 #include "graphics/font.h"
 #include "native_test_harness.h"
 #include "ui/document.h"
@@ -54,6 +55,232 @@ static std::vector<std::uint16_t> pixels() {
     for (int x = 0; x < 80; ++x)
       result.push_back(displayPixelAt(x, y));
   return result;
+}
+
+static void testScrollFallbackPaint() {
+  resetNativeHost();
+  setNativeDisplaySize(80, 80);
+  auto &document = Document::instance();
+  auto root = document.createView();
+  root.style().setProperty("display", "block");
+  root.style().width(80);
+  root.style().height(80);
+  auto list = document.createView();
+  list.style().setProperty("display", "block");
+  list.style().width(80);
+  list.style().height(80);
+  list.style().setProperty("overflow", "scroll");
+  root.appendChild(list);
+  for (const auto color : {0xf800, 0x07e0, 0x001f, 0xffff}) {
+    auto row = document.createView();
+    row.style().setProperty("display", "block");
+    row.style().width(80);
+    row.style().height(40);
+    row.style().backgroundColor(color);
+    list.appendChild(row);
+  }
+  // A real overlapping sibling must reject framebuffer scroll blitting.
+  auto overlay = document.createView();
+  overlay.style().setProperty("position", "absolute");
+  overlay.style().left(60);
+  overlay.style().top(0);
+  overlay.style().width(20);
+  overlay.style().height(20);
+  overlay.style().backgroundColor(0xffff);
+  root.appendChild(overlay);
+  document.mount(root, 80, 80);
+  document.refresh(root, 80, 80);
+  const auto firstRow = treeState().nodes[list.id()].first_child;
+  const auto secondRow = treeState().nodes[firstRow].next_sibling;
+  const auto red = treeState().nodes[firstRow].computedStyle().bg_color;
+  const auto green = treeState().nodes[secondRow].computedStyle().bg_color;
+  assert(displayPixelAt(10, 10) == red);
+  auto &tree = Tree::instance();
+  auto &node = tree.node(list.id());
+  node.layout.scroll_y = 40;
+  node.render.dirty = 1;
+  node.render.layout_dirty = 1;
+  tree.markScrollDirty(list.id());
+  document.refresh(root, 80, 80);
+  assert(displayPixelAt(10, 10) == green);
+  assert(displayPixelAt(70, 10) == 0xffff);
+  const auto scrolled = pixels();
+  tree.markDisplayListDirty();
+  tree.node(root.id()).render.dirty = 1;
+  document.refresh(root, 80, 80);
+  assert(pixels() == scrolled);
+  std::puts("PASS: rejected scroll blits repaint moved content and preserve overlays");
+}
+
+static void testMenuCaretLayers() {
+  resetNativeHost();
+  setNativeDisplaySize(80, 80);
+  auto &document = Document::instance();
+  auto root = document.createView();
+  root.style().width(80);
+  root.style().height(80);
+  root.style().backgroundColor(0x0000);
+  auto caret = document.createView();
+  caret.style().setProperty("position", "absolute");
+  caret.style().setProperty("z-index", "1");
+  caret.style().left(7);
+  caret.style().top(20);
+  caret.style().width(10);
+  caret.style().height(40);
+  caret.style().backgroundColor(0xffff);
+  auto ink = document.createView();
+  ink.style().width(6);
+  ink.style().height(30);
+  ink.style().backgroundColor(0x07e0);
+  caret.appendChild(ink);
+  root.appendChild(caret);
+  // Match the launcher: the left overlay precedes the moving icon in JSX.
+  auto icon = document.createView();
+  icon.style().setProperty("position", "absolute");
+  icon.style().top(10);
+  icon.style().width(40);
+  icon.style().height(60);
+  icon.style().backgroundColor(0xf800);
+  root.appendChild(icon);
+  document.mount(root, 80, 80);
+  document.refresh(root, 80, 80);
+  for (int x : {35, 10, -15, 0, 30}) {
+    icon.style().left(x);
+    document.refresh(root, 80, 80);
+    assert(displayPixelAt(9, 25) == treeState().nodes[ink.id()].computedStyle().bg_color);
+    const auto incremental = pixels();
+    Tree::instance().markDisplayListDirty();
+    document.refresh(root, 80, 80);
+    assert(pixels() == incremental);
+  }
+  std::puts("PASS: raised caret descendants stay above moving menu icons in retained and full replay");
+}
+
+static void testClassLeafGeometry() {
+  resetNativeHost();
+  setNativeDisplaySize(80, 80);
+  auto &sheet = StyleSheet::instance();
+  sheet.clear();
+  sheet.registerRule("snap-dot", "position", "absolute");
+  sheet.registerRule("snap-dot", "width", "8px");
+  sheet.registerRule("snap-dot", "height", "8px");
+  sheet.registerRule("snap-dot", "left", "30px");
+  sheet.registerRule("snap-dot", "top", "30px");
+  sheet.registerRule("snap-dot", "background", "#808080");
+  sheet.registerRule("snap-dot", "border-radius", "50%");
+  sheet.registerRule("snap-selected", "width", "14px");
+  sheet.registerRule("snap-selected", "height", "14px");
+  sheet.registerRule("snap-selected", "left", "27px");
+  sheet.registerRule("snap-selected", "top", "27px");
+  sheet.registerRule("snap-selected", "background", "#ffffff");
+  auto &document = Document::instance();
+  auto root = document.createView();
+  root.style().width(80);
+  root.style().height(80);
+  root.style().backgroundColor(0x001f);
+  auto dot = document.createView();
+  dot.classList().set("snap-dot");
+  root.appendChild(dot);
+  document.mount(root, 80, 80);
+  document.refresh(root, 80, 80);
+  for (const char *classes : {"snap-dot snap-selected", "snap-dot", "snap-dot snap-selected"}) {
+    const auto serial = DisplayList::instance().recordSerial();
+    dot.classList().set(classes);
+    assert(!treeState().displayListRebuildStructural);
+    document.refresh(root, 80, 80);
+    assert(DisplayList::instance().recordSerial() == serial);
+    const auto local = pixels();
+    Tree::instance().markDisplayListDirty();
+    document.refresh(root, 80, 80);
+    assert(pixels() == local);
+  }
+  sheet.registerRule("snap-flow", "position", "relative");
+  dot.classList().set("snap-dot snap-flow");
+  document.refresh(root, 80, 80);
+  dot.classList().set("snap-dot snap-flow snap-selected");
+  assert(treeState().displayListRebuildStructural);
+  std::puts("PASS: class-driven absolute dot size/position changes retain local replay; in-flow changes preserve reflow");
+  sheet.clear();
+}
+
+static void testRegionScopedSimpleReplay() {
+  resetNativeHost();
+  setNativeDisplaySize(160, 160);
+  auto &document = Document::instance();
+  auto root = document.createView();
+  root.style().width(160);
+  root.style().height(160);
+  root.style().backgroundColor(0x001f);
+  auto clock = document.createView();
+  clock.style().setProperty("position", "absolute");
+  clock.style().width(70);
+  clock.style().height(80);
+  clock.style().setProperty("transform", "rotate(6deg)");
+  auto glyph = document.createText("12");
+  glyph.style().width(64);
+  glyph.style().height(80);
+  glyph.style().set(Property::FontId, 9302);
+  glyph.style().set(Property::FontSize, 64);
+  glyph.style().setProperty("color", "#ffffff");
+  clock.appendChild(glyph);
+  root.appendChild(clock);
+  auto title = document.createText("12");
+  title.style().setProperty("position", "absolute");
+  title.style().left(12);
+  title.style().top(90);
+  title.style().width(64);
+  title.style().height(80);
+  title.style().set(Property::FontId, 9302);
+  title.style().set(Property::FontSize, 64);
+  title.style().setProperty("color", "#ffffff");
+  root.appendChild(title);
+  document.mount(root, 160, 160);
+  const DisplayReplayRegion menu{7, 90, 152, 159, -1};
+  const DisplayReplayRegion clockRegion{0, 0, 159, 89, -1};
+  for (int opacity : {255, 128, 0, 64, 255}) {
+    title.style().set(Property::Opacity, opacity);
+    Tree::instance().markDisplayListDirty();
+    document.refresh(root, 160, 160);
+    assert(!DisplayList::instance().canReplaySimpleDirtyRegions(160, 160));
+    assert(DisplayList::instance().canReplaySimpleDirtyRegions(160, 160, &menu, 1));
+    assert(!DisplayList::instance().canReplaySimpleDirtyRegions(160, 160, &clockRegion, 1));
+    auto *canvas = gea::platform::display::Display::canvas();
+    auto *framebuffer = canvas->pixels();
+    const std::vector<std::uint16_t> expected(framebuffer, framebuffer + 160 * 160);
+    for (int y = 90; y < 160; y += 16) {
+      const int rows = std::min(16, 160 - y);
+      std::vector<std::uint16_t> transfer(160 * 146 + 160, 0x07e0);
+      canvas->bindPixels(transfer.data(), 160, 160, 146);
+      gea::platform::display::Display::pushClip(7, y, 146, rows);
+      parallelAttempts = 0;
+      DisplayList::instance().replaySimpleClippedDirtyRegion(7, y, 152, y + rows - 1, -1);
+      assert(parallelAttempts == 0);
+      gea::platform::display::Display::popClip();
+      for (std::size_t index = 0; index < transfer.size(); ++index) {
+        const int offset = static_cast<int>(index) - (y * 146 + 7);
+        if (offset >= 0 && offset < rows * 146) {
+          assert(transfer[index] == expected[(y + offset / 146) * 160 + 7 + offset % 146]);
+        } else {
+          assert(transfer[index] == 0x07e0);
+        }
+      }
+      canvas->bindPixels(framebuffer, 160, 160);
+    }
+  }
+  // A content-only re-record must still replay only the damaged title area.
+  auto *canvas = gea::platform::display::Display::canvas();
+  canvas->pixels()[10 * 160 + 10] = 0xf800;
+  title.style().set(Property::Opacity, 128);
+  Tree::instance().markDisplayListContentDirty();
+  document.refresh(root, 160, 160);
+  assert(displayPixelAt(10, 10) == 0xf800);
+  // A transform can move ink into the menu despite the original layout box
+  // staying above it. Eligibility must use projected command bounds.
+  clock.style().setProperty("transform", "translateY(100px)");
+  Tree::instance().markDisplayListDirty();
+  document.refresh(root, 160, 160);
+  assert(!DisplayList::instance().canReplaySimpleDirtyRegions(160, 160, &menu, 1));
+  std::puts("PASS: static transformed neighbors do not block simple transfer bands; overlapping transformed ink retains general replay");
 }
 
 static void testStableRollingNeighbor() {
@@ -222,6 +449,7 @@ int main() {
   root.appendChild(parent);
   document.mount(root, 80, 80);
   document.refresh(root, 80, 80);
+  assert(!DisplayList::instance().canReplaySimpleDirtyRegions(80, 80));
 
   const int values[]{255, 128, 255, 64, 0, 255, 96};
   std::vector<std::vector<std::uint16_t>> retained;
@@ -242,6 +470,63 @@ int main() {
   }
   assert(retained[0] != retained[1]);
   assert(retained[3] != retained[4]);
+  resetNativeHost();
+  setNativeDisplaySize(80, 80);
+  auto textRoot = document.createView();
+  textRoot.style().width(80);
+  textRoot.style().height(80);
+  textRoot.style().backgroundColor(0x001f);
+  auto label = document.createText("12");
+  label.style().setProperty("position", "absolute");
+  label.style().width(64);
+  label.style().height(80);
+  label.style().set(Property::FontId, 9302);
+  label.style().set(Property::FontSize, 64);
+  label.style().setProperty("color", "#ffffff");
+  textRoot.appendChild(label);
+  document.mount(textRoot, 80, 80);
+  document.refresh(textRoot, 80, 80);
+  const auto serial = DisplayList::instance().recordSerial();
+  std::vector<std::vector<std::uint16_t>> fadedText;
+  for (int opacity : values) {
+    label.style().set(Property::Opacity, opacity);
+    assert(!treeState().displayListDirty);
+    assert(DisplayList::instance().canReplaySimpleDirtyRegions(80, 80));
+    document.refresh(textRoot, 80, 80);
+    assert(DisplayList::instance().recordSerial() == serial);
+    fadedText.push_back(pixels());
+  }
+  for (int i = 0; i < 7; ++i) {
+    label.style().set(Property::Opacity, values[i]);
+    Tree::instance().markDisplayListDirty();
+    document.refresh(textRoot, 80, 80);
+    const auto rebuiltText = pixels();
+    if (rebuiltText != fadedText[i]) {
+      for (std::size_t pixel = 0; pixel < rebuiltText.size(); ++pixel) {
+        if (rebuiltText[pixel] != fadedText[i][pixel]) {
+          std::fprintf(stderr, "text alpha=%d pixel=%zu retained=%04x rebuilt=%04x\n", values[i], pixel, fadedText[i][pixel], rebuiltText[pixel]);
+          break;
+        }
+      }
+    }
+    assert(rebuiltText == fadedText[i]);
+  }
+  assert(fadedText[0] != fadedText[1]);
+  assert(fadedText[4] != fadedText[5]);
+  // Glyphs can paint outside an explicitly undersized text box. That case
+  // keeps the full-record fallback rather than under-invalidating the ink.
+  label.style().height(40);
+  label.style().set(Property::Opacity, 255);
+  Tree::instance().markDisplayListDirty();
+  document.refresh(textRoot, 80, 80);
+  label.style().set(Property::Opacity, 128);
+  assert(treeState().displayListDirty);
+  document.refresh(textRoot, 80, 80);
+  const auto undersizedText = pixels();
+  Tree::instance().markDisplayListDirty();
+  document.refresh(textRoot, 80, 80);
+  assert(pixels() == undersizedText);
+  std::puts("PASS: leaf text fades retain commands and match full recording, including zero and full opacity");
   resetNativeHost();
   setNativeDisplaySize(466, 466);
   auto transparentRoot = document.createView();
@@ -286,4 +571,8 @@ int main() {
       "PASS: retained opacity crosses full brightness without rebuilding; "
       "pixels match full repaint, including nested alpha and zero visibility");
   testStableRollingNeighbor();
+  testRegionScopedSimpleReplay();
+  testClassLeafGeometry();
+  testScrollFallbackPaint();
+  testMenuCaretLayers();
 }
