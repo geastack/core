@@ -26,7 +26,7 @@ require_source() {
 
 require_source "bool viewMatchesNode(NSView *view" \
   "macOS renderer must verify cached NSViews against reused node slots"
-require_source "if (view && !viewMatchesNode(view, node, tagName, inputType))" \
+require_source "if (view && !viewMatchesNode(view, node, tagName, inputType, checkboxButton))" \
   "macOS renderer must evict stale NSViews when a reused node id changes native kind"
 require_source "[nodeIdToView() removeObjectForKey:key]" \
   "macOS renderer must remove evicted stale NSViews from the node cache"

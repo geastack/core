@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 
 namespace gea::framework::events {
 
@@ -52,6 +53,32 @@ struct TouchPoint {
 	int pageY = 0;
 };
 
+// Native callback lowering may copy the event carrier. Its cancellation flags
+// still belong to the same dispatched event, including copies retained later.
+// Allocate shared storage only when a carrier is actually copied.
+class EventControlFlag {
+public:
+  EventControlFlag(bool value = false) : initial_(value) {}
+  EventControlFlag(const EventControlFlag &other) : shared_(other.share()) {}
+  EventControlFlag &operator=(const EventControlFlag &other) {
+    if (this != &other) shared_ = other.share();
+    return *this;
+  }
+  EventControlFlag &operator=(bool value) {
+    if (shared_) *shared_ = value;
+    else initial_ = value;
+    return *this;
+  }
+  operator bool() const { return shared_ ? *shared_ : initial_; }
+private:
+  std::shared_ptr<bool> share() const {
+    if (!shared_) shared_ = std::make_shared<bool>(initial_);
+    return shared_;
+  }
+  bool initial_ = false;
+  mutable std::shared_ptr<bool> shared_;
+};
+
 struct PointerEvent {
 	PointerEventType type;
 	EventTarget target{};
@@ -74,8 +101,8 @@ struct PointerEvent {
 	bool primary = true;
 	bool bubbles = true;
 	bool cancelable = true;
-	bool defaultPrevented = false;
-	bool propagationStopped = false;
+	EventControlFlag defaultPrevented;
+	EventControlFlag propagationStopped;
 	EventPhase eventPhase = EventPhase::None;
 	TouchPoint touches[1]{};
 	TouchPoint targetTouches[1]{};

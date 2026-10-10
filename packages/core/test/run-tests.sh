@@ -3,11 +3,10 @@ set -euo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Plain node tests -- no toolchain, no app sources, milliseconds each. Every
-# test_*.mjs in this directory belongs here; nine of them were orphaned for long
-# enough that one (radio preinit order) had gone stale against a deliberate
-# runtime change and nobody noticed.
+# Keep the established order, then discover additional standalone tests so new
+# files cannot silently fall out of the full runner.
 NODE_TESTS=(
+  test_native_integer_types.mjs
   test_display_internal_reserve.mjs
   test_embedded_weak_symbols.mjs
   test_gea_embedded_compat_transform.mjs
@@ -66,14 +65,31 @@ for node_test in "${NODE_TESTS[@]}"; do
   GEA_THREE_AUDIO_MUTED=1 node "$TEST_DIR/$node_test"
 done
 
+for path in "$TEST_DIR"/test_*.mjs; do
+  node_test="${path##*/}"
+  case " ${NODE_TESTS[*]} " in *" $node_test "*) continue ;; esac
+  echo "==> $node_test"
+  GEA_THREE_AUDIO_MUTED=1 node "$path"
+done
+
 for test_script in "${NATIVE_TESTS[@]}"; do
   echo "==> $test_script"
-  "$TEST_DIR/$test_script"
+  bash "$TEST_DIR/$test_script"
 done
 
 for pipeline in "${PIPELINES[@]}"; do
   echo "==> $pipeline"
-  "$TEST_DIR/$pipeline"
+  bash "$TEST_DIR/$pipeline"
 done
 
-echo "All GEA native example pipelines passed."
+for path in "$TEST_DIR"/run-*.sh; do
+  script="${path##*/}"
+  case "$script" in
+    run-tests.sh|run-gea-native-app-pipeline.sh|run-compiled-pcm-worklet.sh) continue ;;
+  esac
+  case " ${NATIVE_TESTS[*]} ${PIPELINES[*]} " in *" $script "*) continue ;; esac
+  echo "==> $script"
+  bash "$path"
+done
+
+echo "All standalone GEA tests and native example pipelines passed."

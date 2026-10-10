@@ -13,6 +13,27 @@
 #include <cstdlib>
 #include <cstring>
 
+// Applications with short canvases can tune native momentum without replacing
+// the engine gesture/scroll path. Defaults retain the existing long-list feel.
+#ifndef GEA_SCROLL_MOMENTUM_LAUNCH_BOOST
+#define GEA_SCROLL_MOMENTUM_LAUNCH_BOOST 1.45f
+#endif
+#ifndef GEA_SCROLL_MOMENTUM_CARRY_BOOST
+#define GEA_SCROLL_MOMENTUM_CARRY_BOOST 2.0f
+#endif
+#ifndef GEA_SCROLL_MOMENTUM_MAX_VELOCITY
+#define GEA_SCROLL_MOMENTUM_MAX_VELOCITY 24.0f
+#endif
+#ifndef GEA_SCROLL_MOMENTUM_MIN_VELOCITY
+#define GEA_SCROLL_MOMENTUM_MIN_VELOCITY 0.06f
+#endif
+#ifndef GEA_SCROLL_MOMENTUM_DECAY_MS
+#define GEA_SCROLL_MOMENTUM_DECAY_MS 680.0f
+#endif
+#ifndef GEA_SCROLL_MOMENTUM_STOP_VELOCITY
+#define GEA_SCROLL_MOMENTUM_STOP_VELOCITY 0.012f
+#endif
+
 namespace gea::embedded::ui {
 
 namespace {
@@ -802,12 +823,12 @@ private:
 		int y;
 	};
 	static constexpr int kVelocitySampleCount = 5;
-	static constexpr float kLaunchVelocityBoost = 1.45f;
-	static constexpr float kCarryOverBoost = 2.0f;
-	static constexpr float kMaxMomentumVelocity = 24.0f;  // px/ms = 24000 px/s
-	static constexpr float kMinFlingVelocity = 0.06f;     // px/ms = 60 px/s
-	static constexpr float kMomentumDecayMs = 680.0f;
-	static constexpr float kStopVelocity = 0.012f;        // px/ms = 12 px/s
+	static constexpr float kLaunchVelocityBoost = GEA_SCROLL_MOMENTUM_LAUNCH_BOOST;
+	static constexpr float kCarryOverBoost = GEA_SCROLL_MOMENTUM_CARRY_BOOST;
+	static constexpr float kMaxMomentumVelocity = GEA_SCROLL_MOMENTUM_MAX_VELOCITY;  // px/ms
+	static constexpr float kMinFlingVelocity = GEA_SCROLL_MOMENTUM_MIN_VELOCITY;     // px/ms
+	static constexpr float kMomentumDecayMs = GEA_SCROLL_MOMENTUM_DECAY_MS;
+	static constexpr float kStopVelocity = GEA_SCROLL_MOMENTUM_STOP_VELOCITY;        // px/ms
 
 	int activeTouchNode_ = -1;
 	std::uint16_t savedBackgroundColor_ = 0;

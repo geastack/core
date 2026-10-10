@@ -11,3 +11,5 @@
 #include "gea/embedded-host.h"
 #include "ui/document.h"
 #include "ui/signal.h"
+// Debug builds: attributes JSX listeners to nodes for DevTools.
+#include "ui/debugger_listeners.h"

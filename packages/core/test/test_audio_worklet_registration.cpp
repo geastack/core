@@ -9,8 +9,13 @@ namespace gea::host {
 AudioWorkletProcessor::AudioWorkletProcessor() = default;
 namespace audio_worklet {
 workers::MessagePort processorPort() { return {}; }
-void registerProcessor(const std::string& name, ProcessorFactory) {
-  assert(name == "typed-copy");
+void registerProcessor(const std::string& name, ProcessorFactory factory) {
+  assert(name == "typed-copy" || name == "typed-inherited-copy");
+  const auto processor = factory();
+  const AudioWorkletBus inputs{{{0.25f, -0.5f, 0.75f}}};
+  AudioWorkletBus outputs{{{0.0f, 0.0f, 0.0f}}};
+  assert(processor->process(inputs, outputs, {}));
+  assert(outputs == inputs);
   ++registrations;
 }
 }
@@ -25,7 +30,7 @@ std::unordered_map<NativeWebSocketHandle, CallbackTable>& callbackTable() {
 int main() {
   // A normal typed processor registers without reading dynamic constructor properties.
   gea_worklet_probe_entry();
-  assert(registrations == 1);
+  assert(registrations == 2);
 
   // Standard event handler removal must release captures, and cleanup of an
   // already closed socket must not resurrect a callback-table entry.

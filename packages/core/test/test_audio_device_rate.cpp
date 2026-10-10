@@ -173,8 +173,9 @@ int main() {
   bool heard = false;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (capturedFrames < input.size() &&
+  while ((capturedFrames < input.size() || !heard) &&
          std::chrono::steady_clock::now() < deadline) {
+    output.fill(0);
     if (mixer.mix(output.data(), 512)) {
       assert(output[0] == 8192 && output[1] == 8192);
       heard = true;

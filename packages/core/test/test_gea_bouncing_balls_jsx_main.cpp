@@ -31,6 +31,12 @@
 
 extern void __gea_top_level();
 extern "C" double gea_host_image_load_asset_path(const char * /*path*/) { return 0.0; }
+// The tree acquires an <img> source through the pinning entry point; this
+// harness owns no image store, so nothing it hands back is owned.
+extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned) {
+  if (owned) *owned = false;
+  return gea_host_image_load_asset_path(path);
+}
 namespace gea::framework::app::generated {
 void drainMicrotasks();
 }  // namespace gea::framework::app::generated

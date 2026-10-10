@@ -59,7 +59,8 @@ export function includeFlags(env = process.env) {
     join(elements, 'ui'),
     geaos,
     join(engine, 'vendor/stb'),
-    join(engine, 'vendor/AnimatedGIF')
+    join(engine, 'vendor/AnimatedGIF'),
+    ...(env.GEA_COMPILER_RUNTIME ? [env.GEA_COMPILER_RUNTIME] : [])
   ].map((dir) => `-I${dir}`)
 }
 

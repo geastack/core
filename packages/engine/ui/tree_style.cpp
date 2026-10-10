@@ -1248,7 +1248,13 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			// and recreating it during a fade. patchNodeAlpha returns false when
 			// no scope exists (for example, an initially opaque or culled node),
 			// so those cases still take the ordinary recording path below.
-			if (stayLocal &&
+			const auto *textCommand = n->type == NodeType::Text && n->first_child < 0 &&
+			                         DisplayList::instance().nodeCommandCount(node) == 1
+			                             ? DisplayList::instance().nodeCommandAt(node, 0) : nullptr;
+			const bool plainText = textCommand && textCommand->type == DisplayCommandType::DrawText &&
+			                       n->layout.height >= std::max(16, static_cast<int>(style.font_size)) &&
+			                       n->layout.height >= style.line_height;
+			if ((stayLocal || plainText) &&
 			    DisplayList::instance().patchNodeAlpha(node, static_cast<uint8_t>(style.opacity)))
 				return;
 			// Crossing the 255 boundary (scope appears/disappears) or a non-leaf:
@@ -1274,7 +1280,12 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 			// full-viewport repaint). Display toggles (visibility/order) and
 			// filter/box-shadow (pixel spillover past the node box) keep the
 			// conservative full repaint.
-			if (prop == Property::Opacity)
+			// Undersized text boxes can paint glyphs outside their layout damage
+			// region. Their opacity fallback must clear that overflow as well.
+			const bool overflowingText = n->type == NodeType::Text &&
+			                            (n->layout.height < std::max(16, static_cast<int>(style.font_size)) ||
+			                             n->layout.height < style.line_height);
+			if (prop == Property::Opacity && !overflowingText)
 				tree.markDisplayListContentDirty();
 			else
 				tree.markDisplayListDirty();

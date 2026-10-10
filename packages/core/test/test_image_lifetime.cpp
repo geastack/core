@@ -1,4 +1,5 @@
 #include "display.h"
+#include "canvas.h"
 #include "display_present.h"
 #include "host/image.h"
 #include "image.h"
@@ -9,6 +10,7 @@
 #include "ui/image.h"
 #include "ui/internal.h"
 #include "ui/tree_internal.h"
+#include "ui/tree_state.h"
 
 #include <array>
 #include <cassert>
@@ -70,6 +72,7 @@ static void assertSnapshotGray(int x, int y, unsigned char gray) {
   // Restore its display binding before any later frame uses the stack buffer.
   setNativeDisplaySize(32, 32);
   DisplayList::instance().replay();
+  gea::platform::display::Display::flush();
 }
 
 int main(int argc, char **argv) {
@@ -100,8 +103,18 @@ int main(int argc, char **argv) {
   // with only the current decode and any retired frame reader alive.
   for (int step = 0; step < 200; ++step) {
     const bool second = step % 2;
+    const auto before = DisplayList::instance().recordSerial();
+    // A repaint outside the image box would erase this untouched pixel.
+    if (step > 0) gea::platform::display::Display::canvas()->pixels()[31 * 32 + 31] = 0xf800;
     image.setAttribute("src", second ? secondPath.c_str() : firstPath.c_str());
+    if (step == 0) {
+      assert(treeState().displayListDirty);
+      assert(!treeState().displayListRebuildStructural);
+    }
+    else assert(!treeState().displayListDirty);
     document.refresh(root, 32, 32);
+    if (step > 0) assert(DisplayList::instance().recordSerial() == before);
+    if (step > 0) assert(displayPixelAt(31, 31) == 0xf800);
     assertGray(2, 2, second ? 208 : 48);
     assertSnapshotGray(2, 2, second ? 208 : 48);
     assert(liveImages() <= 2);

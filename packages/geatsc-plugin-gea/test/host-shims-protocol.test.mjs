@@ -182,3 +182,12 @@ test("Profiler cycle clock is present in native and aliased host surfaces", () =
     );
   }
 });
+
+test('event targets expose native attribute reads', () => {
+  const method=createGeaHostShims().nativeMemberMethods.getAttribute.find(row=>row.receiverTypes.includes('gea::framework::events::EventTarget'));
+  assert.ok(method);
+  assert.equal(method.returnType,'std::string');
+  assert.ok(method.receiverTypes.includes('PressEventTarget'));
+  assert.ok(method.receiverTypes.includes('InputEventTarget'));
+  assert.ok(method.emit.includes('std::string({arg0}).c_str()'));
+});

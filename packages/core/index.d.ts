@@ -541,6 +541,8 @@ export interface NativeTouchEventAttributes {
 }
 
 export interface NativeEventAttributes extends NativeTouchEventAttributes {
+  /** Text services and app-owned editors may dispatch input on ordinary views. */
+  onInput?: (event: InputEvent) => void
   onClick?: PressHandler
   onPress?: PressHandler
   onKeyDown?: (event: KeyEvent) => void

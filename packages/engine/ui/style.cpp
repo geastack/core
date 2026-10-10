@@ -887,6 +887,38 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 			Tree::instance().markDisplayListDirty();
 		return;
 	}
+	// Class-driven size/position changes owe the same out-of-flow leaf
+	// locality as individual Width/Height/Top/Left setters. A selected
+	// pagination dot cannot move siblings or change draw order.
+	if (beforeImageId == target.image_id && target.first_child < 0 && target.type != NodeType::Text &&
+	    beforeStyle.position == 1 && target.computedStyle().position == 1 && !firstLineChanged &&
+	    target.computedStyle().mask_right_fade_width == 0 && rstyle(target.computedStyle()).filter_blur_radius == 0 &&
+	    rstyle(target.computedStyle()).box_shadow_alpha == 0 &&
+	    !rstyle(beforeStyle).transform_present && !rstyle(target.computedStyle()).transform_present &&
+	    !rstyle(beforeStyle).translate_present && !rstyle(target.computedStyle()).translate_present &&
+	    !rstyle(beforeStyle).rotate_present && !rstyle(target.computedStyle()).rotate_present &&
+	    !rstyle(beforeStyle).scale_present && !rstyle(target.computedStyle()).scale_present) {
+		ComputedStyle geometryNormalized = target.computedStyle();
+		geometryNormalized.width = beforeStyle.width;
+		geometryNormalized.height = beforeStyle.height;
+#if GEA_CSS_POSITION_TOP
+		GEA_CSS_POSITION_PX_0(geometryNormalized) = GEA_CSS_POSITION_PX_0(beforeStyle);
+#endif
+#if GEA_CSS_POSITION_RIGHT
+		GEA_CSS_POSITION_PX_1(geometryNormalized) = GEA_CSS_POSITION_PX_1(beforeStyle);
+#endif
+#if GEA_CSS_POSITION_BOTTOM
+		GEA_CSS_POSITION_PX_2(geometryNormalized) = GEA_CSS_POSITION_PX_2(beforeStyle);
+#endif
+#if GEA_CSS_POSITION_LEFT
+		GEA_CSS_POSITION_PX_3(geometryNormalized) = GEA_CSS_POSITION_PX_3(beforeStyle);
+#endif
+		if (styleEqualExceptLocalDisplayCommands(beforeStyle, geometryNormalized)) {
+			target.render.layout_dirty = 1;
+			Tree::instance().markNodeDisplayCommandsDirty(node);
+			return;
+		}
+	}
 	target.render.layout_dirty = 1;
 	Tree::instance().markDisplayListDirty();
 }

@@ -379,6 +379,7 @@ void rootScrollImageHoldTick();
 		void replayDirectDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1);
 		void replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count);
 		bool canReplaySimpleDirtyRegions(int width, int height) const;
+		bool canReplaySimpleDirtyRegions(int width, int height, const DisplayReplayRegion *regions, int count) const;
 		void replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1);
 		// Static-backdrop cache: bake every non-dirty (static) node into the bg cache
 		// buffer once it's stable, so the dirty-region replay can blit that backdrop and
@@ -583,6 +584,11 @@ void rootScrollImageHoldTick();
 		// keepBoxWidth re-wraps within the current layout.width (a cross-
 		// stretched block's box) and only updates the height.
 		static bool remeasureContentBox(int id, bool keepBoxWidth = false);
+		// Flex layout resized this text item's main (inline) size: re-wrap the
+		// run within the new layout.width and update layout.height. Returns the
+		// widest wrapped line's border-box width — larger than layout.width only
+		// when an unbreakable run overflows the box. One measurement.
+		static int reflowToBoxWidth(int id);
 	};
 
 	// Materializes `<input>` JSX elements. They emit View nodes (tag_name=="input")

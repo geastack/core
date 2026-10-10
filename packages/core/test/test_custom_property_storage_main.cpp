@@ -8,7 +8,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
-#include <malloc/malloc.h>
+#include "heap_census.h"
 #include <vector>
 namespace gea::framework::app::generated { void drainMicrotasks() {} }
 namespace gea::framework::graphics::generated {
@@ -16,7 +16,7 @@ void ensureLinked() {}
 const RasterizedFontData *lookupFontForFamily(int, int) { return nullptr; }
 }
 using namespace gea::embedded::ui;
-struct Sample { const char *phase; malloc_statistics_t heap{}; unsigned long long hash = 1469598103934665603ull; };
+struct Sample { const char *phase; HeapCensus heap{}; unsigned long long hash = 1469598103934665603ull; };
 int main() {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifndef GEA_STORE_TEST_ONLY
@@ -28,7 +28,7 @@ int main() {
   std::array<Sample,5> samples{};
   auto capture = [&](int phase, const char *name) {
     auto &sample = samples[phase]; sample.phase = name;
-    malloc_zone_statistics(nullptr, &sample.heap);
+    captureHeapCensus(&sample.heap);
     for (const auto *stores : {&authored, &resolved}) for (const auto &store : *stores) for (auto key : names) {
       const auto *entry = store.getEntry(key);
       sample.hash = (sample.hash ^ (entry ? entry->flags : 255)) * 1099511628211ull;

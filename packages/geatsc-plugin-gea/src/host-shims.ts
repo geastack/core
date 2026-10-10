@@ -3118,6 +3118,11 @@ export function createGeaHostShims(): HostShimDefinitions {
           // a guess, and the declared TypeScript return is an ordinary `string`.
           getAttribute: [
             {
+              receiverTypes: EVENT_TARGET_RECEIVER_TYPES,
+              emit: "std::string(({receiver}).getAttribute(std::string({arg0}).c_str()))",
+              returnType: "std::string",
+            },
+            {
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
               emit: "std::string(({receiver}).getAttribute({arg0}))",
               returnType: "std::string",

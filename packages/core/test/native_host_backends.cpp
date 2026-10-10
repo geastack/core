@@ -109,6 +109,11 @@ std::string WifiBackend::ssid() { return "Gea Test"; }
 std::string WifiBackend::ip() { return "192.0.2.1"; }
 std::string WifiBackend::mac() { return "00:00:00:00:00:00"; }
 void WifiBackend::configure(const std::string & /*ssid*/, const std::string & /*password*/) {}
+bool WifiBackend::startAccessPoint(const std::string & /*ssid*/, const std::string & /*password*/) { return false; }
+void WifiBackend::stopAccessPoint() {}
+std::string WifiBackend::accessPointMac() { return ""; }
+bool WifiBackend::startCaptivePortal() { return false; }
+void WifiBackend::stopCaptivePortal() {}
 bool WifiBackend::waitForConnection(double /*timeoutMs*/) { return true; }
 void WifiBackend::startScan() {}
 bool WifiBackend::scanning() { return false; }

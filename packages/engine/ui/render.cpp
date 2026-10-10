@@ -1935,7 +1935,7 @@ int gLastScrollUiFrame = -1000;
 					const std::int64_t dy = static_cast<std::int64_t>(qy[j]) - qy[i];
 					const std::int64_t spanX = std::max(std::llabs(static_cast<std::int64_t>(x0) - qx[i]), std::llabs(static_cast<std::int64_t>(x1) - qx[i])) + 1;
 					const std::int64_t spanY = std::max(std::llabs(static_cast<std::int64_t>(y0) - qy[i]), std::llabs(static_cast<std::int64_t>(y1) - qy[i])) + 1;
-					worst = std::max(worst, std::llabs(dx) * spanY + std::llabs(dy) * spanX);
+					worst = std::max<std::int64_t>(worst, std::llabs(dx) * spanY + std::llabs(dy) * spanX);
 					a[i] = static_cast<int>(-dy);
 					b[i] = static_cast<int>(dx);
 				}
@@ -7113,6 +7113,13 @@ int gLastScrollUiFrame = -1000;
 					return;
 				}
 				Node *n = &Tree::instance().nodes()[id];
+				// Plain leaf text fades through a retained alpha scope. Keeping the
+				// scope at 255 and its glyph command at zero avoids a whole-list
+				// rebuild whenever a label begins or ends a fade.
+				const bool retainedTextAlpha = n->type == NodeType::Text && n->first_child < 0 &&
+				                               !n->text.empty() && n->computedStyle().text_alpha == 255 &&
+				                               n->layout.height >= std::max(16, static_cast<int>(n->computedStyle().font_size)) &&
+				                               n->layout.height >= n->computedStyle().line_height;
 				if (n->computedStyle().display == 1 || isCollapsedFlexSubtree(*n) || ViewRenderer::backfaceSubtreeHidden(*n))
 				{
 					state.clearNodeRange(id);
@@ -7146,7 +7153,7 @@ int gLastScrollUiFrame = -1000;
 						}
 					}
 				}
-				if (n->computedStyle().opacity == 0 && !contributesTextMask)
+				if (n->computedStyle().opacity == 0 && !contributesTextMask && !retainedTextAlpha)
 				{
 					state.clearNodeRange(id);
 					return;
@@ -7182,7 +7189,7 @@ int gLastScrollUiFrame = -1000;
 				uint8_t cur_alpha = parent_alpha;
 				const Node *active_mask = mask_node;
 
-				if (n->computedStyle().opacity < 255)
+				if (n->computedStyle().opacity < 255 || retainedTextAlpha)
 				{
 					cur_alpha = (parent_alpha * n->computedStyle().opacity) / 255;
 					DisplayCommand *cmd = list.append();
@@ -7309,7 +7316,7 @@ int gLastScrollUiFrame = -1000;
 				if (filtered && !nativeTextInput)
 					recordFilterBlur(id, *n, DisplayCommandType::ApplyFilterBlur, cur_alpha);
 
-				if (n->computedStyle().opacity < 255)
+				if (n->computedStyle().opacity < 255 || retainedTextAlpha)
 				{
 					DisplayCommand *cmd = list.append();
 					if (cmd)
@@ -8050,7 +8057,44 @@ int gLastScrollUiFrame = -1000;
 							 command.clip.y + command.clip.h >= height;
 			}
 
-			static bool canUseSimpleDirtyReplay(int width, int height)
+			static bool simpleTextAlphaNode(int id, Node *nodes, int count)
+			{
+				if (id < 0 || id >= count || !state.hasNodeScratchFor(id)) return false;
+				const Node &node = nodes[id];
+				const int start = state.nodeDrawStart[id];
+				const int end = state.nodeDrawEnd[id];
+				return node.type == NodeType::Text && node.first_child < 0 &&
+				       node.computedStyle().text_alpha == 255 &&
+				       node.layout.height >= std::max(16, static_cast<int>(node.computedStyle().font_size)) &&
+				       node.layout.height >= node.computedStyle().line_height &&
+				       start >= 0 && end == start + 1 && end <= state.commandCount &&
+				       state.commands[start].type == DisplayCommandType::DrawText;
+			}
+
+			// Only leaf text may carry partial opacity in simple replay. Its one
+			// glyph command needs a local alpha, not ancestor/compositing traversal.
+			struct SimpleTextAlphaScope
+			{
+				UniformRoundedRectBatch &batch;
+				bool changed;
+				SimpleTextAlphaScope(const Node &node, UniformRoundedRectBatch &rects)
+				    : batch(rects), changed(node.computedStyle().opacity != 255)
+				{
+					if (changed) {
+						batch.flush();
+						gea::platform::display::Display::setAlpha(node.computedStyle().opacity);
+					}
+				}
+				~SimpleTextAlphaScope()
+				{
+					if (changed) {
+						batch.flush();
+						gea::platform::display::Display::setAlpha(255);
+					}
+				}
+			};
+
+			static bool canUseSimpleDirtyReplay(int width, int height, const DisplayReplayRegion *regions = nullptr, int count = 0)
 			{
 				if (DisplayList::instance().hasTextClippedBackgrounds()) return false;
 #if GEA_EMBEDDED_SIMPLE_REPLAY_DEBUG
@@ -8069,16 +8113,31 @@ int gLastScrollUiFrame = -1000;
 					if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0)
 						{ SRDBG("blur node", i); return false; }
 					if (node.computedStyle().opacity != 255 && node.computedStyle().opacity != 0)
-						{ SRDBG("opacity node", i); return false; }
+						if (!simpleTextAlphaNode(i, nodes, nodeCount))
+							{ SRDBG("opacity node", i); return false; }
 					if (node.computedStyle().mask_right_fade_width > 0)
 						{ SRDBG("mask node", i); return false; }
-					if (hasRetainedTransformState(node))
-						{ SRDBG("transform node", i); return false; }
+					if (hasRetainedTransformState(node) || (regions && nodeHasTransformChain(i, nodes, nodeCount)))
+					{
+						if (!regions || count <= 0 || !state.hasNodeScratchFor(i))
+							{ SRDBG("transform node", i); return false; }
+						// Projected command bounds include the transform of every
+						// ancestor. A static transformed subtree outside all transfer
+						// windows cannot affect their replay; intersecting ink still
+						// requires the general path, even if its layout box is outside.
+						for (int ri = 0; ri < count; ++ri)
+							if (commandRangeBBoxOverlaps(state.nodeDrawStart[i], state.nodeDrawEnd[i],
+							                            regions[ri].x0, regions[ri].y0, regions[ri].x1, regions[ri].y1))
+								{ SRDBG("transform region", i); return false; }
+					}
 				}
 				for (int ci = 0; ci < state.commandCount; ci++)
 				{
 					const DisplayCommand &command = state.commands[ci];
-					if (command.type == DisplayCommandType::SetAlpha ||
+					const bool plainTextAlpha = command.type == DisplayCommandType::SetAlpha &&
+					                            command.alpha.recordParentAlpha == 255 &&
+					                            simpleTextAlphaNode(command.alpha.nodeId, nodes, nodeCount);
+					if ((command.type == DisplayCommandType::SetAlpha && command.alpha.alpha != 255 && !plainTextAlpha) ||
 							command.type == DisplayCommandType::BeginFilterBlur ||
 							command.type == DisplayCommandType::ApplyFilterBlur)
 						{ SRDBG("alpha/blur cmd type", (int)command.type); return false; }
@@ -8125,6 +8184,8 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					const int start = state.nodeDrawStart[node_id];
 					const int end = state.nodeDrawEnd[node_id];
+					if (node.computedStyle().opacity == 0) continue;
+					SimpleTextAlphaScope alpha(node, roundedRects);
 					replaySimpleCommandRangeInRegions(start, end, regions, count, roundedRects);
 				}
 				roundedRects.flush();
@@ -8178,6 +8239,8 @@ int gLastScrollUiFrame = -1000;
 			const int end = state.nodeDrawEnd[node_id];
 			if (start < 0 || end <= start || end > state.commandCount)
 				return;
+			if (node.computedStyle().opacity == 0) return;
+			SimpleTextAlphaScope alpha(node, roundedRects);
 			for (int ci = start; ci < end; ci++)
 			{
 				DisplayCommand *c = &state.commands[ci];
@@ -8234,6 +8297,8 @@ int gLastScrollUiFrame = -1000;
 					const int end = state.nodeDrawEnd[node_id];
 					if (start < 0 || end <= start || end > state.commandCount)
 						continue;
+					if (node.computedStyle().opacity == 0) continue;
+					SimpleTextAlphaScope alpha(node, roundedRects);
 					for (int ci = start; ci < end; ci++)
 					{
 						DisplayCommand *c = &state.commands[ci];
@@ -9220,7 +9285,7 @@ int gLastScrollUiFrame = -1000;
 				auto *canvas = gea::platform::display::Display::canvas();
 				const int width = canvas ? canvas->width() : 0;
 				const int height = canvas ? canvas->height() : 0;
-				if (canUseSimpleDirtyReplay(width, height))
+				if (canUseSimpleDirtyReplay(width, height, regions, count))
 				{
 					replaySimpleDirtyRegions(regions, count);
 					return;
@@ -12997,6 +13062,11 @@ int gLastScrollUiFrame = -1000;
 	bool DisplayList::canReplaySimpleDirtyRegions(int width, int height) const
 	{
 		return DisplayCommandReplayer::canReplaySimpleDirtyRegions(width, height);
+	}
+
+	bool DisplayList::canReplaySimpleDirtyRegions(int width, int height, const DisplayReplayRegion *regions, int count) const
+	{
+		return regions && count > 0 && DisplayCommandReplayer::canUseSimpleDirtyReplay(width, height, regions, count);
 	}
 
 	void DisplayList::replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin)

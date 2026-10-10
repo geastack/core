@@ -615,18 +615,39 @@ void Tree::setAttribute(int node, const char *name, const char *value)
 	}
 	ensureRareData(node).attributes.set(name, value);
 	if (state.nodes[node].type == NodeType::Image && sameName(name, "src")) {
+		const auto &style = state.nodes[node].computedStyle();
+		const bool fixedBox = (style.width != kUnset || style.width_percent != kUnset) &&
+		                      (style.height != kUnset || style.height_percent != kUnset);
+		bool hadBlit = false;
+		for (int i = 0; i < DisplayList::instance().nodeCommandCount(node); ++i) {
+			const auto *command = DisplayList::instance().nodeCommandAt(node, i);
+			if (command && (command->type == DisplayCommandType::BlitImage ||
+				                command->type == DisplayCommandType::BlitImageScaled ||
+				                command->type == DisplayCommandType::BlitImageProjected))
+				hadBlit = true;
+		}
 		bool owned = false;
 		const int imageId = static_cast<int>(gea_host_image_acquire_asset_path(value ? value : "", &owned));
 		{
 			setStyleFromClass(node, Property::ImageId, imageId);
 			if (owned) gea::framework::graphics::ImageStore::instance().release(imageId);
-			// A runtime src swap makes the image node emit a blit command it
-			// didn't have before (its initial record, with no image, produced
-			// nothing) — a structural change to the display list. Mark it
-			// structural so refresh does a full recordNode() rebuild that records
-			// the new blit, not a partial per-node re-record that keeps the empty
-			// command range. Without this a reactively/imperatively loaded image
-			// (e.g. an EPUB cover applied via setAttribute) never paints.
+			if (fixedBox) {
+				// ImageId already owns fixed-box paint invalidation. Replacing
+				// an existing blit changes this image, not the scene's structure.
+				// A previously empty range needs a fresh recording, but still
+				// only damages this fixed box; siblings need no full repaint.
+				if (!hadBlit) markDisplayListContentDirty();
+				// Mark even if a runtime file reused the same decoded slot id.
+				markNodeDisplayCommandsDirty(node);
+				state.nodes[node].render.dirty = 1;
+#if GEA_CSS_SCROLLING
+				state.nodes[node].render.non_scroll_dirty = 1;
+#endif
+				return;
+			}
+			// An intrinsic-size image can change surrounding layout and may
+			// introduce its first blit. Keep the full layout/recording fallback
+			// for this case so newly loaded images and displaced siblings paint.
 			markDisplayListDirty();
 			state.nodes[node].render.dirty = 1;
 #if GEA_CSS_SCROLLING

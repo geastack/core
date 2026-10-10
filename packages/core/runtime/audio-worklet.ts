@@ -13,14 +13,10 @@ export function flushAudioWorkletOutput(): void {
   __geaFlushAudioWorkletOutput()
 }
 
-declare function __geaRegisterAudioWorkletProcessor(
+declare function __geaRegisterAudioWorkletProcessor<T extends AudioWorkletProcessor>(
   name: string,
-  create: () => AudioWorkletProcessor,
-  process: (
-    processor: AudioWorkletProcessor,
-    inputs: Float32Array[][],
-    outputs: Float32Array[][]
-  ) => boolean
+  create: () => T,
+  process: (processor: T, inputs: Float32Array[][], outputs: Float32Array[][]) => boolean,
 ): void
 
 export abstract class AudioWorkletProcessor {
@@ -33,19 +29,19 @@ export abstract class AudioWorkletProcessor {
   abstract process(
     inputs: Float32Array[][],
     outputs: Float32Array[][],
-    parameters: Record<string, Float32Array>
+    parameters: Record<string, Float32Array>,
   ): boolean
 }
 
 // The native module builder validates the concrete registration constructor.
 // AudioParam descriptors are explicitly unsupported, before code generation.
-export function registerProcessor(
+export function registerProcessor<T extends AudioWorkletProcessor>(
   name: string,
-  constructor: new () => AudioWorkletProcessor
+  constructor: new () => T,
 ): void {
   __geaRegisterAudioWorkletProcessor(
     name,
     () => new constructor(),
-    (processor, inputs, outputs) => processor.process(inputs, outputs, {})
+    (processor, inputs, outputs) => processor.process(inputs, outputs, {}),
   )
 }

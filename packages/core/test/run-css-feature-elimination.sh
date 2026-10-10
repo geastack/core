@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BUILD_DIR="$ROOT/packages/core/test/.build"
+# Its own build directory: tests run in parallel, and a shared one has them
+# overwrite each other's program.cpp and object cache mid-build.
+BUILD_DIR="$ROOT/packages/core/test/.build/css-feature-elimination"
+mkdir -p "$BUILD_DIR"
 CXX_BIN="${CXX:-clang++}"
 export TMPDIR="$BUILD_DIR"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
@@ -20,7 +23,7 @@ echo 'PASS: CSS elimination preserves flat layout, border-box sizing and rendere
 for mode in full pruned; do
   flags=()
   if [[ "$mode" == pruned ]]; then flags=("${pruned_flags[@]}"); fi
-  gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/repaint-scratch-$mode" "$ROOT/packages/core/test/test_repaint_scratch_main.cpp" "${flags[@]}"
+  gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/repaint-scratch-$mode" "$ROOT/packages/core/test/test_repaint_scratch_main.cpp" ${flags[@]+"${flags[@]}"}
   "$BUILD_DIR/repaint-scratch-$mode" > "$BUILD_DIR/repaint-scratch-$mode.txt"
 done
 diff -u "$BUILD_DIR/repaint-scratch-full.txt" "$BUILD_DIR/repaint-scratch-pruned.txt"
@@ -117,7 +120,7 @@ for mode in full pruned; do
   flags=()
   if [[ "$mode" == pruned ]]; then flags=("${pruned_flags[@]}"); fi
   binary="$BUILD_DIR/record-storage-$mode"
-  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/test_record_storage_main.cpp" "${flags[@]}"
+  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/test_record_storage_main.cpp" ${flags[@]+"${flags[@]}"}
   "$binary" > "$binary.txt"
 done
 diff -u "$BUILD_DIR/record-storage-full.txt" "$BUILD_DIR/record-storage-pruned.txt"
@@ -127,7 +130,7 @@ echo 'PASS: embedded record padding preserves copy/move and selector state'
 for mode in full pruned; do
   flags=()
   if [[ "$mode" == pruned ]]; then flags=(-DGEA_CSS_ANIMATIONS=0); fi
-  gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/animation-elimination-$mode" "$ROOT/packages/core/test/test_animation_elimination_main.cpp" "${flags[@]}"
+  gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/animation-elimination-$mode" "$ROOT/packages/core/test/test_animation_elimination_main.cpp" ${flags[@]+"${flags[@]}"}
   "$BUILD_DIR/animation-elimination-$mode" > "$BUILD_DIR/animation-elimination-$mode.txt"
 done
 diff -u "$BUILD_DIR/animation-elimination-full.txt" "$BUILD_DIR/animation-elimination-pruned.txt"
@@ -141,7 +144,7 @@ for mode in pseudo first-line animation; do
     animation) test_main=test_css_animation_priming.cpp; flags=(-DGEA_CSS_PSEUDO_ELEMENTS=0 -DGEA_CSS_FIRST_LINE=0) ;;
   esac
   binary="$BUILD_DIR/independent-buckets-$mode"
-  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/$test_main" "${flags[@]}"
+  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/$test_main" ${flags[@]+"${flags[@]}"}
   "$binary"
 done
 
@@ -153,6 +156,6 @@ for mode in full pruned; do
   flags=()
   if [[ "$mode" == pruned ]]; then flags=("${pruned_flags[@]}" -DGEA_UI_CLASS_INLINE_TOKENS=2); fi
   binary="$BUILD_DIR/style-snapshots-$mode"
-  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/test_style_snapshot_storage_main.cpp" "${flags[@]}"
+  gea_build_native_test "$BUILD_DIR" "$binary" "$ROOT/packages/core/test/test_style_snapshot_storage_main.cpp" ${flags[@]+"${flags[@]}"}
   "$binary"
 done

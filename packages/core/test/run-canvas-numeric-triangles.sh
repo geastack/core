@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BUILD_DIR="$ROOT/packages/core/test/.build"
+# Its own build directory: tests run in parallel, and a shared one has them
+# overwrite each other's program.cpp and object cache mid-build.
+BUILD_DIR="$ROOT/packages/core/test/.build/canvas-numeric-triangles"
+mkdir -p "$BUILD_DIR"
 CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
 export TMPDIR="$BUILD_DIR"

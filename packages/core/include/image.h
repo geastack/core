@@ -27,7 +27,10 @@ using ImageStoreMutex = std::mutex;
 // tile-grid app (maps) keep ~4 screens of decoded tiles resident in PSRAM for
 // instant pan-back, on top of its persistent SD cache. ~128 KiB/tile (RGB565
 // 256x256) when full → ~12 MiB; the P4 has ample PSRAM.
-inline constexpr int kImageMax = 96;
+#ifndef GEA_EMBEDDED_MAX_IMAGES
+#define GEA_EMBEDDED_MAX_IMAGES 96
+#endif
+inline constexpr int kImageMax = GEA_EMBEDDED_MAX_IMAGES;
 
 enum class ImageFit {
 	Fill = 0,

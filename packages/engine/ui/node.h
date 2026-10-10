@@ -58,6 +58,10 @@ public:
 	// generated `__gea_type_X __gea_out{};`.
 	NodeHandle() : NodeHandle(-1) {}
 	explicit NodeHandle(int id) : id_(id), nodeType{id} {}
+	// Event targets and DOM elements are two views of the same tree identity.
+	// Pointer/touch event targets declared as Element therefore project to a
+	// full node handle without boxing or losing the source node id.
+	NodeHandle(const gea::framework::events::EventTarget &target) : NodeHandle(target.id()) {}
 	// Implicit build from a boxed node value (record carrying "__gea_node_id"),
 	// so the compiled-component emitters' `NodeHandle x = <gea_cpp_value>` copy-
 	// inits and NodeHandle-typed args accept a boxed node. SFINAE'd on

@@ -1,6 +1,6 @@
 {
   "name": "@geastack/host",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "GeaStack host bindings and platform service sources.",
   "license": "Apache-2.0",
   "repository": {

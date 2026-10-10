@@ -457,7 +457,13 @@ bool ensureMounted() { return false; }
 
 namespace gea::platform::power {
 int Power::batteryPercent() { return 100; }
+bool Power::charging() { return false; }
 }  // namespace gea::platform::power
+
+// A test must never set the machine's clock, so the host refuses the request.
+namespace gea::platform::clock {
+bool setEpochMs(double) { return false; }
+}  // namespace gea::platform::clock
 
 // Null platform camera: the native test host has no capture hardware, so the
 // host camera bridge (packages/host/host/camera.cpp) links against a camera

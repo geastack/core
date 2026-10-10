@@ -1925,6 +1925,15 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 	return true;
 }
 
+int TextRenderer::reflowToBoxWidth(int id)
+{
+	Node &n = Tree::instance().nodes()[id];
+	const int content_w = std::max(1, n.layout.width - boxInsets(n.computedStyle(), true));
+	const TextLayoutMeasure measured = measureTextLayoutForNode(n, n.text.c_str(), content_w);
+	n.layout.height = static_cast<int16_t>(std::min(measured.height, 32767));
+	return measured.width;
+}
+
 void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent)
 {
 	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent);

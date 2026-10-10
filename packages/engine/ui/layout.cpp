@@ -209,6 +209,16 @@ public:
 		return lines_ + depth * kMaxFlexLines;
 	}
 
+	// Parallel to a depth's children slice: the width a zero-basis text item
+	// measured before applyFlexBasis zeroed it. Allocated on first use only.
+	int16_t *measuredWidthsFor(const int *children)
+	{
+		if (!children_ || !children) return nullptr;
+		if (!measuredWidths_) measuredWidths_ = static_cast<int16_t *>(allocate(sizeof(int16_t) * kScratchDepth * kMaxChildren));
+		if (!measuredWidths_) return nullptr;
+		return measuredWidths_ + (children - children_);
+	}
+
 private:
 	static void *allocate(size_t size)
 	{
@@ -218,6 +228,7 @@ private:
 	int depth_ = 0;
 	int *children_ = nullptr;
 	FlexLine *lines_ = nullptr;
+	int16_t *measuredWidths_ = nullptr;
 };
 
 class ScratchFrame {
@@ -469,6 +480,28 @@ bool definiteFlexCrossSize(const Node &parent, const Node &child, bool row)
 	       (row ? hasExplicitHeight(parent) : hasExplicitWidth(parent));
 }
 
+// CSS Flexbox 9.8.1: a single-line container's stretched item has a definite
+// cross size when the container's cross size is definite — and that container
+// may itself be a stretched item. definiteFlexCrossSize() above only accepts an
+// AUTHORED container size, so a `display:flex` row stretched inside an auto-width
+// column, inside a fixed-width app, read as indefinite: its `flex: 1` items kept
+// their max-content width as basis instead of growing from zero (a long todo
+// title overflowed its row). Walks only stretch links; anything else stays
+// conservative (indefinite).
+bool definiteStretchedSize(const Node &node, bool horizontal)
+{
+	if (horizontal ? hasExplicitWidth(node) : hasExplicitHeight(node)) return true;
+	if (node.parent < 0 || isOutOfFlowPosition(node.computedStyle().position) || intrinsicSizeConstraint(node, horizontal) ||
+	    isIntrinsicSizeExpression(horizontal ? node.computedStyle().width_expression : node.computedStyle().height_expression)) return false;
+	const Node &parent = Tree::instance().nodes()[node.parent];
+	if (parent.computedStyle().display != kDisplayFlex) return false;
+	const bool parentRow = flexRowDirection(parent.computedStyle()) != (writingMode(parent) != 0);
+	if (parentRow == horizontal) return false;
+	const int alignment = node.computedStyle().align_self >= 0 ? node.computedStyle().align_self : parent.computedStyle().align_items;
+	if (parent.computedStyle().flex_wrap != 0 || alignment != 0 || (node.computedStyle().margin_auto & (parentRow ? 5 : 10))) return false;
+	return definiteStretchedSize(parent, horizontal);
+}
+
 void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 {
 	if (!preferredRatio(node) || (node.type != NodeType::View && node.type != NodeType::Image)) return;
@@ -632,7 +665,7 @@ public:
 				engine_.layoutNode(child, childAvailWidth, childAvailHeight);
 			}
 			if (node_.computedStyle().display == kDisplayFlex) {
-				applyFlexBasis(child);
+				applyFlexBasis(i, child);
 				Node &item = Tree::instance().nodes()[child];
 				// A growing item with a zero flex basis (`flex: 1`) starts from zero; its
 				// automatic minimum floors the FINAL flexed size (growFlexChildren), not the
@@ -1293,6 +1326,7 @@ public:
 		for (int lineIndex = 0; lineIndex < lineCount; lineIndex++) {
 			FlexLine &line = lines_[lineIndex];
 			int remaining = mainContentBox - line.mainSize;
+			textReflowed_ = false;
 
 			const int totalGrow = totalFlexGrowForLine(line, nodes);
 			if (remaining > 0 && totalGrow > 0) {
@@ -1328,6 +1362,12 @@ public:
 					if (childNode.computedStyle().flex <= 0) continue;
 					const int mainSize = isRow_ ? childNode.layout.width : childNode.layout.height;
 					if (mainSize == 0) {
+						if (isRow_ && childNode.type == NodeType::Text) {
+							if (!zeroBasisGrowItem(childNode)) continue;
+							childNode.layout.width = clampInt16(clampFlexMainSize(childNode, textAutomaticMinimum(childNode)));
+							reflowFlexedText(child, childNode, false);
+							continue;
+						}
 						const int floor = automaticMinimumMainSize(childNode);
 						if (floor > 0) (isRow_ ? childNode.layout.width : childNode.layout.height) = clampInt16(floor);
 						engine_.repositionChildren(child);
@@ -1342,7 +1382,10 @@ public:
 				measuredCross = std::max(measuredCross, isRow_ ? child.layout.height + child.computedStyle().margin[0] + child.computedStyle().margin[2]
 				                                                    : child.layout.width + child.computedStyle().margin[1] + child.computedStyle().margin[3]);
 			}
-			if (node_.computedStyle().display == kDisplayFlex && hasRatio && !definiteCross) {
+			// A re-wrapped text item changes the line's cross size the same way. Only
+			// while this container sizes itself from content: in an assigned pass the
+			// parent already owns its cross size and has placed its siblings.
+			if (node_.computedStyle().display == kDisplayFlex && (hasRatio || (textReflowed_ && !assignedSize_)) && !definiteCross) {
 				line.crossSize = std::max(line.strutSize, baselineCrossSize(line.start, line.count, measuredCross));
 				ratioCrossChanged = true;
 			}
@@ -1480,6 +1523,7 @@ private:
 			if (written > start && wrap) finish();
 			main += childMain + (written > start ? mainGap_ : 0);
 			cross = std::max(cross, childCross);
+			if (measuredWidths_) measuredWidths_[written] = measuredWidths_[i];
 			children_[written++] = id;
 		}
 		finish();
@@ -1517,7 +1561,15 @@ private:
 		return count;
 	}
 
+	// Constant for the pass (node_, axis and assignedSize_ are fixed), but asked
+	// per item and the stretch walk climbs ancestors: resolve it once.
 	int flexPercentageBasis() const
+	{
+		if (percentageBasis_ == kUnresolvedBasis) percentageBasis_ = resolveFlexPercentageBasis();
+		return percentageBasis_;
+	}
+
+	int resolveFlexPercentageBasis() const
 	{
 		if (isRow_ ? hasExplicitWidth(node_) : hasExplicitHeight(node_)) return mainAvail_;
 		// A normal block's automatic inline size fills its containing block.
@@ -1529,7 +1581,7 @@ private:
 			const Node &parent = Tree::instance().nodes()[node_.parent];
 			if (parent.computedStyle().display == kDisplayFlex) {
 				const bool parentRow = flexRowDirection(parent.computedStyle()) != (writingMode(parent) != 0);
-				if (isRow_ != parentRow ? definiteFlexCrossSize(parent, node_, parentRow)
+				if (isRow_ != parentRow ? definiteStretchedSize(node_, isRow_)
 				                       : (isRow_ ? hasExplicitWidth(parent) : hasExplicitHeight(parent))) return mainAvail_;
 			}
 		}
@@ -1544,7 +1596,7 @@ private:
 		return !(isRow_ ? hasExplicitWidth(childNode) : hasExplicitHeight(childNode));
 	}
 
-	void applyFlexBasis(int child)
+	void applyFlexBasis(int index, int child)
 	{
 		Node &childNode = Tree::instance().nodes()[child];
 		// Authored bases were measured on the physical main axis above. Preserve
@@ -1556,6 +1608,13 @@ private:
 		if (flexPercentageBasis() < 0) return;
 		if (isRow_) {
 			if (hasExplicitWidth(childNode)) return;
+			if (childNode.type == NodeType::Text) {
+				// Keep the width this text just measured (wrapped at mainAvail_):
+				// a final width at least this wide keeps every line break, so the
+				// grow needs no second measurement (reflowFlexedText).
+				if (!measuredWidths_) measuredWidths_ = LayoutScratch::instance().measuredWidthsFor(children_);
+				if (measuredWidths_) measuredWidths_[index] = childNode.layout.width;
+			}
 			if (childNode.layout.width == 0) return;
 			childNode.layout.width = 0;
 		} else {
@@ -1647,21 +1706,20 @@ private:
 	{
 		if (totalGrow <= 0 || delta <= 0) return;
 		int applied = 0;
-		int lastGrowChild = -1;
+		int lastGrow = -1;
+		for (int i = 0; i < line.count; i++)
+			if (nodes[children_[line.start + i]].computedStyle().flex > 0) lastGrow = i;
 
-		for (int i = 0; i < line.count; i++) {
+		for (int i = 0; i <= lastGrow; i++) {
 			const int child = children_[line.start + i];
 			Node &childNode = nodes[child];
 			if (childNode.computedStyle().flex <= 0) continue;
-			lastGrowChild = child;
-			const int change = (delta * childNode.computedStyle().flex) / totalGrow;
-			applied += applyFlexMainSizeDelta(child, childNode, change);
-		}
-
-		const int remainder = delta - applied;
-		if (remainder > 0 && lastGrowChild >= 0) {
-			Node &childNode = nodes[lastGrowChild];
-			applyFlexMainSizeDelta(lastGrowChild, childNode, remainder);
+			// The last growing item also takes the integer remainder (and whatever
+			// earlier items could not absorb) in the same resize, so its subtree —
+			// or its text re-wrap — is laid out once, not twice.
+			const int share = (delta * childNode.computedStyle().flex) / totalGrow;
+			const int change = i == lastGrow ? std::max(share, delta - applied) : share;
+			applied += applyFlexMainSizeDelta(child, childNode, change, line.start + i);
 		}
 	}
 
@@ -1734,13 +1792,54 @@ private:
 		return extent;
 	}
 
-	int applyFlexMainSizeDelta(int child, Node &childNode, int delta)
+	// CSS `min-width: auto` for a row's text item: its MIN-CONTENT width — the
+	// longest unbreakable run ("stopwatch"), never the whole single line. Same
+	// exemptions as automaticMinimumMainSize: an authored min-width replaces it,
+	// a scroll container has none, and max-width caps it.
+	int textAutomaticMinimum(const Node &text) const
+	{
+		const ComputedStyle &style = text.computedStyle();
+		if (style.min_width != kUnset || isScrollableOverflow(overflowX(style))) return 0;
+		int extent = TextRenderer::minContentWidth(text) + boxInsets(style, true);
+		if (style.max_width != kUnset) extent = std::min(extent, contentSizeToBorderSize(style, style.max_width, true));
+		return extent;
+	}
+
+	// A text leaf's height IS its wrapped content height (see
+	// childMainSizeIsShrinkable), so a row that flexes its width must re-wrap
+	// it — once, at the final width. A zero-basis item is also floored at its
+	// min-content width (Flexbox 4.5), checked only when that one measurement
+	// reports an unbreakable run wider than the box. Returns the final width.
+	int reflowFlexedText(int child, Node &text, bool floorAtMinContent, int measuredWidth = -1)
+	{
+		// Wrapping at no less than the measured width (and no more than the width it
+		// was measured against) breaks every line in the same place: the height
+		// stands and min-content <= measured width, so no second measurement.
+		if (measuredWidth >= 0 && text.layout.width >= measuredWidth && text.layout.width <= mainAvail_) return text.layout.width;
+		const int previousHeight = text.layout.height;
+		const int widest = TextRenderer::reflowToBoxWidth(child);
+		if (floorAtMinContent && widest > text.layout.width) {
+			const int floor = textAutomaticMinimum(text);
+			if (floor > text.layout.width) {
+				text.layout.width = clampInt16(floor);
+				TextRenderer::reflowToBoxWidth(child);
+			}
+		}
+		if (text.layout.height != previousHeight) textReflowed_ = true;
+		return text.layout.width;
+	}
+
+	int applyFlexMainSizeDelta(int child, Node &childNode, int delta, int index = -1)
 	{
 		if (delta == 0) return 0;
 		const int before = isRow_ ? childNode.layout.width : childNode.layout.height;
 		int after = before + delta;
 		after = clampFlexMainSize(childNode, after);
-		if (delta > 0 && zeroBasisGrowItem(childNode)) {
+		const bool zeroBasisGrow = delta > 0 && zeroBasisGrowItem(childNode);
+		const bool rowText = isRow_ && childNode.type == NodeType::Text;
+		// A row's text item takes its min-content floor in reflowFlexedText, from
+		// the same measurement that re-wraps it.
+		if (zeroBasisGrow && !rowText) {
 			const int autoMin = automaticMinimumMainSize(childNode);
 			if (after < autoMin) after = autoMin;
 		}
@@ -1754,6 +1853,9 @@ private:
 		if (after == before) return 0;
 		if (isRow_) childNode.layout.width = after;
 		else childNode.layout.height = after;
+		// A grown-from-zero text item may now be narrower than the width it was
+		// measured (and wrapped) at.
+		if (rowText && zeroBasisGrow) after = reflowFlexedText(child, childNode, true, index >= 0 && measuredWidths_ ? measuredWidths_[index] : -1);
 		if (preferredRatio(childNode) > 0 && !(isRow_ ? hasExplicitHeight(childNode) : hasExplicitWidth(childNode)) &&
 		    !definiteFlexCrossSize(node_, childNode, isRow_)) {
 			int16_t &cross = isRow_ ? childNode.layout.height : childNode.layout.width;
@@ -1993,6 +2095,13 @@ private:
 	std::vector<FlexLine> extraLines_;
 	int mainGap_ = 0;
 	int crossGap_ = 0;
+	static constexpr int kUnresolvedBasis = INT_MIN;
+	mutable int percentageBasis_ = kUnresolvedBasis;
+	// LayoutScratch slice parallel to children_; see applyFlexBasis.
+	int16_t *measuredWidths_ = nullptr;
+	// Set when flexing a row's text item re-wrapped it to a different height,
+	// so the line's cross size has to be re-derived (see positionLines).
+	bool textReflowed_ = false;
 };
 
 // CSS inline-level classification. Browsers flow inline-level boxes (text,

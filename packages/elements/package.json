@@ -1,6 +1,6 @@
 {
   "name": "@geastack/elements",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Non-core GeaStack JSX elements and native element backends.",
   "license": "Apache-2.0",
   "repository": {
@@ -41,6 +41,6 @@
   },
   "sideEffects": false,
   "dependencies": {
-    "@geastack/core": "^0.1.37"
+    "@geastack/core": "^0.1.40"
   }
 }

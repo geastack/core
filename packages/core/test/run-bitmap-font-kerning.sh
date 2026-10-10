@@ -2,13 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BUILD_DIR="${GEA_NATIVE_TEST_BUILD_DIR:-$ROOT/packages/core/test/.build/wrapped-text-box-overflow}"
+# An engine-only stub program: it needs no compiler pipeline output, so it
+# owns its build directory instead of borrowing one another test left behind.
+BUILD_DIR="${GEA_NATIVE_TEST_BUILD_DIR:-$ROOT/packages/core/test/.build/bitmap-font-kerning}"
 CXX_BIN="${CXX:-clang++}"
-
-if [[ ! -d "$BUILD_DIR" ]]; then
-  echo "Use an existing native test build directory with GEA_NATIVE_TEST_BUILD_DIR" >&2
-  exit 1
-fi
+mkdir -p "$BUILD_DIR"
 
 export TMPDIR="$BUILD_DIR"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"

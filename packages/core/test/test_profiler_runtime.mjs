@@ -39,7 +39,11 @@ test('Profiler fallback preserves desktop nanosecond units', () => {
 test('Profiler concrete wrapper and ambient native declaration both typecheck', () => {
   const filename = '/profiler-runtime.ts'
   const text = profilerSource + '\nconst cycles: number = Profiler.nowCycles()\n'
-  const options = { noEmit: true, strict: true, target: ts.ScriptTarget.ES2022 }
+  // `types: []`: only the two Profiler declarations are under test. Otherwise
+  // every visible @types package is checked too, under the default classic
+  // module resolution that cannot resolve their own imports (@types/node's
+  // `undici-types`), and the result depends on which directory runs the test.
+  const options = { noEmit: true, strict: true, target: ts.ScriptTarget.ES2022, types: [] }
   const host = ts.createCompilerHost(options)
   const originalGetSourceFile = host.getSourceFile.bind(host)
   host.getSourceFile = (path, ...args) => path === filename

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BUILD_DIR="$ROOT/packages/core/test/.build"
+# Its own build directory: tests run in parallel, and a shared one has them
+# overwrite each other's program.cpp and object cache mid-build.
+BUILD_DIR="$ROOT/packages/core/test/.build/native-jpeg"
+mkdir -p "$BUILD_DIR"
 export TMPDIR="$BUILD_DIR"
 "${CC:-clang}" -DGEA_EMBEDDED_GIF_C_API -c "$ROOT/packages/engine/vendor/AnimatedGIF/AnimatedGIF.c" \
   -I "$ROOT/packages/engine/vendor/AnimatedGIF" -o "$BUILD_DIR/native-jpeg-gif.o"

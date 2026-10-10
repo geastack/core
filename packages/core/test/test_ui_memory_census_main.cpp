@@ -13,7 +13,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include <malloc/malloc.h>
+#include "heap_census.h"
 
 namespace gea::framework::app::generated { void drainMicrotasks() {} }
 namespace gea::framework::graphics::generated {
@@ -25,13 +25,13 @@ using namespace gea::embedded::test;
 using gea::platform::display::Display;
 struct Snapshot {
     const char *phase;
-    malloc_statistics_t heap{};
+    HeapCensus heap{};
     std::uint64_t pixels = 0;
 };
 static Snapshot capture(const char *phase)
 {
     Snapshot result{phase};
-    malloc_zone_statistics(nullptr, &result.heap); // all allocator zones
+    captureHeapCensus(&result.heap);
     result.pixels = 1469598103934665603ull;
     for (int y = 0; y < 240; ++y)
         for (int x = 0; x < 120; ++x)

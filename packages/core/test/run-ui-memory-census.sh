@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-BUILD_DIR="$ROOT/packages/core/test/.build"
+# Its own build directory: tests run in parallel, and a shared one has them
+# overwrite each other's program.cpp and object cache mid-build.
+BUILD_DIR="$ROOT/packages/core/test/.build/ui-memory-census"
+mkdir -p "$BUILD_DIR"
 CXX_BIN="${CXX:-clang++}"
 link_gc=-Wl,--gc-sections
 if [[ "$(uname -s)" == Darwin ]]; then link_gc=-Wl,-dead_strip; fi

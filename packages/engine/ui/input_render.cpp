@@ -41,15 +41,13 @@ constexpr int kInputCaretInsetY = 6;
 // centering formula here matches the height the framework's bitmap text path
 // would draw at by default.
 constexpr int kBitmapFontHeight = gea::framework::graphics::BitmapFont8x16::kHeight;
-// #475569 (slate-600). Computed via packRgb565Components because the
-// display layer byte-swaps the wire format — a raw 0x4A69 literal would
-// land as BGR garbage (the "purple placeholder" symptom).
-inline std::uint16_t kPlaceholderColor()
+// #475569 (slate-600), packed in the target native color format.
+inline gea::framework::graphics::pixel::native_t kPlaceholderColor()
 {
-	return gea::framework::graphics::pixel::packRgb565Components(71 / 8, 85 / 4, 105 / 8);
+	return gea::framework::graphics::pixel::nativeColor(71, 85, 105);
 }
 
-const char *inputContentText(int id, std::uint16_t *outColor, std::uint16_t textColor)
+const char *inputContentText(int id, gea::framework::graphics::pixel::native_t *outColor, gea::framework::graphics::pixel::native_t textColor)
 {
 	auto &tree = Tree::instance();
 	const char *value = tree.getAttribute(id, "value");
@@ -111,7 +109,7 @@ void InputRenderer::record(int id)
 	if (n.type != NodeType::View) return;
 	if (std::strcmp(tagFromId(n.tag_id), "input") != 0) return;
 
-	std::uint16_t color = n.computedStyle().text_color;
+	gea::framework::graphics::pixel::native_t color = n.computedStyle().text_color;
 	const char *content = inputContentText(id, &color, n.computedStyle().text_color);
 
 	const int x = n.layout.x;
@@ -199,7 +197,7 @@ void InputRenderer::record(int id)
 		const int caretY = contentY + kInputCaretInsetY;
 		int caretH = contentH - kInputCaretInsetY * 2;
 		if (caretH < 4) caretH = contentH > 4 ? contentH - 2 : contentH;
-		const std::uint16_t caretColor = n.computedStyle().text_color ? n.computedStyle().text_color : 0xFFFF;
+		const gea::framework::graphics::pixel::native_t caretColor = n.computedStyle().text_color ? n.computedStyle().text_color : gea::framework::graphics::pixel::nativeColor(255, 255, 255);
 
 		DisplayCommand *cmd = DisplayList::instance().append();
 		if (cmd) {
