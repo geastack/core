@@ -2923,6 +2923,22 @@ CssRule makeStaticCompiledCssRule(StaticStyleSelectorKind selectorKind,
 	return rule;
 }
 
+// A direct property rule is applied through its compiled value, so its
+// declaration only says which pass it belongs to. The font metrics are resolved
+// first, by a pass that picks its rules by declaration (setsFontMetrics), and
+// every later pass drops them as settled (setStyleValue's g_resolvedFontNode
+// guard). Registered as Ignored, a static `font-weight: 600` therefore never
+// landed anywhere: every node kept 400 on every target.
+CssDeclarationId declarationForDirectProperty(Property property)
+{
+	switch (property) {
+	case Property::FontId: return CssDeclarationId::FontFamily;
+	case Property::FontSize: return CssDeclarationId::FontSize;
+	case Property::FontWeight: return CssDeclarationId::FontWeight;
+	default: return CssDeclarationId::Ignored;
+	}
+}
+
 CssRule makeDirectPropertyCssRule(StaticStyleSelectorKind selectorKind,
                                   const char *selector,
                                   Property property,
@@ -2932,7 +2948,7 @@ CssRule makeDirectPropertyCssRule(StaticStyleSelectorKind selectorKind,
 	return makeStaticCompiledCssRule(selectorKind,
 	                                 selector,
 	                                 CssRuleProperty::Other,
-	                                 CssDeclarationId::Ignored,
+	                                 declarationForDirectProperty(property),
 	                                 storeDirectPropertyCompiledValue(property, value),
 	                                 media);
 }
@@ -2942,10 +2958,18 @@ CssRule makeDirectPropertyGroupCssRule(StaticStyleSelectorKind selectorKind,
                                        std::initializer_list<StaticStylePropertyValue> properties,
                                        const char *media)
 {
+	// A group that carries a font metric joins the font pass whole. Its other
+	// properties are plain values, so applying them early is harmless: the
+	// ordinary pass replays the cascade over them in order.
+	CssDeclarationId declaration = CssDeclarationId::Ignored;
+	for (const StaticStylePropertyValue &entry : properties) {
+		const CssDeclarationId candidate = declarationForDirectProperty(entry.property);
+		if (candidate != CssDeclarationId::Ignored) declaration = candidate;
+	}
 	return makeStaticCompiledCssRule(selectorKind,
 	                                 selector,
 	                                 CssRuleProperty::Other,
-	                                 CssDeclarationId::Ignored,
+	                                 declaration,
 	                                 storeDirectPropertyGroupCompiledValue(properties),
 	                                 media);
 }
@@ -6092,10 +6116,16 @@ ResolvedCssLength resolveCompiledLengthForNodeDetailed(const CssLengthSpec &leng
 	if (tryResolveStaticLengthExpressionCached(handle, expression, nodeId, axis, depth, cached)) return cached;
 	// The ordinary dynamic cache keys containing-block dimensions. Font metrics
 	// are another dependency, so never reuse that cache for font-relative input.
+	// A var() is a third: its value is an ancestor's custom property, and a
+	// node styled before it is parented (templates build children first)
+	// resolves to nothing under the same handle, basis and axis -- an entry
+	// that would then answer every later resolution, layout's included, and
+	// `.screen { padding: var(--safe-x) }` stayed at 0 that way.
 	const bool fontRelative = g_fontSizeBasisNode >= 0 || lengthDependsOnFont(length, nodeId);
-	if (!fontRelative && tryResolveDynamicLengthExpressionCached(handle, nodeId, axis, cached)) return cached;
+	const bool cacheable = !fontRelative && !compiledLengthSpecHasCustomRuntimeInputs(length, depth);
+	if (cacheable && tryResolveDynamicLengthExpressionCached(handle, nodeId, axis, cached)) return cached;
 	ResolvedCssLength resolved = resolveCompiledLengthExpressionForNode(expression, nodeId, axis, depth);
-	if (!fontRelative) storeDynamicLengthExpressionCached(handle, nodeId, axis, resolved);
+	if (cacheable) storeDynamicLengthExpressionCached(handle, nodeId, axis, resolved);
 	return resolved;
 }
 
@@ -9361,7 +9391,8 @@ bool propertyAffectsDescendantStyle(Property property)
 	       property == Property::LineHeight || property == Property::LineHeightExpression || property == Property::LineHeightMultiplier ||
 	       property == Property::TextAlign ||
 	       property == Property::TextTransform ||
-	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::BorderWidth ||
+	       property == Property::WhiteSpace || property == Property::Visibility || property == Property::PointerEvents ||
+	       property == Property::BorderWidth ||
 	       (property >= Property::BorderTopWidth && property <= Property::BorderLeftWidth);
 }
 
@@ -9401,6 +9432,12 @@ void applyInheritedStyleDefaults(int node)
 #endif
 #if GEA_CSS_VISIBILITY
 	style.visibility = parentStyle.visibility;
+#endif
+#if GEA_CSS_POINTER_EVENTS
+	// pointer-events inherits in CSS: `.overlay { pointer-events: none }` lets
+	// hits fall through its images too, which is how a decorative layer stays
+	// out of the way of what sits under it.
+	style.pointer_events = parentStyle.pointer_events;
 #endif
 }
 
@@ -16108,6 +16145,11 @@ struct ParentStyleSnapshot {
 #else
 	static constexpr std::uint8_t visibility = 0;
 #endif
+#if GEA_CSS_POINTER_EVENTS
+	std::int8_t pointer_events;
+#else
+	static constexpr std::int8_t pointer_events = 0;
+#endif
 #if GEA_CSS_SIDE_BORDERS
 	std::array<int, 4> border_widths;
 #else
@@ -16145,6 +16187,9 @@ ParentStyleSnapshot snapshotParentStyle(const ComputedStyle &s)
 #if GEA_CSS_VISIBILITY
 	out.visibility = s.visibility;
 #endif
+#if GEA_CSS_POINTER_EVENTS
+	out.pointer_events = s.pointer_events;
+#endif
 #if GEA_CSS_SIDE_BORDERS
 	out.border_widths = {computedBorderWidth(s, 0), computedBorderWidth(s, 1),
 	                    computedBorderWidth(s, 2), computedBorderWidth(s, 3)};
@@ -16159,7 +16204,8 @@ bool parentStylesDiffer(const ParentStyleSnapshot &a, const ParentStyleSnapshot 
 	return a.text_color != b.text_color || a.text_alpha != b.text_alpha || a.font_id != b.font_id || a.font_size != b.font_size ||
 	       a.font_weight != b.font_weight || a.line_height != b.line_height || a.line_height_multiplier != b.line_height_multiplier ||
 	       a.text_align != b.text_align || a.text_transform != b.text_transform ||
-	       a.white_space != b.white_space || a.visibility != b.visibility || a.border_widths != b.border_widths;
+	       a.white_space != b.white_space || a.visibility != b.visibility || a.pointer_events != b.pointer_events ||
+	       a.border_widths != b.border_widths;
 }
 
 inline void listInsertUnique(CssAtomSmallList &v, CssAtomId s)
@@ -17669,6 +17715,32 @@ bool styleMountBatchActive()
 	return g_styleMountBatchActive;
 }
 
+void noteMountedRootStyle(int root)
+{
+	auto &state = treeState();
+	if (root < 0 || root >= state.nodeCount) return;
+	// Under the mount batch this only records the root as pending; being the
+	// ancestor of everything else queued, it subsumes them and the batch's
+	// incremental walk styles the root first, so its custom properties are in
+	// place before any descendant's var() is resolved.
+	recomputeSubtreeClassStyles(root);
+}
+
+// Whether `node` has had its class styles computed at least once, read from
+// whichever storage this build keeps the bit in (recomputeNodeClassStyles sets
+// it): the custom-property reference record, the shared-style node flag, or
+// the plain tracked array. The caller checks the range.
+static bool classStyleTracked(int node)
+{
+#if GEA_CSS_CUSTOM_PROPERTIES
+	return g_nodeRefs[node].tracked;
+#elif GEA_EMBEDDED_SHARED_STYLES
+	return treeState().nodes[node].class_style_tracked;
+#else
+	return g_nodeStyleTracked[node];
+#endif
+}
+
 void endStyleMountBatch()
 {
 	if (!g_styleMountBatchActive) return;
@@ -17714,7 +17786,28 @@ void endStyleMountBatch()
 				break;
 			}
 		}
-		if (!covered) topRoots.push_back(node);
+		if (covered) continue;
+		// The document root is created by Document, not by the app, so a mount
+		// never marks it pending — yet it is what :root matches, and :root is
+		// where custom properties are declared. Recomputing the app's subtree
+		// without it means every descendant var() resolves against a root that
+		// has no properties yet: the lookup misses, and a miss latches 0 into the
+		// computed style (a `padding: var(--safe-x)` silently became 0). Pull the
+		// root in, but only while it has never been styled — that is the first
+		// mount. Later incremental updates keep their narrow roots, so a theme
+		// switch does not turn into a whole-tree recompute.
+		int ultimate = node;
+		while (state.nodes[ultimate].parent >= 0) ultimate = state.nodes[ultimate].parent;
+		const bool rootNeedsFirstStyle =
+		    ultimate != node && ultimate >= 0 && ultimate < kMaxNodes && !classStyleTracked(ultimate);
+		if (rootNeedsFirstStyle) {
+			if (!g_pendingRecomputeMark.contains(ultimate)) {
+				g_pendingRecomputeMark.insert(ultimate);
+				topRoots.push_back(ultimate);
+			}
+			continue;
+		}
+		topRoots.push_back(node);
 	}
 
 	// Incremental recompute: a near-root class change (e.g. a theme switch) only

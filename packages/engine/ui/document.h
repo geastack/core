@@ -97,5 +97,12 @@ void endStyleMountBatch();
 // presents to the panel would show unstyled content; the render path uses this to
 // suppress that flush until styles land. Defined in style.cpp.
 bool styleMountBatchActive();
+// Queues the class styles of a newly mounted root. The mounted root is what
+// `:root` matches and where a stylesheet's custom properties live, but nothing
+// in building it (createView + an id attribute) queues its own recompute, so
+// `:root { --x: ... }` never landed and every var(--x) below resolved to
+// nothing. Deferred and coalesced under an open batch, where it becomes the
+// one top-most root; immediate otherwise. Defined in style.cpp.
+void noteMountedRootStyle(int root);
 
 }  // namespace gea::embedded::ui
