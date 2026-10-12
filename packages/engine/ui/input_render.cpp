@@ -175,6 +175,9 @@ void InputRenderer::record(int id)
 			cmd->text.ellipsisWidth = 0;
 			cmd->text.emphasis = 0;
 			cmd->text.emphasisColor = 0;
+			const std::size_t contentBytes = std::strlen(content);
+			cmd->text.textBytes = static_cast<uint16_t>(contentBytes > 65535 ? 65535 : contentBytes);
+			cmd->text.collapsible = hasCollapsibleWhitespace(content) ? 1 : 0;
 		}
 	}
 

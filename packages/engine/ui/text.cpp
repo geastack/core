@@ -116,7 +116,7 @@ static_assert(kMaxCachedLines > 0);
 
 struct LineBreakCacheEntry {
 	const char *textPtr = nullptr;
-	std::uint32_t textHashPrefix = 0;
+	std::uint32_t textHash = 0;
 	int maxWidth = -1;
 	// The first line of an inline continuation gets a different budget and origin
 	// than the rest, so two runs of the same string at the same maxWidth can break
@@ -133,17 +133,18 @@ struct LineBreakCacheEntry {
 
 LineBreakCacheEntry gLineBreakCache[kLineBreakCacheSlots];
 
-inline std::uint32_t hashTextPrefix(const char *text)
+inline std::uint32_t hashTextEnds(const char *text, int bytes)
 {
-	// 32-bit FNV-1a over first 16 bytes (or up to NUL). Cheap and good
-	// enough to disambiguate text-mutations on the same buffer.
+	// 32-bit FNV-1a over the byte count and the first and last 16 bytes (the
+	// whole text up to 32). A hash of the first 16 bytes alone took a text
+	// that reused another's buffer and shared its prefix for that text, and
+	// painted its line breaks, cutting the last line.
 	std::uint32_t h = 2166136261u;
-	for (int i = 0; i < 16; i++) {
-		const unsigned char c = static_cast<unsigned char>(text[i]);
-		if (!c) break;
-		h ^= c;
-		h *= 16777619u;
-	}
+	h = (h ^ static_cast<std::uint32_t>(bytes & 0xff)) * 16777619u;
+	h = (h ^ static_cast<std::uint32_t>((bytes >> 8) & 0xff)) * 16777619u;
+	const int head = bytes < 16 ? bytes : 16;
+	for (int i = 0; i < head; i++) h = (h ^ static_cast<unsigned char>(text[i])) * 16777619u;
+	for (int i = bytes > 32 ? bytes - 16 : head; i < bytes; i++) h = (h ^ static_cast<unsigned char>(text[i])) * 16777619u;
 	return h;
 }
 
@@ -498,13 +499,27 @@ std::string transformedTextCopy(const char *text, int textTransform)
 	return out;
 }
 
-const char *textWithTransform(const char *text, int textTransform, std::string &storage, int whiteSpace = -1)
+inline bool collapsesWhiteSpace(int whiteSpace)
+{
+	// normal, nowrap and pre-line collapse spaces; pre and pre-wrap keep them.
+	return whiteSpace == 0 || whiteSpace == 1 || whiteSpace == 4;
+}
+
+inline int saturatedTextBytes(std::size_t bytes)
+{
+	return bytes > 65535 ? 65535 : static_cast<int>(bytes);
+}
+
+// `collapsible` is hasCollapsibleWhitespace() of `text`: NodeText::collapsible
+// for a node's own text, computed by the caller for other text, false for text
+// already normalized. It stands in for the strpbrk and strstr scan this
+// function made on every measure and draw.
+const char *textWithTransform(const char *text, int textTransform, std::string &storage, int whiteSpace, bool collapsible)
 {
 	// Perform CSS segment-break/space collapsing identically in measurement
 	// and painting, while retaining the authored Node::text for later mutation.
 	// Edge trimming belongs to line layout, not to individual inline runs.
-	if (text && (whiteSpace == 0 || whiteSpace == 1 || whiteSpace == 4) &&
-	    (std::strpbrk(text, "\t\r\n\f") || std::strstr(text, "  "))) {
+	if (text && collapsible && collapsesWhiteSpace(whiteSpace)) {
 		std::string normalized;
 		normalized.reserve(std::strlen(text));
 		bool space = false;
@@ -529,6 +544,12 @@ const char *textWithTransform(const char *text, int textTransform, std::string &
 	if (!text || textTransform == 0) return text;
 	storage = transformedTextCopy(text, textTransform);
 	return storage.c_str();
+}
+
+// A node's own text, normalized and transformed as its style says.
+const char *textForNode(const Node &node, std::string &storage)
+{
+	return textWithTransform(node.text.c_str(), node.computedStyle().text_transform, storage, node.computedStyle().white_space, node.text.collapsible());
 }
 
 struct TextMeasure {
@@ -1006,11 +1027,11 @@ int leadingCollapsibleBytes(const char *text)
 	return static_cast<int>(p - text);
 }
 
-TextLayoutMeasure measureTextLayoutForNode(const Node &node, const char *text, int contentWidth)
+TextLayoutMeasure measureTextLayoutForNode(const Node &node, int contentWidth)
 {
 	if (contentWidth < 0) contentWidth = 0;
 	std::string transformed;
-	const char *measureText = textWithTransform(text, node.computedStyle().text_transform, transformed, node.computedStyle().white_space);
+	const char *measureText = textForNode(node, transformed);
 	// white-space: nowrap lays the run out as a single line — measure against an
 	// unbounded width so the content box sizes to the full text (then max-width /
 	// the parent box clamps it). Drawing truncates/ellipsizes the overflow.
@@ -1033,11 +1054,13 @@ TextLayoutMeasure measureTextLayoutForNode(const Node &node, const char *text, i
 	return out;
 }
 
-int measureSingleLineTextWidthForNode(const Node &node, const char *text)
+// `text` is measured in the node's style and need not be the node's own;
+// `collapsible` as for textWithTransform.
+int measureSingleLineTextWidthForNode(const Node &node, const char *text, bool collapsible)
 {
 	if (!text || !text[0]) return 0;
 	std::string transformed;
-	const char *measureText = textWithTransform(text, node.computedStyle().text_transform, transformed, node.computedStyle().white_space);
+	const char *measureText = textWithTransform(text, node.computedStyle().text_transform, transformed, node.computedStyle().white_space, collapsible);
 	return TextMetrics::measure(measureText,
 	                            32767,
 	                            node.computedStyle().font_id,
@@ -1088,12 +1111,7 @@ public:
 		sink.screenX = screenX;
 		sink.width = width;
 		sink.coverage = outCoverage;
-		drawWrapped(command.text.text, command.text.x, command.text.y, command.text.maxWidth,
-		            command.text.color, command.text.scale, command.text.align, command.text.containerWidth,
-			    command.text.fontId, command.text.textTransform, command.text.lineHeight,
-			    command.text.whiteSpace, command.text.textOverflow, command.text.maxHeight,
-			    command.text.firstLineIndent, command.text.alignLast, command.text.lineLimit,
-			    command.text.blockEllipsis, command.text.ellipsisWidth, command.text.emphasis, command.text.emphasisColor, &sink);
+		drawWrapped(command, &sink);
 	}
 
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
@@ -1147,11 +1165,27 @@ public:
 		}
 	}
 
-	static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight = 0, int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0, int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0, TextCoverageSink *coverageSink = nullptr)
+	// Paints a DrawText command, normalizing its authored text as layout did
+	// when the command says white-space collapsing may change it.
+	static void drawWrapped(const DisplayCommand &command, TextCoverageSink *coverageSink = nullptr)
 	{
+		const char *text = command.text.text;
 		if (!text || !text[0]) return;
+		const int x = command.text.x, y = command.text.y;
+		int maxWidth = command.text.maxWidth;
+		const gea::framework::graphics::pixel::native_t color = command.text.color;
+		const float scale = command.text.scale;
+		const int textAlign = command.text.align, containerWidth = command.text.containerWidth, fontId = command.text.fontId;
+		const int textTransform = command.text.textTransform, lineHeight = command.text.lineHeight, whiteSpace = command.text.whiteSpace;
+		const int textOverflow = command.text.textOverflow, maxHeight = command.text.maxHeight, firstLineIndent = command.text.firstLineIndent;
+		const int alignLast = command.text.alignLast, lineLimit = command.text.lineLimit, blockEllipsis = command.text.blockEllipsis;
+		const int ellipsisWidth = command.text.ellipsisWidth, emphasis = command.text.emphasis;
+		const gea::framework::graphics::pixel::native_t emphasisColor = command.text.emphasisColor;
 		std::string transformed;
-		text = textWithTransform(text, textTransform, transformed, whiteSpace);
+		text = textWithTransform(text, textTransform, transformed, whiteSpace, command.text.collapsible != 0);
+		// Keys the line-break cache: the command's count for the authored text,
+		// the copy's once it was normalized or transformed.
+		const int textBytes = text == command.text.text ? command.text.textBytes : saturatedTextBytes(transformed.size());
 		// Pre preserves forced breaks and paints every line without soft wrap.
 		if (whiteSpace == 2) maxWidth = 32767;
 		const BlockEllipsis ellipsis{blockEllipsis == kAutoBlockEllipsis ? "\xE2\x80\xA6" : blockEllipsis ? cssAtomText(static_cast<CssAtomId>(blockEllipsis)) : nullptr,
@@ -1189,13 +1223,15 @@ public:
 				if (noWrap)
 					drawRasterizedSingleLine(text, x, y, maxWidth, color, singleLineAlign, containerWidth, fontId, fontSize, lineHeight, overflowEllipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
 				else
-					drawRasterizedWrapped(text, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
+					drawRasterizedWrapped(text, textBytes, x, y, maxWidth, color, textAlign, containerWidth, fontId, fontSize, lineHeight, clipX0, clipY0, clipX1, clipY1,
 					                      overflowEllipsis ? maxHeight : 0, firstLineIndent, alignLast, hangSpaces, lineLimit, ellipsis, coverageSink);
 				return;
 			}
 		}
 #else
 		(void)fontId;
+		(void)textBytes;
+		(void)maxHeight;
 #endif
 		if (noWrap)
 			drawBitmapSingleLine(text, x, y, maxWidth, color, scale, singleLineAlign, containerWidth, lineHeight, overflowEllipsis, clipX0, clipY0, clipX1, clipY1, coverageSink);
@@ -1340,7 +1376,7 @@ private:
 		else gea::platform::display::Display::drawTextFontFamily(buf, lineX, lineBoxY, color, fontId, fontSize);
 	}
 
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const BlockEllipsis &ellipsis = {}, const TextCoverageSink *coverageSink = nullptr)
+	static void drawRasterizedWrapped(const char *text, int textBytes, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, int alignLast = -1, bool hangSpaces = false, int lineLimit = 0, const BlockEllipsis &ellipsis = {}, const TextCoverageSink *coverageSink = nullptr)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1386,12 +1422,12 @@ private:
 		// Cache lookup: if the same (text content, layout params) was laid out
 		// previously, skip the per-glyph advance loop and iterate the cached
 		// chars[] array directly. See LineBreakCacheEntry comment.
-		const std::uint32_t hash = hashTextPrefix(text);
+		const std::uint32_t hash = hashTextEnds(text, textBytes);
 		const int slot = lineBreakCacheSlot(text, maxWidth);
 		LineBreakCacheEntry &entry = gLineBreakCache[slot];
 		const bool cacheHit =
 			entry.textPtr == text &&
-			entry.textHashPrefix == hash &&
+			entry.textHash == hash &&
 			entry.maxWidth == maxWidth &&
 			entry.firstLineIndent == firstLineIndent &&
 			entry.fontId == fontId &&
@@ -1400,7 +1436,7 @@ private:
 
 		if (!cacheHit) {
 			entry.textPtr = text;
-			entry.textHashPrefix = hash;
+			entry.textHash = hash;
 			entry.maxWidth = maxWidth;
 			entry.firstLineIndent = firstLineIndent;
 			entry.fontId = fontId;
@@ -1877,12 +1913,14 @@ void Tree::setText(int node, const char *text)
 	int gid_preW = 0;
 	int gid_rightW = 0;
 	if (gid_canPartial) {
+		// Pieces of either text may collapse when either one does.
+		const bool gid_collapsible = target.text.collapsible() || hasCollapsibleWhitespace(text);
 		const std::string gid_pre = gid_new.substr(0, static_cast<size_t>(gid_prefix));
 		const std::string gid_oldHead = target.text.substr(0, static_cast<size_t>(gid_oldLen - gid_suffix));
 		const std::string gid_newHead = gid_new.substr(0, static_cast<size_t>(gid_newLen - gid_suffix));
-		gid_preW = measureSingleLineTextWidthForNode(target, gid_pre.c_str());
-		const int gid_oldHeadW = measureSingleLineTextWidthForNode(target, gid_oldHead.c_str());
-		const int gid_newHeadW = measureSingleLineTextWidthForNode(target, gid_newHead.c_str());
+		gid_preW = measureSingleLineTextWidthForNode(target, gid_pre.c_str(), gid_collapsible);
+		const int gid_oldHeadW = measureSingleLineTextWidthForNode(target, gid_oldHead.c_str(), gid_collapsible);
+		const int gid_newHeadW = measureSingleLineTextWidthForNode(target, gid_newHead.c_str(), gid_collapsible);
 		if (gid_oldHeadW == gid_newHeadW) {
 			// The unchanged suffix stays at the same x position, so it does not need
 			// repainting; stop at the end of the changed head.
@@ -1890,8 +1928,8 @@ void Tree::setText(int node, const char *text)
 		} else {
 			// The suffix moved, or the new run is shorter. Cover both complete run
 			// extents so all shifted/removed glyph pixels are restored from backdrop.
-			const int gid_oldTextW = measureSingleLineTextWidthForNode(target, target.text.c_str());
-			const int gid_newTextW = measureSingleLineTextWidthForNode(target, gid_new.c_str());
+			const int gid_oldTextW = measureSingleLineTextWidthForNode(target, target.text.c_str(), gid_collapsible);
+			const int gid_newTextW = measureSingleLineTextWidthForNode(target, gid_new.c_str(), gid_collapsible);
 			gid_rightW = gid_oldTextW > gid_newTextW ? gid_oldTextW : gid_newTextW;
 		}
 	}
@@ -1934,7 +1972,7 @@ void Tree::setText(int node, const char *text)
 			const int content_w = fixedWidth
 				? fixedBoxWidth - target.computedStyle().padding[1] - target.computedStyle().padding[3]
 				: 0x4000;  // 16384 px — well beyond any panel dimension
-			const TextLayoutMeasure measured = measureTextLayoutForNode(target, target.text.c_str(), content_w);
+			const TextLayoutMeasure measured = measureTextLayoutForNode(target, content_w);
 			if (absolute) {
 				target.layout.width = measured.width;
 				target.layout.height = measured.height;
@@ -2019,7 +2057,7 @@ int TextRenderer::baselineOffset(const Node &node, bool last)
 	int offset = boxInset(node.computedStyle(), 0) + halfLeading + font.ascender();
 	if (last) {
 		std::string storage;
-		const char *text = prepareText(node.text.c_str(), node.computedStyle().text_transform, node.computedStyle().white_space, storage);
+		const char *text = textForNode(node, storage);
 		const int width = node.computedStyle().white_space == 1 || node.computedStyle().white_space == 2
 		    ? 32767 : std::max(1, node.layout.width - boxInsets(node.computedStyle(), true));
 		const auto measured = TextMetrics::measure(text, width, node.computedStyle().font_id, fontSize, node.computedStyle().line_height, node.computedStyle().font_weight);
@@ -2042,7 +2080,7 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 	if (!advance.valid || advance.lineAdvance <= 0) return out;
 
 	std::string transformed;
-	const char *text = textWithTransform(raw, node.computedStyle().text_transform, transformed, node.computedStyle().white_space);
+	const char *text = textForNode(node, transformed);
 	if (!text || !text[0]) return out;
 
 	if (contentWidth < 1) contentWidth = 1;
@@ -2096,7 +2134,7 @@ InlineFlowMeasure TextRenderer::measureInlineFlow(const Node &node, int firstAva
 int TextRenderer::firstUnbreakableWidth(const Node &node)
 {
 	std::string storage;
-	const char *text = prepareText(node.text.c_str(), node.computedStyle().text_transform, node.computedStyle().white_space, storage);
+	const char *text = textForNode(node, storage);
 	if (!text) return 0;
 	if (node.computedStyle().white_space == 0 || node.computedStyle().white_space == 1 || node.computedStyle().white_space == 4)
 		text += leadingCollapsibleBytes(text);
@@ -2108,20 +2146,21 @@ int TextRenderer::firstUnbreakableWidth(const Node &node)
 		if (cp == '\n' || (wrapping && isWrappingSpace(cp))) { end = start; break; }
 		if (wrapping && canBreakAfter(cp)) break;
 	}
-	return measureSingleLineTextWidthForNode(node, std::string(text, end - text).c_str());
+	// Already normalized above.
+	return measureSingleLineTextWidthForNode(node, std::string(text, end - text).c_str(), false);
 }
 
 int TextRenderer::minContentWidth(const Node &node, int *pendingWord)
 {
 	std::string storage;
-	const char *text = prepareText(node.text.c_str(), node.computedStyle().text_transform, node.computedStyle().white_space, storage);
+	const char *text = textForNode(node, storage);
 	const bool wrapping = node.computedStyle().white_space != 1 && node.computedStyle().white_space != 2;
 	const char *start = text;
 	int width = 0, current = pendingWord ? *pendingWord : 0;
 	for (const char *p = text;; ++p) {
 		if (!*p || *p == '\n' || (wrapping && (*p == ' ' || *p == '\t'))) {
 			const std::string word(start, p - start);
-			current += measureSingleLineTextWidthForNode(node, word.c_str());
+			current += measureSingleLineTextWidthForNode(node, word.c_str(), false);
 			width = std::max(width, current);
 			if (!*p) { if (pendingWord) *pendingWord = current; break; }
 			current = 0;
@@ -2133,7 +2172,7 @@ int TextRenderer::minContentWidth(const Node &node, int *pendingWord)
 
 const char *TextRenderer::prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage)
 {
-	return textWithTransform(text, textTransform, storage, whiteSpace);
+	return textWithTransform(text, textTransform, storage, whiteSpace, collapsesWhiteSpace(whiteSpace) && hasCollapsibleWhitespace(text));
 }
 
 void TextRenderer::layout(int id, int avail_w)
@@ -2146,7 +2185,7 @@ void TextRenderer::layout(int id, int avail_w)
 	else if ((n->computedStyle().width_percent != kUnset || n->computedStyle().width_expression >= 0) && n->layout.width > 0) content_w = n->layout.width - boxInset(n->computedStyle(), 1) - boxInset(n->computedStyle(), 3);
 	if (content_w < 0) content_w = 0;
 
-	const TextLayoutMeasure measured = measureTextLayoutForNode(*n, n->text.c_str(), content_w);
+	const TextLayoutMeasure measured = measureTextLayoutForNode(*n, content_w);
 	n->layout.width = measured.width;
 	n->layout.height = measured.height;
 }
@@ -2172,7 +2211,7 @@ bool TextRenderer::remeasureContentBox(int id, bool keepBoxWidth)
 	else if (n.computedStyle().width != kUnset) content_w = contentSizeToBorderSize(n.computedStyle(), n.computedStyle().width, true) - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
 	else if ((n.computedStyle().width_percent != kUnset || n.computedStyle().width_expression >= 0) && n.layout.width > 0) content_w = n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
 	if (content_w < 0) content_w = 0;
-	const TextLayoutMeasure measured = measureTextLayoutForNode(n, n.text.c_str(), content_w);
+	const TextLayoutMeasure measured = measureTextLayoutForNode(n, content_w);
 	if (keepBoxWidth) {
 		if (measured.height == n.layout.height) return false;
 		n.layout.height = measured.height;
@@ -2188,14 +2227,44 @@ int TextRenderer::reflowToBoxWidth(int id)
 {
 	Node &n = Tree::instance().nodes()[id];
 	const int content_w = std::max(1, n.layout.width - boxInsets(n.computedStyle(), true));
-	const TextLayoutMeasure measured = measureTextLayoutForNode(n, n.text.c_str(), content_w);
+	const TextLayoutMeasure measured = measureTextLayoutForNode(n, content_w);
 	n.layout.height = static_cast<int16_t>(std::min(measured.height, 32767));
 	return measured.width;
 }
 
+void TextRenderer::drawWrapped(const DisplayCommand &command)
+{
+	TextDrawer::drawWrapped(command);
+}
+
 void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int text_align, int containerWidth, int fontId, int textTransform, int lineHeight, int whiteSpace, int textOverflow, int maxHeight, int firstLineIndent, int alignLast, int lineLimit, int blockEllipsis, int ellipsisWidth, int emphasis, gea::framework::graphics::pixel::native_t emphasisColor)
 {
-	TextDrawer::drawWrapped(text, x, y, maxWidth, color, scale, text_align, containerWidth, fontId, textTransform, lineHeight, whiteSpace, textOverflow, maxHeight, firstLineIndent, alignLast, lineLimit, blockEllipsis, ellipsisWidth, emphasis, emphasisColor);
+	DisplayCommand command{};
+	command.type = DisplayCommandType::DrawText;
+	command.text.text = text;
+	command.text.x = static_cast<int16_t>(x);
+	command.text.y = static_cast<int16_t>(y);
+	command.text.maxWidth = static_cast<int16_t>(maxWidth);
+	command.text.color = color;
+	command.text.scale = scale;
+	command.text.align = static_cast<int8_t>(text_align);
+	command.text.textTransform = static_cast<int8_t>(textTransform);
+	command.text.lineHeight = static_cast<int16_t>(lineHeight);
+	command.text.containerWidth = static_cast<int16_t>(containerWidth);
+	command.text.fontId = static_cast<int16_t>(fontId);
+	command.text.whiteSpace = static_cast<int8_t>(whiteSpace);
+	command.text.textOverflow = static_cast<int8_t>(textOverflow);
+	command.text.maxHeight = static_cast<int16_t>(maxHeight);
+	command.text.firstLineIndent = static_cast<int16_t>(firstLineIndent);
+	command.text.alignLast = static_cast<int8_t>(alignLast);
+	command.text.lineLimit = static_cast<int16_t>(lineLimit);
+	command.text.blockEllipsis = static_cast<uint16_t>(blockEllipsis);
+	command.text.ellipsisWidth = static_cast<int16_t>(ellipsisWidth);
+	command.text.emphasis = static_cast<uint8_t>(emphasis);
+	command.text.emphasisColor = emphasisColor;
+	command.text.textBytes = static_cast<uint16_t>(text ? saturatedTextBytes(std::strlen(text)) : 0);
+	command.text.collapsible = hasCollapsibleWhitespace(text) ? 1 : 0;
+	TextDrawer::drawWrapped(command);
 }
 
 void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
@@ -2210,7 +2279,7 @@ int TextRenderer::measureWidth(const char *text, int fontId, int fontSize, int t
 	// 32767 = no horizontal wrapping; we want the full single-line width
 	// that the chosen font would render. Returning that as int16-safe.
 	std::string transformed;
-	const char *measureText = textWithTransform(text, textTransform, transformed);
+	const char *measureText = textWithTransform(text, textTransform, transformed, -1, false);
 	const TextMeasure measured = TextMetrics::measure(measureText, 32767, fontId, fontSize);
 	return measured.width;
 }
@@ -2219,7 +2288,7 @@ int TextRenderer::measureHeight(const char *text, int fontId, int fontSize, int 
 {
 	if (!text || !text[0]) return 0;
 	std::string transformed;
-	const char *measureText = textWithTransform(text, textTransform, transformed);
+	const char *measureText = textWithTransform(text, textTransform, transformed, -1, false);
 	const TextMeasure measured = TextMetrics::measure(measureText, 32767, fontId, fontSize, lineHeight);
 	return measured.height;
 }
@@ -2379,7 +2448,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 		}
 	}
 	std::string transformedText;
-	const char *measureText = textWithTransform(n->text.c_str(), n->computedStyle().text_transform, transformedText, n->computedStyle().white_space);
+	const char *measureText = textForNode(*n, transformedText);
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 	if (transformed && recordProjectedRasterText(*n, measureText, parentAlpha, tx, ty, tw)) return;
 #endif
@@ -2627,6 +2696,8 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->type = DisplayCommandType::DrawText;
 	cmd->bx = bx; cmd->by = by; cmd->bw = bw; cmd->bh = bh;
 	cmd->text.text = n->text.c_str();
+	cmd->text.textBytes = static_cast<uint16_t>(saturatedTextBytes(n->text.size()));
+	cmd->text.collapsible = n->text.collapsible() ? 1 : 0;
 	cmd->text.x = drawX; cmd->text.y = drawY;
 	cmd->text.maxWidth = drawW;
 	cmd->text.color = n->computedStyle().text_color;

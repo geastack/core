@@ -202,22 +202,20 @@ void rootScrollImageHoldTick();
 				int16_t rx8[4], ry8[4];
 				uint8_t cssRadii;
 			} strokeRoundedRect;
+			// Fields in size order, so the struct keeps its size in every pixel
+			// format (native_t is two or four bytes).
 			struct
 			{
 				const char *text;
-				int16_t x, y, maxWidth;
-				gea::framework::graphics::pixel::native_t color;
 				float scale;
-				int8_t align;
-				int8_t textTransform;
+				gea::framework::graphics::pixel::native_t color;
+				// text-emphasis marks (ComputedStyle::text_emphasis bits, 0 = none),
+				// painted in emphasisColor unless the bits say transparent.
+				gea::framework::graphics::pixel::native_t emphasisColor;
+				int16_t x, y, maxWidth;
 				int16_t lineHeight;
 				int16_t containerWidth;
 				int16_t fontId;
-				// CSS white-space / text-overflow, carried so the deferred draw
-				// can reproduce single-line truncation. whiteSpace==1 => nowrap
-				// (no width-based wrapping); textOverflow==1 => ellipsis ("...").
-				int8_t whiteSpace;
-				int8_t textOverflow;
 				// Content-box height. With ellipsis on WRAPPED text this caps the
 				// line budget (height / line advance) and the last line ellipsizes
 				// — the multi-line clamp. 0 = unlimited (draw every line).
@@ -225,10 +223,6 @@ void rootScrollImageHoldTick();
 				// Inline continuation offset for the run's FIRST line only (see
 				// LayoutBox::inline_indent). 0 for every run that starts its own line.
 				int16_t firstLineIndent;
-				// text-align-last: -1 when every line uses `align`. Otherwise bits 0-1
-				// align lines a forced break ends, and bit 2 marks a run whose final
-				// line also ends its paragraph.
-				int8_t alignLast;
 				// line-clamp: paint at most this many lines (0 = all).
 				int16_t lineLimit;
 				// block-ellipsis on the last painted line: 0 = none,
@@ -236,10 +230,23 @@ void rootScrollImageHoldTick();
 				// That line may use ellipsisWidth px from x, up to its line box end.
 				uint16_t blockEllipsis;
 				int16_t ellipsisWidth;
-				// text-emphasis marks (ComputedStyle::text_emphasis bits, 0 = none),
-				// painted in emphasisColor unless the bits say transparent.
+				// strlen(text), saturated: part of the line-break cache key.
+				uint16_t textBytes;
+				int8_t align;
+				int8_t textTransform;
+				// CSS white-space / text-overflow, carried so the deferred draw
+				// can reproduce single-line truncation. whiteSpace==1 => nowrap
+				// (no width-based wrapping); textOverflow==1 => ellipsis ("...").
+				int8_t whiteSpace;
+				int8_t textOverflow;
+				// text-align-last: -1 when every line uses `align`. Otherwise bits 0-1
+				// align lines a forced break ends, and bit 2 marks a run whose final
+				// line also ends its paragraph.
+				int8_t alignLast;
 				uint8_t emphasis;
-				gea::framework::graphics::pixel::native_t emphasisColor;
+				// NodeText::collapsible of the text: white-space collapsing may
+				// change it, so the draw normalizes a copy. 0 skips that outright.
+				uint8_t collapsible;
 			} text;
 			struct
 			{
@@ -644,6 +651,8 @@ void rootScrollImageHoldTick();
 	public:
 		// Shared preparation for measuring and replaying authored text. Storage
 		// owns the result only when collapsing or case transformation is needed.
+		// For text that has no node (projected labels): scans it for collapsible
+		// whitespace, which a node's text carries (NodeText::collapsible).
 		static const char *prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage);
 		static void layout(int id, int availableWidth);
 		static int baselineOffset(const Node &node, bool last);
@@ -665,6 +674,9 @@ void rootScrollImageHoldTick();
 		static void record(const Node &node, uint8_t parentAlpha = 255);
 		static void unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
 		                             int width, uint8_t *outCoverage);
+		// Paints a DrawText command.
+		static void drawWrapped(const DisplayCommand &command);
+		// For callers that hold no command (tests): scans the text as record() would.
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
 														int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0,
