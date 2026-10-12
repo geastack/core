@@ -1768,10 +1768,11 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 			return;
 		}
 		// Large opaque fills (e.g. a full-screen page/paper background) skip the
-		// per-pixel occlusion scan below. That scan READS every pixel just to
-		// minimize the dirty rect — worth it for a small changed region, but pure
-		// overhead for a page-sized fill that gets repainted wholesale anyway. Here
-		// we memset each row (fillSpanColor) and mark the whole rect dirty once.
+		// per-pixel occlusion scan below. That scan READS pixels just to minimize
+		// the dirty rect (a whole row when nothing in it changes) — worth it for a
+		// small changed region, but pure overhead for a page-sized fill that gets
+		// repainted wholesale anyway. Here we memset each row (fillSpanColor) and
+		// mark the whole rect dirty once.
 		// (Packed targets take the word-scan below for EVERY size: on e-paper the
 		// erase fill repaints a mostly-unchanged page, and skipping the matching
 		// words costs one sequential read instead of a full write-allocate pass —
@@ -1782,8 +1783,8 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 			return;
 		}
 #endif
-		for (int row = y0; row <= y1; row++) {
 #if GEA_PIXEL_STORAGE_PACKED
+		for (int row = y0; row <= y1; row++) {
 			// Byte/word-wise occlusion scan: a packed byte holds kPxPerByte pixels,
 			// so comparing whole bytes against the replicated value (and aligned
 			// 32-bit words against it ×4) skips already-correct spans without
@@ -1845,23 +1846,38 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 				markDirty(runStart, row, xe, row);
 				runStart = -1;  // keep the shared tail below a no-op
 			}
-#else
-			pixel::native_t *dst = &pixels_[rowToPhysical(row) * stride_ + x0];
-			int runStart = -1;
-			for (int i = 0; i < count; i++) {
-				if (dst[i] == c) {
-					if (runStart >= 0) {
-						markDirty(x0 + runStart, row, x0 + i - 1, row);
-						runStart = -1;
-					}
-					continue;
-				}
-				if (runStart < 0) runStart = i;
-				dst[i] = c;
-			}
-#endif
 			if (runStart >= 0) markDirty(x0 + runStart, row, x1, row);
 		}
+#else
+		// One span per row, from the first to the last pixel the fill changes,
+		// written at store speed. Reading and comparing every pixel and marking
+		// each differing run dirty cost more than the fill itself: a row
+		// background whose colour toggles differs everywhere, and its 13 rows x
+		// 410 px compared one by one were half of a 200 us desktop frame. The
+		// pixels are the same; the dirty rect also covers pixels inside the span
+		// that already had the colour. Rows with the same span share one rect.
+		int spanX0 = 0, spanX1 = -1, spanY0 = 0;
+		for (int row = y0; row <= y1; row++) {
+			const int phys = rowToPhysical(row);
+			const pixel::native_t *dst = &pixels_[phys * stride_ + x0];
+			int first = 0;
+			while (first < count && dst[first] == c) first++;
+			if (first == count) {
+				if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, row - 1);
+				spanX1 = -1;
+				continue;
+			}
+			int last = count - 1;
+			while (dst[last] == c) last--;
+			fillSpanColor(phys, x0 + first, last - first + 1, c);
+			if (spanX1 >= 0 && x0 + first == spanX0 && x0 + last == spanX1) continue;
+			if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, row - 1);
+			spanX0 = x0 + first;
+			spanX1 = x0 + last;
+			spanY0 = row;
+		}
+		if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, y1);
+#endif
 	} else if (globalAlpha_ != 0) {
 		const int a = globalAlpha_;
 #if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
