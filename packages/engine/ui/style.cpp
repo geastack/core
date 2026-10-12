@@ -14019,6 +14019,129 @@ constexpr std::uint16_t kNoCachedStyleApplyOp = 0xFFFFu;
 
 bool ruleWriteMask(const CssRule &rule, PropertyWriteMask &mask);
 
+// Ancestor key filter for a top-down subtree recompute (WebKit's
+// SelectorFilter): a counting Bloom filter over the classes and tags of the
+// ancestors of the node being restyled. A selector whose ancestor parts name a
+// class or tag the filter lacks cannot match, so its ancestor walk is skipped.
+// It answers only for a child of the last node on its chain, and any class or
+// tag change switches it off until the walk that opened it ends.
+class AncestorKeyFilter {
+	static constexpr int kSlotBits = 9;
+
+public:
+	bool active() const { return active_; }
+	bool covers(int node) const
+	{
+		return depth_ > 0 && !off_ && treeState().nodes[node].parent == chain_[depth_ - 1];
+	}
+	bool mayHave(unsigned slot) const { return counts_[slot] != 0; }
+	// The chain class (SharedRulePlans) of the node on top, -1 for none.
+	int topClass() const { return depth_ > 0 ? chainClass_[depth_ - 1] : -1; }
+	// The class the plan build gave `node`, for when it goes on top.
+	void noteClass(int node, int chainClass)
+	{
+		pendingNode_ = node;
+		pendingClass_ = chainClass;
+	}
+	static unsigned slotForClass(CssAtomId cls) { return (static_cast<std::uint32_t>(cls) * 2654435761u) >> (32 - kSlotBits); }
+	static unsigned slotForTag(int16_t tag)
+	{
+		return ((static_cast<std::uint32_t>(static_cast<std::uint16_t>(tag)) | 0x10000u) * 2654435761u) >> (32 - kSlotBits);
+	}
+	void invalidate()
+	{
+		if (active_) off_ = true;
+	}
+
+	// Opens the filter for a walk from `root`, holding root's ancestors.
+	void begin(int root)
+	{
+		const auto &state = treeState();
+		active_ = true;
+		int ancestors[kMaxDepth];
+		int count = 0;
+		for (int a = state.nodes[root].parent; a >= 0 && a < state.nodeCount; a = state.nodes[a].parent) {
+			if (count == kMaxDepth) {
+				off_ = true;
+				return;
+			}
+			ancestors[count++] = a;
+		}
+		while (count > 0) {
+			const int ancestor = ancestors[--count];
+			noteClass(ancestor, ancestorChainClass(ancestor));
+			push(ancestor);
+		}
+	}
+	void end()
+	{
+		std::memset(counts_, 0, sizeof counts_);
+		depth_ = keyCount_ = 0;
+		pendingNode_ = pendingClass_ = -1;
+		active_ = off_ = false;
+	}
+	// Adds `node` on top of the chain. False when it did not enter (no pop).
+	bool push(int node)
+	{
+		if (off_ || depth_ == kMaxDepth) {
+			off_ = true;
+			return false;
+		}
+		const auto &state = treeState();
+		keyStart_[depth_] = static_cast<std::uint16_t>(keyCount_);
+		chainClass_[depth_] = static_cast<std::int16_t>(pendingNode_ == node ? pendingClass_ : -1);
+		chain_[depth_++] = node;
+		const NodeClassList &classes = state.classLists[node];
+		for (std::size_t i = 0, n = classes.size(); i < n; ++i) add(slotForClass(classes.at(i)));
+		add(slotForTag(state.nodes[node].tag_id));
+		return true;
+	}
+	void pop()
+	{
+		--depth_;
+		while (keyCount_ > keyStart_[depth_]) {
+			const unsigned slot = keys_[--keyCount_];
+			if (counts_[slot] != 255) --counts_[slot];
+		}
+	}
+
+private:
+	static constexpr int kMaxDepth = 64;
+	static constexpr int kMaxKeys = 512;
+	// A saturated counter never comes down: it can only answer "maybe".
+	void add(unsigned slot)
+	{
+		if (keyCount_ == kMaxKeys) {
+			off_ = true;
+			return;
+		}
+		keys_[keyCount_++] = static_cast<std::uint16_t>(slot);
+		if (counts_[slot] != 255) ++counts_[slot];
+	}
+
+	std::uint8_t counts_[1 << kSlotBits] = {};
+	std::uint16_t keys_[kMaxKeys];
+	std::uint16_t keyStart_[kMaxDepth];
+	std::int16_t chainClass_[kMaxDepth];
+	int chain_[kMaxDepth];
+	int pendingNode_ = -1;
+	int pendingClass_ = -1;
+	int ancestorChainClass(int node) const;
+	int depth_ = 0;
+	int keyCount_ = 0;
+	bool active_ = false;
+	bool off_ = false;
+};
+
+AncestorKeyFilter g_ancestorFilter;
+
+constexpr std::uint8_t kRuleSamePlanNext = 1;
+constexpr std::uint8_t kRuleSignatureLocal = 2;
+// The match depends only on the node's and its ancestors' classes, tag, id
+// and root-ness: no :first-child, :last-child, :hover or sibling combinator.
+constexpr std::uint8_t kRuleChainLocal = 4;
+bool selectorRuleIsSignatureLocal(const CssRule &rule);
+
 // Rule-matching index. A full class-style recompute is O(nodes x rules), and
 // with a large stylesheet (the weather app registers ~686 rules) scanning every
 // rule for every node dominates mount/recompute time. The index buckets rules by
@@ -14063,6 +14186,9 @@ struct RuleIndex {
 	// change to one of these keys restyles the siblings after the node.
 	DenseIdSet siblingClasses;
 	DenseIdSet siblingTags;
+	// Ids some selector names. Any other id cannot affect a match, so the
+	// candidate signature leaves it out and same-shaped nodes share entries.
+	DenseIdSet referencedIds;
 	bool hasSiblingRules = false;
 	// CSS specificity per rule (indexed by rule index), packed as
 	// ids*10000 + (classes+pseudo-classes)*100 + (elements+pseudo-elements). Used to
@@ -14076,6 +14202,28 @@ struct RuleIndex {
 	// than one selector key. Serial 0 means "not seen".
 	std::vector<std::uint16_t> candidateSeen;
 	std::uint16_t candidateSerial = 0;
+	// Selector matches of the node whose rule plan is being built, by selector
+	// plan: every declaration of a rule block is its own rule sharing one plan,
+	// and each used to walk the ancestor chain again. A result holds while its
+	// serial equals planSerial, which every plan build advances.
+	struct PlanMatch {
+		std::uint16_t serial;
+		std::uint8_t result;
+	};
+	std::vector<PlanMatch> planMatch;
+	std::uint16_t planSerial = 0;
+	// The ancestor key filter answers for that node (AncestorKeyFilter), and
+	// the filter slots each plan's ancestor parts need: planKeySlots from
+	// planKeyBegin[plan] to planKeyBegin[plan + 1].
+	bool planFiltered = false;
+	// Every candidate of the plan being built was chain-local (kRuleChainLocal).
+	bool planChainLocal = true;
+	std::vector<std::uint32_t> planKeyBegin;
+	std::vector<std::uint16_t> planKeySlots;
+	// Per rule: kRuleSamePlanNext (the next rule is the next declaration of
+	// the same selector block, so a selector that rejects one rejects both),
+	// kRuleSignatureLocal (selectorRuleIsSignatureLocal) and kRuleChainLocal.
+	std::vector<std::uint8_t> ruleFlags;
 	// Media-query results are viewport-global. Cache one active bit per rule so a
 	// recompute over many nodes does not re-evaluate the same @media expressions.
 	std::vector<std::uint8_t> mediaMatches;
@@ -14158,6 +14306,7 @@ void rebuildRuleIndexIfNeeded()
 	g_ruleIndex.ancestorTags.clear();
 	g_ruleIndex.siblingClasses.clear();
 	g_ruleIndex.siblingTags.clear();
+	g_ruleIndex.referencedIds.clear();
 	g_ruleIndex.hasSiblingRules = false;
 	const auto &list = rules();
 	g_ruleIndex.specificity.assign(list.size(), 0);
@@ -14165,6 +14314,8 @@ void rebuildRuleIndexIfNeeded()
 	g_ruleIndex.styleOps.assign(list.size(), kNoCachedStyleApplyOp);
 	g_ruleIndex.candidateSeen.assign(list.size(), 0);
 	g_ruleIndex.candidateSerial = 0;
+	g_ruleIndex.planMatch.assign(selectorPlans().size(), {0, 0});
+	g_ruleIndex.planSerial = 0;
 	g_ruleIndex.mediaMatches.assign(list.size(), 0);
 	g_ruleIndex.hasMediaConditions = false;
 	g_ruleIndex.hasPseudoElementRules = false;
@@ -14214,8 +14365,10 @@ void rebuildRuleIndexIfNeeded()
 					const int16_t tag = plan->ancestorTags.at(ancestor);
 					if (tag >= 0) g_ruleIndex.ancestorTags.insert(tag);
 				}
-				for (std::size_t p = 0; p < plan->parts.size(); ++p)
+				for (std::size_t p = 0; p < plan->parts.size(); ++p) {
 					if (plan->parts.at(p).sibling) g_ruleIndex.hasSiblingRules = true;
+					if (plan->parts.at(p).simple.idAtom != kInvalidCssAtom) g_ruleIndex.referencedIds.insert(plan->parts.at(p).simple.idAtom);
+				}
 				for (std::size_t sibling = 0, count = plan->siblingClasses.size(); sibling < count; ++sibling)
 					g_ruleIndex.siblingClasses.insert(plan->siblingClasses.at(sibling));
 				for (std::size_t sibling = 0, count = plan->siblingTags.size(); sibling < count; ++sibling)
@@ -14234,6 +14387,36 @@ void rebuildRuleIndexIfNeeded()
 		if (list[i].propertyKind == CssRuleProperty::Animation) g_ruleIndex.animationRules.push_back(i);
 #endif
 	}
+	g_ruleIndex.ruleFlags.assign(list.size(), 0);
+	for (std::size_t i = 0; i < list.size(); ++i) {
+		std::uint8_t flags = selectorRuleIsSignatureLocal(list[i]) ? kRuleSignatureLocal : 0;
+		bool chainLocal = true;
+		if (list[i].selectorType == CssRule::SelectorType::Selector) {
+			if (const SelectorPlan *plan = selectorPlanForHandle(list[i].selectorPlan)) {
+				for (std::size_t p = 0; chainLocal && p < plan->parts.size(); ++p) {
+					const SelectorPart &part = plan->parts.at(p);
+					chainLocal = !part.sibling && !part.simple.wantsFirstChild && !part.simple.wantsLastChild && !part.simple.wantsHover;
+				}
+			}
+		}
+		if (chainLocal) flags |= kRuleChainLocal;
+		if (i + 1 < list.size() && list[i].selectorType == CssRule::SelectorType::Selector &&
+		    list[i + 1].selectorType == CssRule::SelectorType::Selector && list[i].selectorPlan != kNoSelectorPlan &&
+		    list[i].selectorPlan == list[i + 1].selectorPlan)
+			flags |= kRuleSamePlanNext;
+		g_ruleIndex.ruleFlags[i] = flags;
+	}
+	const auto &plans = selectorPlans();
+	g_ruleIndex.planKeyBegin.assign(plans.size() + 1, 0);
+	g_ruleIndex.planKeySlots.clear();
+	for (std::size_t p = 0; p < plans.size(); ++p) {
+		g_ruleIndex.planKeyBegin[p] = static_cast<std::uint32_t>(g_ruleIndex.planKeySlots.size());
+		for (std::size_t i = 0, n = plans[p].ancestorClasses.size(); i < n; ++i)
+			g_ruleIndex.planKeySlots.push_back(AncestorKeyFilter::slotForClass(plans[p].ancestorClasses.at(i)));
+		for (std::size_t i = 0, n = plans[p].ancestorTags.size(); i < n; ++i)
+			g_ruleIndex.planKeySlots.push_back(AncestorKeyFilter::slotForTag(plans[p].ancestorTags.at(i)));
+	}
+	g_ruleIndex.planKeyBegin[plans.size()] = static_cast<std::uint32_t>(g_ruleIndex.planKeySlots.size());
 	g_ruleIndex.byClass.finalize();
 	g_ruleIndex.byTag.finalize();
 	g_ruleIndex.selById.finalize();
@@ -14278,6 +14461,34 @@ bool ruleMediaMatchesIndex(int ruleIndex)
 	rebuildRuleMediaCacheIfNeeded();
 	if (ruleIndex < 0 || static_cast<std::size_t>(ruleIndex) >= g_ruleIndex.mediaMatches.size()) return false;
 	return g_ruleIndex.mediaMatches[static_cast<std::size_t>(ruleIndex)] != 0;
+}
+
+void nextPlanMatchSerial()
+{
+	std::uint16_t next = static_cast<std::uint16_t>(g_ruleIndex.planSerial + 1u);
+	if (next == 0) {
+		for (RuleIndex::PlanMatch &memo : g_ruleIndex.planMatch) memo.serial = 0;
+		next = 1;
+	}
+	g_ruleIndex.planSerial = next;
+}
+
+// selectorMatchesNode for the node of the current plan build, once per plan.
+bool selectorMatchesPlanNode(const CssRule &rule, int node)
+{
+	const std::size_t handle = rule.selectorPlan;
+	if (handle + 1 >= g_ruleIndex.planKeyBegin.size()) return selectorMatchesNode(rule, node);
+	RuleIndex::PlanMatch &memo = g_ruleIndex.planMatch[handle];
+	if (memo.serial != g_ruleIndex.planSerial) {
+		memo.serial = g_ruleIndex.planSerial;
+		bool matches = true;
+		if (g_ruleIndex.planFiltered) {
+			for (std::uint32_t k = g_ruleIndex.planKeyBegin[handle], end = g_ruleIndex.planKeyBegin[handle + 1]; matches && k < end; ++k)
+				matches = g_ancestorFilter.mayHave(g_ruleIndex.planKeySlots[k]);
+		}
+		memo.result = matches && selectorMatchesNode(rule, node) ? 1u : 0u;
+	}
+	return memo.result != 0;
 }
 
 std::uint16_t nextCandidateCollectSerial()
@@ -15528,16 +15739,10 @@ std::uint16_t cachedStyleApplyOpForCompiledValue(const CssCompiledValue *compile
 	return static_cast<std::uint16_t>(ops.size() - 1);
 }
 
-void storeActiveRulePlanForSignature(const RuleCandidateSignature &signature, const ActiveRulePlan &plan)
+// The plan's buckets as a cache entry; false when they do not fit.
+bool flattenActiveRulePlan(const ActiveRulePlan &plan, ActiveRulePlanCacheEntry &entry)
 {
-	static constexpr std::size_t kActiveRulePlanCacheLimit = 64;
-	if (!activeRulePlanFitsCache(plan)) return;
-	auto &cache = activeRulePlanCache();
-	if (cache.size() >= kActiveRulePlanCacheLimit) return;
-	cache.emplace_back();
-	ActiveRulePlanCacheEntry &entry = cache.back();
-	activeRulePlanCacheLastHit() = cache.size() - 1;
-	copyActiveRulePlanSignature(entry, signature);
+	if (!activeRulePlanFitsCache(plan)) return false;
 	const auto &ruleList = rules();
 	std::size_t write = 0;
 	for (int bucket = 0; bucket < kActiveRuleBucketCount; ++bucket) {
@@ -15546,10 +15751,7 @@ void storeActiveRulePlanForSignature(const RuleCandidateSignature &signature, co
 		entry.bucketCounts[bucket] = static_cast<std::uint8_t>(count);
 		entry.bucketOffsets[bucket] = static_cast<std::uint8_t>(write);
 		for (std::size_t i = 0; i < count; ++i) {
-			if (write >= kActiveRulePlanCacheRuleCapacity) {
-				cache.pop_back();
-				return;
-			}
+			if (write >= kActiveRulePlanCacheRuleCapacity) return false;
 			const int ri = src.at(i);
 			if (ri < 0 || static_cast<std::size_t>(ri) >= ruleList.size()) {
 				entry.rules[write++] = {};
@@ -15569,6 +15771,115 @@ void storeActiveRulePlanForSignature(const RuleCandidateSignature &signature, co
 			        : cachedStyleApplyOpForCompiledValue(compiledCssValueForHandle(rule.compiledValue));
 		}
 	}
+	return true;
+}
+
+void storeActiveRulePlanForSignature(const RuleCandidateSignature &signature, const ActiveRulePlan &plan)
+{
+	static constexpr std::size_t kActiveRulePlanCacheLimit = 64;
+	if (!activeRulePlanFitsCache(plan)) return;
+	auto &cache = activeRulePlanCache();
+	if (cache.size() >= kActiveRulePlanCacheLimit) return;
+	cache.emplace_back();
+	ActiveRulePlanCacheEntry &entry = cache.back();
+	activeRulePlanCacheLastHit() = cache.size() - 1;
+	copyActiveRulePlanSignature(entry, signature);
+	if (!flattenActiveRulePlan(plan, entry)) cache.pop_back();
+}
+
+bool captureRuleCandidateSignature(int selectorNode, RuleCandidateSignature &signature);
+
+// Plans shared along one top-down subtree recompute. Nodes whose signature
+// and whose ancestors' signatures, pair by pair, are the same (one chain
+// class) get the same rules from chain-local selectors (kRuleChainLocal), so
+// a list of identical rows builds its row, label and icon plans once.
+class SharedRulePlans {
+public:
+	void clear()
+	{
+		classCount_ = 0;
+		for (std::int16_t &key : planKey_) key = 0;
+		nextPlan_ = 0;
+		inUse_ = -1;
+	}
+	// The class of a node with `signature` whose parent has `parentClass`
+	// (kAboveRoot for the tree root); -1 when the parent has none or the
+	// table is full.
+	static constexpr int kAboveRoot = -2;
+	int chainClass(int parentClass, const RuleCandidateSignature &signature)
+	{
+		if (parentClass == -1) return -1;
+		for (int i = 0; i < classCount_; ++i)
+			if (classes_[i].parent == parentClass && classes_[i].same(signature)) return i;
+		if (classCount_ == kMaxClasses) return -1;
+		ChainClass &added = classes_[classCount_];
+		added.parent = static_cast<std::int16_t>(parentClass);
+		added.idAtom = signature.idAtom;
+		added.tagId = signature.tagId;
+		added.classCount = signature.classCount;
+		added.root = signature.root;
+		for (std::size_t i = 0; i < signature.classCount; ++i) added.classes[i] = signature.classes[i];
+		return classCount_++;
+	}
+	const ActiveRulePlanCacheEntry *find(int chainClass)
+	{
+		for (int i = 0; i < kMaxPlans; ++i) {
+			if (planKey_[i] != chainClass + 1) continue;
+			inUse_ = i;
+			return &plans_[i];
+		}
+		return nullptr;
+	}
+	// Never overwrites the entry find() last handed out.
+	void store(int chainClass, const ActiveRulePlan &plan)
+	{
+		int slot = nextPlan_;
+		if (slot == inUse_) slot = (slot + 1) % kMaxPlans;
+		nextPlan_ = (slot + 1) % kMaxPlans;
+		planKey_[slot] = 0;
+		if (flattenActiveRulePlan(plan, plans_[slot])) planKey_[slot] = static_cast<std::int16_t>(chainClass + 1);
+	}
+
+private:
+	static constexpr int kMaxClasses = 64;
+	static constexpr int kMaxPlans = 4;
+	// A parent class and a signature; plain fields, so the table is zero-initialized.
+	struct ChainClass {
+		std::int16_t parent;
+		CssAtomId classes[kRuleCandidateCacheClassCapacity];
+		CssAtomId idAtom;
+		int16_t tagId;
+		std::uint8_t classCount;
+		bool root;
+
+		bool same(const RuleCandidateSignature &signature) const
+		{
+			if (idAtom != signature.idAtom || tagId != signature.tagId || classCount != signature.classCount || root != signature.root)
+				return false;
+			for (std::size_t i = 0; i < classCount; ++i)
+				if (classes[i] != signature.classes[i]) return false;
+			return true;
+		}
+	};
+	ChainClass classes_[kMaxClasses];
+	ActiveRulePlanCacheEntry plans_[kMaxPlans];
+	std::int16_t planKey_[kMaxPlans] = {};  // chain class + 1, 0 empty
+	int classCount_ = 0;
+	int nextPlan_ = 0;
+	int inUse_ = -1;
+};
+
+SharedRulePlans g_sharedPlans;
+// recomputeNodeClassStyles calls in progress. Only the outermost shares
+// plans: a nested one could overwrite the entry the outer one is applying.
+int g_classRecomputeDepth = 0;
+
+int AncestorKeyFilter::ancestorChainClass(int node) const
+{
+	RuleCandidateSignature signature;
+	if (!captureRuleCandidateSignature(node, signature)) return -1;
+	const int parent = treeState().nodes[node].parent;
+	return g_sharedPlans.chainClass(parent < 0 ? SharedRulePlans::kAboveRoot : topClass(), signature);
 }
 
 bool selectorRuleIsSignatureLocal(const CssRule &rule)
@@ -16238,7 +16549,8 @@ bool captureRuleCandidateSignature(int selectorNode, RuleCandidateSignature &sig
 	for (std::size_t i = 0; i < classes.size(); ++i)
 		signature.classes[i] = classes.at(i);
 	sortRuleCandidateSignatureClasses(signature);
-	signature.idAtom = nodeIdAttributeAtom(selectorNode);
+	const CssAtomId idAtom = nodeIdAttributeAtom(selectorNode);
+	if (idAtom != kInvalidCssAtom && g_ruleIndex.referencedIds.contains(idAtom)) signature.idAtom = idAtom;
 	signature.tagId = state.nodes[selectorNode].tag_id;
 	signature.root = isRootNode(selectorNode);
 	return true;
@@ -16343,34 +16655,48 @@ const RuleCandidateCacheEntry *cachedRuleCandidateEntryForSignature(const RuleCa
 		lastHit = i;
 		return &g_ruleIndex.candidateCache[i];
 	}
-	if (g_ruleIndex.candidateCache.size() >= kRuleCandidateCacheLimit) return nullptr;
-	g_ruleIndex.candidateCache.emplace_back();
-	RuleCandidateCacheEntry &entry = g_ruleIndex.candidateCache.back();
+	// Full: take over the slots in turn, so the shapes of the current screen
+	// win over those an earlier screen left behind.
+	static std::size_t nextVictim = 0;
+	std::size_t slot;
+	if (g_ruleIndex.candidateCache.size() < kRuleCandidateCacheLimit) {
+		g_ruleIndex.candidateCache.emplace_back();
+		slot = g_ruleIndex.candidateCache.size() - 1;
+	} else {
+		slot = nextVictim;
+		nextVictim = (nextVictim + 1) % kRuleCandidateCacheLimit;
+	}
+	RuleCandidateCacheEntry &entry = g_ruleIndex.candidateCache[slot];
 	copyCandidateSignature(entry, signature);
 	buildRuleCandidatesForSignature(signature, entry.rules);
 	entry.signatureLocal = candidateRulesAreSignatureLocal(entry.rules, rules());
-	lastHit = g_ruleIndex.candidateCache.size() - 1;
+	lastHit = slot;
 	return &entry;
 }
 
-void addCachedActiveCandidateRule(ActiveRulePlan &plan,
+// False when the rule's selector rejected the node.
+bool addCachedActiveCandidateRule(ActiveRulePlan &plan,
                                   int selectorNode,
                                   int ruleIndex,
                                   const std::vector<CssRule> &ruleList,
                                   const std::vector<std::uint8_t> *mediaMatches,
                                   const RuleCandidateSignature *signature = nullptr)
 {
-	if (ruleIndex < 0 || static_cast<std::size_t>(ruleIndex) >= ruleList.size()) return;
+	if (ruleIndex < 0 || static_cast<std::size_t>(ruleIndex) >= ruleList.size()) return true;
 	if (mediaMatches &&
 	    (static_cast<std::size_t>(ruleIndex) >= mediaMatches->size() ||
 	     (*mediaMatches)[static_cast<std::size_t>(ruleIndex)] == 0))
-		return;
+		return true;
 	const CssRule &rule = ruleList[static_cast<std::size_t>(ruleIndex)];
 	if (rule.selectorType == CssRule::SelectorType::Selector) {
-		if (signature && selectorRuleIsSignatureLocal(rule)) {
-			if (!selectorRuleMatchesSignature(rule, *signature)) return;
-		} else if (!selectorMatchesNode(rule, selectorNode)) {
-			return;
+		const bool known = static_cast<std::size_t>(ruleIndex) < g_ruleIndex.ruleFlags.size();
+		const std::uint8_t flags = known ? g_ruleIndex.ruleFlags[static_cast<std::size_t>(ruleIndex)] : 0;
+		if (!(flags & kRuleChainLocal)) g_ruleIndex.planChainLocal = false;
+		const bool signatureLocal = known ? (flags & kRuleSignatureLocal) != 0 : selectorRuleIsSignatureLocal(rule);
+		if (signature && signatureLocal) {
+			if (!selectorRuleMatchesSignature(rule, *signature)) return false;
+		} else if (!selectorMatchesPlanNode(rule, selectorNode)) {
+			return false;
 		}
 	}
 	const int bucket = activeRuleBucketFor(rule);
@@ -16382,26 +16708,28 @@ void addCachedActiveCandidateRule(ActiveRulePlan &plan,
 	if ((rule.declaration == CssDeclarationId::Transition || rule.declaration == CssDeclarationId::AnimationPlayState) &&
 	    rule.pseudoElement == CssRule::PseudoElement::None) plan.push(kActiveMotion, ruleIndex);
 #endif
+	return true;
 }
 
-void addActiveCandidateRule(ActiveRulePlan &plan,
+// False when the rule's selector rejected the node.
+bool addActiveCandidateRule(ActiveRulePlan &plan,
                             int selectorNode,
                             int ruleIndex,
                             std::uint16_t serial,
                             const std::vector<CssRule> &ruleList,
                             const std::vector<std::uint8_t> *mediaMatches)
 {
-	if (ruleIndex < 0 || static_cast<std::size_t>(ruleIndex) >= g_ruleIndex.candidateSeen.size()) return;
+	if (ruleIndex < 0 || static_cast<std::size_t>(ruleIndex) >= g_ruleIndex.candidateSeen.size()) return true;
 	std::uint16_t &seen = g_ruleIndex.candidateSeen[static_cast<std::size_t>(ruleIndex)];
-	if (seen == serial) return;
+	if (seen == serial) return true;
 	seen = serial;
-	if (static_cast<std::size_t>(ruleIndex) >= ruleList.size()) return;
+	if (static_cast<std::size_t>(ruleIndex) >= ruleList.size()) return true;
 	if (mediaMatches &&
 	    (static_cast<std::size_t>(ruleIndex) >= mediaMatches->size() ||
 	     (*mediaMatches)[static_cast<std::size_t>(ruleIndex)] == 0))
-		return;
+		return true;
 	const CssRule &rule = ruleList[static_cast<std::size_t>(ruleIndex)];
-	if (rule.selectorType == CssRule::SelectorType::Selector && !selectorMatchesNode(rule, selectorNode)) return;
+	if (rule.selectorType == CssRule::SelectorType::Selector && !selectorMatchesPlanNode(rule, selectorNode)) return false;
 	const int bucket = activeRuleBucketFor(rule);
 	if (bucket >= 0) plan.push(bucket, ruleIndex);
 #if GEA_CSS_ANIMATIONS
@@ -16411,6 +16739,23 @@ void addActiveCandidateRule(ActiveRulePlan &plan,
 	if ((rule.declaration == CssDeclarationId::Transition || rule.declaration == CssDeclarationId::AnimationPlayState) &&
 	    rule.pseudoElement == CssRule::PseudoElement::None) plan.push(kActiveMotion, ruleIndex);
 #endif
+	return true;
+}
+
+// After a selector rejected rules[i], the number of following entries that
+// are the next declarations of the same block (and so rejected as well).
+template <typename Rules>
+std::size_t rejectedBlockTail(const Rules &rules, std::size_t i, std::size_t count)
+{
+	std::size_t skip = 0;
+	while (i + skip + 1 < count) {
+		const int ri = rules[i + skip];
+		if (static_cast<std::size_t>(ri) >= g_ruleIndex.ruleFlags.size() ||
+		    !(g_ruleIndex.ruleFlags[static_cast<std::size_t>(ri)] & kRuleSamePlanNext) || rules[i + skip + 1] != ri + 1)
+			break;
+		++skip;
+	}
+	return skip;
 }
 
 void addActiveCandidateRuleBucket(ActiveRulePlan &plan,
@@ -16422,7 +16767,8 @@ void addActiveCandidateRuleBucket(ActiveRulePlan &plan,
 {
 	if (bucket.empty()) return;
 	for (std::size_t i = 0; i < bucket.count; ++i)
-		addActiveCandidateRule(plan, selectorNode, bucket.data[i], serial, ruleList, mediaMatches);
+		if (!addActiveCandidateRule(plan, selectorNode, bucket.data[i], serial, ruleList, mediaMatches))
+			i += rejectedBlockTail(bucket.data, i, bucket.count);
 }
 
 void addActiveCandidateRuleBucket(ActiveRulePlan &plan,
@@ -16433,8 +16779,9 @@ void addActiveCandidateRuleBucket(ActiveRulePlan &plan,
                                   const std::vector<std::uint8_t> *mediaMatches)
 {
 	if (bucket.empty()) return;
-	for (const int ri : bucket)
-		addActiveCandidateRule(plan, selectorNode, ri, serial, ruleList, mediaMatches);
+	for (std::size_t i = 0; i < bucket.size(); ++i)
+		if (!addActiveCandidateRule(plan, selectorNode, bucket[i], serial, ruleList, mediaMatches))
+			i += rejectedBlockTail(bucket, i, bucket.size());
 }
 
 void buildActiveRulePlanForNode(int selectorNode, ActiveRulePlan &plan)
@@ -16445,23 +16792,40 @@ void buildActiveRulePlanForNode(int selectorNode, ActiveRulePlan &plan)
 	const auto &state = treeState();
 	if (selectorNode < 0 || selectorNode >= state.nodeCount) return;
 	if (isAnonymousTextNode(state.nodes[selectorNode])) return;
+	nextPlanMatchSerial();
+	g_ruleIndex.planFiltered = g_ancestorFilter.covers(selectorNode);
 	const auto &ruleList = rules();
 	const std::vector<std::uint8_t> *mediaMatches =
 	    g_ruleIndex.hasMediaConditions ? &g_ruleIndex.mediaMatches : nullptr;
 	RuleCandidateSignature signature;
 	if (captureRuleCandidateSignature(selectorNode, signature)) {
+		int chainClass = -1;
+		if (g_ruleIndex.planFiltered) {
+			chainClass = g_sharedPlans.chainClass(g_ancestorFilter.topClass(), signature);
+			g_ancestorFilter.noteClass(selectorNode, chainClass);
+		}
 		if (const ActiveRulePlanCacheEntry *cachedPlan = cachedActiveRulePlanForSignature(signature)) {
 			setActiveRulePlanFromCache(plan, *cachedPlan);
 			return;
 		}
-		if (const RuleCandidateCacheEntry *candidateEntry = cachedRuleCandidateEntryForSignature(signature)) {
-			for (std::size_t i = 0, n = candidateEntry->rules.size(); i < n; ++i) {
-				const int ri = candidateEntry->rules[i];
-				addCachedActiveCandidateRule(plan, selectorNode, ri, ruleList, mediaMatches, &signature);
+		if (g_classRecomputeDepth > 1) chainClass = -1;
+		if (chainClass >= 0) {
+			if (const ActiveRulePlanCacheEntry *shared = g_sharedPlans.find(chainClass)) {
+				setActiveRulePlanFromCache(plan, *shared);
+				return;
 			}
+		}
+		if (const RuleCandidateCacheEntry *candidateEntry = cachedRuleCandidateEntryForSignature(signature)) {
+			g_ruleIndex.planChainLocal = true;
+			const RuleCandidateList &candidates = candidateEntry->rules;
+			for (std::size_t i = 0, n = candidates.size(); i < n; ++i)
+				if (!addCachedActiveCandidateRule(plan, selectorNode, candidates[i], ruleList, mediaMatches, &signature))
+					i += rejectedBlockTail(candidates, i, n);
 			collapseShadowedActiveRules(plan);
 			if (candidateEntry->signatureLocal)
 				storeActiveRulePlanForSignature(signature, plan);
+			else if (chainClass >= 0 && g_ruleIndex.planChainLocal)
+				g_sharedPlans.store(chainClass, plan);
 			return;
 		}
 	}
@@ -16926,6 +17290,7 @@ void recomputeNodeClassStyles(int node)
 {
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
+	++g_classRecomputeDepth;
 
 	const ComputedStyle beforeStyle = state.nodes[node].computedStyle();
 #if GEA_CSS_FIRST_LINE
@@ -17027,6 +17392,7 @@ void recomputeNodeClassStyles(int node)
 #if GEA_CSS_CUSTOM_PROPERTIES
 	g_recordingNode = prevRecordingNode;
 #endif
+	--g_classRecomputeDepth;
 }
 
 // When set (during the initial app mount), per-op class-style recomputes are
@@ -17044,6 +17410,20 @@ bool g_styleMountBatchActive = false;
 // descendant classes — from N full/overlapping recomputes into one pass.
 std::vector<int> g_pendingRecomputeRoots;
 
+// `filtered`: the ancestor key filter holds node's ancestors, so node goes on
+// top of it for its children.
+void recomputeSubtreeWalk(int node, bool filtered)
+{
+	auto &state = treeState();
+	recomputeNodeClassStyles(node);
+	const bool entered = filtered && g_ancestorFilter.push(node);
+	for (int child = state.nodes[node].first_child; child >= 0; child = state.nodes[child].next_sibling) {
+		if (isGeneratedPseudoNode(state.nodes[child])) continue;
+		recomputeSubtreeWalk(child, entered);
+	}
+	if (entered) g_ancestorFilter.pop();
+}
+
 void recomputeSubtreeClassStyles(int node)
 {
 	if (g_styleMountBatchActive) {
@@ -17052,11 +17432,17 @@ void recomputeSubtreeClassStyles(int node)
 	}
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
-	recomputeNodeClassStyles(node);
-	for (int child = state.nodes[node].first_child; child >= 0; child = state.nodes[child].next_sibling) {
-		if (isGeneratedPseudoNode(state.nodes[child])) continue;
-		recomputeSubtreeClassStyles(child);
+	// A walk started from inside another leaves that walk's filter alone.
+	if (g_ancestorFilter.active()) {
+		recomputeSubtreeWalk(node, false);
+		return;
 	}
+	rebuildRuleIndexIfNeeded();
+	g_sharedPlans.clear();
+	g_ancestorFilter.begin(node);
+	recomputeSubtreeWalk(node, true);
+	g_ancestorFilter.end();
+	g_sharedPlans.clear();
 }
 
 void recomputeDescendantClassStyles(int node)
@@ -17410,6 +17796,7 @@ void snapshotCustomProperties(const NodeRareData *rareData, CustomPropertySnapsh
 
 void noteClassMutationForIncremental(int node, const NodeClassSnapshot &oldTokens)
 {
+	g_ancestorFilter.invalidate();
 	const auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return;
 	// A + or ~ selector keyed on a class this mutation added or removed
@@ -19781,6 +20168,7 @@ void Tree::setTagName(int node, const char *tagName)
 	const int16_t id = internTag(tagName ? tagName : "");
 	if (state.nodes[node].tag_id == id) return;
 	state.nodes[node].tag_id = id;
+	g_ancestorFilter.invalidate();
 	recomputeSubtreeClassStyles(node);
 }
 
