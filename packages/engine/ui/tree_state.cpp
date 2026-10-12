@@ -762,8 +762,9 @@ const NodeCustomProperty *NodeCustomPropertyStore::getEntry(CssAtomId nameId) co
 // __cxa_guard_acquire CALL on every access — and treeState() sits on the hottest
 // style-recompute path (called per rule, per node). UI state is single-threaded
 // (the mount task and the frame task never run concurrently), so the guard is
-// unnecessary; a zero-initialized pointer + null check is one load and a branch.
-static TreeState *g_treeState = nullptr;
+// unnecessary; a zero-initialized pointer + null check is one load and a branch,
+// inlined into the caller (tree_state.h).
+TreeState *g_treeState = nullptr;
 StorageUsage treeStorageUsage()
 {
     StorageUsage usage;
@@ -773,7 +774,7 @@ StorageUsage treeStorageUsage()
 }
 
 
-TreeState &treeState()
+TreeState &createTreeState()
 {
 	if (!g_treeState) {
 #if defined(ESP_PLATFORM)
