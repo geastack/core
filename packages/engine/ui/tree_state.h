@@ -446,6 +446,17 @@ struct TreeState {
 	int hoveredNodeId = -1;
 };
 
-TreeState &treeState();
+// Created by the first treeState() call (tree_state.cpp). treeState() is read
+// per rule and per node in style, layout and paint order; out of line, the call
+// took ~10% of a desktop layout frame's samples (inline: flex-layout-96 -6%), so
+// the pointer is read inline and only the first call leaves the caller.
+extern TreeState *g_treeState;
+TreeState &createTreeState();
+
+inline TreeState &treeState()
+{
+	if (g_treeState) return *g_treeState;
+	return createTreeState();
+}
 
 }  // namespace gea::embedded::ui
