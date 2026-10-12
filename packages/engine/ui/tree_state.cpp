@@ -169,19 +169,19 @@ NodeText &NodeText::operator=(NodeText &&other) noexcept
 }
 const std::string &NodeText::str() const
 {
-	return empty() ? g_emptyNodeText : nodeTextPool().at(handle_).text;
+	return empty() ? g_emptyNodeText : nodeTextPool().at(index()).text;
 }
 void NodeText::clear()
 {
 	if (empty())
 		return;
 	auto &pool = nodeTextPool();
-	auto &entry = pool.at(handle_);
+	auto &entry = pool.at(index());
 	// Release long text allocations on removal, rather than retaining the
 	// largest label ever seen in every reusable slot.
 	entry.text.~basic_string();
 	entry.nextFree = pool.freeHead;
-	pool.freeHead = handle_;
+	pool.freeHead = index();
 	handle_ = kEmpty;
 }
 void NodeText::assign(const char *text)
@@ -202,7 +202,8 @@ void NodeText::assign(const char *text)
 		}
 		new (&pool.at(handle_).text) std::string;
 	}
-	pool.at(handle_).text.assign(text);
+	pool.at(index()).text.assign(text);
+	handle_ = index() | (hasCollapsibleWhitespace(text) ? kCollapsible : 0u);
 }
 
 namespace {
