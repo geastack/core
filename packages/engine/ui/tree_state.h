@@ -113,8 +113,39 @@ struct FirstLineFragment {
 struct InlineStaticPosition {
 	std::int16_t x = 0;
 	std::int16_t y = 0;
+	// Block extent of the line box that holds the static position; 0 when the
+	// box is anchored to a line that has not been laid out yet.
+	std::int16_t lineHeight = 0;
+	// The node whose line layout recorded x and y; they are relative to it.
+	std::int16_t flowNode = -1;
 	bool continuationLine = false;
+	// Line content precedes the static position on its line.
+	bool afterContent = false;
+	// The box's right margin edge meets x: an empty line in a right-to-left
+	// block. Laid-out lines keep their items in left-to-right order, so a box
+	// they placed starts at x.
+	bool anchorRight = false;
 	bool valid = false;
+};
+
+// Column boxes of a multicol container (CSS Multi-column). Layout places the
+// content as one column `width` wide; painting slices it into column boxes
+// `height` tall and `gap` apart, `used` of them, first to last. `discard`
+// (continue: discard) drops what overflows the last column box.
+// One fragment of an inline box split by blocks: its border box relative to
+// the element's, and the sides it paints (bits 0-3: top, right, bottom, left).
+struct InlinePart {
+	std::int16_t x = 0, y = 0, width = 0, height = 0;
+	std::uint8_t sides = 0;
+};
+
+struct MulticolLayout {
+	std::int16_t width = 0;
+	std::int16_t gap = 0;
+	std::int16_t height = 0;
+	std::int16_t used = 0;
+	bool valid = false;
+	bool discard = false;
 };
 
 struct NodeCustomProperty {
@@ -242,6 +273,12 @@ struct NodeRareData {
 	inline static constexpr FirstLineBackground firstLineBackground{};
 	inline static constexpr FirstLineFragment firstLineFragment{};
 #endif
+#if GEA_CSS_MULTICOL
+	MulticolLayout multicol;
+#else
+	inline static constexpr MulticolLayout multicol{};
+#endif
+	std::vector<InlinePart> inlineParts;
 
 	void clear()
 	{
@@ -264,6 +301,10 @@ struct NodeRareData {
 	firstLineFragment = FirstLineFragment{};
 #endif
 	inlineStaticPosition = InlineStaticPosition{};
+#if GEA_CSS_MULTICOL
+	multicol = MulticolLayout{};
+#endif
+	inlineParts.clear();
 	}
 };
 
@@ -363,6 +404,31 @@ struct TreeState {
 	static constexpr bool transformPresent = false;
 	static constexpr bool transformScanValid = true;
 #endif
+	// A position: sticky box was placed by the last absolute-coordinate pass.
+	// Its offset depends on the scroll position, so scroll-only fast paths that
+	// shift content without that pass must re-stick it or stand down.
+#if GEA_CSS_STICKY
+	bool stickyPresent = false;
+	// The sticky boxes those passes placed: the offset each one added and where
+	// it left the box, so the root scroll fast path can re-stick them without
+	// the pass (LayoutEngine::stickyBoxesScrolledBy). More boxes than slots
+	// set stickyOverflow until the next root pass.
+	struct StickyBox {
+		std::int16_t node, dx, dy, x, y;
+	};
+	static constexpr int kMaxStickyBoxes = 32;
+	StickyBox stickyBoxes[kMaxStickyBoxes];
+	std::uint8_t stickyCount = 0;
+	bool stickyOverflow = false;
+#else
+	static constexpr bool stickyPresent = false;
+#endif
+	// direction: rtl was set on some node at some point. direction inherits
+	// lazily (-1 walks to the nearest ancestor that sets it), so every
+	// start/end alignment question walks to the root; while this stays false
+	// the answer is ltr without the walk. Never cleared: it only guards a
+	// fast path.
+	bool rtlSeen = false;
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —
@@ -380,6 +446,17 @@ struct TreeState {
 	int hoveredNodeId = -1;
 };
 
-TreeState &treeState();
+// Created by the first treeState() call (tree_state.cpp). treeState() is read
+// per rule and per node in style, layout and paint order; out of line, the call
+// took ~10% of a desktop layout frame's samples (inline: flex-layout-96 -6%), so
+// the pointer is read inline and only the first call leaves the caller.
+extern TreeState *g_treeState;
+TreeState &createTreeState();
+
+inline TreeState &treeState()
+{
+	if (g_treeState) return *g_treeState;
+	return createTreeState();
+}
 
 }  // namespace gea::embedded::ui

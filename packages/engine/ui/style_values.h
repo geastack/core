@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "css_features.h"
 #include "pixel.h"
 
 #include <cstdint>
@@ -8,6 +9,20 @@
 namespace gea::embedded::ui {
 
 struct ComputedStyle;
+// A border-image-source that paints: a linear-gradient().
+struct BorderImageSource {
+	gea::framework::graphics::pixel::native_t from, mid, to;
+	std::uint8_t fromAlpha, midAlpha, toAlpha, hasMid;
+	std::uint16_t midStop, toStop;
+	std::int16_t angle;
+};
+// border-image-slice, -width or -outset for top, right, bottom, left. kind 0:
+// number, 1: device px, 2: percentage, 3: auto.
+struct BorderImageSides {
+	float value[4] = {};
+	std::uint8_t kind[4] = {};
+	std::uint8_t fill = 0;
+};
 struct BackgroundPlacement {
 	int x, y, width, height;
 	int repeatX = 0, repeatY = 0; // repeat, no-repeat, round, space
@@ -22,7 +37,22 @@ public:
 	static bool applyBackgroundImage(ComputedStyle &style, int handle, int nodeId);
 	// 0: border-box, 1: padding-box, 2: content-box. Lists repeat by image layer.
 	static int backgroundClip(const ComputedStyle &style, int layer);
+#if GEA_CSS_BACKGROUND_BLEND
+	// 0 normal, then multiply, screen, overlay, darken, lighten, color-dodge,
+	// color-burn, hard-light, soft-light, difference, exclusion, hue,
+	// saturation, color, luminosity. Callers check rstyle(style).bg_blend first.
+	static int backgroundBlendMode(const ComputedStyle &style, int layer);
+#endif
 	static bool hasTextBackgroundClip(const ComputedStyle &style);
+#if GEA_CSS_BORDER_IMAGE
+	// Null when border-image-source is none or an image Gea cannot paint.
+	static const BorderImageSource *borderImageSource(const ComputedStyle &style);
+	// 0: slice, 1: width, 2: outset.
+	static BorderImageSides borderImageSides(const ComputedStyle &style, int which);
+	// How far the border image reaches outside the border box, in px. Callers
+	// check rstyle(style).border_image_source first; this is a call across units.
+	static int borderImageOutsetExtent(const ComputedStyle &style);
+#endif
 	static BackgroundPlacement backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
 	                                              int x, int y, int width, int height);
 	// Convert a raw style-value colour int into this board's native pixel, applied

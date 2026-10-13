@@ -235,6 +235,14 @@
 #define GEA_CSS_RADIUS_INDEX(index) 0
 #endif
 
+// Shaped overflow clips: a rounded or transformed `overflow: hidden` box clips
+// its content to the padding box's inner radii, or to its screen parallelogram.
+// Off, every overflow clip is a rectangle and a transformed box does not clip,
+// and replay carries none of the save/restore machinery.
+#ifndef GEA_CSS_SHAPED_CLIPS
+#define GEA_CSS_SHAPED_CLIPS 1
+#endif
+
 #ifndef GEA_CSS_FIRST_LINE
 #define GEA_CSS_FIRST_LINE 1
 #endif
@@ -245,6 +253,50 @@
 
 #ifndef GEA_CSS_BACKGROUND_LAYERS
 #define GEA_CSS_BACKGROUND_LAYERS 1
+#endif
+
+// border-image with a linear-gradient() source (CSS Backgrounds 3, section 6).
+// Off, the properties are unknown, RareStyle carries no handles, and the
+// record and dirty-rect paths carry no border-image checks.
+#ifndef GEA_CSS_BORDER_IMAGE
+#define GEA_CSS_BORDER_IMAGE 1
+#endif
+
+// background-blend-mode on gradient layers (Compositing 1, section 10). Off,
+// the property is unknown, RareStyle carries no handle, and replay carries no
+// per-pixel blend path.
+#ifndef GEA_CSS_BACKGROUND_BLEND
+#define GEA_CSS_BACKGROUND_BLEND 1
+#endif
+
+// text-emphasis marks (CSS Text Decoration 3, section 3). Off, the properties
+// are unknown, ComputedStyle carries no emphasis fields and the text drawer
+// paints no marks.
+#ifndef GEA_CSS_TEXT_EMPHASIS
+#define GEA_CSS_TEXT_EMPHASIS 1
+#endif
+
+// position: sticky (CSS Position 3). Off, sticky parses as static, the
+// absolute-coordinate pass tracks no scrollport, and the root scroll-only
+// refresh never stands down for sticky boxes.
+#ifndef GEA_CSS_STICKY
+#define GEA_CSS_STICKY 1
+#endif
+
+// 32-bit declared and laid-out widths and heights, for boxes past the int16
+// range that a scale transform brings onto the screen. Off, those fields are
+// int16 as before and Node is 12 bytes smaller on 32-bit targets.
+#ifndef GEA_CSS_LARGE_BOXES
+#define GEA_CSS_LARGE_BOXES 1
+#endif
+
+// CSS Overflow 4 line clamping (line-clamp, max-lines, continue, block-ellipsis)
+// and CSS Multi-column (column-count, column-width, column-fill, column-span).
+#ifndef GEA_CSS_LINE_CLAMP
+#define GEA_CSS_LINE_CLAMP 1
+#endif
+#ifndef GEA_CSS_MULTICOL
+#define GEA_CSS_MULTICOL 1
 #endif
 
 #ifndef GEA_CSS_LINE_HEIGHT_EXPRESSIONS

@@ -1768,10 +1768,11 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 			return;
 		}
 		// Large opaque fills (e.g. a full-screen page/paper background) skip the
-		// per-pixel occlusion scan below. That scan READS every pixel just to
-		// minimize the dirty rect — worth it for a small changed region, but pure
-		// overhead for a page-sized fill that gets repainted wholesale anyway. Here
-		// we memset each row (fillSpanColor) and mark the whole rect dirty once.
+		// per-pixel occlusion scan below. That scan READS pixels just to minimize
+		// the dirty rect (a whole row when nothing in it changes) — worth it for a
+		// small changed region, but pure overhead for a page-sized fill that gets
+		// repainted wholesale anyway. Here we memset each row (fillSpanColor) and
+		// mark the whole rect dirty once.
 		// (Packed targets take the word-scan below for EVERY size: on e-paper the
 		// erase fill repaints a mostly-unchanged page, and skipping the matching
 		// words costs one sequential read instead of a full write-allocate pass —
@@ -1782,8 +1783,8 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 			return;
 		}
 #endif
-		for (int row = y0; row <= y1; row++) {
 #if GEA_PIXEL_STORAGE_PACKED
+		for (int row = y0; row <= y1; row++) {
 			// Byte/word-wise occlusion scan: a packed byte holds kPxPerByte pixels,
 			// so comparing whole bytes against the replicated value (and aligned
 			// 32-bit words against it ×4) skips already-correct spans without
@@ -1845,23 +1846,38 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 				markDirty(runStart, row, xe, row);
 				runStart = -1;  // keep the shared tail below a no-op
 			}
-#else
-			pixel::native_t *dst = &pixels_[rowToPhysical(row) * stride_ + x0];
-			int runStart = -1;
-			for (int i = 0; i < count; i++) {
-				if (dst[i] == c) {
-					if (runStart >= 0) {
-						markDirty(x0 + runStart, row, x0 + i - 1, row);
-						runStart = -1;
-					}
-					continue;
-				}
-				if (runStart < 0) runStart = i;
-				dst[i] = c;
-			}
-#endif
 			if (runStart >= 0) markDirty(x0 + runStart, row, x1, row);
 		}
+#else
+		// One span per row, from the first to the last pixel the fill changes,
+		// written at store speed. Reading and comparing every pixel and marking
+		// each differing run dirty cost more than the fill itself: a row
+		// background whose colour toggles differs everywhere, and its 13 rows x
+		// 410 px compared one by one were half of a 200 us desktop frame. The
+		// pixels are the same; the dirty rect also covers pixels inside the span
+		// that already had the colour. Rows with the same span share one rect.
+		int spanX0 = 0, spanX1 = -1, spanY0 = 0;
+		for (int row = y0; row <= y1; row++) {
+			const int phys = rowToPhysical(row);
+			const pixel::native_t *dst = &pixels_[phys * stride_ + x0];
+			int first = 0;
+			while (first < count && dst[first] == c) first++;
+			if (first == count) {
+				if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, row - 1);
+				spanX1 = -1;
+				continue;
+			}
+			int last = count - 1;
+			while (dst[last] == c) last--;
+			fillSpanColor(phys, x0 + first, last - first + 1, c);
+			if (spanX1 >= 0 && x0 + first == spanX0 && x0 + last == spanX1) continue;
+			if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, row - 1);
+			spanX0 = x0 + first;
+			spanX1 = x0 + last;
+			spanY0 = row;
+		}
+		if (spanX1 >= 0) markDirty(spanX0, spanY0, spanX1, y1);
+#endif
 	} else if (globalAlpha_ != 0) {
 		const int a = globalAlpha_;
 #if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
@@ -4253,57 +4269,53 @@ void Canvas::strokeRoundedRect(int x, int y, int w, int h, int tl, int tr, int b
 			markDirty(dirtyX0, dirtyY0, dirtyX1, dirtyY1);
 		return;
 	}
-	fillRect(x + tl, y, w - tl - tr, lw, color);
-	fillRect(x + bl, y + h - lw, w - bl - br, lw, color);
-	fillRect(x, y + tl, lw, h - tl - bl, color);
-	fillRect(x + w - lw, y + tr, lw, h - tr - br, color);
-	for (int q = 0; q < 4; q++) {
-		int r, cx, cy;
-		switch (q) {
-		case 0: r = tr; cx = x + w - 1 - r; cy = y + r; break;
-		case 1: r = tl; cx = x + r;         cy = y + r; break;
-		case 2: r = bl; cx = x + r;         cy = y + h - 1 - r; break;
-		case 3: r = br; cx = x + w - 1 - r; cy = y + h - 1 - r; break;
-		default: continue;
-		}
-		if (r <= 0) continue;
-		if (cx + r < clip->x0 || cx - r > clip->x1 ||
-		    cy + r < clip->y0 || cy - r > clip->y1)
+	// Each row is painted once as the outer shape's span minus the inner
+	// (padding-edge) shape's span, using fillRoundedRect's scanline so the ring
+	// is the exact complement of a fill of the inner box. Separate edge and
+	// corner pieces used to overlap, blending translucent borders twice where
+	// they met and bulging 1px into the padding area at the curves.
+	const int ix = x + lw, iy = y + lw, iw = w - 2 * lw, ih = h - 2 * lw;
+	const int innerMax = std::min(iw / 2, ih / 2);
+	auto innerRadius = [&](int r) { return std::min(std::max(0, r - lw), std::max(0, innerMax)); };
+	const int itl = innerRadius(tl), itr = innerRadius(tr), ibr = innerRadius(br), ibl = innerRadius(bl);
+	auto rowSpan = [](int bx, int by, int bw, int bh, int rtl, int rtr, int rbr, int rbl, int sy, int &left, int &right) {
+		if (bw <= 0 || bh <= 0 || sy < by || sy >= by + bh) return false;
+		left = bx + bw;
+		right = bx - 1;
+		auto corner = [&](int r, int cy, bool leftSide) {
+			const int dy = sy > cy ? sy - cy : cy - sy;
+			const int dx = CanvasMath::integerSqrt(r * r - dy * dy);
+			if (leftSide) left = std::min(left, bx + r - dx);
+			else right = std::max(right, bx + bw - 1 - r + dx);
+		};
+		const bool inTopLeft = rtl > 0 && sy <= by + rtl, inBottomLeft = rbl > 0 && sy >= by + bh - 1 - rbl;
+		const bool inTopRight = rtr > 0 && sy <= by + rtr, inBottomRight = rbr > 0 && sy >= by + bh - 1 - rbr;
+		if (inTopLeft) corner(rtl, by + rtl, true);
+		if (inBottomLeft) corner(rbl, by + bh - 1 - rbl, true);
+		if (!inTopLeft && !inBottomLeft) left = bx;
+		if (inTopRight) corner(rtr, by + rtr, false);
+		if (inBottomRight) corner(rbr, by + bh - 1 - rbr, false);
+		if (!inTopRight && !inBottomRight) right = bx + bw - 1;
+		return left <= right;
+	};
+	auto paint = [&](int sy, int sx0, int sx1) {
+		if (sx0 < clip->x0) sx0 = clip->x0;
+		if (sx1 > clip->x1) sx1 = clip->x1;
+		if (sx0 < 0) sx0 = 0;
+		if (sx1 >= width_) sx1 = width_ - 1;
+		if (sx0 <= sx1) fillSpanGlobalAlpha(rowToPhysical(sy), sx0, sx1 - sx0 + 1, color);
+	};
+	int row0 = std::max(std::max(y, clip->y0), 0);
+	int row1 = std::min(std::min(y + h - 1, clip->y1), height_ - 1);
+	for (int sy = row0; sy <= row1; ++sy) {
+		int oL, oR, iL, iR;
+		if (!rowSpan(x, y, w, h, tl, tr, br, bl, sy, oL, oR)) continue;
+		if (!rowSpan(ix, iy, iw, ih, itl, itr, ibr, ibl, sy, iL, iR)) {
+			paint(sy, oL, oR);
 			continue;
-		int ri = r - lw;
-		if (ri < 0) ri = 0;
-		int dy0 = 0;
-		int dy1 = r;
-		if (q == 0 || q == 1) {
-			if (cy - dy0 > clip->y1) dy0 = cy - clip->y1;
-			if (cy - dy1 < clip->y0) dy1 = cy - clip->y0;
-		} else {
-			if (cy + dy0 < clip->y0) dy0 = clip->y0 - cy;
-			if (cy + dy1 > clip->y1) dy1 = clip->y1 - cy;
 		}
-		if (dy0 < 0) dy0 = 0;
-		if (dy1 > r) dy1 = r;
-		if (dy0 > dy1) continue;
-		for (int dy = dy0; dy <= dy1; dy++) {
-			int dx_outer = CanvasMath::integerSqrt(r * r - dy * dy);
-			int dx_inner = (dy <= ri) ? CanvasMath::integerSqrt(ri * ri - dy * dy) : 0;
-			int sx0, sx1, sy;
-			switch (q) {
-			case 0: sx0 = cx + dx_inner; sx1 = cx + dx_outer; sy = cy - dy; break;
-			case 1: sx0 = cx - dx_outer; sx1 = cx - dx_inner; sy = cy - dy; break;
-			case 2: sx0 = cx - dx_outer; sx1 = cx - dx_inner; sy = cy + dy; break;
-			case 3: sx0 = cx + dx_inner; sx1 = cx + dx_outer; sy = cy + dy; break;
-			default: continue;
-			}
-			if (sy < clip->y0 || sy > clip->y1) continue;
-			if (sx0 < clip->x0) sx0 = clip->x0;
-			if (sx1 > clip->x1) sx1 = clip->x1;
-			if (sx0 < 0) sx0 = 0;
-			if (sx1 >= width_) sx1 = width_ - 1;
-			if (sx0 > sx1 || sy < 0 || sy >= height_) continue;
-
-			fillSpanGlobalAlpha(rowToPhysical(sy), sx0, sx1 - sx0 + 1, color);
-		}
+		paint(sy, oL, std::min(oR, iL - 1));
+		paint(sy, std::max(oL, iR + 1), oR);
 	}
 	markDirtyClipped(x, y, x + w - 1, y + h - 1);
 }

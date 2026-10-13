@@ -158,7 +158,7 @@ void InputRenderer::record(int id)
 			cmd->text.maxWidth = contentW;
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
-			cmd->text.align = n.computedStyle().text_align;
+			cmd->text.align = static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
 			cmd->text.textTransform = n.computedStyle().text_transform;
 			cmd->text.lineHeight = n.computedStyle().line_height;
 			cmd->text.containerWidth = contentW;
@@ -169,6 +169,15 @@ void InputRenderer::record(int id)
 			cmd->text.textOverflow = n.computedStyle().text_overflow;
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
+			cmd->text.alignLast = -1;
+			cmd->text.lineLimit = 0;
+			cmd->text.blockEllipsis = 0;
+			cmd->text.ellipsisWidth = 0;
+			cmd->text.emphasis = 0;
+			cmd->text.emphasisColor = 0;
+			const std::size_t contentBytes = std::strlen(content);
+			cmd->text.textBytes = static_cast<uint16_t>(contentBytes > 65535 ? 65535 : contentBytes);
+			cmd->text.collapsible = hasCollapsibleWhitespace(content) ? 1 : 0;
 		}
 	}
 

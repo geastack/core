@@ -205,6 +205,12 @@ constexpr ComputedStyle makeDefaultStyle()
 #if GEA_CSS_TEXT_ALIGN
 	style.text_align = 0;
 #endif
+	style.text_align_last = 0;
+#if GEA_CSS_TEXT_EMPHASIS
+	style.text_emphasis = 0;
+	style.text_emphasis_color = 0;
+#endif
+	style.vertical_align = 0;
 #if GEA_CSS_TEXT_DECORATION
 	style.text_decoration = 0;
 #endif
@@ -375,6 +381,11 @@ void NodeLifecycle::init(Node *n, NodeType type)
 	n->layout.width = 0;
 	n->layout.height = 0;
 	n->layout.inline_indent = 0;
+#if GEA_CSS_LINE_CLAMP
+	n->layout.line_clamp_hidden = 0;
+	n->layout.line_clamp_owner = 0;
+	n->layout.line_clamp_lines = 0;
+#endif
 #if !GEA_EMBEDDED_SHARED_STYLES
 	n->layout.memo_avail_w = n->layout.memo_avail_h = 0;
 	n->layout.memo_pass = 0;
@@ -425,6 +436,7 @@ void NodeLifecycle::init(Node *n, NodeType type)
 #if GEA_CSS_FILTERS
 	n->render.previous_filter_blur_radius = 0;
 #endif
+	n->render.previous_box_shadow_extent = 0;
 	n->render.inline_baseline = 0;
 	n->render.dirty = 0;
 	n->render.canvas_pixels_only_dirty = 0;

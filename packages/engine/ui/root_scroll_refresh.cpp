@@ -294,6 +294,132 @@ bool dirtyBounds(const Node &n, int width, int height, RootScrollOnlyRefresh::Di
 	return true;
 }
 
+#if GEA_CSS_STICKY
+// Inclusive pixel bounds, empty while x1 < x0. Trivial, so an unused array
+// of them costs a scroll frame nothing.
+struct PaintBounds {
+	int x0, y0, x1, y1;
+
+	static PaintBounds none() { return {0, 0, -1, -1}; }
+	bool empty() const { return x1 < x0 || y1 < y0; }
+	void unite(const PaintBounds &b)
+	{
+		if (b.empty()) return;
+		if (empty()) {
+			*this = b;
+			return;
+		}
+		x0 = std::min(x0, b.x0);
+		y0 = std::min(y0, b.y0);
+		x1 = std::max(x1, b.x1);
+		y1 = std::max(y1, b.y1);
+	}
+	void shift(int dx, int dy)
+	{
+		x0 += dx;
+		x1 += dx;
+		y0 += dy;
+		y1 += dy;
+	}
+	bool touches(const PaintBounds &b) const
+	{
+		return !empty() && !b.empty() && x0 <= b.x1 + 1 && b.x0 <= x1 + 1 && y0 <= b.y1 + 1 && b.y0 <= y1 + 1;
+	}
+};
+
+// A sticky box the scroll re-stuck: its shift on top of the content's, and
+// its paint in the previous and the current display list. A frame follows
+// this many; more record the list afresh and repaint the scrollport.
+constexpr int kMaxStickyMoves = 4;
+struct StickyMove {
+	int node, dx, dy;
+	PaintBounds old, now;
+};
+
+// translateSubtreeCommands walks every node's ancestors and every clip
+// command's; a sticky box's subtree is a few nodes, so move it node by node
+// (each node with children scans the list once for its clip scopes).
+int countInnerNodes(const TreeState &state, int id, int limit)
+{
+	int count = state.nodes[id].first_child >= 0;
+	for (int child = state.nodes[id].first_child; child >= 0 && count <= limit; child = state.nodes[child].next_sibling)
+		count += countInnerNodes(state, child, limit - count);
+	return count;
+}
+
+void translateEachNodeCommands(const TreeState &state, int id, int dx, int dy)
+{
+	DisplayList::instance().translateNodeCommands(id, dx, dy);
+	for (int child = state.nodes[id].first_child; child >= 0; child = state.nodes[child].next_sibling)
+		translateEachNodeCommands(state, child, dx, dy);
+}
+
+void translateStickyCommands(const TreeState &state, int id, int dx, int dy)
+{
+	constexpr int kMaxInnerNodes = 4;
+	if (countInnerNodes(state, id, kMaxInnerNodes) <= kMaxInnerNodes) translateEachNodeCommands(state, id, dx, dy);
+	else DisplayList::instance().translateSubtreeCommands(id, dx, dy);
+}
+
+void uniteSubtreeCommandBounds(const TreeState &state, int id, PaintBounds &bounds)
+{
+	PaintBounds own;
+	if (DisplayList::instance().nodeCommandBounds(id, &own.x0, &own.y0, &own.x1, &own.y1)) bounds.unite(own);
+	for (int child = state.nodes[id].first_child; child >= 0; child = state.nodes[child].next_sibling)
+		uniteSubtreeCommandBounds(state, child, bounds);
+}
+
+// A re-stuck box that kept its place on screen and whose border box covers
+// the scrollport across the scroll axis from its leading or trailing edge,
+// with nothing that scrolls painting over it there: that band keeps its
+// pixels. Widens *lead or *trail (pixels along the axis) to it.
+bool stuckBand(const TreeState &state, const StickyMove &moved, bool horizontal, int move, int scrollNode, int vx, int vy, int vw,
+               int vh, int *lead, int *trail)
+{
+	if (horizontal ? (moved.dx != -move || moved.dy != 0) : (moved.dy != -move || moved.dx != 0)) return false;
+	const LayoutBox &box = state.nodes[moved.node].layout;
+	if (box.width <= 0 || box.height <= 0) return false;
+	// Scrollport-relative extents along (a) and across (c) the scroll axis.
+	const int a0 = horizontal ? box.x - vx : box.y - vy;
+	const int a1 = horizontal ? box.x + box.width - 1 - vx : box.y + box.height - 1 - vy;
+	const int c0 = horizontal ? box.y - vy : box.x - vx;
+	const int c1 = horizontal ? box.y + box.height - 1 - vy : box.x + box.width - 1 - vx;
+	const int extent = horizontal ? vw : vh;
+	if (c0 > 0 || c1 < (horizontal ? vh : vw) - 1) return false;
+	int band0, band1;
+	if (a0 <= 0 && a1 >= 0) {
+		band0 = 0;
+		band1 = std::min(a1, extent - 1);
+	} else if (a0 <= extent - 1 && a1 >= extent - 1) {
+		band0 = std::max(a0, 0);
+		band1 = extent - 1;
+	} else {
+		return false;
+	}
+	const int x0 = horizontal ? vx + band0 : vx, x1 = horizontal ? vx + band1 : vx + vw - 1;
+	const int y0 = horizontal ? vy : vy + band0, y1 = horizontal ? vy + vh - 1 : vy + band1;
+	if (!DisplayList::instance().regionPaintedOnlyBy(x0, y0, x1, y1, moved.node, scrollNode)) return false;
+	if (band0 == 0) *lead = std::max(*lead, band1 + 1);
+	else *trail = std::max(*trail, extent - band0);
+	return true;
+}
+
+// The re-stuck boxes move apart from the content, which the slot and
+// extra-dirty damage of refresh() assume they follow.
+bool stickyMovesFollowable(const TreeState &state, const int *slots, int count, const RootScrollOnlyRefresh::DirtyNode *extra,
+                           int extraCount, int slotCount)
+{
+	if (slotCount > 0) return false;
+	for (int e = 0; e < extraCount; e++) {
+		for (int s = 0; s < count; s++) {
+			const int box = state.stickyBoxes[slots[s]].node;
+			if (extra[e].id == box || isDescendantOf(state, extra[e].id, box)) return false;
+		}
+	}
+	return true;
+}
+#endif
+
 }  // namespace
 
 int RootScrollOnlyRefresh::refreshNode(int root,
@@ -501,6 +627,19 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		GEA_REFRESH_PERF(perf.rootScrollRejected++);
 		return 0;
 	}
+#if GEA_CSS_STICKY
+	// Shifting content by the scroll delta drags sticky boxes along; the ones
+	// this scroll re-sticks move back after the shift and repaint their old
+	// and new places below.
+	int stickySlots[TreeState::kMaxStickyBoxes];
+	int stickyCount = state.stickyPresent ? LayoutEngine::stickyBoxesScrolledBy(scroll_node, stickySlots) : 0;
+	if (stickyCount > 0 && !stickyMovesFollowable(state, stickySlots, stickyCount, extraDirtyNodes, extraDirtyCount, slotCount))
+		stickyCount = -1;
+	if (stickyCount < 0) {
+		GEA_REFRESH_PERF(perf.rootScrollRejected++);
+		return 0;
+	}
+#endif
 	GEA_REFRESH_PERF(perf.rootScrollAccepted++);
 	GEA_REFRESH_PERF(perf.rootScrollExtraDirtyNodes += extraDirtyCount);
 
@@ -517,6 +656,22 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	// frame's delta along the scrolled axis to keep them in sync.
 	if (horizontal) shiftDescendantLayoutX(scroll_node, move);
 	else shiftDescendantLayoutY(scroll_node, move);
+#if GEA_CSS_STICKY
+	StickyMove stickyMoves[kMaxStickyMoves];
+	int stickyMoveCount = 0;
+	bool stickyRepaintAll = false;
+	for (int s = 0; s < stickyCount; s++) {
+		const int node = state.stickyBoxes[stickySlots[s]].node;
+		int dx, dy;
+		LayoutEngine::restickScrolledBox(stickySlots[s], &dx, &dy);
+		if (!dx && !dy) continue;
+		if (stickyMoveCount == kMaxStickyMoves) stickyRepaintAll = true;
+		else stickyMoves[stickyMoveCount++] = {node, dx, dy, PaintBounds::none(), PaintBounds::none()};
+	}
+	if (stickyRepaintAll) stickyMoveCount = 0;
+#else
+	constexpr bool stickyRepaintAll = false;
+#endif
 
 	// Reconcile repositioned <virtual-list> slots natively (mirrors the layout
 	// engine's absolute-child resolution: the positioned list is the containing
@@ -567,6 +722,17 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		damage.moved = dx != 0 || dy != 0;
 	}
 
+#if GEA_CSS_STICKY
+	// Where each re-stuck box painted last frame, in the list that painted it;
+	// the scroll blit below drags those pixels by `move`.
+	for (int s = 0; s < stickyMoveCount; s++) {
+		PaintBounds &old = stickyMoves[s].old;
+		old = PaintBounds::none();
+		uniteSubtreeCommandBounds(state, stickyMoves[s].node, old);
+		old.shift(horizontal ? move : 0, horizontal ? 0 : move);
+	}
+#endif
+
 	int vx = n->layout.x;
 	int vy = n->layout.y;
 	int vw = n->layout.width;
@@ -614,7 +780,9 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		                               !horizontal &&
 		                               n->type != NodeType::VirtualList &&
 		                               slotCount == 0 &&
-		                               extraDirtyCount == 0;
+		                               extraDirtyCount == 0 &&
+		                               !stickyRepaintAll &&
+		                               !list.hasColumnCopies();
 		const int coverageDelta = scrollYNow - coverageScrollY;
 		const bool coverageValid = translateEligible &&
 		                           coverageRoot == root &&
@@ -630,6 +798,10 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 			// translateSubtreeCommands includes the scroll node's own box
 			// commands (background/border), which are viewport-fixed — undo.
 			list.translateNodeCommands(scroll_node, 0, -move);
+#if GEA_CSS_STICKY
+			for (int s = 0; s < stickyMoveCount; s++)
+				translateStickyCommands(state, stickyMoves[s].node, stickyMoves[s].dx, stickyMoves[s].dy);
+#endif
 			listReady = list.patchScrollbarThumb(scroll_node);
 		}
 		if (!listReady && translateEligible) {
@@ -679,6 +851,20 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		}
 		GEA_REFRESH_PERF(perf.rootScrollRebuildUs += refreshPerfNowUs() - rebuildStartUs);
 	}
+#if GEA_CSS_STICKY
+	// A box stuck to an edge of the scrollport stays put on screen. When every
+	// re-stuck box holds such a band, the blit and the strip leave the bands out
+	// and nothing repaints there; each box repaints only what it paints outside.
+	int bandLead = 0, bandTrail = 0;
+	bool banded = stickyMoveCount > 0;
+	for (int s = 0; s < stickyMoveCount; s++) {
+		StickyMove &moved = stickyMoves[s];
+		moved.now = PaintBounds::none();
+		uniteSubtreeCommandBounds(state, moved.node, moved.now);
+		banded = banded && stuckBand(state, moved, horizontal, move, scroll_node, vx, vy, vw, vh, &bandLead, &bandTrail);
+	}
+	if (!banded) bandLead = bandTrail = 0;
+#endif
 	GEA_REFRESH_PERF(perf.rootScrollMovePx += abs_move);
 	GEA_REFRESH_PERF(perf.rootScrollViewportPx += vw * vh);
 	GEA_REFRESH_PERF(perf.rootScrollStripPx += horizontal ? (vh * (abs_move < vw ? abs_move : vw))
@@ -723,21 +909,109 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	const bool contentHasRightFadeMask = hasRightFadeMask(state, scroll_node);
 
 	const int viewportExtent = horizontal ? vw : vh;
-	if (!contentHasRightFadeMask && abs_move > 0 && abs_move < viewportExtent) {
+	// The part of the scrollport the blit moves.
+	int bx = vx, by = vy, bw = vw, bh = vh;
+#if GEA_CSS_STICKY
+	if (horizontal) {
+		bx += bandLead;
+		bw -= bandLead + bandTrail;
+	} else {
+		by += bandLead;
+		bh -= bandLead + bandTrail;
+	}
+	const bool bands = bandLead > 0 || bandTrail > 0;
+	static bool lastBands = false;
+	bool blit = !stickyRepaintAll && !contentHasRightFadeMask && abs_move > 0 && abs_move < (horizontal ? bw : bh);
+	// A software scroll register (esp32 display.cpp) rotates the rows of the
+	// rect it scrolled last and restarts at zero for a new rect, which
+	// scrambles those rows. Bands change the rect: reset the register and
+	// repaint its rows and the scrollport once instead of blitting.
+	if (blit && !horizontal && (bands || lastBands)) {
+		auto *canvas = gea::platform::display::Display::canvas();
+		const int regionY = canvas ? canvas->scrollRegionY() : 0, regionH = canvas ? canvas->scrollRegionH() : 0;
+		if (regionH > 0 && (regionY != by || regionH != bh)) {
+			gea::platform::display::Display::resetScrollRegion();
+			replayScrollNodeRegion(0, regionY, width, regionH);
+			blit = false;
+		}
+	}
+	lastBands = bands;
+#else
+	const bool blit = !contentHasRightFadeMask && abs_move > 0 && abs_move < viewportExtent;
+#endif
+	if (blit) {
 		const std::int64_t scrollRectStartUs = refreshPerfNowUs();
-		gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
+		gea::platform::display::Display::scrollRect(bx, by, bw, bh, horizontal ? move : 0, horizontal ? 0 : move);
 		GEA_REFRESH_PERF(perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs);
 
 		const std::int64_t stripReplayStartUs = refreshPerfNowUs();
+		// The newly-revealed edge strip.
+		int stripX = bx, stripY = by, stripW = bw, stripH = bh;
 		if (horizontal) {
-			// Repaint the newly-revealed vertical edge strip.
-			if (move < 0) replayScrollNodeRegion(vx + vw - abs_move, vy, abs_move, vh);
-			else replayScrollNodeRegion(vx, vy, abs_move, vh);
-		} else if (move < 0) {
-			replayScrollNodeRegion(vx, vy + vh - abs_move, vw, abs_move);
+			stripW = abs_move;
+			if (move < 0) stripX = bx + bw - abs_move;
 		} else {
-			replayScrollNodeRegion(vx, vy, vw, abs_move);
+			stripH = abs_move;
+			if (move < 0) stripY = by + bh - abs_move;
 		}
+#if GEA_CSS_STICKY
+		// A re-stuck box left the content: repaint, inside the blit, where the
+		// blit dragged its pixels and where it sits now. A rect touching the
+		// strip joins it; then nothing holds images, since a stuck header would
+		// repaint every frame and never show a held one.
+		PaintBounds stickyDamage[2 * kMaxStickyMoves];
+		int stickyDamageCount = 0;
+		bool stripHoldsImages = holdImages;
+		{
+			const PaintBounds blitRect{bx, by, bx + bw - 1, by + bh - 1};
+			auto clipToBlit = [&](PaintBounds b) {
+				b.x0 = std::max(b.x0, blitRect.x0);
+				b.y0 = std::max(b.y0, blitRect.y0);
+				b.x1 = std::min(b.x1, blitRect.x1);
+				b.y1 = std::min(b.y1, blitRect.y1);
+				return b;
+			};
+			PaintBounds strip{stripX, stripY, stripX + stripW - 1, stripY + stripH - 1};
+			for (int s = 0; s < stickyMoveCount; s++) {
+				const StickyMove &moved = stickyMoves[s];
+				// The stale pixels: last frame's paint dragged by the blit, which is
+				// also the box's paint now taken back by its own shift.
+				PaintBounds stale = moved.now;
+				stale.shift(-moved.dx, -moved.dy);
+				stale.unite(moved.old);
+				stale = clipToBlit(stale);
+				PaintBounds now = clipToBlit(moved.now);
+				if (stale.touches(now)) {
+					stale.unite(now);
+					now = PaintBounds::none();
+				}
+				for (const PaintBounds &b : {stale, now}) {
+					if (b.empty()) continue;
+					if (b.touches(strip)) {
+						strip.unite(b);
+						stripHoldsImages = false;
+					} else {
+						stickyDamage[stickyDamageCount++] = b;
+					}
+				}
+			}
+			stripX = strip.x0;
+			stripY = strip.y0;
+			stripW = strip.x1 - strip.x0 + 1;
+			stripH = strip.y1 - strip.y0 + 1;
+		}
+		noteDamage(stripX, stripY, stripW, stripH);
+		gScrollStripReplayActive = stripHoldsImages;
+		ViewportRegion::replayDisplayRegion(stripX, stripY, stripW, stripH);
+		gScrollStripReplayActive = false;
+		for (int d = 0; d < stickyDamageCount; d++) {
+			const PaintBounds &b = stickyDamage[d];
+			noteDamage(b.x0, b.y0, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
+			ViewportRegion::replayDisplayRegion(b.x0, b.y0, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
+		}
+#else
+		replayScrollNodeRegion(stripX, stripY, stripW, stripH);
+#endif
 		GEA_REFRESH_PERF(perf.rootScrollStripReplayUs += refreshPerfNowUs() - stripReplayStartUs);
 
 		// Scrollbar damage is vertical-only: the horizontal forecast/rail rows use
@@ -764,12 +1038,22 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 				const int shiftedOldBottom = shiftedOldY + oldThumbH - 1;
 				const int newThumbBottom = newThumbY + newThumbH - 1;
 				if (shiftedOldBottom + 1 >= newThumbY && newThumbBottom + 1 >= shiftedOldY) {
-					const int damageY = shiftedOldY < newThumbY ? shiftedOldY : newThumbY;
-					const int damageBottom = shiftedOldBottom > newThumbBottom ? shiftedOldBottom : newThumbBottom;
+					int damageY = shiftedOldY < newThumbY ? shiftedOldY : newThumbY;
+					int damageBottom = shiftedOldBottom > newThumbBottom ? shiftedOldBottom : newThumbBottom;
+#if GEA_CSS_STICKY
+					// The thumb rows inside a band were not blitted.
+					if (bands) {
+						damageY = std::min(damageY, oldThumbY);
+						damageBottom = std::max(damageBottom, oldThumbY + oldThumbH - 1);
+					}
+#endif
 					replayScrollbarDamage(damageY, damageBottom - damageY + 1);
 				} else {
 					replayScrollbarDamage(shiftedOldY, oldThumbH);
 					replayScrollbarDamage(newThumbY, newThumbH);
+#if GEA_CSS_STICKY
+					if (bands) replayScrollbarDamage(oldThumbY, oldThumbH);
+#endif
 				}
 			} else {
 				replayScrollbarDamage(n->layout.y, n->layout.height);

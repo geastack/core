@@ -65,6 +65,8 @@ export function styleKeywordPropertyValuesForPropertyName(propertyName: string, 
   }
   if (propertyName === 'position') return keywordValue('Position', POSITION_KEYWORDS, value)
   if (propertyName === 'text-align') return keywordValue('TextAlign', TEXT_ALIGN_KEYWORDS, value)
+  if (propertyName === 'text-align-last') return keywordValue('TextAlignLast', TEXT_ALIGN_LAST_KEYWORDS, value)
+  if (propertyName === 'vertical-align') return keywordValue('VerticalAlign', VERTICAL_ALIGN_KEYWORDS, value)
   if (propertyName === 'white-space') return keywordValue('WhiteSpace', WHITE_SPACE_KEYWORDS, value)
   if (propertyName === 'text-overflow') return keywordValue('TextOverflow', TEXT_OVERFLOW_KEYWORDS, value)
   if (propertyName === 'backface-visibility') return keywordValue('Backface', BACKFACE_KEYWORDS, value)
@@ -153,6 +155,11 @@ const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['float', 'Float'],
   ['clear', 'Clear'],
   ['margin-trim', 'MarginTrim'],
+  ['line-clamp', 'LineClamp'],
+  ['-webkit-line-clamp', 'WebkitLineClamp'],
+  ['max-lines', 'MaxLines'],
+  ['continue', 'Continue'],
+  ['block-ellipsis', 'BlockEllipsis'],
   ['writing-mode', 'WritingMode'],
   ['direction', 'Direction'],
   ['flex-flow', 'FlexFlow'],
@@ -251,6 +258,8 @@ const STYLE_DECLARATION_ENUM_BY_PROPERTY = new Map<string, string>([
   ['font-weight', 'FontWeight'],
   ['line-height', 'LineHeight'],
   ['text-align', 'TextAlign'],
+  ['text-align-last', 'TextAlignLast'],
+  ['vertical-align', 'VerticalAlign'],
   ['text-decoration', 'TextDecoration'],
   ['text-decoration-line', 'TextDecoration'],
   ['text-transform', 'TextTransform'],
@@ -369,6 +378,8 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
   ['place-items', ['AlignItems', 'JustifyItems']],
   ['position', ['Position']],
   ['text-align', ['TextAlign']],
+  ['text-align-last', ['TextAlignLast']],
+  ['vertical-align', ['VerticalAlign']],
   ['white-space', ['WhiteSpace']],
   ['text-overflow', ['TextOverflow']],
   ['backface-visibility', ['Backface']],
@@ -381,13 +392,18 @@ const STYLE_KEYWORD_PROPERTIES_BY_PROPERTY = new Map<string, string[]>([
   ['text-transform', ['TextTransform']],
 ])
 
+// As in the engine's displayValue(): keyword flags sit above the box kind,
+// 32 for flow-root and 64 for inline (both together: inline-block).
 const DISPLAY_KEYWORDS = new Map<string, number>([
   ['block', 0],
   ['none', 1],
   ['grid', 2],
-  ['inline-grid', 2],
+  ['inline-grid', 66],
   ['flex', 3],
-  ['inline-flex', 3],
+  ['inline-flex', 67],
+  ['flow-root', 32],
+  ['inline', 64],
+  ['inline-block', 96],
 ])
 
 const FLEX_DIRECTION_KEYWORDS = new Map<string, number>([
@@ -428,14 +444,39 @@ const POSITION_KEYWORDS = new Map<string, number>([
   ['static', 0],
   ['absolute', 1],
   ['relative', 2],
+  ['sticky', 4],
+  ['-webkit-sticky', 4],
 ])
 
+// 0 start, 1 center, 2 right, 3 left, 4 end (see textAlignValue in style.cpp).
 const TEXT_ALIGN_KEYWORDS = new Map<string, number>([
-  ['left', 0],
   ['start', 0],
   ['center', 1],
   ['right', 2],
-  ['end', 2],
+  ['left', 3],
+  ['end', 4],
+])
+
+const VERTICAL_ALIGN_KEYWORDS = new Map<string, number>([
+  ['baseline', 0],
+  ['top', 1],
+  ['bottom', 2],
+  ['middle', 3],
+  ['text-top', 4],
+  ['text-bottom', 5],
+  ['sub', 6],
+  ['super', 7],
+])
+
+// The engine keeps auto distinct from start: text-align plus one, 0 = auto.
+const TEXT_ALIGN_LAST_KEYWORDS = new Map<string, number>([
+  ['auto', 0],
+  ['left', 1],
+  ['start', 1],
+  ['justify', 1],
+  ['center', 2],
+  ['right', 3],
+  ['end', 3],
 ])
 
 const WHITE_SPACE_KEYWORDS = new Map<string, number>([

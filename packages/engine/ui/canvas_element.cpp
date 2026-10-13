@@ -2657,8 +2657,8 @@ void CanvasRenderer::record(const Node &node)
 			cmd->canvasBatch = {static_cast<int16_t>(id),
 								node.layout.x,
 								node.layout.y,
-								node.layout.width,
-								node.layout.height,
+								static_cast<int16_t>(node.layout.width),
+								static_cast<int16_t>(node.layout.height),
 								CanvasRenderingContext2D::stateFor(id)->identity_};
 			return;
 		}
