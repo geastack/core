@@ -1058,6 +1058,42 @@ test("delegated static events unregister their exact body listener through the b
   assert.doesNotMatch(source, /cityButton\.addEventListener/);
 });
 
+test("scroll listeners bind on their own node, since a non-bubbling scroll never reaches the body", () => {
+  const lines = rootSetupLines(
+    "list",
+    [
+      {
+        index: 3,
+        kind: "event",
+        walk: [],
+        expr: "() => track()",
+        payload: { attrName: "onScroll" },
+      },
+    ],
+    [],
+    [],
+    undefined,
+    "virtual-list",
+    new Map(),
+    "__gea_branch_disposer",
+  );
+  assert.ok(lines, "expected the scroll event to lower");
+  const source = lines.join("\n");
+  assert.match(
+    source,
+    /auto __gea_event_listener_list_3 = list\.addEventListener\("scroll"/,
+  );
+  assert.match(
+    source,
+    /__gea_branch_disposer->add\(\[__gea_event_listener_list_3, list\]/,
+  );
+  assert.match(
+    source,
+    /list\.removeEventListener\("scroll", __gea_event_listener_list_3\)/,
+  );
+  assert.doesNotMatch(source, /body\(\)\.addEventListener\("scroll"/);
+});
+
 test("mixed mounted root style constants stay outside reactive applies", () => {
   const constants = new Map([
     ["ROOT_COLOR", { valueType: "string", value: "#123456" }],
