@@ -1552,6 +1552,14 @@ export interface HapticsController {
 
 export declare const Haptics: HapticsController
 
+export interface BoardController {
+  // The board's temperature in °C (its die sensor on most boards); NaN without one.
+  temperature(): number
+  // The board's supply voltage in volts; NaN where it is not measured.
+  supplyVoltage(): number
+}
+export declare const Board: BoardController
+
 export interface NotifyController {
   // Transient host->app notification channel (e.g. pushed from the companion
   // via GEADEV NOTIFY). text() is the latest message; seq() increments on each

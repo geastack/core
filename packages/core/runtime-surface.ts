@@ -76,6 +76,7 @@ export type {
   AudioProps,
   BatteryController,
   HapticsController,
+  BoardController,
   BluetoothConfig,
   BluetoothConnections,
   BluetoothController,

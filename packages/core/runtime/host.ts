@@ -417,6 +417,11 @@ declare const __gea_Battery: {
   // Battery charge percentage (0-100) from the platform PMU.
   level(): number
 }
+declare const __gea_Board: {
+  // The board's temperature (°C) and supply voltage (V); NaN where unmeasured.
+  temperature(): number
+  supplyVoltage(): number
+}
 declare const __gea_Notify: {
   // Transient host->app notification channel. text() is the latest message;
   // seq() increments on each post so an app can detect a new one.
@@ -1184,6 +1189,17 @@ export const Battery = {
   level(): number {
     return __gea_Battery.level()
   },
+}
+// NaN where no host injects the global (the browser has no board sensors).
+export const Board = {
+  temperature(): number {
+    if (typeof __gea_Board === 'undefined') return NaN
+    return __gea_Board.temperature()
+  },
+  supplyVoltage(): number {
+    if (typeof __gea_Board === 'undefined') return NaN
+    return __gea_Board.supplyVoltage()
+  }
 }
 export const Notify = {
   text(): string {
