@@ -302,22 +302,38 @@ public:
 	bool scrollFirstContainerY(int dy)
 	{
 		if (dy == 0) return false;
+		const int id = firstContainerY();
+		if (id < 0) return false;
+		Node &node = Tree::instance().nodes()[id];
+		const int cur = scrollTop(id);
+		int next = cur + dy;
+		const int maxY = scrollMaxY(id, node);
+		if (next < 0) next = 0;
+		if (next > maxY) next = maxY;
+		if (next == cur) return false;
+		setScrollTop(id, next);
+		return true;
+	}
+
+	bool firstContainerYMetrics(int *top, int *maxY)
+	{
+		const int id = firstContainerY();
+		if (id < 0) return false;
+		if (top) *top = scrollTop(id);
+		if (maxY) *maxY = scrollMaxY(id, Tree::instance().nodes()[id]);
+		return true;
+	}
+
+	static int firstContainerY()
+	{
 		Tree &tree = Tree::instance();
 		const int count = tree.nodeCount();
 		for (int id = 0; id < count; ++id) {
 			Node &node = tree.nodes()[id];
 			if (isStructuralNodeType(node.type) || node.computedStyle().display == 1) continue;
-			if (!nodeCanScrollY(id, node)) continue;
-			const int cur = scrollTop(id);
-			int next = cur + dy;
-			const int maxY = scrollMaxY(id, node);
-			if (next < 0) next = 0;
-			if (next > maxY) next = maxY;
-			if (next == cur) return false;
-			setScrollTop(id, next);
-			return true;
+			if (nodeCanScrollY(id, node)) return id;
 		}
-		return false;
+		return -1;
 	}
 
 	// Drop every piece of per-touch / per-fling state that points into the
@@ -967,6 +983,11 @@ int Tree::pointerUp()
 bool Tree::scrollByKeyStep(int dy)
 {
 	return InputController::instance().scrollFirstContainerY(dy);
+}
+
+bool Tree::keyStepScrollMetrics(int *scrollTop, int *scrollMax)
+{
+	return InputController::instance().firstContainerYMetrics(scrollTop, scrollMax);
 }
 
 void Tree::tickInput(int timestampMs)
