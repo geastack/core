@@ -133,6 +133,10 @@ public:
 	// default Up/Down-button scroll on touchless hardware. Returns true if the
 	// scroll offset changed.
 	bool scrollByKeyStep(int dy);
+	// The offset and range, in layout px, of the container scrollByKeyStep
+	// drives, for a platform scroll indicator to show. False when nothing
+	// scrolls vertically.
+	bool keyStepScrollMetrics(int *scrollTop, int *scrollMax);
 	void tickInput(int timestampMs);
 	void resetInput();
 	int scrollLeft(int node) const;
