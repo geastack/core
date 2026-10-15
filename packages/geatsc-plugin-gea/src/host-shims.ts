@@ -580,6 +580,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           Haptics: "gea::host::Haptics",
           Profiler: "gea::host::Profiler",
           Battery: "gea::host::Battery",
+          Board: "gea::host::Board",
           Notify: "gea::host::Notify",
           DeviceControl: "gea::host::DeviceControl",
           nativeBench: "gea::host::native_bench",
@@ -596,6 +597,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Haptics: "gea::host::Haptics",
           __gea_Profiler: "gea::host::Profiler",
           __gea_Battery: "gea::host::Battery",
+          __gea_Board: "gea::host::Board",
           __gea_Notify: "gea::host::Notify",
           __gea_DeviceControl: "gea::host::DeviceControl",
           // `console` is a PATH, not a value. An app that declares its own
@@ -1441,6 +1443,14 @@ export function createGeaHostShims(): HostShimDefinitions {
             charging: "gea::host::Battery.charging",
             level: "gea::host::Battery.level",
           },
+          Board: {
+            temperature: "gea::host::Board.temperature",
+            supplyVoltage: "gea::host::Board.supplyVoltage",
+          },
+          __gea_Board: {
+            temperature: "gea::host::Board.temperature",
+            supplyVoltage: "gea::host::Board.supplyVoltage",
+          },
           Notify: {
             text: "gea::host::Notify.text",
             seq: "gea::host::Notify.seq",
@@ -1476,6 +1486,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Profiler: ["nowUs", "nowCycles"],
           Battery: ["level"],
           __gea_Battery: ["level"],
+          Board: ["temperature", "supplyVoltage"],
+          __gea_Board: ["temperature", "supplyVoltage"],
           Notify: ["seq"],
           __gea_Notify: ["seq"],
         },
@@ -2757,6 +2769,30 @@ export function createGeaHostShims(): HostShimDefinitions {
             },
             level: {
               emit: "gea::host::Battery.level({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+          },
+          Board: {
+            temperature: {
+              emit: "gea::host::Board.temperature({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+            supplyVoltage: {
+              emit: "gea::host::Board.supplyVoltage({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+          },
+          __gea_Board: {
+            temperature: {
+              emit: "gea::host::Board.temperature({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+            supplyVoltage: {
+              emit: "gea::host::Board.supplyVoltage({args})",
               returnType: "double",
               noThrow: true,
             },
