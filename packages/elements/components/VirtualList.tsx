@@ -1,4 +1,4 @@
-import type { ClassValue, Event, TouchEventHandler } from '@geastack/core'
+import type { ClassValue, Event, GeaJsxElement, TouchEventHandler } from '@geastack/core'
 
 // A windowing list backed by the native <virtual-list> element. The element is
 // an ordinary overflow:scroll container that scrolls over a virtual content
@@ -10,7 +10,7 @@ import type { ClassValue, Event, TouchEventHandler } from '@geastack/core'
 // blit instead of re-rendering. Row content, height, colours and fonts all come
 // from `itemTemplate` + its CSS; the framework owns none of it.
 
-export type VirtualListItemTemplate = (index: number, top: number) => any
+export type VirtualListItemTemplate = (index: number, top: number) => GeaJsxElement
 
 export interface VirtualListProps {
   itemCount: number
