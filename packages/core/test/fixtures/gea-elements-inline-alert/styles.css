@@ -1,0 +1,19 @@
+.app {
+  width: 100vw;
+  height: 100vh;
+}
+
+.alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.narrow {
+  width: 200px;
+}
+
+.status {
+  font-size: 14px;
+}

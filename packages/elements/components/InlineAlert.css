@@ -1,0 +1,80 @@
+.inline-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-left: 4px solid #2f5f9e;
+  background-color: #e8eef7;
+  color: #171713;
+}
+
+.inline-alert--success {
+  border-left-color: #2e7d4f;
+  background-color: #e6f2ea;
+}
+
+.inline-alert--warning {
+  border-left-color: #a8690a;
+  background-color: #fbf0dc;
+}
+
+.inline-alert--error {
+  border-left-color: #b3261e;
+  background-color: #f9e3e1;
+}
+
+.inline-alert__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inline-alert__severity {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.inline-alert__title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.inline-alert__message {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.inline-alert__actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.inline-alert__action,
+.inline-alert__dismiss {
+  /* Measured on the pixel engine: an auto-width button in a flex row took
+     the whole row, where CSS gives it its max-content width. fit-content
+     sizes it to its label; max-width keeps a long label inside the row. */
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid #171713;
+  background-color: #ffffff;
+  color: #171713;
+  font-size: 14px;
+}
+
+/* Keep this block last: it overrides the variant rules above at the same
+   specificity, and the severity label still tells the variants apart. */
+@media (monochrome) {
+  .inline-alert,
+  .inline-alert--success,
+  .inline-alert--warning,
+  .inline-alert--error {
+    border-left-color: #000000;
+    background-color: #ffffff;
+    color: #000000;
+  }
+}
