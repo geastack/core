@@ -55,12 +55,17 @@ A component named `Name` touches these files:
 | `components/Name.tsx` | The component and its exported `NameProps` interface. |
 | `components/Name.css` | The default stylesheet, imported from `Name.tsx` with `import './Name.css'`. |
 | `components/Name.d.ts` | The public declaration: the same props interface and `export default function Name(props: NameProps): any` (or `export declare class` for a class component). |
-| `components/index.ts` | `export { default as Name } from './Name'` for a function component, `export { Name } from './Name'` for a class component (as `CameraView` does). |
-| `components/index.d.ts` | The same export plus `export type { NameProps } from './Name'` |
+| `components/index.ts` | `export { default as Name } from './Name'` for a function component, `export { Name } from './Name'` for a class component (as `CameraView` does), plus `export type { NameProps } from './Name'`. |
+| `components/index.d.ts` | The same exports. |
 | `package.json` | An `exports` entry `"./components/Name"` with `types` and `default`. |
 | `README.md` | One bullet describing the component. |
 
 Keep `Name.tsx` and `Name.d.ts` in sync by hand; there is no generator.
+
+Export the types from `index.ts` too, not only from `index.d.ts`. A native
+build resolves value imports of `@geastack/elements` to `index.ts`, so
+`import { Name, type NameProps } from '@geastack/elements'` passes `tsc` but
+fails in geatsc with "has no exported member" when `index.ts` lacks the type.
 
 ## Component Shape
 
