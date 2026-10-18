@@ -20,6 +20,16 @@ export default () => (
 )
 ```
 
+## Checkbox
+
+`Checkbox` accepts `checked`, `indeterminate`, `disabled`, `label`, `class`,
+and `style` props.
+
+`onChange(checked)` receives the next checked value when an enabled checkbox
+is toggled. `onPress(event)` and `onClick(event)` run from the native `click`
+path. `onPress` is not a native `press` event binding. A Space keydown toggles
+the checkbox but does not invoke either callback.
+
 The component prop types live in `@geastack/core`. The C++ sources are
 compiled into a target through `@geastack/core`'s source manifest. Vendored
 third-party code is listed in the repository's `THIRD_PARTY.md`.
