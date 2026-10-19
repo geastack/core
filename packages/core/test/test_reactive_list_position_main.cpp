@@ -1,7 +1,7 @@
 #define GEA_HOST_DECLARED 1
 #include "gea/embedded.h"
 #include "graphics/font.h"
-#include "../../../../compiler/src/targets/cpp/runtime/gea_runtime.h"
+#include "gea_runtime.h"
 #include "native_test_harness.h"
 #include <cassert>
 #include <cstdio>

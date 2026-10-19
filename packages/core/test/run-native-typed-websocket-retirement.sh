@@ -2,7 +2,7 @@
 set -euo pipefail
 TEST_DIR=$(cd "$(dirname "$0")" && pwd)
 CORE_ROOT=$(cd "$TEST_DIR/../../.." && pwd)
-COMPILER_ROOT=$(cd "$CORE_ROOT/../compiler" && pwd)
+if [[ -n "${GEA_COMPILER_CLI:-}" ]]; then COMPILER_ROOT=$(cd "$(dirname "$GEA_COMPILER_CLI")/.." && pwd); else COMPILER_ROOT=$(cd "$CORE_ROOT/../compiler" && pwd); fi
 OUT_DIR="$TEST_DIR/.build/native-typed-websocket-retirement"
 mkdir -p "$OUT_DIR"
 CXX_BIN=${CXX:-clang++}

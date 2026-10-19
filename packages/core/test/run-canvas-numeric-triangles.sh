@@ -14,5 +14,5 @@ void __gea_top_level() {}
 CPP
 gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/canvas-numeric-triangles" \
   "$ROOT/packages/core/test/test_canvas_numeric_triangles_main.cpp" \
-  "-I$ROOT/../compiler/src/targets/cpp/runtime"
+  "-I${GEA_COMPILER_RUNTIME:-$ROOT/../compiler/src/targets/cpp/runtime}"
 "$BUILD_DIR/canvas-numeric-triangles"
