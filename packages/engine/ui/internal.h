@@ -79,6 +79,15 @@ void rootScrollImageHoldTick();
 	// DrawText::blockEllipsis for the default ellipsis ("\u2026", or "...").
 	constexpr uint16_t kAutoBlockEllipsis = 0xFFFF;
 
+	// The block ellipsis in the clamp container's own font and colour, `inset`
+	// px past the run's last glyph (the right edges of the inline boxes it
+	// closes). fontSize 0: the ellipsis continues the run in the run's style.
+	struct BlockEllipsisStyle
+	{
+		int16_t fontId, fontSize, inset;
+		gea::framework::graphics::pixel::native_t color;
+	};
+
 	struct DisplayCommand
 	{
 		DisplayCommandType type;
@@ -212,6 +221,8 @@ void rootScrollImageHoldTick();
 				// text-emphasis marks (ComputedStyle::text_emphasis bits, 0 = none),
 				// painted in emphasisColor unless the bits say transparent.
 				gea::framework::graphics::pixel::native_t emphasisColor;
+				// Aligned to native_t like the colours above.
+				BlockEllipsisStyle ellipsisStyle;
 				int16_t x, y, maxWidth;
 				int16_t lineHeight;
 				int16_t containerWidth;
@@ -643,7 +654,9 @@ void rootScrollImageHoldTick();
 		// identically to deleting them — and keeps the run a single unmodified
 		// string for the display list.
 		int firstLineIndentAdjust = 0;
-
+		// The run ends with a preserved newline and inline content follows it:
+		// that content starts the next line box, not the run's last line.
+		bool endsWithBreak = false;
 	};
 
 	class TextRenderer
@@ -680,7 +693,8 @@ void rootScrollImageHoldTick();
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
 														int firstLineIndent = 0, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0,
-														int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0);
+														int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0,
+														const BlockEllipsisStyle *ellipsisStyle = nullptr);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);

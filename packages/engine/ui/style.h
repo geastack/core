@@ -235,6 +235,7 @@ enum class Property : int {
 	BorderImageWidth,
 	BorderImageOutset,
 	BorderImageRepeat,
+	LineClampAuto,
 	Count
 };
 
@@ -243,7 +244,8 @@ inline int lineClampFlagBit(Property property)
 {
 	return property == Property::LineClampContinue ? 1 : property == Property::BlockEllipsis ? 2 :
 	       property == Property::ColumnCountSet ? 4 : property == Property::ColumnWidthSet ? 8 :
-	       property == Property::ColumnFillAuto ? 16 : property == Property::LineClampDiscard ? 32 : 64;
+	       property == Property::ColumnFillAuto ? 16 : property == Property::LineClampDiscard ? 32 :
+	       property == Property::LineClampAuto ? 128 : 64;
 }
 
 enum class StyleDeclaration : std::uint8_t {

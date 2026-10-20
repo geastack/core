@@ -97,6 +97,7 @@ bool isLayoutProperty(Property prop)
 	case Property::ColumnWidth:
 	case Property::ColumnFillAuto:
 	case Property::LineClampDiscard:
+	case Property::LineClampAuto:
 	case Property::ColumnSpanAll:
 	case Property::VerticalAlign:
 #if GEA_CSS_TEXT_ALIGN
@@ -386,9 +387,15 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 	case Property::ColumnWidthSet:
 	case Property::ColumnFillAuto:
 	case Property::LineClampDiscard:
+	case Property::LineClampAuto:
 	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(prop);
-		const int next = value ? rstyle(style).line_clamp_flags | bit : rstyle(style).line_clamp_flags & ~bit;
+		int flags = rstyle(style).line_clamp_flags;
+		// Only the line-clamp shorthand writes LineClampAuto, and it resets
+		// continue, so the write clears discard too: the shorthand's five
+		// writes fill CssCompiledValue::values.
+		if (prop == Property::LineClampAuto) flags &= ~lineClampFlagBit(Property::LineClampDiscard);
+		const int next = value ? flags | bit : flags & ~bit;
 		if (rstyle(style).line_clamp_flags != next) { rstyleMut(style).line_clamp_flags = next; changed = 1; }
 		break;
 	}

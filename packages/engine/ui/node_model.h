@@ -237,7 +237,7 @@ struct RareStyle {
 	static constexpr int8_t justify_self = -1;
 #endif
 	// Computed contain flags: size, inline-size, layout, style, paint.
-	// Currently consumed by document background propagation.
+	// Consumed by document background propagation and block size containment.
 #if GEA_CSS_CONTAINMENT
 	uint8_t containment = 0;
 #else

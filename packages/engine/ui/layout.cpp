@@ -3,6 +3,7 @@
 #include "flex_balance.h"
 #include "memory.h"
 #include "tree_state.h"
+#include "style_values.h"
 #include "refresh_perf.h"
 
 #include "graphics/font.h"
@@ -34,6 +35,9 @@ bool isCollapsedFlexSubtree(const Node &node)
 		if (isCollapsedFlexItem(*current)) return true;
 	return false;
 }
+
+// view.cpp
+bool hasAnyRadius(const Node &node);
 
 namespace {
 
@@ -387,10 +391,14 @@ bool hasExplicitHeight(const Node &node)
 // contexts are single units. Child coordinates are still parent-relative.
 int writingMode(const Node &node);
 bool emptyInlineBox(const Node &node);
+int containingBlockForAbsoluteNode(int node, int root, Node *nodes);
 
 struct LineClampWalk {
 	Node *nodes;
 	int maxLines;
+	// The used height limits the lines kept too: line-clamp: auto, alone or
+	// after a line count.
+	bool byHeight;
 	int limit;
 	int lines = 0;
 	int lastLineTop = INT_MIN;
@@ -402,27 +410,45 @@ struct LineClampWalk {
 	bool clamped = false;
 	// The blocks the walk is inside, innermost last. Clamping removes the rest
 	// of their content, so each still ends with its bottom border and padding,
-	// its min-height and its bottom margin.
-	struct OpenBlock { int top, inset, minHeight, margin; };
+	// its min-height and its bottom margin. Content overflowing a block does not
+	// extend it: a break inside it ends its fragment by its own bottom.
+	// keptEnd: where its border box ends after the content kept so far.
+	struct OpenBlock { int top, inset, minHeight, margin, height, keptEnd; };
 	std::vector<OpenBlock> open;
+	// Inline boxes the clamp point falls inside, innermost first.
+	std::vector<int> cutInlines;
+	// Blocks the clamp point falls inside, innermost first, with the border-box
+	// height their kept content ends at.
+	struct ClampedBlock { int id, height; };
+	std::vector<ClampedBlock> clampedBlocks;
 	// Where the container's content ends when clamped after content ending at
 	// `bottom` with bottom margin `margin`. Margins collapse outwards through
 	// blocks without bottom border, padding or min-height (CSS 2.2 8.3.1); the
 	// container is a BFC root, so the outermost margin stays inside it.
-	int endAfter(int bottom, int margin) const
+	template <bool Keep = false>
+	int endAfter(int bottom, int margin)
 	{
 		for (auto it = open.rbegin(); it != open.rend(); ++it) {
 			if (it->inset > 0 || it->minHeight > 0) { bottom += margin; margin = 0; }
-			bottom = std::max(bottom + it->inset, it->top + it->minHeight);
+			bottom = std::max(std::min(bottom + it->inset, it->top + it->height), it->top + it->minHeight);
+			if constexpr (Keep) it->keptEnd = std::max(it->keptEnd, bottom);
 			margin = std::max(margin, it->margin);
 		}
 		return bottom + margin;
 	}
+	// Keeps content ending there: endAfter, recording each open block's end.
+	void keep(int bottom, int margin) { keptBottom = std::max(keptBottom, endAfter<true>(bottom, margin)); }
 };
 
 #if GEA_CSS_LINE_CLAMP
 void hideAfterLineClamp(Node *nodes, int id)
 {
+	// An abspos after the clamp point stays, with its contents, while its
+	// containing block precedes or contains that point (is not hidden).
+	if (isOutOfFlowPosition(nodes[id].computedStyle().position)) {
+		const int containing = containingBlockForAbsoluteNode(id, -1, nodes);
+		if (containing < 0 || !(nodes[containing].layout.line_clamp_hidden & 1)) return;
+	}
 	nodes[id].layout.line_clamp_hidden = 1;
 	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) hideAfterLineClamp(nodes, c);
 }
@@ -438,14 +464,40 @@ bool clampsLines(const Node &node)
 }
 
 #if GEA_CSS_LINE_CLAMP
+// Marks the fragment applyLineClamp gives an inline box it cuts.
+constexpr std::uint8_t kLineClampPart = 16;
+
 // A nested clamp container keeps the state inside it for its own layout.
 void clearLineClamp(Node *nodes, int id)
 {
 	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) {
 		nodes[c].layout.line_clamp_hidden = 0;
 		nodes[c].layout.line_clamp_lines = 0;
+		if (NodeRareData *rare = rareDataFor(c); rare && rare->inlineParts.size() == 1 && (rare->inlineParts[0].sides & kLineClampPart))
+			rare->inlineParts.clear();
 		if (!clampsLines(nodes[c])) clearLineClamp(nodes, c);
 	}
+}
+
+// A block the clamp point falls inside ends with its kept content
+// (css-overflow-4 line-clamp), so its border box paints `height` px tall; an
+// authored height stays, like the clamp container's own.
+// Layout keeps the full height for the layout memo; clearLineClamp drops the
+// fragment. Only a box recordInlineParts paints as recordBox would (background
+// colour, solid square borders) takes one, and a box painting nothing needs none.
+void clampBlockFragment(Node *nodes, int id, int height)
+{
+	const Node &box = nodes[id];
+	if (height <= 0 || height >= box.layout.height) return;
+	const ComputedStyle &style = box.computedStyle();
+	if (!(style.has_bg && style.bg_alpha > 0) && !hasAnyBorder(style)) return;
+	if (hasExplicitHeight(box)) return;
+	const RareStyle &rare = rstyle(style);
+	if (hasAnyRadius(box) || styleHasBackgroundImage(style) || hasBorderRelief(style) || rare.bg_image_layer_count > 1 ||
+	    StyleValues::backgroundClip(style, rare.bg_image_layer_count - 1) != 0 || rare.box_shadow_alpha || rare.border_image_source) return;
+	if (const NodeRareData *data = rareDataFor(id); data && !data->inlineParts.empty()) return;
+	ensureRareData(id).inlineParts = {InlinePart{0, 0, static_cast<std::int16_t>(std::min(box.layout.width, 32767)), static_cast<std::int16_t>(height),
+	                                             static_cast<std::uint8_t>(15 | kLineClampPart)}};
 }
 
 void walkLineClamp(LineClampWalk &walk, int parent, int originY)
@@ -480,7 +532,7 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 				const int lineTop = top + boxInset(child.computedStyle(), 0) + line * advance;
 				const bool newLine = lineTop > walk.lastLineTop;
 				const int end = walk.endAfter(lineTop + advance, 0);
-				if (walk.maxLines ? newLine && walk.lines >= walk.maxLines : end > walk.limit) {
+				if ((walk.maxLines && newLine && walk.lines >= walk.maxLines) || (walk.byHeight && end > walk.limit)) {
 					walk.clamped = true;
 					if (line == 0) hideAfterLineClamp(nodes, id);
 					else child.layout.line_clamp_lines = static_cast<int16_t>(line);
@@ -490,7 +542,7 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 					++walk.lines;
 					walk.lastLineTop = lineTop;
 				}
-				walk.keptBottom = std::max(walk.keptBottom, end);
+				walk.keep(lineTop + advance, 0);
 				walk.lastRun = id;
 				++walk.kept;
 			}
@@ -507,10 +559,18 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 			const int kept = walk.kept;
 			if (!inlineWrapper) {
 				const int minHeight = child.computedStyle().min_height > 0 ? contentSizeToBorderSize(child.computedStyle(), child.computedStyle().min_height, false) : 0;
-				walk.open.push_back({top, boxInset(child.computedStyle(), 2), minHeight, child.computedStyle().margin[2]});
+				walk.open.push_back({top, boxInset(child.computedStyle(), 2), minHeight, child.computedStyle().margin[2], child.layout.height, top});
 			}
 			walkLineClamp(walk, id, top);
-			if (!inlineWrapper) walk.open.pop_back();
+			if (!inlineWrapper) {
+				if (walk.clamped && walk.kept != kept) {
+					const int height = std::min(walk.open.back().keptEnd - top, child.layout.height);
+					walk.clampedBlocks.push_back({id, height});
+					clampBlockFragment(nodes, id, height);
+				}
+				walk.open.pop_back();
+			}
+			if (inlineWrapper && walk.clamped && walk.kept != kept) walk.cutInlines.push_back(id);
 			// A box whose first content already follows the clamp point is
 			// hidden whole, backgrounds and borders included. It is not between
 			// the last line and the clamp point, so that line keeps the ellipsis.
@@ -519,18 +579,18 @@ void walkLineClamp(LineClampWalk &walk, int parent, int originY)
 				walk.lastRun = lastRun;
 			}
 			if (!walk.clamped) {
-				if (!inlineWrapper) walk.keptBottom = std::max(walk.keptBottom, walk.endAfter(top + child.layout.height, bottomMargin(walk.kept == kept)));
+				if (!inlineWrapper) walk.keep(top + child.layout.height, bottomMargin(walk.kept == kept));
 				++walk.kept;
 			}
 			continue;
 		}
 		const int end = walk.endAfter(top + child.layout.height, bottomMargin(child.first_child < 0));
-		if (walk.maxLines ? walk.lines >= walk.maxLines : end > walk.limit) {
+		if ((walk.maxLines && walk.lines >= walk.maxLines) || (walk.byHeight && end > walk.limit)) {
 			walk.clamped = true;
 			hideAfterLineClamp(nodes, id);
 			continue;
 		}
-		walk.keptBottom = std::max(walk.keptBottom, end);
+		walk.keep(top + child.layout.height, bottomMargin(child.first_child < 0));
 		walk.lastRun = -1;
 		++walk.kept;
 	}
@@ -541,9 +601,46 @@ void applyLineClamp(int id)
 	Node *nodes = Tree::instance().nodes();
 	Node &node = nodes[id];
 	clearLineClamp(nodes, id);
-	LineClampWalk walk{nodes, rstyle(node.computedStyle()).max_lines, node.layout.height - boxInset(node.computedStyle(), 2)};
+	const int maxLines = rstyle(node.computedStyle()).max_lines;
+	LineClampWalk walk{nodes, maxLines, !maxLines || (rstyle(node.computedStyle()).line_clamp_flags & 128), node.layout.height - boxInset(node.computedStyle(), 2)};
 	walk.keptBottom = boxInset(node.computedStyle(), 0);
 	walkLineClamp(walk, id, 0);
+	// An inline box the clamp point cuts paints only the fragment before it,
+	// open at its end: its end border and padding do not continue past the
+	// clamp point (css-overflow-4 block-ellipsis).
+	for (const int cut : walk.cutInlines) {
+		Node &box = nodes[cut];
+		if (const NodeRareData *rare = rareDataFor(cut); rare && !rare->inlineParts.empty()) continue;
+		const ComputedStyle &boxStyle = box.computedStyle();
+		int right = boxInset(boxStyle, 3), bottom = boxInset(boxStyle, 0);
+		for (int c = box.first_child; c >= 0; c = nodes[c].next_sibling) {
+			const Node &child = nodes[c];
+			const ComputedStyle &style = child.computedStyle();
+			if ((child.layout.line_clamp_hidden & 1) || isDisplayNone(style) || isOutOfFlowPosition(style.position)) continue;
+			if (child.type != NodeType::Text) {
+				// A block inside the box that the clamp point cuts ends at its kept content.
+				int height = child.layout.height;
+				for (const auto &block : walk.clampedBlocks)
+					if (block.id == c) height = block.height;
+				right = std::max(right, child.layout.x + child.layout.width);
+				bottom = std::max(bottom, child.layout.y + height);
+				continue;
+			}
+			if (child.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+			const int inner = child.layout.width - boxInsets(style, true);
+			const InlineFlowMeasure m = TextRenderer::measureInlineFlow(child, inner, inner, true);
+			const int lines = child.layout.line_clamp_lines ? child.layout.line_clamp_lines : std::max(1, m.lineCount);
+			const int width = lines == 1 ? m.firstLineWidth + m.firstLineIndentAdjust - m.firstLineTrailingSpace : m.maxLineWidth;
+			right = std::max(right, child.layout.x + boxInset(style, 3) + width);
+			bottom = std::max(bottom, child.layout.y + boxInset(style, 0) + lines * m.lineAdvance);
+		}
+		const int height = bottom + boxInset(boxStyle, 2);
+		ensureRareData(cut).inlineParts = {InlinePart{0, 0, static_cast<std::int16_t>(right), static_cast<std::int16_t>(height),
+		                                              static_cast<std::uint8_t>(1 | 4 | 8 | kLineClampPart)}};
+		int top = box.layout.y;
+		for (int a = box.parent; a >= 0 && a != id; a = nodes[a].parent) top += nodes[a].layout.y;
+		walk.keptBottom = std::max(walk.keptBottom, top + height);
+	}
 	// The block ellipsis ends the last line before the clamp point.
 	if (walk.clamped && (rstyle(node.computedStyle()).line_clamp_flags & 2) && walk.lastRun >= 0)
 		nodes[walk.lastRun].layout.line_clamp_hidden |= 2;
@@ -1163,6 +1260,7 @@ public:
 			int wrapSpans = 0;
 			int wrapAdvance = 0;
 			int wrapLastWidth = 0;
+			bool wrapEndsWithBreak = false;
 			bool lineAligned = false;
 			int topItemHeight = 0, bottomItemHeight = 0;
 			std::vector<int> lineStaticChildren;
@@ -1211,7 +1309,7 @@ public:
 						// next line box rather than overflowing it or being cut open.
 						if (pen > 0 && m.firstLineWidth > firstAvail && !collapsibleSpaceOnly(subject)) break;
 						const int boxH = m.lineCount * m.lineAdvance + padV;
-						const bool wraps = m.lineCount > 1;
+						const bool wraps = m.lineCount > 1 || m.endsWithBreak;
 						const int boxW = wraps ? rest + padH : m.firstLineWidth + padH;
 						const int indent =
 						    (wraps ? pen + gap : 0) + m.firstLineIndentAdjust;
@@ -1245,6 +1343,7 @@ public:
 							wrapSpans = m.lineCount;
 							wrapAdvance = m.lineAdvance;
 							wrapLastWidth = m.lastLineWidth + padH;
+							wrapEndsWithBreak = m.endsWithBreak;
 							if (firstLineFragment)
 								firstLineCandidates.push_back({innerRun >= 0 ? innerRun : child,
 								                              firstLineFragmentX, firstLineFragmentWidth,
@@ -1425,6 +1524,14 @@ public:
 				if (continuedBaseline + inheritedDescent > flowBottom)
 					flowBottom = continuedBaseline + inheritedDescent;
 				if (penStart > maxLineWidth) maxLineWidth = penStart;
+				// A run that ends with a forced break leaves its last line box to itself.
+				if (wrapEndsWithBreak) {
+					lineTop = continuedBaseline + inheritedDescent + gapStyle;
+					penStart = 0;
+					continuing = false;
+					inheritedAscent = 0;
+					inheritedDescent = 0;
+				}
 			} else {
 				lineTop = baseline + lineDescent + gapStyle;
 				penStart = 0;
@@ -1489,7 +1596,9 @@ public:
 	// or nowrap run keeps its own box.
 	static bool isFragmentableRun(const Node &n)
 	{
-		return n.type == NodeType::Text && !n.text.empty() && n.computedStyle().white_space != 1 && n.computedStyle().white_space != 2 &&
+		// pre text flows only across its preserved newlines; one line of it stays whole.
+		return n.type == NodeType::Text && !n.text.empty() && n.computedStyle().white_space != 1 &&
+		       (n.computedStyle().white_space != 2 || n.text.find('\n') != std::string::npos) &&
 		       n.computedStyle().width == kUnset && n.computedStyle().width_percent == kUnset;
 	}
 
@@ -3099,6 +3208,16 @@ public:
 		// Overflow columns follow the last column box; continue: discard drops them.
 		int used = std::max(1, (flow + height - 1) / height);
 		if (flags & 32) used = std::min(used, g.count);
+#if GEA_CSS_LINE_CLAMP
+		// The discarded content follows the clamp point that ends the last
+		// column box, which takes the block ellipsis like a line clamp's.
+		if (flags & 32) {
+			clearLineClamp(nodes_, id_);
+			LineClampWalk walk{nodes_, 0, true, boxInset(node_.computedStyle(), 0) + used * height};
+			walkLineClamp(walk, id_, 0);
+			if (walk.clamped && (flags & 2) && walk.lastRun >= 0) nodes_[walk.lastRun].layout.line_clamp_hidden |= 2;
+		}
+#endif
 		ensureRareData(id_).multicol = MulticolLayout{clampInt16(g.width), clampInt16(g.gap), clampInt16(height), clampInt16(used), true, (flags & 32) != 0};
 #if GEA_CSS_SCROLLING
 		node_.layout.scroll_content_width = clampInt16(std::max<int>(node_.layout.width, insetsX + used * (g.width + g.gap) - g.gap));
@@ -5631,6 +5750,13 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
 		LayoutNodePass(*this, id, node.layout.width, node.layout.height).repositionChildren();
+#if GEA_CSS_CONTAINMENT
+	// Size containment sizes the box as if it had no content (CSS Contain 3.2).
+	// A node without contain pays the type check and one rare-style read.
+	if (node.type == NodeType::View && (rstyle(node.computedStyle()).containment & 1) && writingMode(node) == 0 &&
+	    !hasExplicitHeight(node) && !(scrollsOverflowY(node.computedStyle()) && node.layout.height > 0))
+		node.layout.height = clampLayoutSize(node, boxInsets(node.computedStyle(), false), false);
+#endif
 #if GEA_CSS_LINE_CLAMP
 	if (clampsLines(node)) {
 		applyLineClamp(id);

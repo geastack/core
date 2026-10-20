@@ -112,7 +112,9 @@ void runtimeTtfTrace(const char *, ...) {}
 constexpr int kRuntimeAsciiFirst = 0x20;
 constexpr int kRuntimeAsciiLast = 0x7e;
 constexpr int kRuntimeAsciiCount = kRuntimeAsciiLast - kRuntimeAsciiFirst + 1;
-constexpr int kRuntimeExtraGlyphs = 1;
+// Beyond ASCII: the degree sign and the horizontal ellipsis, which the
+// block ellipsis of line-clamp and text-overflow draws when the font has it.
+constexpr int kRuntimeExtraGlyphs = 2;
 constexpr int kRuntimeGlyphCapacity = kRuntimeAsciiCount + kRuntimeExtraGlyphs;
 constexpr int kRuntimeFontCacheSlots = 64;
 constexpr int kRuntimeMaxAtlasWidth = 256;
@@ -143,6 +145,7 @@ int runtimeCodepointAt(int index)
 {
 	if (index >= 0 && index < kRuntimeAsciiCount) return kRuntimeAsciiFirst + index;
 	if (index == kRuntimeAsciiCount) return 0x00b0;
+	if (index == kRuntimeAsciiCount + 1) return 0x2026;
 	return -1;
 }
 
