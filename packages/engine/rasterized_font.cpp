@@ -134,9 +134,11 @@ constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints)/sizeof(int);
 #else
 // The degree sign, and the bullet a password input draws for each hidden
 // character (lv_textarea's LV_TEXTAREA_PWD_BULLET_UNICODE): without it every
-// masked character fell back to nothing. Kept short: each entry costs a Glyph
-// in every one of the 64 cache slots, on boards with no PSRAM too.
-constexpr int kRuntimeExtraCodepoints[] = {0x00b0, 0x2022};
+// masked character fell back to nothing. The horizontal ellipsis is what the
+// block ellipsis of line-clamp and text-overflow draws when the font has it.
+// Kept short: each entry costs a Glyph in every one of the 64 cache slots, on
+// boards with no PSRAM too.
+constexpr int kRuntimeExtraCodepoints[] = {0x00b0, 0x2022, 0x2026};
 constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints) / sizeof(int);
 #endif
 // Room for the glyphs an app declares beyond the fixed set above: the build's

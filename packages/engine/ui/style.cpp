@@ -7283,7 +7283,8 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 		out[1] = {Property::LineClampContinue, 0};
 		out[2] = {Property::BlockEllipsis, 0};
 		out[3] = {Property::BlockEllipsisString, 0};
-		out[4] = {Property::LineClampDiscard, 0};
+		// Also clears LineClampDiscard (setStyleValue).
+		out[4] = {Property::LineClampAuto, 0};
 		return 5;
 	}
 	for (const auto &word : words) {
@@ -7292,14 +7293,17 @@ int lineClampWrites(CssDeclarationId declaration, const std::string &value, Stat
 		else if (word == "no-ellipsis" && declaration == CssDeclarationId::LineClamp) ellipsis = false;
 		else if (word != "-webkit-legacy") return 0;
 	}
-	if ((lines > 0) == automatic || (!ellipsis && quoted)) return 0;
+	// A line count, auto, or both: then the block size clamps too, wherever
+	// it comes first.
+	if ((lines == 0 && !automatic) || (!ellipsis && quoted)) return 0;
 	// -webkit-line-clamp is the legacy form, which clamps only display:
 	// -webkit-box. Gea has no such display, so it never collapses here.
 	out[0] = {Property::MaxLines, lines};
 	out[1] = {Property::LineClampContinue, declaration == CssDeclarationId::LineClamp};
 	out[2] = {Property::BlockEllipsis, ellipsis && (!quoted || customAtom != 0)};
 	out[3] = {Property::BlockEllipsisString, customAtom};
-	out[4] = {Property::LineClampDiscard, 0};
+	// Also clears LineClampDiscard (setStyleValue).
+	out[4] = {Property::LineClampAuto, lines > 0 && automatic};
 	return 5;
 }
 
@@ -8659,6 +8663,7 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::ColumnWidthSet:
 	case Property::ColumnFillAuto:
 	case Property::LineClampDiscard:
+	case Property::LineClampAuto:
 	case Property::ColumnSpanAll: {
 		const int bit = lineClampFlagBit(property);
 		auto &flags = rstyleMut(style).line_clamp_flags;
@@ -12721,7 +12726,7 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "float") return removeInlineStyleProperties(id, {Property::Float});
 	if (property == "margin-trim") return removeInlineStyleProperties(id, {Property::MarginTrim});
 	if (property == "line-clamp" || property == "-webkit-line-clamp")
-		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::LineClampDiscard, Property::BlockEllipsis, Property::BlockEllipsisString});
+		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::LineClampDiscard, Property::BlockEllipsis, Property::BlockEllipsisString, Property::LineClampAuto});
 	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});
 	if (property == "continue") return removeInlineStyleProperties(id, {Property::LineClampContinue, Property::LineClampDiscard});
 	if (property == "block-ellipsis") return removeInlineStyleProperties(id, {Property::BlockEllipsis, Property::BlockEllipsisString});
