@@ -11,8 +11,21 @@ import {
 
 const core = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "gea-file-assets-"));
+// The storage directory is the device's filesystem path, which the manifest
+// requires to be POSIX (/nand/assets); this host test stands its fixture in
+// for that filesystem. On Windows the fixture's root-relative spelling
+// (/Users/.../Temp/...) is that POSIX path, and with the fixture's drive
+// current, node and the test programs open it there. Executables carry .exe,
+// the only name spawn finds.
+const windows = process.platform === "win32";
+const fixtureRoot = path.parse(fixture).root;
+const directory = windows
+  ? fixture.slice(fixtureRoot.length - 1).replaceAll("\\", "/")
+  : fixture;
+if (windows) process.chdir(fixtureRoot);
+const exe = windows ? ".exe" : "";
 try {
-  const storage = { type: "file", directory: fixture };
+  const storage = { type: "file", directory };
   assert.equal(fileAssetDirectory({}), null);
   for (const directory of [
     "relative",
@@ -51,7 +64,7 @@ try {
     "123456789",
     "previous firmware keeps its own bundle for rollback",
   );
-  const binary = path.join(fixture, "test");
+  const binary = path.join(fixture, "test" + exe);
   execFileSync(
     process.env.CXX || "clang++",
     [
@@ -119,7 +132,7 @@ try {
       JSON.parse(fs.readFileSync(file + ".assets.json", "utf8")).files[0],
   );
   const payloads = files.map((file) => fs.readFileSync(file.local));
-  const generatedBinary = path.join(fixture, "generated-test");
+  const generatedBinary = path.join(fixture, "generated-test" + exe);
   execFileSync(
     process.env.CXX || "clang++",
     [

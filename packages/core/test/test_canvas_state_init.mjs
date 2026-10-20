@@ -72,9 +72,11 @@ int main() {
   }
 }
 `
+// Windows has no `c++`, and spawn finds an executable only by its .exe name.
+const windows = process.platform === 'win32'
 for (const enabled of [undefined, 0, 1]) {
-  const binary = path.join(build, `canvas-state-init-${enabled ?? 'default'}`)
-  const compiled = spawnSync(process.env.CXX || 'c++', [
+  const binary = path.join(build, `canvas-state-init-${enabled ?? 'default'}${windows ? '.exe' : ''}`)
+  const compiled = spawnSync(process.env.CXX || (windows ? 'clang++' : 'c++'), [
     '-std=c++20', '-O2', '-g', '-fsanitize=address,undefined',
     ...(enabled === undefined ? [] : [`-DGEA_EMBEDDED_UI_STATE_DYNAMIC_INIT=${enabled}`]),
     '-I', path.join(core, 'include'), '-I', path.join(core, '../engine'),

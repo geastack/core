@@ -41,7 +41,13 @@ for (const [variant, defines] of [
   ["canvas", ["-DGEA_EMBEDDED_DIRECT_CANVAS_CONTEXT=1"]],
   ["headless", ["-DGEA_EMBEDDED_NO_DISPLAY=1"]],
 ]) {
-  const binary = path.join(build, "runtime-input-collection-" + variant);
+  // clang names a Windows executable with .exe; spawn needs the real name.
+  const binary = path.join(
+    build,
+    "runtime-input-collection-" +
+      variant +
+      (process.platform === "win32" ? ".exe" : ""),
+  );
   execFileSync(
     process.env.CXX || "clang++",
     [

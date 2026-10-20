@@ -48,7 +48,8 @@ for (const input of [
   "import { Magnetometer } from '@geastack/core'; Magnetometer.open()",
   '__gea_Magnetometer.read(0, new Float64Array(5))',
 ]) test('magnetometer calls report their sensor host binding: ' + input, t => {
-  const entry = '/virtual-magnetometer-api.ts'
+  // The analyzer resolves its entry; a drive-relative path gains a drive letter on Windows.
+  const entry = resolve('/virtual-magnetometer-api.ts')
   t.mock.method(fs, 'existsSync', file => file === entry)
   t.mock.method(fs, 'statSync', () => ({ isFile: () => true }))
   t.mock.method(fs, 'readFileSync', () => input)

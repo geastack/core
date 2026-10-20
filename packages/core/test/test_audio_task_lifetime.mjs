@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url'
 const source = readFileSync(new URL('../../host/audio_runtime.cpp', import.meta.url), 'utf8')
 const build = process.env.GEA_TEST_BUILD_DIR || fileURLToPath(new URL('../../../build/', import.meta.url))
 mkdirSync(build, { recursive: true })
-const binary = path.join(build, 'audio-task-lifetime-test')
+// Windows has no `c++`, and spawn finds an executable only by its .exe name.
+const windows = process.platform === 'win32'
+const binary = path.join(build, `audio-task-lifetime-test${windows ? '.exe' : ''}`)
 
 function method(signature) {
   const start = source.indexOf(signature)
@@ -151,7 +153,7 @@ int main() {
   assert(live.empty());
 }
 `
-  const compiled = spawnSync(process.env.CXX || 'c++', [
+  const compiled = spawnSync(process.env.CXX || (windows ? 'clang++' : 'c++'), [
     '-std=c++20', '-O1', '-g', '-pthread', '-fsanitize=address,undefined',
     '-x', 'c++', '-', '-o', binary,
   ], { input: program, encoding: 'utf8', env: { ...process.env, TMPDIR: build } })

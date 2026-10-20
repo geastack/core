@@ -78,3 +78,16 @@ gea_native_symbols() {
 gea_native_symbol_map_flags() {
   if [[ "$GEA_HOST_MANGLING" == microsoft ]]; then printf '%s\n' "-Wl,-map:$(cygpath -m "${1%.exe}.map")"; fi
 }
+
+# The suffix a linked executable needs to be started by a native program such
+# as node: Windows' CreateProcess search (libuv's included) adds .com/.exe to a
+# name without an extension and never tries the bare name, which only Git
+# Bash runs. Empty elsewhere.
+GEA_HOST_EXE_SUFFIX=
+if [[ "$GEA_HOST_MANGLING" == microsoft ]]; then GEA_HOST_EXE_SUFFIX=.exe; fi
+
+# $1, a Git Bash path (/c/Users/...), spelled for a native program to open:
+# outside Git Bash such a path is drive-relative. Unchanged elsewhere.
+gea_native_path() {
+  if [[ "$GEA_HOST_MANGLING" == microsoft ]]; then cygpath -w "$1"; else printf '%s\n' "$1"; fi
+}

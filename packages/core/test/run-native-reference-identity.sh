@@ -5,7 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BUILD_DIR="$ROOT/packages/core/test/.build/native-reference-identity"
 CXX_BIN="${CXX:-clang++}"
 : "${GEA_TEST_RUNTIME_HEADER:?Set actual shared compiler runtime gea_runtime.h}"
-[[ "$GEA_TEST_RUNTIME_HEADER" == /* && -f "$GEA_TEST_RUNTIME_HEADER" ]] || { echo 'Actual absolute shared runtime header required' >&2;exit 2; }
+# A Windows path (C:\...) is absolute too; cygpath spells it /c/... for the check.
+runtime_header_path=$GEA_TEST_RUNTIME_HEADER
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) runtime_header_path=$(cygpath -u "$runtime_header_path") ;; esac
+[[ "$runtime_header_path" == /* && -f "$runtime_header_path" ]] || { echo 'Actual absolute shared runtime header required' >&2;exit 2; }
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-1}"
 mkdir -p "$BUILD_DIR"
 source "$ROOT/packages/core/test/native-test-common.sh"

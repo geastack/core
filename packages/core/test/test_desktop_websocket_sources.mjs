@@ -14,8 +14,10 @@ const env = {
   GEA_ENGINE_DIR: resolve(core, 'packages/engine'), GEA_ELEMENTS_DIR: resolve(core, 'packages/elements'),
   GEA_GEAOS_PACKAGE_DIR: resolve(core, 'packages/geaos'), GEA_DESKTOP_WEBSOCKET_CURL: ''
 }
-const curl = resolve(env.GEA_HOST_DIR, 'host/websocket_curl.cpp')
-const nativeApple = resolve(env.GEA_HOST_DIR, 'host/websocket_apple.mm')
+// The manifest joins its package directories with `/` on every host (see
+// gea_sources.mjs), so a Windows directory keeps its backslashes up to there.
+const curl = `${env.GEA_HOST_DIR}/host/websocket_curl.cpp`
+const nativeApple = `${env.GEA_HOST_DIR}/host/websocket_apple.mm`
 const count = (list, name) => list.filter(p => p === name).length
 assert.equal(count(manifest.cxxSources(env), curl), 0, 'unrelated framework/browser/unit builds must not acquire libcurl')
 assert.equal(count(manifest.cxxSources({ ...env, GEA_DESKTOP_WEBSOCKET_CURL: '1' }), curl), 1,

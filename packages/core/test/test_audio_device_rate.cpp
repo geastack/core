@@ -7,6 +7,8 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -97,24 +99,31 @@ struct InputOnlyProcessor final : AudioWorkletProcessor {
 };
 
 struct AlternatingProcessor final : AudioWorkletProcessor {
+  // A burst is the calls of one render batch. The render loop services its
+  // task queue only between batches, so a task the first call of a batch posts
+  // runs once that batch has ended and closes it. Counting batches this way,
+  // rather than by the wall-clock gap between calls, does not mistake a
+  // preempted call on a loaded host for the cooperative tick.
+  std::shared_ptr<bool> batchOpen = std::make_shared<bool>(false);
   unsigned burst = 0;
-  std::chrono::steady_clock::time_point lastEnd;
   bool process(const AudioWorkletBus &inputs, AudioWorkletBus &outputs,
                const AudioWorkletParameters &) override {
     assert(outputs.empty() && inputs[0][0].size() == 128);
-    const auto now = std::chrono::steady_clock::now();
-    burst = lastEnd.time_since_epoch().count() &&
-                    now - lastEnd < std::chrono::microseconds(800)
-                ? burst + 1
-                : 1;
-    longestBurst = std::max(longestBurst.load(), burst);
+    if (!*batchOpen) {
+      *batchOpen = true;
+      burst = 0;
+      const bool posted = workers::Context::current()->post(
+          [open = batchOpen] { *open = false; });
+      assert(posted);
+      (void)posted;
+    }
+    longestBurst = std::max(longestBurst.load(), ++burst);
     const auto call = ++alternatingCalls;
     // One FFT-sized call exceeds a quantum; the following call is cheap. A
     // one-quantum batch budget inserts a forced tick after every heavy call,
     // preventing a run of three calls even with capture already available.
     if (call & 1)
       std::this_thread::sleep_for(std::chrono::milliseconds(8));
-    lastEnd = std::chrono::steady_clock::now();
     return true;
   }
 };
@@ -257,6 +266,8 @@ int main() {
     while (alternatingCalls < 64 && std::chrono::steady_clock::now() < deadline)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     assert(alternatingCalls == 64);
+    if (longestBurst < 3 || longestBurst > 4)
+      std::fprintf(stderr, "longest render batch: %u calls\n", longestBurst.load());
     assert(longestBurst >= 3 && longestBurst <= 4);
     alternatingContext.close();
   }

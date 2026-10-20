@@ -20,6 +20,15 @@
 #else
 #include <thread>
 #endif
+#if defined(_WIN32) && !defined(ESP_PLATFORM)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace gea::host::audio_worklet {
 namespace {
@@ -337,6 +346,16 @@ struct ContextState : std::enable_shared_from_this<ContextState> {
     // This entry owns its periodic render loop; runPending services only its
     // bounded messages between process calls, never on the UI or mixer task.
     realm->start([self] {
+#if defined(_WIN32) && !defined(ESP_PLATFORM)
+      // The render loop is the graph's audio clock, which ESP runs at its top
+      // task priority (above). Windows would leave it at normal priority, and
+      // it does not favour a thread waking from its 1 ms sleep over ready
+      // threads of equal priority: on a busy host every wake queued behind
+      // them, the loop fell seconds behind its quanta and capture overran.
+      // Time-critical is the level Windows audio engines give render threads;
+      // the bounded batch and the sleep below still yield every iteration.
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+#endif
       active = self.get();
       { std::lock_guard lock(self->readyMutex); self->ready = true; }
       self->readySignal.notify_all();
