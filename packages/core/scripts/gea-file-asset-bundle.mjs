@@ -26,7 +26,13 @@ export function fileAssetBundle(appDir, outCpp, kind, entries) {
     ? JSON.parse(fs.readFileSync(manifestFile, "utf8"))
     : {};
   const directory = fileAssetDirectory(manifest);
-  if (!directory || !entries.length) return null;
+  const metadata = `${outCpp}.assets.json`;
+  if (!directory || !entries.length) {
+    // A manifest left from an earlier storage-backed build would still have
+    // deploy tooling push that bundle.
+    fs.rmSync(metadata, { force: true });
+    return null;
+  }
   const bytes = Buffer.concat(entries.map((entry) => Buffer.from(entry.data)));
   const hash = createHash("sha256").update(bytes).digest("hex");
   const id = String(manifest.gea?.id || path.basename(appDir)).replace(
@@ -43,7 +49,6 @@ export function fileAssetBundle(appDir, outCpp, kind, entries) {
     version: 1,
     files: [{ local, remote, bytes: bytes.length, sha256: hash }],
   };
-  const metadata = `${outCpp}.assets.json`;
   const contents = JSON.stringify(deployment, null, 2) + "\n";
   if (
     !fs.existsSync(metadata) ||
