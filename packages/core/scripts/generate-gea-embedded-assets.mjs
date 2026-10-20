@@ -246,6 +246,15 @@ parts.push('#include <cstring>')
 if (bundle) parts.push('#include "platform/asset_bundle.h"')
 parts.push('')
 
+// gea_app_entry.cpp declares gea_embedded_assets_prepare weak and calls it only
+// when defined. A file-backed bundle defines it below; every other app needs
+// this fallback, for the same reason as gea_embedded_asset_lookup's: Apple's ld
+// rejects an undefined weak symbol that GCC/Xtensa would resolve to null.
+if (!bundle || assets.length === 0) {
+  parts.push('extern "C" __attribute__((weak)) bool gea_embedded_assets_prepare() { return true; }')
+  parts.push('')
+}
+
 if (assets.length === 0) {
   parts.push('// No embedded assets for this app.')
   // Still define gea_embedded_asset_lookup (always false): host/image.cpp declares
