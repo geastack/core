@@ -161,6 +161,46 @@ try {
   run("corrupt");
   files.forEach((file, i) => fs.writeFileSync(file.local, payloads[i]));
   run("ready");
+
+  // gea_app_entry.cpp calls the prepare hook whether or not the app uses file
+  // storage, and Apple's ld rejects a weak reference nothing defines, so the
+  // generator has to define it for apps without a bundle too.
+  const prepareMain = path.join(fixture, "prepare_main.cpp");
+  fs.writeFileSync(
+    prepareMain,
+    'extern "C" bool gea_embedded_assets_prepare();\nint main() { return gea_embedded_assets_prepare() ? 0 : 1; }\n',
+  );
+  for (const [id, asset] of [
+    ["no-storage-test", "public/pixel.png"],
+    ["no-assets-test", null],
+  ]) {
+    const plain = path.join(fixture, id);
+    fs.mkdirSync(path.join(plain, "public"), { recursive: true });
+    fs.writeFileSync(
+      path.join(plain, "package.json"),
+      JSON.stringify({ gea: { id } }),
+    );
+    if (asset) fs.copyFileSync(path.join(app, asset), path.join(plain, asset));
+    const plainCpp = path.join(fixture, id + ".cpp");
+    execFileSync(
+      process.execPath,
+      [
+        path.join(core, "scripts/generate-gea-embedded-assets.mjs"),
+        "--app-dir",
+        plain,
+        "--out-cpp",
+        plainCpp,
+      ],
+      { stdio: "pipe" },
+    );
+    const plainBinary = path.join(fixture, id + "-prepare" + exe);
+    execFileSync(
+      process.env.CXX || "clang++",
+      ["-std=c++20", plainCpp, prepareMain, "-o", plainBinary],
+      { stdio: "inherit" },
+    );
+    execFileSync(plainBinary, [], { stdio: "inherit" });
+  }
   console.log(
     "File asset bundles: validated content, rollback identity, corrupt/truncated/oversized/missing files, ASan/UBSan passed",
   );

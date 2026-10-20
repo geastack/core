@@ -41,7 +41,7 @@ void drainMicrotasks();
 #endif
 extern "C" void gea_cycle_collection_defer_begin() GEA_PROGRAM_HOOK;
 extern "C" void gea_cycle_collection_defer_end() GEA_PROGRAM_HOOK;
-extern "C" bool gea_embedded_assets_prepare() __attribute__((weak));
+extern "C" bool gea_embedded_assets_prepare() GEA_PROGRAM_HOOK;
 
 namespace gea::framework::app {
 

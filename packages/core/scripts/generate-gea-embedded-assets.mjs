@@ -332,6 +332,14 @@ if (assets.length === 0) {
   parts.push('}')
   parts.push('')
 }
+if (!bundle) {
+  // Without file storage every asset is embedded and ready at startup. Define
+  // the hook anyway: gea_app_entry.cpp references it, and Apple's ld rejects a
+  // weak reference nothing defines. Weak like gea_embedded_asset_lookup, since
+  // a bundled binary links several apps' generated assets.
+  parts.push('extern "C" __attribute__((weak)) bool gea_embedded_assets_prepare() { return true; }')
+  parts.push('')
+}
 
 writeFileIfChanged(outCpp, parts.join('\n'))
 process.stderr.write(`generate-gea-embedded-assets: ${assets.length} asset(s) -> ${path.relative(process.cwd(), outCpp)}\n`)
