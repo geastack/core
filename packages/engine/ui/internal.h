@@ -10,6 +10,10 @@
 #undef quad
 #endif
 
+// Linear-gradient commands that clip to their bounds: border-image tiles and
+// background layers clipped to the border area.
+#define GEA_GRADIENT_BOUNDS_CLIP (GEA_CSS_BORDER_IMAGE || GEA_CSS_BACKGROUND_LAYERS)
+
 namespace gea::embedded::ui
 {
 
@@ -170,10 +174,11 @@ void rootScrollImageHoldTick();
 				uint8_t hasMid;
 				// background-blend-mode of the layer; 0 is normal (see BlendMode).
 				uint8_t blend;
-#if GEA_CSS_BORDER_IMAGE
+#if GEA_GRADIENT_BOUNDS_CLIP
 				// 1: the replay also clips the fill to the command bounds. A
 				// border-image tile's gradient box is the whole scaled image; its
-				// bounds are the tile, so it needs no PushClip/PopClip pair.
+				// bounds are the tile, so it needs no PushClip/PopClip pair. A
+				// border-area layer's bounds are one side of the border.
 				uint8_t boundsClip;
 #endif
 			} gradient;

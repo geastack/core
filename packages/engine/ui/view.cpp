@@ -30,7 +30,8 @@ class TextBackgroundClipScope {
 	int previous_ = -1;
 	bool active_ = false;
 public:
-	TextBackgroundClipScope(const Node &node, int clip) : active_(clip == 3) {
+	// background-clip: text (3), or the text half of border-area text (5).
+	TextBackgroundClipScope(const Node &node, int clip) : active_(clip == 3 || clip == 5) {
 		if (active_) previous_ = DisplayList::instance().setRecordingTextClipOwner(
 		    static_cast<int>(&node - Tree::instance().nodes()));
 	}
@@ -355,7 +356,7 @@ DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int 
 	cmd->gradient.toAlpha = toAlpha;
 	cmd->gradient.hasMid = hasMid;
 	cmd->gradient.blend = blend;
-#if GEA_CSS_BORDER_IMAGE
+#if GEA_GRADIENT_BOUNDS_CLIP
 	cmd->gradient.boundsClip = 0;
 #endif
 	return cmd;
@@ -1730,6 +1731,57 @@ void recordBorderAreaFill(const Node &node, uint8_t parentAlpha)
 		appendBorderSideWithAlpha(node, side, node.computedStyle().bg_color, node.computedStyle().bg_alpha, parentAlpha, transformed);
 }
 
+#if GEA_CSS_BACKGROUND_LAYERS
+// The rects background-clip: border-area paints in the box (x, y, w, h): one
+// per border side with a width (border-style none and hidden leave none). A
+// radius larger than the border curves the inner edge; the rects stop at the
+// padding box, so the sliver inside that curve stays unpainted.
+int borderAreaRects(const Node &node, int x, int y, int w, int h, int (*rects)[4])
+{
+	const auto &s = node.computedStyle();
+	const int top = computedBorderWidth(s, 0), right = computedBorderWidth(s, 1);
+	const int bottom = computedBorderWidth(s, 2), left = computedBorderWidth(s, 3);
+	const int sides[4][4] = {{x, y, w, top}, {x + w - right, y + top, right, h - top - bottom},
+	                         {x, y + h - bottom, w, bottom}, {x, y + top, left, h - top - bottom}};
+	int count = 0;
+	for (const auto &side : sides)
+		if (side[2] > 0 && side[3] > 0) std::copy(side, side + 4, rects[count++]);
+	return count;
+}
+
+// A linear-gradient layer clipped to the border area: each side records the
+// layer's whole painting box with the side as bounds, and the replay clips to
+// the bounds, so no replay path depends on a PushClip/PopClip pair.
+template <typename Append>
+__attribute__((noinline)) void recordBorderAreaGradient(const Node &node, Append append)
+{
+	int rects[4][4];
+	const int count = borderAreaRects(node, node.layout.x, node.layout.y, node.layout.width, node.layout.height, rects);
+	for (int i = 0; i < count; ++i) {
+		DisplayCommand *cmd = append();
+		if (!cmd) return;
+		cmd->bx = rects[i][0]; cmd->by = rects[i][1]; cmd->bw = rects[i][2]; cmd->bh = rects[i][3];
+		cmd->gradient.boundsClip = 1;
+	}
+}
+#endif
+
+// Records a linear-gradient layer under its background-clip. border-area (4)
+// records the sides through `side`; border-area text (5) also records the
+// whole layer clipped to the text. A transformed box records the whole layer.
+template <typename Whole, typename Side>
+void recordLinearGradientLayer(const Node &node, int clip, Whole whole, [[maybe_unused]] Side side)
+{
+#if GEA_CSS_BACKGROUND_LAYERS
+	if ((clip == 4 || clip == 5) && !ViewGeometry::hasTransformChain(node, false)) {
+		recordBorderAreaGradient(node, side);
+		if (clip == 4) return;
+	}
+#endif
+	TextBackgroundClipScope textClip(node, clip);
+	whole();
+}
+
 // A transformed linear-gradient face paints a uniform border as its edge frame.
 bool gradientEdgeCarriesBorder(const Node &node)
 {
@@ -1819,16 +1871,9 @@ void recordRadialGradientBackground(const Node &node)
 	appendRadialGradientRectRaw(node, x, y, w, h);
 }
 
-void recordOverlayLinearGradientBackground(const Node &node)
+DisplayCommand *appendOverlayLinearGradientRectRaw(const Node &node, int x, int y, int w, int h)
 {
-	if (!rstyle(node.computedStyle()).bg_overlay_gradient) return;
-	const int x = node.layout.x;
-	const int y = node.layout.y;
-	const int w = node.layout.width;
-	const int h = node.layout.height;
-	if (w <= 0 || h <= 0) return;
-	if (ViewGeometry::hasTransformChain(node, false)) return;
-	appendLinearGradientRectRaw(node,
+	return appendLinearGradientRectRaw(node,
 	                            x,
 	                            y,
 	                            w,
@@ -1844,6 +1889,16 @@ void recordOverlayLinearGradientBackground(const Node &node)
 	                            rstyle(node.computedStyle()).bg_overlay_gradient_to_alpha,
 	                            rstyle(node.computedStyle()).bg_overlay_gradient_has_mid,
 	                            backgroundLayerBlend(node, rstyle(node.computedStyle()).bg_overlay_gradient_layer));
+}
+
+void recordOverlayLinearGradientBackground(const Node &node)
+{
+	if (!rstyle(node.computedStyle()).bg_overlay_gradient) return;
+	const int w = node.layout.width;
+	const int h = node.layout.height;
+	if (w <= 0 || h <= 0) return;
+	if (ViewGeometry::hasTransformChain(node, false)) return;
+	appendOverlayLinearGradientRectRaw(node, node.layout.x, node.layout.y, w, h);
 }
 
 // Background positioning and painting areas are distinct. In particular, the
@@ -1867,7 +1922,6 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 		int w = canvas ? treeState().mountedWidth : geometry.layout.width;
 		int h = canvas ? treeState().mountedHeight : geometry.layout.height;
 		const int clip = canvas ? 0 : StyleValues::backgroundClip(source.computedStyle(), layer);
-		TextBackgroundClipScope textClip(source, clip);
 		if (clip == 1 || clip == 2) {
 			int inset[4];
 			for (int i = 0; i < 4; ++i) inset[i] = computedBorderWidth(geometry.computedStyle(), i) +
@@ -1875,46 +1929,68 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 			x += inset[3]; y += inset[0]; w -= inset[1]+inset[3]; h -= inset[0]+inset[2];
 		}
 		if (w <= 0 || h <= 0) continue;
-		auto *begin = DisplayList::instance().append();
-		if (!begin) return true;
-		begin->type = DisplayCommandType::PushClip;
-		begin->bx = begin->clip.x = x; begin->by = begin->clip.y = y;
-		begin->bw = begin->clip.w = w; begin->bh = begin->clip.h = h; begin->clip.nodeId = -1;
-		begin->clip.shaped = 0;
-		struct TileAxis { double start, step; int count; };
-		auto axis = [](int position, int size, int mode, int area, int areaSize, int clipStart, int clipSize) -> TileAxis {
-			if (mode == 1) return {static_cast<double>(position), static_cast<double>(size), 1};
-			if (mode == 3) {
-				const int count = areaSize/size;
-				if (count < 2) return {static_cast<double>(position), static_cast<double>(size), 1};
-				return {static_cast<double>(area), static_cast<double>(areaSize-size)/(count-1), count};
+		// Records the tiles that meet the area (cx, cy, cw, ch) under a clip to it.
+		// A border-area side's linear tiles also clip to their bounds, since the
+		// dirty-region replays skip clip commands. False when the list is full.
+		const auto paintArea = [&](int cx, int cy, int cw, int ch, [[maybe_unused]] bool boundsClip) {
+			auto *begin = DisplayList::instance().append();
+			if (!begin) return false;
+			begin->type = DisplayCommandType::PushClip;
+			begin->bx = begin->clip.x = cx; begin->by = begin->clip.y = cy;
+			begin->bw = begin->clip.w = cw; begin->bh = begin->clip.h = ch; begin->clip.nodeId = -1;
+			begin->clip.shaped = 0;
+			struct TileAxis { double start, step; int count; };
+			auto axis = [](int position, int size, int mode, int area, int areaSize, int clipStart, int clipSize) -> TileAxis {
+				if (mode == 1) return {static_cast<double>(position), static_cast<double>(size), 1};
+				if (mode == 3) {
+					const int count = areaSize/size;
+					if (count < 2) return {static_cast<double>(position), static_cast<double>(size), 1};
+					return {static_cast<double>(area), static_cast<double>(areaSize-size)/(count-1), count};
+				}
+				const int start = position + static_cast<int>(std::floor(static_cast<double>(clipStart-position)/size))*size;
+				return {static_cast<double>(start), static_cast<double>(size), (clipStart+clipSize-start+size-1)/size};
+			};
+			const auto ax = axis(p.x,p.width,p.repeatX,p.areaX,p.areaWidth,cx,cw), ay = axis(p.y,p.height,p.repeatY,p.areaY,p.areaHeight,cy,ch);
+			for (int row = 0; row < ay.count; ++row) for (int col = 0; col < ax.count; ++col) {
+				const int tx = std::lround(ax.start+col*ax.step), ty = std::lround(ay.start+row*ay.step);
+				if (tx >= cx+cw || ty >= cy+ch || tx+p.width <= cx || ty+p.height <= cy) continue;
+				DisplayCommand *paint = nullptr;
+				if (linear) paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height);
+				else if (radial) paint = appendRadialGradientRectRaw(source,tx,ty,p.width,p.height);
+				else paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height,
+				    r.bg_overlay_gradient_from_color,r.bg_overlay_gradient_mid_color,r.bg_overlay_gradient_to_color,
+				    r.bg_overlay_gradient_mid_stop,r.bg_overlay_gradient_to_stop,r.bg_overlay_gradient_angle,
+				    r.bg_overlay_gradient_from_alpha,r.bg_overlay_gradient_mid_alpha,r.bg_overlay_gradient_to_alpha,r.bg_overlay_gradient_has_mid,
+				    backgroundLayerBlend(source, layer));
+				// Radius belongs to the painting box, never to each repeated image.
+				if (paint) {
+					auto &cmd = *paint;
+					if (radial) cmd.radialGradient.tl = cmd.radialGradient.tr = cmd.radialGradient.br = cmd.radialGradient.bl = 0;
+					else cmd.gradient.tl = cmd.gradient.tr = cmd.gradient.br = cmd.gradient.bl = 0;
+					cmd.bx = std::max(cx, tx); cmd.by = std::max(cy, ty);
+					cmd.bw = std::min(cx+cw,tx+p.width)-cmd.bx; cmd.bh = std::min(cy+ch,ty+p.height)-cmd.by;
+#if GEA_GRADIENT_BOUNDS_CLIP
+					if (!radial) cmd.gradient.boundsClip = boundsClip;
+#endif
+				}
 			}
-			const int start = position + static_cast<int>(std::floor(static_cast<double>(clipStart-position)/size))*size;
-			return {static_cast<double>(start), static_cast<double>(size), (clipStart+clipSize-start+size-1)/size};
+			auto *end = DisplayList::instance().append();
+			if (end) { end->type = DisplayCommandType::PopClip; end->bx = cx; end->by = cy; end->bw = cw; end->bh = ch; end->clip.nodeId = -1; }
+			return true;
 		};
-		const auto ax = axis(p.x,p.width,p.repeatX,p.areaX,p.areaWidth,x,w), ay = axis(p.y,p.height,p.repeatY,p.areaY,p.areaHeight,y,h);
-		for (int row = 0; row < ay.count; ++row) for (int col = 0; col < ax.count; ++col) {
-			const int tx = std::lround(ax.start+col*ax.step), ty = std::lround(ay.start+row*ay.step);
-			if (tx >= x+w || ty >= y+h || tx+p.width <= x || ty+p.height <= y) continue;
-			DisplayCommand *paint = nullptr;
-			if (linear) paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height);
-			else if (radial) paint = appendRadialGradientRectRaw(source,tx,ty,p.width,p.height);
-			else paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height,
-			    r.bg_overlay_gradient_from_color,r.bg_overlay_gradient_mid_color,r.bg_overlay_gradient_to_color,
-			    r.bg_overlay_gradient_mid_stop,r.bg_overlay_gradient_to_stop,r.bg_overlay_gradient_angle,
-			    r.bg_overlay_gradient_from_alpha,r.bg_overlay_gradient_mid_alpha,r.bg_overlay_gradient_to_alpha,r.bg_overlay_gradient_has_mid,
-			    backgroundLayerBlend(source, layer));
-			// Radius belongs to the painting box, never to each repeated image.
-			if (paint) {
-				auto &cmd = *paint;
-				if (radial) cmd.radialGradient.tl = cmd.radialGradient.tr = cmd.radialGradient.br = cmd.radialGradient.bl = 0;
-				else cmd.gradient.tl = cmd.gradient.tr = cmd.gradient.br = cmd.gradient.bl = 0;
-				cmd.bx = std::max(x, tx); cmd.by = std::max(y, ty);
-				cmd.bw = std::min(x+w,tx+p.width)-cmd.bx; cmd.bh = std::min(y+h,ty+p.height)-cmd.by;
-			}
+#if GEA_CSS_BACKGROUND_LAYERS
+		// border-area paints the tiles where the border strokes; border-area
+		// text adds them under the text.
+		if (clip == 4 || clip == 5) {
+			int rects[4][4];
+			const int count = borderAreaRects(geometry, x, y, w, h, rects);
+			for (int i = 0; i < count; ++i)
+				if (!paintArea(rects[i][0], rects[i][1], rects[i][2], rects[i][3], true)) return true;
+			if (clip == 4) continue;
 		}
-		auto *end = DisplayList::instance().append();
-		if (end) { end->type = DisplayCommandType::PopClip; end->bx = x; end->by = y; end->bw = w; end->bh = h; end->clip.nodeId = -1; }
+#endif
+		TextBackgroundClipScope textClip(source, clip);
+		if (!paintArea(x, y, w, h, false)) return true;
 	}
 	return true;
 }
@@ -2904,6 +2980,13 @@ bool ViewRenderer::overflowClipShape(const Node &node, OverflowClipShape &out)
 		// A perspective projection is not a parallelogram; keep it unclipped.
 		if (std::abs(out.qx[0] + out.qx[2] - out.qx[1] - out.qx[3]) > 1 ||
 		    std::abs(out.qy[0] + out.qy[2] - out.qy[1] - out.qy[3]) > 1) return false;
+		// A translation moves the box whole. Its local box is then where it lands,
+		// and replay clips it as an untransformed box, with the cached corner masks.
+		if (out.qx[0] == out.qx[3] && out.qx[1] == out.qx[2] && out.qy[0] == out.qy[1] && out.qy[2] == out.qy[3] &&
+		    out.qx[1] - out.qx[0] == w && out.qy[3] - out.qy[0] == h) {
+			out.lx = out.qx[0];
+			out.ly = out.qy[0];
+		}
 		int bx0, by0, bx1, by1;
 		boundsFromCorners(out.qx, out.qy, &bx0, &by0, &bx1, &by1);
 		out.x = bx0;
@@ -3166,6 +3249,8 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 		if (n->computedStyle().bg_alpha > 0 && !canvasRoot &&
 		    (canvasSource < 0 || &treeState().nodes[canvasSource] != n)) {
 			const int clip = StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_image_layer_count - 1);
+			// border-area text: the border area, then the box under the text below.
+			if (clip == 5) recordBorderAreaFill(*n, parentAlpha);
 			TextBackgroundClipScope textClip(*n, clip);
 			if (clip == 1 || clip == 2) {
 				recordTransformedRoundedRectFill(*n, parentAlpha, clip);
@@ -3195,17 +3280,19 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_record_box") ViewRenderer::recordB
 		if (!canvasRoot && (canvasSource < 0 || &treeState().nodes[canvasSource] != n)) {
 			if (!recordPlacedBackgrounds(*n, *n, false)) {
 				if (n->computedStyle().bg_fill == 1) {
-					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_gradient_layer));
-					recordLinearGradientBackground(*n, parentAlpha);
-					borderOnGradientEdge = ViewGeometry::hasTransformChain(*n, false) && gradientEdgeCarriesBorder(*n);
+					recordLinearGradientLayer(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_gradient_layer), [&] {
+						recordLinearGradientBackground(*n, parentAlpha);
+						borderOnGradientEdge = ViewGeometry::hasTransformChain(*n, false) && gradientEdgeCarriesBorder(*n);
+					}, [&] { return appendLinearGradientRectRaw(*n, x, y, w, h); });
 				}
-				{
+				// Each layer's flag first: a colour-only box makes no clip lookups.
+				if (rstyle(n->computedStyle()).bg_radial_gradient) {
 					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_radial_gradient_layer));
 					recordRadialGradientBackground(*n);
 				}
-				{
-					TextBackgroundClipScope textClip(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_overlay_gradient_layer));
-					recordOverlayLinearGradientBackground(*n);
+				if (rstyle(n->computedStyle()).bg_overlay_gradient) {
+					recordLinearGradientLayer(*n, StyleValues::backgroundClip(n->computedStyle(), rstyle(n->computedStyle()).bg_overlay_gradient_layer),
+					    [&] { recordOverlayLinearGradientBackground(*n); }, [&] { return appendOverlayLinearGradientRectRaw(*n, x, y, w, h); });
 				}
 			}
 			recordBackgroundGrid(*n, parentAlpha);

@@ -2456,7 +2456,8 @@ int gLastScrollUiFrame = -1000;
 			static int exposableBoxes(const TransformedRoundedRectCommand &shape, Box *boxes, int8_t *corners)
 			{
 				int count = 0;
-				if (transformedRoundedRectLooksAxisAligned(shape) && shape.x1 - shape.x0 == shape.lw && shape.y3 - shape.y0 == shape.lh)
+				if (transformedRoundedRectLooksAxisAligned(shape) && shape.x1 - shape.x0 == shape.lw && shape.y3 - shape.y0 == shape.lh &&
+				    std::abs(shape.x0 - shape.lx) <= 1 && std::abs(shape.y0 - shape.ly) <= 1)
 				{
 					// Only the corner boxes can lie outside an untransformed rounded rect.
 					const int left = shape.lx, top = shape.ly, right = shape.lx + shape.lw - 1, bottom = shape.ly + shape.lh - 1;
@@ -2466,6 +2467,31 @@ int gLastScrollUiFrame = -1000;
 					if (trW && trH) { corners[count] = 1; boxes[count++] = {right - trW + 1, top, right, top + trH - 1}; }
 					if (brW && brH) { corners[count] = 2; boxes[count++] = {right - brW + 1, bottom - brH + 1, right, bottom}; }
 					if (blW && blH) { corners[count] = 3; boxes[count++] = {left, bottom - blH + 1, left + blW - 1, bottom}; }
+					return count;
+				}
+				// A quarter turn, a flip or a scale keeps the quad on the pixel grid, so
+				// again only the corner boxes can lie outside it, wherever the transform
+				// takes them. Their corner is -1: restore() samples them per pixel.
+				const bool rows = shape.y0 == shape.y1 && shape.y2 == shape.y3 && shape.x0 == shape.x3 && shape.x1 == shape.x2;
+				const bool columns = shape.x0 == shape.x1 && shape.x2 == shape.x3 && shape.y0 == shape.y3 && shape.y1 == shape.y2;
+				if ((rows || columns) && shape.lw > 0 && shape.lh > 0)
+				{
+					const int w[4] = {extent(shape.tlRx8), extent(shape.trRx8), extent(shape.brRx8), extent(shape.blRx8)};
+					const int h[4] = {extent(shape.tlRy8), extent(shape.trRy8), extent(shape.brRy8), extent(shape.blRy8)};
+					const float ux = static_cast<float>(shape.x1 - shape.x0) / shape.lw, uy = static_cast<float>(shape.y1 - shape.y0) / shape.lw;
+					const float vx = static_cast<float>(shape.x3 - shape.x0) / shape.lh, vy = static_cast<float>(shape.y3 - shape.y0) / shape.lh;
+					for (int i = 0; i < 4; ++i)
+					{
+						if (!w[i] || !h[i]) continue;
+						// The corner's local box, from the local top-left, mapped to the screen.
+						const float u0 = i == 1 || i == 2 ? static_cast<float>(shape.lw - w[i]) : 0.0f, u1 = u0 + static_cast<float>(w[i]);
+						const float v0 = i >= 2 ? static_cast<float>(shape.lh - h[i]) : 0.0f, v1 = v0 + static_cast<float>(h[i]);
+						const float sx0 = shape.x0 + ux * u0 + vx * v0, sx1 = shape.x0 + ux * u1 + vx * v1;
+						const float sy0 = shape.y0 + uy * u0 + vy * v0, sy1 = shape.y0 + uy * u1 + vy * v1;
+						corners[count] = -1;
+						boxes[count++] = {static_cast<int>(std::floor(std::min(sx0, sx1))), static_cast<int>(std::floor(std::min(sy0, sy1))),
+						                  static_cast<int>(std::ceil(std::max(sx0, sx1))) - 1, static_cast<int>(std::ceil(std::max(sy0, sy1))) - 1};
+					}
 					return count;
 				}
 				const int16_t xs[4] = {shape.x0, shape.x1, shape.x2, shape.x3};
@@ -2509,7 +2535,7 @@ int gLastScrollUiFrame = -1000;
 			static bool exactlyAxisAligned(const TransformedRoundedRectCommand &r)
 			{
 				return r.x0 == r.x3 && r.x1 == r.x2 && r.y0 == r.y1 && r.y2 == r.y3 &&
-				       r.x1 - r.x0 == r.lw && r.y3 - r.y0 == r.lh;
+				       r.x1 - r.x0 == r.lw && r.y3 - r.y0 == r.lh && r.x0 == r.lx && r.y0 == r.ly;
 			}
 
 			// The corners restore through cached masks (see cornerMask).
@@ -6881,11 +6907,12 @@ int gLastScrollUiFrame = -1000;
 			{
 				int cx0, cy0, cx1, cy1;
 				gea::platform::display::Display::clip(&cx0, &cy0, &cx1, &cy1);
-#if GEA_CSS_BORDER_IMAGE
+#if GEA_GRADIENT_BOUNDS_CLIP
 				if (c.gradient.boundsClip)
 				{
 					// A border-image tile: the gradient box is the whole scaled image and
-					// the bounds are the tile.
+					// the bounds are the tile. A border-area layer: the box is the
+					// painting area and the bounds are one border side.
 					cx0 = std::max<int>(cx0, c.bx);
 					cy0 = std::max<int>(cy0, c.by);
 					cx1 = std::min<int>(cx1, c.bx + c.bw - 1);

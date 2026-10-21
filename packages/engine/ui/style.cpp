@@ -7127,7 +7127,13 @@ int compileBackgroundClip(const std::string &value, bool shorthand = false)
 	for (const auto &layer : splitTopLevel(lower, ',')) {
 		if (!shorthand) {
 			const auto word = trimCssValue(layer);
-			const int clip = word == "text" ? 3 : word == "border-area" ? 4 : backgroundBoxValue(word);
+			int clip = word == "text" ? 3 : word == "border-area" ? 4 : backgroundBoxValue(word);
+			// border-area || text (CSS Backgrounds 4): the union of both areas, 5.
+			if (clip < 0) {
+				const auto words = splitWords(word);
+				if (words.size() == 2 && words[0] != words[1] && (words[0] == "text" || words[0] == "border-area") &&
+				    (words[1] == "text" || words[1] == "border-area")) clip = 5;
+			}
 			if (clip < 0) return -1;
 			clips.push_back(clip);
 		} else {
@@ -19032,7 +19038,7 @@ bool StyleValues::hasTextBackgroundClip(const ComputedStyle &style)
 	const auto &lists = backgroundClipLists();
 	if (!handle || handle > lists.size()) return false;
 	const auto &list = lists[handle - 1];
-	return std::find(list.begin(), list.end(), 3) != list.end();
+	return std::any_of(list.begin(), list.end(), [](std::uint8_t clip) { return clip == 3 || clip == 5; });
 }
 
 #if GEA_CSS_BORDER_IMAGE
