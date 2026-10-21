@@ -27,7 +27,7 @@
 #define GEA_SCROLL_MOMENTUM_MAX_VELOCITY 24.0f
 #endif
 #ifndef GEA_SCROLL_MOMENTUM_MIN_VELOCITY
-#define GEA_SCROLL_MOMENTUM_MIN_VELOCITY 0.06f
+#define GEA_SCROLL_MOMENTUM_MIN_VELOCITY 0.2f
 #endif
 #ifndef GEA_SCROLL_MOMENTUM_DECAY_MS
 #define GEA_SCROLL_MOMENTUM_DECAY_MS 680.0f
@@ -106,6 +106,7 @@ public:
 		carryOverVelocity_ = momentumVelocity_;
 		carryOverAxis_ = momentumAxis_;
 		cancelMomentum();
+		pointerDownMs_ = gea::framework::services::FrameScheduler::nowMs();
 		activeScrollNode_ = tree.nodeCount() == 0 ? -1 : findScrollNodeId(0, x, y);
 		activeScrollOwner_=NodeHandle(activeScrollNode_);
 		snapAccumDy_ = 0;
@@ -766,27 +767,53 @@ private:
 		if (scrollNode < 0 || scrollNode >= tree.nodeCount()) return;
 		if (!nodeCanScrollAxis(scrollNode, tree.node(scrollNode), axis)) return;
 
-		// Average velocity from the oldest sample to the newest in the ring.
-		// Using two endpoints rather than a per-sample derivative smooths
-		// out the noisy last few touch reports right before lift-off.
-		const int newestIdx =
-		    (velocitySampleNext_ + kVelocitySampleCount - 1) % kVelocitySampleCount;
-		const int oldestIdx =
-		    velocitySampleCount_ < kVelocitySampleCount
-		        ? 0
-		        : velocitySampleNext_;
-		const VelocitySample &newest = velocitySamples_[newestIdx];
-		const VelocitySample &oldest = velocitySamples_[oldestIdx];
-		const int dtMs = newest.timestampMs - oldest.timestampMs;
+		// Release velocity is the finger's speed over the last
+		// kVelocityWindowMs before lift-off, not over the whole ring: a flick
+		// that started fast and slowed before release must launch at the slow
+		// speed. The newest sample is the lift itself (pushed at pointer up),
+		// so a pause before lifting counts as standing still. The window start
+		// is interpolated between the two samples that straddle it, which
+		// keeps the estimate independent of the touch report rate.
+		auto sampleAt = [this](int back) -> const VelocitySample & {
+			return velocitySamples_[(velocitySampleNext_ + kVelocitySampleCount - 1 - back) %
+			                        kVelocitySampleCount];
+		};
+		auto along = [axis](const VelocitySample &s) {
+			return static_cast<float>(axis == ScrollAxis::X ? s.x : s.y);
+		};
+		const VelocitySample &newest = sampleAt(0);
+		const int windowStartMs = newest.timestampMs - kVelocityWindowMs;
+		int dtMs = 0;
+		float deltaF = 0.0f;
+		for (int back = 1; back < velocitySampleCount_; back++) {
+			const VelocitySample &older = sampleAt(back);
+			if (older.timestampMs > windowStartMs && back + 1 < velocitySampleCount_) continue;
+			if (older.timestampMs >= windowStartMs) {
+				// The ring does not reach back a whole window: use what it holds.
+				dtMs = newest.timestampMs - older.timestampMs;
+				deltaF = along(newest) - along(older);
+				break;
+			}
+			const VelocitySample &newer = sampleAt(back - 1);
+			const int span = newer.timestampMs - older.timestampMs;
+			const float t = span > 0
+			                    ? static_cast<float>(windowStartMs - older.timestampMs) / span
+			                    : 1.0f;
+			const float startPos = along(older) + (along(newer) - along(older)) * t;
+			dtMs = kVelocityWindowMs;
+			deltaF = along(newest) - startPos;
+			break;
+		}
 		if (dtMs <= 0) return;
 
 		const int nowMs = gea::framework::services::FrameScheduler::nowMs();
 
-		const int delta = axis == ScrollAxis::X ? newest.x - oldest.x : newest.y - oldest.y;
-		float velocityPxPerMs = static_cast<float>(delta) / static_cast<float>(dtMs);
+		const int delta = static_cast<int>(deltaF);
+		float velocityPxPerMs = deltaF / static_cast<float>(dtMs);
 
-		// Below ~0.06 px/ms = 60 px/sec, the fling is so weak it'd stop in a
-		// frame or two — not worth the tick overhead and visually a no-op.
+		// Below ~0.2 px/ms = 200 px/sec over the release window the finger was
+		// not flicking: a finger that stopped still rolls a few px as it lifts,
+		// and launching that roll reads as the list moving on by itself.
 		// A tap (no drag, weak velocity) also lands here, which is what we
 		// want: a tap should NOT resume a stashed fling.
 		if (std::fabs(velocityPxPerMs) < kMinFlingVelocity) {
@@ -805,7 +832,11 @@ private:
 		// the new flick goes in the same direction, add the leftover
 		// velocity to the new one. Opposite direction → user is reversing
 		// course, drop the stash.
+		// Only a quick re-flick carries: a finger that caught the fling and held
+		// or dragged slowly before lifting would otherwise launch faster than
+		// it moved.
 		if (carryOverAxis_ == axis && carryOverVelocity_ != 0.0f &&
+		    nowMs - pointerDownMs_ <= kCarryOverWindowMs &&
 		    (carryOverVelocity_ > 0.0f) == (velocityPxPerMs > 0.0f)) {
 			velocityPxPerMs += carryOverVelocity_ * kCarryOverBoost;
 		}
@@ -843,9 +874,11 @@ private:
 		int x;
 		int y;
 	};
-	static constexpr int kVelocitySampleCount = 5;
+	static constexpr int kVelocitySampleCount = 8;
+	static constexpr int kVelocityWindowMs = 50;
 	static constexpr float kLaunchVelocityBoost = GEA_SCROLL_MOMENTUM_LAUNCH_BOOST;
 	static constexpr float kCarryOverBoost = GEA_SCROLL_MOMENTUM_CARRY_BOOST;
+	static constexpr int kCarryOverWindowMs = 250;
 	static constexpr float kMaxMomentumVelocity = GEA_SCROLL_MOMENTUM_MAX_VELOCITY;  // px/ms
 	static constexpr float kMinFlingVelocity = GEA_SCROLL_MOMENTUM_MIN_VELOCITY;     // px/ms
 	static constexpr float kMomentumDecayMs = GEA_SCROLL_MOMENTUM_DECAY_MS;
@@ -877,6 +910,7 @@ private:
 	// Folded into the next flick if same-direction so successive flicks
 	// accelerate (iOS-style).
 	float carryOverVelocity_ = 0.0f;
+	int pointerDownMs_ = 0;
 	ScrollAxis carryOverAxis_ = ScrollAxis::None;
 };
 

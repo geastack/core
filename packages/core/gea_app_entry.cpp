@@ -6,6 +6,7 @@
 #include "gea_perf_config.h"  // GEA_EMBEDDED_PERF master + per-subsystem perf flags
 #include "gea/embedded.h"
 #include "host/backends.h"
+#include "host/gpio.h"
 #include "host/worker.h"
 #include "ui/node_features.h"
 #include "ui/style.h"
@@ -41,7 +42,7 @@ void drainMicrotasks();
 #endif
 extern "C" void gea_cycle_collection_defer_begin() GEA_PROGRAM_HOOK;
 extern "C" void gea_cycle_collection_defer_end() GEA_PROGRAM_HOOK;
-extern "C" bool gea_embedded_assets_prepare() __attribute__((weak));
+extern "C" bool gea_embedded_assets_prepare() GEA_PROGRAM_HOOK;
 
 namespace gea::framework::app {
 
@@ -281,6 +282,8 @@ void Application::frame(int timestampMs)
 #if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 	applicationFramePhaseSet(ApplicationFramePhase::DrainMicrotasks);
 	generated::drainMicrotasks();
+	// Pin edges first, so state they change renders in this frame.
+	gea::host::gpio::runCallbacks();
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);
 	gea::host::runAnimationFrameCallbacks(timestampMs);
 	generated::drainMicrotasks();
@@ -305,6 +308,10 @@ void Application::frame(int timestampMs)
 	applicationFramePhaseSet(ApplicationFramePhase::DrainMicrotasks);
 	generated::drainMicrotasks();
 	recordFramePhase(ApplicationFramePhase::DrainMicrotasks, phaseClockUs() - startUs);
+
+	// Pin edges (Gpio/Digital callbacks): after the microtasks, before rAF, so
+	// state they change renders in this frame. Their microtasks drain with rAF's.
+	gea::host::gpio::runCallbacks();
 
 	startUs = phaseClockUs();
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);

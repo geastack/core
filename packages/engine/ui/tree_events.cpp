@@ -366,7 +366,15 @@ bool dispatchRootKeyEvent(gea::framework::events::PointerEvent &event, bool lega
  using gea::framework::events::PointerEventType;
  if (event.type != PointerEventType::KeyDown && event.type != PointerEventType::KeyUp) return false;
  auto &tree = Tree::instance();
- if (event.targetId < 0) event.targetId = tree.mountedRoot();
+ // With no focused input a hardware key belongs to the app: target its top
+ // element (the mount container's first child), so the event bubbles through
+ // the app root -- where apps bind onKeyDown -- and then the container. Aiming
+ // at the container itself skipped every app-level key handler.
+ if (event.targetId < 0) {
+  const int root = tree.mountedRoot();
+  const int app = tree.firstChildOf(root);
+  event.targetId = app >= 0 ? app : root;
+ }
  event.target = gea::framework::events::EventTarget(event.targetId);
  const auto path = captureEventPath(tree, event.targetId);
  bool dispatched = dispatchWindowEvent(event, true);

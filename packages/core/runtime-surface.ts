@@ -6,6 +6,7 @@ export * from './runtime/host'
 export * from './runtime/ble'
 export * from './runtime/images'
 export * from './runtime/color'
+export * from './runtime/gpio'
 export { mount } from './runtime/primitives'
 // The embedded/geatsc pipeline aliases '@geastack/core' to runtime.ts, so an
 // app's `import type { GeaCanvasElement, GeaEmbeddedImage } from
@@ -130,6 +131,7 @@ export type {
   ImageSource,
   IncomingMessage,
   InputController,
+  ButtonsController,
   InputElementProps,
   InputEvent,
   InputEventTarget,

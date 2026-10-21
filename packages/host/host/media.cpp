@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "platform/file_cache.h"
+#include "platform/internal_stack.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -241,7 +242,7 @@ bool patchWavHeader(FILE *file, std::uint32_t dataBytes) {
   return std::fflush(file) == 0;
 }
 
-double writeWavFile(const std::string &path, const std::vector<std::int16_t> &samples, int sampleRate, int channels) {
+double writeWavFileOnInternalStack(const std::string &path, const std::vector<std::int16_t> &samples, int sampleRate, int channels) {
   if (path.empty()) return 0.0;
   gea::platform::storage::ensureMounted();
   makeParentDirs(path);
@@ -286,6 +287,13 @@ double writeWavFile(const std::string &path, const std::vector<std::int16_t> &sa
   return static_cast<double>(44u + actualDataBytes);
 }
 
+double writeWavFile(const std::string &path, const std::vector<std::int16_t> &samples, int sampleRate, int channels) {
+  double result{};
+  gea::platform::onInternalStack([&] { result = writeWavFileOnInternalStack(path, samples, sampleRate, channels); });
+  return result;
+}
+
+
 bool recordingPathAssigned(const std::string &path) {
   for (const auto &entry : recorderTable()) {
     if (entry.second.path == path) return true;
@@ -325,7 +333,7 @@ std::FILE *openRecorderOutput(RecorderState &recorder, NativeMediaRecorderHandle
   }
 }
 
-bool openRecorderFile(RecorderState &recorder, NativeMediaRecorderHandle handle) {
+bool openRecorderFileOnInternalStack(RecorderState &recorder, NativeMediaRecorderHandle handle) {
   if (recorder.path.empty()) return false;
   gea::platform::storage::ensureMounted();
   makeParentDirs(recorder.path);
@@ -343,13 +351,25 @@ bool openRecorderFile(RecorderState &recorder, NativeMediaRecorderHandle handle)
   return true;
 }
 
-void closeRecorderFile(RecorderState &recorder) {
+bool openRecorderFile(RecorderState &recorder, NativeMediaRecorderHandle handle) {
+  bool result{};
+  gea::platform::onInternalStack([&] { result = openRecorderFileOnInternalStack(recorder, handle); });
+  return result;
+}
+
+
+void closeRecorderFileOnInternalStack(RecorderState &recorder) {
   if (!recorder.file) return;
   std::fclose(recorder.file);
   recorder.file = nullptr;
 }
 
-bool flushRecorderPcm(RecorderState &recorder) {
+void closeRecorderFile(RecorderState &recorder) {
+  gea::platform::onInternalStack([&] { closeRecorderFileOnInternalStack(recorder); });
+}
+
+
+bool flushRecorderPcmOnInternalStack(RecorderState &recorder) {
   if (!recorder.file || recorder.pcm.empty() || recorder.writeFailed) return !recorder.writeFailed;
   std::size_t writtenSamples = 0;
   while (writtenSamples < recorder.pcm.size()) {
@@ -376,13 +396,20 @@ bool flushRecorderPcm(RecorderState &recorder) {
   return true;
 }
 
+bool flushRecorderPcm(RecorderState &recorder) {
+  bool result{};
+  gea::platform::onInternalStack([&] { result = flushRecorderPcmOnInternalStack(recorder); });
+  return result;
+}
+
+
 void appendRecorderPcm(RecorderState &recorder, const std::int16_t *samples, std::size_t count) {
   if (!recorder.file || recorder.writeFailed || !samples || count == 0) return;
   recorder.pcm.insert(recorder.pcm.end(), samples, samples + count);
   if (recorder.pcm.size() >= kRecorderFlushSamples) flushRecorderPcm(recorder);
 }
 
-double finalizeRecorderFile(RecorderState &recorder) {
+double finalizeRecorderFileOnInternalStack(RecorderState &recorder) {
   flushRecorderPcm(recorder);
   std::vector<std::int16_t>().swap(recorder.pcm);  // the entry outlives the recording; free its staging
   if (!recorder.file) return 0.0;
@@ -405,7 +432,14 @@ double finalizeRecorderFile(RecorderState &recorder) {
   return static_cast<double>(44u + dataBytes);
 }
 
-std::vector<std::uint8_t> readFileBytes(const std::string &path) {
+double finalizeRecorderFile(RecorderState &recorder) {
+  double result{};
+  gea::platform::onInternalStack([&] { result = finalizeRecorderFileOnInternalStack(recorder); });
+  return result;
+}
+
+
+std::vector<std::uint8_t> readFileBytesOnInternalStack(const std::string &path) {
   if (path.empty()) return {};
   gea::platform::storage::ensureMounted();
   FILE *file = std::fopen(path.c_str(), "rb");
@@ -423,6 +457,13 @@ std::vector<std::uint8_t> readFileBytes(const std::string &path) {
   out.resize(read);
   return out;
 }
+
+std::vector<std::uint8_t> readFileBytes(const std::string &path) {
+  std::vector<std::uint8_t> result{};
+  gea::platform::onInternalStack([&] { result = readFileBytesOnInternalStack(path); });
+  return result;
+}
+
 
 }  // namespace
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Linux desktop provider: link a WebSocket-enabled libcurl >= 7.86.
+// Linux desktop provider: link libcurl >= 7.86. Without ws/wss in the linked
+// libcurl (Debian 12's 7.88.1) it still builds, and connections fail at runtime.
 #if defined(__linux__) || defined(GEA_TEST_CURL_WEBSOCKET)
 #include "host/websocket_platform.h"
 #include <atomic>
@@ -16,7 +17,7 @@
 #include <sys/socket.h>
 #endif
 #if LIBCURL_VERSION_NUM < 0x075600
-#error "Desktop WebSocket requires libcurl >= 7.86 with ws/wss enabled"
+#error "Desktop WebSocket requires libcurl >= 7.86"
 #endif
 namespace gea::host::websocket::curl_transport {
 using Clock = std::chrono::steady_clock;
@@ -332,7 +333,12 @@ void State::run() {
       }
       char buffer[16384];
       std::size_t received = 0;
+#if LIBCURL_VERSION_NUM >= 0x080200
       const curl_ws_frame *meta = nullptr;
+#else
+      // curl_ws_recv took a non-const frame pointer until 8.2.0.
+      curl_ws_frame *meta = nullptr;
+#endif
       const auto rc =
           curl_ws_recv(c.easy, buffer, sizeof(buffer), &received, &meta);
       if (rc == CURLE_OK && meta) {

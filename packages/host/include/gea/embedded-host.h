@@ -22,6 +22,7 @@
 #include "host/tile_loader.h"
 #include "host/memory.h"
 #include "host/input.h"
+#include "host/buttons.h"
 #include "host/gpio.h"
 #include "host/uart.h"
 #include "host/esp_now.h"

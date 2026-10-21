@@ -32,9 +32,12 @@ automatically.
 
 ## Linux provider
 
-`host/websocket_curl.cpp` is the Linux desktop provider, linked with a
-WebSocket-enabled libcurl >= 7.86. macOS's system libcurl lacks ws/wss, so Linux
-runtime behavior has to be tested on Linux.
+`host/websocket_curl.cpp` is the Linux desktop provider, linked with libcurl
+>= 7.86. It builds against a libcurl without ws/wss (Debian 12 and Raspberry Pi OS
+Bookworm ship 7.88.1 without them); there every connection fails with an error
+event, "WebSocket protocol not enabled in libcurl". Connecting needs a libcurl that
+lists ws/wss in `curl-config --protocols`, such as Debian 13's. macOS's system
+libcurl lacks ws/wss, so Linux runtime behavior has to be tested on Linux.
 
 The Linux worker alone owns libcurl calls. Sends have byte/entry bounds; complete
 text is assembled and UTF-8 checked within 1 MiB. Script events use the same owner

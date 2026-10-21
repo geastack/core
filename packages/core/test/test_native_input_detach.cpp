@@ -11,6 +11,7 @@
 #include <stdexcept>
 namespace gea::framework::app::generated { void drainMicrotasks() {} }
 namespace gea::framework::graphics::generated { void ensureLinked() {} }
+namespace gea::platform::touch { extern int gNativeTestMoveConsumes; }
 using namespace gea::embedded::ui;
 using namespace gea::framework::events;
 static NodeHandle observedReplacement;
@@ -75,8 +76,11 @@ int main(int argc,char**argv){
   contact(TouchPhase::Down,pointer);assert(down==1);
   root.removeChild(button);root.appendChild(button);
   assert(tree.node(button.id()).computedStyle().bg_color==oldBackground&&tree.node(button.id()).computedStyle().has_bg==oldHasBackground);
+  const int consumesBefore=gea::platform::touch::gNativeTestMoveConsumes;
   contact(TouchPhase::Move,pointer,21);contact(TouchPhase::Up,pointer,21);
   assert(cancel==1&&up==0&&click==0&&down==1);
+  // The move that retires the detached gesture still drains the controller.
+  if(pointer==0)assert(gea::platform::touch::gNativeTestMoveConsumes==consumesBefore+1);
   contact(TouchPhase::Down,pointer);contact(TouchPhase::Up,pointer);
   assert(down==2&&cancel==1&&up==1&&click==1);
  }

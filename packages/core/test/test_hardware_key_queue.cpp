@@ -72,4 +72,35 @@ int main() {
   queueKeyDown(27);
   assert(consumeKeyDown() == 27);
   assert(consumeKeyDown() == 0);
+
+  // Named buttons travel the same ordered stream and say which button they
+  // are; a bare key code says none.
+  assert(buttonCount() == 0 && buttonCode(0)[0] == '\0');
+  const int boot = registerButton("Boot", "Escape", 27, 0);
+  const int power = registerButton("Power", "Enter", 13);
+  const int side = registerButton("Side", "", 0);
+  assert(boot == 0 && power == 1 && side == 2 && buttonCount() == 3);
+  assert(registerButton("Boot", "Escape", 27) == boot && buttonCount() == 3);
+  assert(registerButton("", "Escape", 27) == -1);
+  assert(findButton("Power") == power && findButton("Nope") == -1);
+  assert(buttonPin(boot) == 0 && buttonPin(power) == -1 && buttonPin(7) == -1);
+  queueKeyDown(39);
+  queueButton(boot, true);
+  assert(buttonPressed(boot) && !buttonPressed(power));
+  queueButton(side, true);
+  queueButton(boot, false);
+  queueButton(7, true);
+  assert(consumeKeyEvent(event) && event.keyCode == 39 && event.button == -1);
+  assert(consumeKeyEvent(event) && event.keyCode == 27 && event.pressed && event.button == boot);
+  assert(consumeKeyEvent(event) && event.keyCode == 0 && event.pressed && event.button == side);
+  assert(consumeKeyEvent(event) && event.keyCode == 27 && !event.pressed && event.button == boot);
+  assert(!consumeKeyEvent(event));
+  assert(!buttonPressed(boot) && buttonPressed(side));
+  // An aliasless press is not a "no key pending" answer to consumeKeyDown.
+  queueButton(side, true);
+  queueKeyDown(40);
+  assert(consumeKeyDown() == 40);
+  for (int id = buttonCount(); id < kMaxButtons; ++id)
+    assert(registerButton(id == 3 ? "B3" : id == 4 ? "B4" : id == 5 ? "B5" : id == 6 ? "B6" : "B7", "", 0) == id);
+  assert(registerButton("Full", "", 0) == -1);
 }

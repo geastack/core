@@ -950,6 +950,17 @@ function lowerHostFacadeCall(context: StoreMethodLowerContext, path: string | nu
     'Battery.level': { target: 'gea::host::Battery.level' },
     '__gea_Battery.level': { target: 'gea::host::Battery.level' },
 
+    // ButtonsController — the board's named physical buttons.
+    'Buttons.count': { target: 'gea::host::Buttons.count' },
+    '__gea_Buttons.count': { target: 'gea::host::Buttons.count' },
+    'Buttons.code': { target: 'gea::host::Buttons.code', hints: ['number'] },
+    '__gea_Buttons.code': { target: 'gea::host::Buttons.code', hints: ['number'] },
+    'Buttons.key': { target: 'gea::host::Buttons.key', hints: ['number'] },
+    '__gea_Buttons.key': { target: 'gea::host::Buttons.key', hints: ['number'] },
+    'Buttons.pin': { target: 'gea::host::Buttons.pin', hints: ['number'] },
+    '__gea_Buttons.pin': { target: 'gea::host::Buttons.pin', hints: ['number'] },
+    'Buttons.pressed': { target: 'gea::host::Buttons.pressed', hints: ['string'] },
+    '__gea_Buttons.pressed': { target: 'gea::host::Buttons.pressed', hints: ['string'] },
     // NotifyController — transient host->app notification channel.
     'Notify.text': { target: 'gea::host::Notify.text' },
     '__gea_Notify.text': { target: 'gea::host::Notify.text' },

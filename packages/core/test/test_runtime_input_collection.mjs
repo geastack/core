@@ -7,10 +7,9 @@ import { fileURLToPath } from "node:url";
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const core = path.resolve(testDir, "../../..");
 const build = path.join(testDir, ".build/runtime-input-collection");
-const compilerRuntime = path.resolve(
-  core,
-  "../compiler/src/targets/cpp/runtime",
-);
+const compilerRuntime =
+  process.env.GEA_COMPILER_RUNTIME ??
+  path.resolve(core, "../compiler/src/targets/cpp/runtime");
 mkdirSync(build, { recursive: true });
 
 // Compile the production dispatcher verbatim. Only platform services are fakes;

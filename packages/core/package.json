@@ -1,6 +1,6 @@
 {
   "name": "@geastack/core",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "GeaStack app API, reactivity headers, runtime sources, and type declarations.",
   "license": "Apache-2.0",
   "repository": {

@@ -630,6 +630,13 @@ for (const source of [`document.createElement(tag)`, `element.innerHTML = markup
   assert.deepEqual(videoNodes(app(t, { 'index.tsx': source })), ['node-video-analysis-v1', 'node-videos'])
 })
 
+test('device-service imports from core create no nodes', t => {
+  const entry = app(t, { 'index.tsx': `import { touch, WiFi, BLE, Accelerometer, audioContext, Clock, Geolocation, writeCacheFile } from '@geastack/core';
+    export function probe() { return [touch, WiFi, BLE, Accelerometer, audioContext, Clock, Geolocation, writeCacheFile] }` })
+  assert.deepEqual(videoNodes(entry), ['node-video-analysis-v1'])
+  assert.deepEqual(nativeNodes(entry), ['node-analysis-v1'])
+})
+
 test('a known bracket-access factory keeps ordinary nodes compact', t => {
   assert.deepEqual(nativeNodes(app(t, { 'index.tsx': `document['createElement']('button')` })), ['node-analysis-v1'])
 })

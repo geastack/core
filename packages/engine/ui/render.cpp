@@ -4880,6 +4880,60 @@ int gLastScrollUiFrame = -1000;
 			return coverage;
 		}
 
+		// Where a rounded-rect contour's left and right edges run across the pixel
+		// row [y, y + 1): each edge is monotone within a corner, so its extremes
+		// over the row sit at the row's ends or where a corner meets a straight
+		// side. Mirrors roundedRectContainsFast's corner order (tl before bl, tr
+		// before br).
+		struct RoundedRowEdges
+		{
+			bool any = false;   // the contour reaches into the row
+			bool whole = false; // the row lies wholly within its vertical extent
+			float lMin = 0, lMax = 0, rMin = 0, rMax = 0;
+		};
+
+		RoundedRowEdges roundedRectRowEdges(const TransformedRoundedRectCommand &r, int y)
+		{
+			RoundedRowEdges e;
+			if (r.lw <= 0 || r.lh <= 0)
+				return e;
+			const float left = static_cast<float>(r.lx), top = static_cast<float>(r.ly);
+			const float right = left + static_cast<float>(r.lw), bottom = top + static_cast<float>(r.lh);
+			const float y0 = std::max(static_cast<float>(y), top), y1 = std::min(static_cast<float>(y + 1), bottom);
+			if (y1 <= y0)
+				return e;
+			e.any = true;
+			e.whole = static_cast<float>(y) >= top && static_cast<float>(y + 1) <= bottom;
+			const auto radius = [](int16_t r8) { return static_cast<float>(std::max(0, static_cast<int>(r8))) * 0.125f; };
+			const float tlRx = radius(r.tlRx8), tlRy = radius(r.tlRy8), trRx = radius(r.trRx8), trRy = radius(r.trRy8);
+			const float brRx = radius(r.brRx8), brRy = radius(r.brRy8), blRx = radius(r.blRx8), blRy = radius(r.blRy8);
+			const auto inset = [](float rx, float ry, float dy) {
+				const float t = dy / ry;
+				return rx - rx * std::sqrt(std::max(0.0f, 1.0f - t * t));
+			};
+			const auto leftAt = [&](float sy) {
+				if (tlRx > 0 && tlRy > 0 && sy < top + tlRy) return left + inset(tlRx, tlRy, top + tlRy - sy);
+				if (blRx > 0 && blRy > 0 && sy >= bottom - blRy) return left + inset(blRx, blRy, sy - (bottom - blRy));
+				return left;
+			};
+			const auto rightAt = [&](float sy) {
+				if (trRx > 0 && trRy > 0 && sy < top + trRy) return right - inset(trRx, trRy, top + trRy - sy);
+				if (brRx > 0 && brRy > 0 && sy >= bottom - brRy) return right - inset(brRx, brRy, sy - (bottom - brRy));
+				return right;
+			};
+			const float probes[6] = {y0, y1, top + tlRy, bottom - blRy, top + trRy, bottom - brRy};
+			e.lMin = e.rMin = 1e9f;
+			e.lMax = e.rMax = -1e9f;
+			for (int i = 0; i < 6; ++i)
+			{
+				const float sy = std::clamp(probes[i], y0, y1);
+				const float l = leftAt(sy), rr = rightAt(sy);
+				e.lMin = std::min(e.lMin, l); e.lMax = std::max(e.lMax, l);
+				e.rMin = std::min(e.rMin, rr); e.rMax = std::max(e.rMax, rr);
+			}
+			return e;
+		}
+
 		void drawCssRoundedBorder(const DisplayCommand &command)
 		{
 			const auto &s = command.strokeRoundedRect;
@@ -4923,7 +4977,31 @@ int gLastScrollUiFrame = -1000;
 					for (int x = std::max(x0, innerX1); x <= x1; ++x) paintCoveragePixel(row[x], s.color, alpha, full, full);
 					continue;
 				}
-				for (int x = x0; x <= x1; ++x) {
+				// Only pixels within a pixel of a contour edge need the per-pixel
+				// test; the rest of the row is plainly outside the ring, inside the
+				// border, or inside the hole. A large ellipse is all corner box, so
+				// testing every pixel of it costs a frame per pass.
+				const RoundedRowEdges oe = roundedRectRowEdges(outer, y), ie = roundedRectRowEdges(inner, y);
+				if (!oe.any)
+					continue;
+				const int oL0 = static_cast<int>(std::floor(oe.lMin)) - 1, oL1 = static_cast<int>(std::ceil(oe.lMax)) + 1;
+				const int oR0 = static_cast<int>(std::floor(oe.rMin)) - 1, oR1 = static_cast<int>(std::ceil(oe.rMax)) + 1;
+				const int iL0 = static_cast<int>(std::floor(ie.lMin)) - 1, iL1 = static_cast<int>(std::ceil(ie.lMax)) + 1;
+				const int iR0 = static_cast<int>(std::floor(ie.rMin)) - 1, iR1 = static_cast<int>(std::ceil(ie.rMax)) + 1;
+				for (int x = std::max(x0, oL0); x <= std::min(x1, oR1); ++x) {
+					if (oe.whole && x > oL1 && x < oR0 && (!ie.any || ie.whole))
+					{
+						if (!ie.any || x < iL0 || x > iR1)
+						{
+							paintCoveragePixel(row[x], s.color, alpha, full, full);
+							continue;
+						}
+						if (x > iL1 && x < iR0)
+						{
+							x = iR0 - 1; // inside the hole: nothing to paint
+							continue;
+						}
+					}
 					int coverage;
 					if (cornerRow && (x < cornerX0 || x >= cornerX1))
 					{

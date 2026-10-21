@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -468,6 +469,23 @@ public:
   static bool configureInput(double pin, bool pull_up);
   static bool write(double pin, bool level);
   static bool read(double pin);
+
+  // An open pin: the one backend under both TS classes, `Gpio` and the
+  // ECMA-419 `Digital`. `mode` is a platform::gpio::Gpio::Mode, `edges` a
+  // kRising | kFalling mask (0 for none). With edges, `onEdge` runs on the app
+  // thread, once per frame that saw one or more edges. Edges come from the
+  // pin's interrupt; the pin is polled instead every `pollMs` (each frame for
+  // 0) when the app asks for polling with pollMs > 0, or when the platform has
+  // no interrupt for the pin. Returns the handle, or -1 when the pin is not
+  // usable, is already open, or the mode is not supported.
+  static double open(double pin, double mode, double edges, double pollMs, std::function<void()> onEdge);
+  // 0 or 1; 0 for a closed handle.
+  static double get(double handle);
+  static bool set(double handle, double level);
+  static void close(double handle);
+  // Delivers pending edges. Application::frame calls it through
+  // gea::host::gpio::runCallbacks().
+  static void runCallbacks();
 };
 
 // A WS2812/NeoPixel strand on one pin — the "onboard LED" of most modern ESP32

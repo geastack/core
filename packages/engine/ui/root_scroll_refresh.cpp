@@ -721,9 +721,18 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	// the post-shift positions, so for a masked scroller we skip the blit and
 	// re-rasterize the whole viewport from that list — the fade stays anchored.
 	const bool contentHasRightFadeMask = hasRightFadeMask(state, scroll_node);
+	// A software-rotated canvas (e.g. a 172x640 panel driven as 640x172)
+	// stores logical rows as framebuffer columns; neither the scroll-register
+	// row remap nor the pixel blit shifts it correctly, and the stale pixels
+	// left behind showed as content drawn over itself. Re-rasterize the whole
+	// viewport from the rebuilt display list instead.
+	bool blitScroll = !contentHasRightFadeMask;
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+	if (auto *canvas = gea::platform::display::Display::canvas(); canvas && canvas->isLandscapeRotated()) blitScroll = false;
+#endif
 
 	const int viewportExtent = horizontal ? vw : vh;
-	if (!contentHasRightFadeMask && abs_move > 0 && abs_move < viewportExtent) {
+	if (blitScroll && abs_move > 0 && abs_move < viewportExtent) {
 		const std::int64_t scrollRectStartUs = refreshPerfNowUs();
 		gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
 		GEA_REFRESH_PERF(perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs);

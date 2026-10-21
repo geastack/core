@@ -5,6 +5,15 @@ export const nodeFeatures = ['node-images', 'node-inputs'] as const
 // Separate marker: an analyzer without it never reports node-videos, and its
 // absence must not let a newer CLI drop the video host from the firmware.
 export const videoNodeAnalysisVersion = 'node-video-analysis-v1'
+const nodeFreeCoreExports = new RegExp('^(?:' + [
+  'Component', 'ReactiveComponent', 'Store', 'mount', 'Display', 'rgb', 'rgba',
+  'touch', 'Input', 'Accelerometer', 'Magnetometer', 'Geolocation', 'geolocation', 'Clock', 'Battery', 'Memory', 'Profiler',
+  'WiFi', 'wifi', 'BLE', 'bluetooth', 'BLEServer', 'registerBleServer', 'initBleServers', 'EspNow', 'Uart', 'Gpio', 'Digital', 'Buttons', 'Led', 'Haptics', 'Notify', 'DeviceControl',
+  'Audio', 'audioContext', 'flushAudioWorkletOutput',
+  'writeCacheFile', 'readCacheFile', 'removeCacheFile', 'listCacheFiles', 'readFileRange', 'readMapArchive',
+  'http', 'fetchBytes', 'fetchText', 'fetchAsync', 'fetchReady', 'fetchResult', 'fetchRelease',
+].join('|') + ')$')
+
 export function addUnknownNodeFeatures(features: Set<string>): void {
   for (const feature of nodeFeatures) features.add(feature)
   features.add('node-videos')
@@ -37,14 +46,16 @@ export function addNodeFeatures(file: string, text: string, features: Set<string
       if (/<(?:img|image|input|textarea|select|video)\b/i.test(node.text)) unknown()
     }
     if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) name(node.tagName.getText(source).split(':').at(-1)!)
-    // Display controls the panel/canvas; importing it cannot create native
-    // image or input nodes. Calls that actually create nodes are still scanned.
+    // Display controls the panel/canvas, and the device services (sensors,
+    // radios, storage, audio, clock) have no DOM surface: importing them cannot
+    // create image, input or video nodes. Calls that actually create nodes are
+    // still scanned.
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) &&
         /^(?:gea-embedded|@geastack\/(?:core|engine)|@geajs\/core)(?:\/|$)/.test(node.moduleSpecifier.text) &&
         node.importClause && !node.importClause.isTypeOnly) {
       const bindings = node.importClause.namedBindings
       if (node.importClause.name || !bindings || !ts.isNamedImports(bindings) ||
-          bindings.elements.some(item => !item.isTypeOnly && !/^(?:Component|Store|mount|Display)$/.test((item.propertyName ?? item.name).text))) unknown()
+          bindings.elements.some(item => !item.isTypeOnly && !nodeFreeCoreExports.test((item.propertyName ?? item.name).text))) unknown()
     }
     // Mutation/markup helpers can create descendants whose tags are not present
     // as JSX. Known literal factories are covered by their tag strings above.

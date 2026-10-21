@@ -4,19 +4,20 @@ cd "$(dirname "$0")/../../.."
 out="$PWD/packages/geatsc-plugin-gea/dist"
 test -d "$out"
 export TMPDIR="$out"
+export GEA_COMPILER_CLI="${GEA_COMPILER_CLI:-$PWD/../compiler/dist/cli.js}"
 node --input-type=module <<'JS'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { validateWorkletRegistrations } from './packages/core/scripts/gea-worker-modules.mjs'
-const ts = createRequire(path.resolve('../compiler/package.json'))('typescript')
+const ts = createRequire(path.resolve(path.dirname(process.env.GEA_COMPILER_CLI), '../package.json'))('typescript')
 const implementation = path.resolve('packages/core/runtime/audio-worklet.ts')
 validateWorkletRegistrations(ts, path.resolve('packages/core/test/test_audio_worklet_compiled.ts'), implementation)
 assert.throws(() => validateWorkletRegistrations(ts, path.resolve('packages/core/test/test_audio_worklet_parameters_rejected.ts'), implementation), /AudioParam parameterDescriptors/)
 assert.throws(() => validateWorkletRegistrations(ts, path.resolve('packages/core/test/test_audio_worklet_unknown_constructor.ts'), implementation), /directly named class constructor/)
 assert.doesNotThrow(() => validateWorkletRegistrations(ts, path.resolve('packages/core/test/test_audio_worklet_abstract_constructor.ts'), implementation))
 JS
-GEATSC2_GEA_PLUGIN="$out/host-shims" node ../compiler/dist/cli.js compile \
+GEATSC2_GEA_PLUGIN="$out/host-shims" node "$GEA_COMPILER_CLI" compile \
   packages/core/test/test_audio_worklet_compiled.ts --out-dir "$out" \
   --plugin "$out/index.js" --realm-storage --entry-symbol gea_worklet_probe_entry
 source packages/core/test/native-host.sh
@@ -31,7 +32,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 const out = path.resolve('packages/geatsc-plugin-gea/dist')
 const result = spawnSync(process.execPath, [
-  '../compiler/dist/cli.js', 'compile', 'packages/core/test/test_audio_worklet_abstract_constructor.ts',
+  process.env.GEA_COMPILER_CLI, 'compile', 'packages/core/test/test_audio_worklet_abstract_constructor.ts',
   '--out-dir', out, '--plugin', path.join(out, 'index.js'), '--realm-storage'
 ], { encoding: 'utf8', env: process.env })
 assert.equal(result.error, undefined)

@@ -27,8 +27,10 @@ struct AssetSegment {
 inline bool loadAssetBundle(const char *path, const AssetSegment *segments,
                             std::size_t count, std::size_t bytes,
                             std::uint32_t expectedCrc) {
-  if (!ensureMounted())
+  if (!ensureMounted()) {
+    std::fprintf(stderr, "Gea asset bundle storage not mounted: %s\n", path);
     return false;
+  }
   auto *file = std::fopen(path, "rb");
   if (!file) {
     std::fprintf(stderr, "Gea asset bundle missing: %s\n", path);

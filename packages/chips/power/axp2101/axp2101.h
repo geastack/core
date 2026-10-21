@@ -88,6 +88,14 @@ public:
 
 	bool clearInterrupts();
 
+	// The power key's press and release, latched by the PMU as the PWRON
+	// pin's falling and rising edges. A board with no PMU interrupt line reads
+	// them from the status register.
+	bool enablePowerKeyEdges();
+	// Reports and clears the edges latched since the last call; both are set
+	// when a whole press fit between two reads.
+	bool takePowerKeyEdges(bool &fell, bool &rose);
+
 private:
 	bool updateBits(std::uint8_t reg, std::uint8_t mask, std::uint8_t value);
 	bool setBit(std::uint8_t reg, std::uint8_t bit, bool enabled);

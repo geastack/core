@@ -121,6 +121,15 @@ public:
 			if (picker.consume(event.touchPhase, x, y, event.pointerId)) return true;
 		}
 #endif
+		// A primary move marker holds the controller's queued-move flag: every
+		// path below must drain it, or the controller stops reporting moves and
+		// every later drag is dead while taps still work.
+		int tx = event.x;
+		int ty = event.y;
+		if (event.touchPhase == TouchPhase::Move && event.pointerId == 0) {
+			gea::platform::touch::Touchscreen::consumeLatestMove(&tx, &ty);
+			TouchRuntime::transformTouchToLogical(&tx, &ty);
+		}
 		// Immediate-mode apps (Display.ctx games) mount no UI tree: hitTestNode
 		// returns -1 and there is no root to bind document listeners onto, so the
 		// tree dispatch below can never reach the app. Deliver pointer events
@@ -140,21 +149,14 @@ public:
 
 		if (retireInvalidPrimary(!event.touching && event.touchPhase == TouchPhase::Up)) return false;
 		if(primaryQuarantined_){
-			if(event.touchPhase==TouchPhase::Move) gea::platform::touch::Touchscreen::consumeLatestMove(nullptr,nullptr);
 			if(!event.touching && event.touchPhase==TouchPhase::Up)primaryQuarantined_=false;
 			return false;
 		}
 		auto dispatchTicket=primaryTicket_;bool primaryBegan=false;
 		bool changed = false;
 
-		int tx = event.x;
-		int ty = event.y;
 		bool touching = event.touching;
-		if (event.touchPhase == TouchPhase::Move) {
-			gea::platform::touch::Touchscreen::consumeLatestMove(&tx, &ty);
-			TouchRuntime::transformTouchToLogical(&tx, &ty);
-			touching = true;
-		}
+		if (event.touchPhase == TouchPhase::Move) touching = true;
 		// Up callbacks inherit the last consumed move, while tx/ty retain the
 		// consumed edge coordinates. Expose both without changing routing.
 		recordConsumed(event, touching, tx, ty, !touching && wasActive_ ? lastX_ : tx,

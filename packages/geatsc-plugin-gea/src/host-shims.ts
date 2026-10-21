@@ -583,7 +583,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           Memory: "gea::host::Memory",
           memory: "gea::host::Memory",
           Input: "gea::host::Input",
-          Gpio: "gea::host::Gpio",
+          // `Gpio` itself is a TS class (core runtime/gpio.ts) over `__gea_Gpio`.
+          Buttons: "gea::host::Buttons",
           Led: "gea::host::Led",
           Clock: "gea::host::Clock",
           Haptics: "gea::host::Haptics",
@@ -600,6 +601,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Memory: "gea::host::Memory",
           __gea_Input: "gea::host::Input",
           __gea_Gpio: "gea::host::Gpio",
+          __gea_Buttons: "gea::host::Buttons",
           __gea_EspNow: "gea::host::EspNow",
           __gea_Magnetometer: "gea::host::Magnetometer",
           __gea_Uart: "gea::host::Uart",
@@ -1392,17 +1394,30 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Input: {
             consumeBackButton: "gea::host::Input.consumeBackButton",
           },
-          Gpio: {
-            configureOutput: "gea::host::Gpio.configureOutput",
-            configureInput: "gea::host::Gpio.configureInput",
-            write: "gea::host::Gpio.write",
-            read: "gea::host::Gpio.read",
-          },
+          // The one backend under the `Gpio` and ECMA-419 `Digital` classes.
           __gea_Gpio: {
             configureOutput: "gea::host::Gpio.configureOutput",
             configureInput: "gea::host::Gpio.configureInput",
             write: "gea::host::Gpio.write",
             read: "gea::host::Gpio.read",
+            open: "gea::host::Gpio.open",
+            get: "gea::host::Gpio.get",
+            set: "gea::host::Gpio.set",
+            close: "gea::host::Gpio.close",
+          },
+          Buttons: {
+            count: "gea::host::Buttons.count",
+            code: "gea::host::Buttons.code",
+            key: "gea::host::Buttons.key",
+            pin: "gea::host::Buttons.pin",
+            pressed: "gea::host::Buttons.pressed",
+          },
+          __gea_Buttons: {
+            count: "gea::host::Buttons.count",
+            code: "gea::host::Buttons.code",
+            key: "gea::host::Buttons.key",
+            pin: "gea::host::Buttons.pin",
+            pressed: "gea::host::Buttons.pressed",
           },
           __gea_Magnetometer: {
             open: "gea::host::Magnetometer.open",
@@ -1508,8 +1523,10 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Memory: MEMORY_NO_THROW_METHODS,
           Input: ["consumeBackButton"],
           __gea_Input: ["consumeBackButton"],
-          Gpio: ["configureOutput", "configureInput", "write", "read"],
-          __gea_Gpio: ["configureOutput", "configureInput", "write", "read"],
+          // open() stores its callback; it runs later, from Application::frame.
+          __gea_Gpio: ["configureOutput", "configureInput", "write", "read", "open", "get", "set", "close"],
+          Buttons: ["count", "code", "key", "pin", "pressed"],
+          __gea_Buttons: ["count", "code", "key", "pin", "pressed"],
           __gea_EspNow: ["open", "isOpen", "canSend", "setMaxTxPower", "getMaxTxPower", "close"],
           __gea_Magnetometer: ["open", "close", "count"],
           __gea_Uart: ["open", "isOpen", "close", "available", "writable"],

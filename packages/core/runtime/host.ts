@@ -346,15 +346,14 @@ declare const __gea_Input: {
   // their rAF loop and dismiss the overlay if visible.
   consumeBackButton(): boolean
 }
-declare const __gea_Gpio: {
-  // Digital pins, for the wiring a board exposes that no other facade covers:
-  // an LED, a relay, a button that is not the launcher button. Each call
-  // answers "did this board do it" — a pin the chip does not have reports
-  // false rather than throwing.
-  configureOutput(pin: number): boolean
-  configureInput(pin: number, pullUp: boolean): boolean
-  write(pin: number, level: boolean): boolean
-  read(pin: number): boolean
+declare const __gea_Buttons: {
+  // The board's named physical buttons (presses arrive as key events whose
+  // `code` is the name). Index-based so a list reads without a boxed array.
+  count(): number
+  code(index: number): string
+  key(index: number): string
+  pin(index: number): number
+  pressed(code: string): boolean
 }
 declare const __gea_Magnetometer: {
   open(): boolean
@@ -1045,18 +1044,21 @@ export const Input = {
     return __gea_Input.consumeBackButton()
   },
 }
-export const Gpio = {
-  configureOutput(pin: number): boolean {
-    return __gea_Gpio.configureOutput(pin)
+export const Buttons = {
+  count(): number {
+    return __gea_Buttons.count()
   },
-  configureInput(pin: number, pullUp: boolean): boolean {
-    return __gea_Gpio.configureInput(pin, pullUp)
+  code(index: number): string {
+    return __gea_Buttons.code(index)
   },
-  write(pin: number, level: boolean): boolean {
-    return __gea_Gpio.write(pin, level)
+  key(index: number): string {
+    return __gea_Buttons.key(index)
   },
-  read(pin: number): boolean {
-    return __gea_Gpio.read(pin)
+  pin(index: number): number {
+    return __gea_Buttons.pin(index)
+  },
+  pressed(code: string): boolean {
+    return __gea_Buttons.pressed(code)
   },
 }
 export const Uart = {

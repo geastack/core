@@ -1409,17 +1409,129 @@ export interface InputController {
 
 export declare const Input: InputController
 
-export interface GpioController {
-  // Drive a pin. Returns whether this board did it: a pin the chip does not
-  // have, or a target with no GPIO at all, reports false rather than throwing,
-  // so an app written for one board degrades on another instead of crashing.
-  configureOutput(pin: number): boolean
-  configureInput(pin: number, pullUp: boolean): boolean
-  write(pin: number, level: boolean): boolean
-  read(pin: number): boolean
+export type GpioMode = 'input' | 'output' | 'openDrain'
+export type GpioPull = 'none' | 'up' | 'down' | 'both'
+export type GpioEdge = 'none' | 'rising' | 'falling' | 'both'
+
+export interface GpioOptions {
+  /** Defaults to 'input'. */
+  mode?: GpioMode
+  /** An input's internal pull resistor. Defaults to 'none'. */
+  pull?: GpioPull
+  /** Which edges call `onChange`. Defaults to 'both' when `onChange` is given. */
+  edge?: GpioEdge
+  /** Called on the app thread with the level after an edge. */
+  onChange?: (value: boolean) => void
+  /**
+   * Poll every this many milliseconds instead of using the pin's edge
+   * interrupt. Leave it out: inputs are interrupt-driven by default.
+   */
+  poll?: number
 }
 
-export declare const Gpio: GpioController
+/**
+ * One digital pin. Inputs with an `onChange` are interrupt-driven: the edge
+ * interrupt only marks the pin, and `onChange` runs on the app thread at the
+ * start of the next frame. Throws when the pin cannot be opened in that mode
+ * (a pin the chip does not have, a pin already open, a target with no GPIO).
+ *
+ * ```ts
+ * const led = new Gpio(2, { mode: 'output' })
+ * const key = new Gpio(14, { pull: 'up', onChange: (high) => led.write(!high) })
+ * ```
+ *
+ * Shares its native backend with the ECMA-419 `Digital` class. The static
+ * pin-number calls are the older API and keep working.
+ */
+export declare class Gpio {
+  constructor(pin: number, options?: GpioOptions)
+  readonly pin: number
+  /** The pin's level; for an output, the level it drives. */
+  read(): boolean
+  write(value: boolean): void
+  /** Releases the pin and its interrupt. */
+  close(): void
+
+  // Each answers "did this board do it": a pin the chip does not have, or a
+  // target with no GPIO, reports false rather than throwing.
+  static configureOutput(pin: number): boolean
+  static configureInput(pin: number, pullUp: boolean): boolean
+  static write(pin: number, level: boolean): boolean
+  static read(pin: number): boolean
+}
+
+export interface DigitalOptions<Target = undefined> {
+  pin: number
+  /** Digital.Input, InputPullUp, InputPullDown, InputPullUpDown, Output or OutputOpenDrain. */
+  mode: number
+  /** Digital.Rising, Digital.Falling, or both OR'd; required with onReadable. */
+  edge?: number
+  /** Called with `this` = the Digital after an edge. */
+  onReadable?: (this: Digital<Target>) => void
+  /** Any value, kept as `target` for the callback. */
+  target?: Target
+  /** GeaStack extension: poll every this many milliseconds instead of using the interrupt. */
+  poll?: number
+  /** Only 'number' is supported. */
+  format?: string
+}
+
+/**
+ * ECMA-419 Digital IO class, as on Moddable: the same native backend as
+ * `Gpio`, so an input with an `edge` is interrupt-driven and `onReadable`
+ * runs on the app thread.
+ *
+ * ```ts
+ * const button = new Digital({
+ *   pin: 0,
+ *   mode: Digital.InputPullUp,
+ *   edge: Digital.Rising | Digital.Falling,
+ *   onReadable() { console.log(this.read()) },
+ * })
+ * ```
+ */
+export declare class Digital<Target = undefined> {
+  static readonly Input: number
+  static readonly InputPullUp: number
+  static readonly InputPullDown: number
+  static readonly InputPullUpDown: number
+  static readonly Output: number
+  static readonly OutputOpenDrain: number
+  static readonly Rising: number
+  static readonly Falling: number
+  constructor(options: DigitalOptions<Target>)
+  readonly target: Target | undefined
+  format: string
+  /** 0 or 1. */
+  read(): number
+  write(value: number): void
+  close(): void
+}
+
+/**
+ * The board's named physical buttons. A press arrives as a `keydown`/`keyup`
+ * whose `code` is the button's name and whose `key`/`keyCode` are its default
+ * key alias, so `onKeyDown={e => { if (e.code === 'Boot') ... }}` listens to
+ * one button, and an app that only knows `Escape`/`Enter` still works. Names
+ * are the silkscreen's, in PascalCase: 'Boot', 'Power', 'Key1'. This lists
+ * them; a board with no buttons reports count() 0.
+ */
+export interface ButtonsController {
+  count(): number
+  /** The button's name ('Boot'), or '' past count(). */
+  code(index: number): string
+  /** Its default key alias ('Escape'), or '' when it has none. */
+  key(index: number): string
+  /**
+   * Its GPIO, or -1 for a button that is not one (a PMU's power key). A
+   * `Gpio` or `Digital` can open this pin as an input next to the key events.
+   */
+  pin(index: number): number
+  /** Whether the named button is held right now; false for an unknown name. */
+  pressed(code: string): boolean
+}
+
+export declare const Buttons: ButtonsController
 
 export interface UartOptions {
   tx: number

@@ -578,6 +578,8 @@ void rootScrollImageHoldTick();
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);
 		static int firstUnbreakableWidth(const Node &node);
 		static int minContentWidth(const Node &node, int *pendingWord = nullptr);
+		// The run laid out on one line (no soft wraps): CSS max-content width.
+		static int maxContentWidth(const Node &node);
 		static int measureHeight(const char *text, int fontId, int fontSize, int textTransform = 0, int lineHeight = 0);
 		// In-place box re-measure for a rebound text node on refresh paths that
 		// skip the layout pass (root-scroll fast path): record() wraps and clips

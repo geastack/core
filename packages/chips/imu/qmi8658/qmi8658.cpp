@@ -14,7 +14,9 @@ constexpr std::uint8_t kReset = 0x60;
 constexpr std::uint8_t kTempLow = 0x33;
 constexpr std::uint8_t kExpectedWhoAmI = 0x05;
 constexpr int kBiasSamples = 100;
-constexpr double kAccelScale = 8.0 / 32768.0;
+// Full scale must match resetAndConfigure(): CTRL2 0x15 selects +-4 g and CTRL3
+// 0x54 selects +-512 dps.
+constexpr double kAccelScale = 4.0 / 32768.0;
 constexpr double kGyroScale = 512.0 / 32768.0;
 constexpr double kStandardGravity = 9.80665;
 

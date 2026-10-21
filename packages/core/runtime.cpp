@@ -161,7 +161,8 @@ void dispatch_rotary_input()
 }
 
 // Hardware-button key presses (boards without touch — e.g. the e-paper's
-// BOOT/PWR buttons) queued via input::queueKeyDown. A focused <input> gets the
+// BOOT/PWR buttons) queued via input::queueKeyDown, and named board buttons
+// queued via input::queueButton. A focused <input> gets the
 // key first through its per-node keydown listener; then the document-level
 // keydown handler runs (hardware buttons / app-level shortcuts bound on a
 // non-input element), unless the input consumed it.
@@ -173,6 +174,12 @@ void dispatch_key_input()
 		events::PointerEvent event{};
 		event.type = key.pressed ? events::PointerEventType::KeyDown : events::PointerEventType::KeyUp;
 		event.keyCode = key.keyCode;
+		// A board button names itself in `code`; `key` is its default alias.
+		if (key.button >= 0) {
+			event.code = input::buttonCode(key.button);
+			const char *alias = input::buttonKey(key.button);
+			event.key = *alias ? alias : "Unidentified";
+		}
 		event.bubbles = true;
 		event.cancelable = true;
 

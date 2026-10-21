@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@geastack/core": [
+        "../runtime.ts"
+      ]
+    }
+  },
+  "files": [
+    "native-gpio-contract.ts"
+  ]
+}

@@ -1895,6 +1895,12 @@ int TextRenderer::minContentWidth(const Node &node, int *pendingWord)
 	return width;
 }
 
+int TextRenderer::maxContentWidth(const Node &node)
+{
+	// The same unbounded measure remeasureContentBox gives natural-width text.
+	return measureTextLayoutForNode(node, node.text.c_str(), 0x4000).width;
+}
+
 const char *TextRenderer::prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage)
 {
 	return textWithTransform(text, textTransform, storage, whiteSpace);

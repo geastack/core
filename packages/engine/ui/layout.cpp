@@ -324,6 +324,15 @@ bool hasFlexBasis(const Node &node)
 	return node.computedStyle().flex_basis != kUnset || rstyle(node.computedStyle()).flex_basis_expression >= 0;
 }
 
+// CSS 2 10.3.7/10.6.4: an out-of-flow box with both insets on an axis and an
+// auto size there takes its used size from the containing block. That size is
+// definite before the box's content is laid out, so size the box up front:
+// shrinking it to its content and stretching it afterwards laid every
+// positioned descendant out against the content-sized box and then again
+// against the stretched one -- twice per nesting level of `inset: 0` panels.
+bool insetStretched(const Node &node, bool horizontal);
+int insetStretchedBorderSize(const Node &node, bool horizontal, int basis);
+
 bool hasExplicitWidth(const Node &node)
 {
 	if (const auto *basis = flexBasisScope(node, true)) return basis->value != kUnset;
@@ -333,6 +342,7 @@ bool hasExplicitWidth(const Node &node)
 		return scope && scope->constraint == 0;
 	}
 	if (node.computedStyle().width != kUnset) return true;
+	if (insetStretched(node, true)) return true;
 	if (intrinsicWidthConstraint(node)) return false;
 	return node.computedStyle().width_expression >= 0 || node.computedStyle().width_percent != kUnset;
 }
@@ -373,6 +383,7 @@ bool hasExplicitHeight(const Node &node)
 	if (const auto *basis = flexBasisScope(node, false)) return basis->value != kUnset;
 	if (const auto *scope = intrinsicSizeScope(node, false); scope && scope->constraint == 0) return true;
 	if (node.computedStyle().height != kUnset) return true;
+	if (insetStretched(node, false)) return true;
 	if (intrinsicSizeConstraint(node, false)) return false;
 	if (node.computedStyle().height_expression < 0 && node.computedStyle().height_percent == kUnset) return false;
 	if (!percentageHeightDependsOnIntrinsicSize(node)) return true;
@@ -386,6 +397,8 @@ int resolvedStyleWidth(const Node &node, int basis)
 	if (const auto *scope = intrinsicSizeScope(node, true); scope && scope->constraint == 0)
 		return std::max(0, scope->borderSize - (node.computedStyle().box_sizing == 0 ? boxInsets(node.computedStyle(), true) : 0));
 	if (!hasExplicitWidth(node)) return basis;
+	if (insetStretched(node, true))
+		return insetStretchedBorderSize(node, true, basis) - (node.computedStyle().box_sizing == 0 ? boxInsets(node.computedStyle(), true) : 0);
 	if (node.computedStyle().width_expression >= 0) return resolveLayoutSizeExpression(static_cast<int>(&node - Tree::instance().nodes()), node.computedStyle().width_expression, true);
 	if (node.computedStyle().width != kUnset) return node.computedStyle().width;
 	if (node.computedStyle().width_percent != kUnset) return resolvePercentSize(basis, node.computedStyle().width_percent);
@@ -398,6 +411,8 @@ int resolvedStyleHeight(const Node &node, int basis)
 	if (const auto *scope = intrinsicSizeScope(node, false); scope && scope->constraint == 0)
 		return std::max(0, scope->borderSize - (node.computedStyle().box_sizing == 0 ? boxInsets(node.computedStyle(), false) : 0));
 	if (!hasExplicitHeight(node)) return basis;
+	if (insetStretched(node, false))
+		return insetStretchedBorderSize(node, false, basis) - (node.computedStyle().box_sizing == 0 ? boxInsets(node.computedStyle(), false) : 0);
 	if (node.computedStyle().height_expression >= 0) return resolveLayoutSizeExpression(static_cast<int>(&node - Tree::instance().nodes()), node.computedStyle().height_expression, false);
 	if (node.computedStyle().height != kUnset) return node.computedStyle().height;
 	if (node.computedStyle().height_percent != kUnset && !percentageHeightDependsOnIntrinsicSize(node))
@@ -1770,9 +1785,18 @@ private:
 			const Node &grand = nodes[c];
 			if (isLayoutExcluded(grand) || isOutOfFlowPosition(grand.computedStyle().position)) continue;
 			// layout.{x,y} are still parent-relative here: resolveAbsoluteCoords runs
-			// after the whole layout pass.
+			// after the whole layout pass. A text run's laid-out box is its line box,
+			// as wide as the space it was offered (and offset by text-align), so it
+			// would floor the item at the whole row -- `<div>BACK</div>` beside a
+			// title never shrank and three `flex: 1` buttons each grew to the full
+			// row. Its contribution is its fit-content width: max-content, capped at
+			// that line box. Min-content alone is too small for a run that wraps --
+			// "AV AV" offered 22px measures its widest line, 18px, while CSS keeps
+			// the item at the 22px it shrank to from its max-content basis.
 			const int end = isRow_
-				? grand.layout.x + grand.layout.width + grand.computedStyle().margin[1]
+				? (grand.type == NodeType::Text
+				       ? boxInset(childNode.computedStyle(), 3) + std::min<int>(TextRenderer::maxContentWidth(grand), grand.layout.width)
+				       : grand.layout.x + grand.layout.width + grand.computedStyle().margin[1])
 				: grand.layout.y + grand.layout.height + grand.computedStyle().margin[2];
 			if (end > extent) extent = end;
 		}
@@ -3638,6 +3662,30 @@ int resolvedPositionOffsetForBasis(const Node &node, int percentBasis)
 	return offset;
 }
 
+bool insetStretched(const Node &node, bool horizontal)
+{
+	const ComputedStyle &style = node.computedStyle();
+	if (node.type != NodeType::View || !isOutOfFlowPosition(style.position) || isLayoutExcluded(node)) return false;
+	if (horizontal ? style.width != kUnset || style.width_expression >= 0 || style.width_percent != kUnset ||
+	                     isIntrinsicSizeExpression(style.width_expression)
+	               : style.height != kUnset || style.height_expression >= 0 || style.height_percent != kUnset ||
+	                     isIntrinsicSizeExpression(style.height_expression)) return false;
+	if (intrinsicSizeScope(node, horizontal) || flexBasisScope(node, horizontal) || preferredRatio(node) > 0) return false;
+	return horizontal ? hasPositionOffsetValue<3>(node) && hasPositionOffsetValue<1>(node)
+	                  : hasPositionOffsetValue<0>(node) && hasPositionOffsetValue<2>(node);
+}
+
+// Border-box size of an inset-stretched box in a containing block `basis` wide
+// (or tall); the same arithmetic as stretchAbsoluteNodeToContainingBlock.
+int insetStretchedBorderSize(const Node &node, bool horizontal, int basis)
+{
+	const ComputedStyle &style = node.computedStyle();
+	const int size = horizontal
+	    ? basis - resolvedPositionOffsetForBasis<3>(node, basis) - resolvedPositionOffsetForBasis<1>(node, basis) - style.margin[1] - style.margin[3]
+	    : basis - resolvedPositionOffsetForBasis<0>(node, basis) - resolvedPositionOffsetForBasis<2>(node, basis) - style.margin[0] - style.margin[2];
+	return std::max(size, boxInsets(style, horizontal));
+}
+
 void offsetFromAncestorToNode(int ancestor, int node, Node *nodes, int *outX, int *outY)
 {
 	int x = 0;
@@ -4131,6 +4179,7 @@ static_assert(sizeof(LayoutPassMemo) == 10);
 LayoutPassMemo *gLayoutMemo = nullptr;
 int gLayoutMemoCapacity = 0;
 std::size_t gLayoutMemoPeakBytes = 0;
+
 }  // namespace
 
 void LayoutEngine::beginLayoutPass()

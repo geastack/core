@@ -903,7 +903,10 @@ int Touchscreen::readCached(int *x, int *y)
 	if (y) *y = gTouchY;
 	return gTouching ? 1 : 0;
 }
-void Touchscreen::consumeLatestMove(int * /*x*/, int * /*y*/) {}
+// Counts drained move markers: a dispatch path that skips one leaves a real
+// controller's queued-move flag set and every later drag dead.
+int gNativeTestMoveConsumes = 0;
+void Touchscreen::consumeLatestMove(int * /*x*/, int * /*y*/) { ++gNativeTestMoveConsumes; }
 void Touchscreen::injectEvent(Phase /*phase*/, bool touching, int x, int y)
 {
 	gTouching = touching;

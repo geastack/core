@@ -15,6 +15,13 @@ constexpr std::uint8_t kAdcSystemHigh = 0x3A;
 constexpr std::uint8_t kAdcSystemLow = 0x3B;
 constexpr std::uint8_t kInterruptStatusFirst = 0x48;
 constexpr std::uint8_t kInterruptStatusCount = 3;
+constexpr std::uint8_t kInterruptEnable1 = 0x41;
+constexpr std::uint8_t kInterruptStatus1 = 0x49;
+// Bits of kInterruptEnable1 / kInterruptStatus1: the PWRON key's edges. The
+// key pulls PWRON low, so the falling edge is the press.
+constexpr std::uint8_t kPowerKeyRose = 0;
+constexpr std::uint8_t kPowerKeyFell = 1;
+constexpr std::uint8_t kPowerKeyEdges = (1u << kPowerKeyRose) | (1u << kPowerKeyFell);
 constexpr std::uint8_t kChargeCurrentSetting = 0x62;
 constexpr std::uint8_t kBatteryDetectControl = 0x68;
 constexpr std::uint8_t kBatteryPercent = 0xA4;
@@ -142,6 +149,22 @@ bool PowerManagementUnit::clearInterrupts() {
 		ok = bus_.writeRegister(static_cast<std::uint8_t>(kInterruptStatusFirst + i), 0xFF) && ok;
 	}
 	return ok;
+}
+
+bool PowerManagementUnit::enablePowerKeyEdges() {
+	// Drop any edge latched before the enable, then let the latches arm.
+	return bus_.writeRegister(kInterruptStatus1, kPowerKeyEdges) &&
+	       updateBits(kInterruptEnable1, kPowerKeyEdges, kPowerKeyEdges);
+}
+
+bool PowerManagementUnit::takePowerKeyEdges(bool &fell, bool &rose) {
+	std::uint8_t status = 0;
+	if (!bus_.readRegister(kInterruptStatus1, status)) return false;
+	fell = (status >> kPowerKeyFell) & 1u;
+	rose = (status >> kPowerKeyRose) & 1u;
+	const std::uint8_t latched = status & kPowerKeyEdges;
+	if (!latched) return true;
+	return bus_.writeRegister(kInterruptStatus1, latched);
 }
 
 }  // namespace gea::chips::axp2101

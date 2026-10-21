@@ -63,7 +63,8 @@ const geaGeolocationHostMethods = [
   'clearWatch',
 ]
 const geaInputHostMethods = ['consumeBackButton']
-const geaGpioHostMethods = ['configureOutput', 'configureInput', 'write', 'read']
+const geaGpioHostMethods = ['configureOutput', 'configureInput', 'write', 'read', 'open', 'get', 'set', 'close']
+const geaButtonsHostMethods = ['count', 'code', 'key', 'pin', 'pressed']
 const geaMagnetometerHostMethods = ['open', 'close', 'count', 'read']
 const geaEspNowHostMethods = ['open', 'isOpen', 'canSend', 'setMaxTxPower', 'getMaxTxPower', 'close', 'addPeer', 'send', 'receive']
 const geaUartHostMethods = ['open', 'isOpen', 'close', 'read', 'write', 'available', 'writable']
@@ -150,6 +151,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ...geaMemoryHostMethods.map((method): [string, string[]] => [`gea::host::Memory.${method}`, geaHostDeclarations]),
       ...geaInputHostMethods.map((method): [string, string[]] => [`gea::host::Input.${method}`, geaHostDeclarations]),
       ...geaGpioHostMethods.map((method): [string, string[]] => [`gea::host::Gpio.${method}`, geaHostDeclarations]),
+      ...geaButtonsHostMethods.map((method): [string, string[]] => [`gea::host::Buttons.${method}`, geaHostDeclarations]),
       ...geaMagnetometerHostMethods.map((method): [string, string[]] => [`gea::host::Magnetometer.${method}`, geaHostDeclarations]),
       ...geaEspNowHostMethods.map((method): [string, string[]] => [`gea::host::EspNow.${method}`, geaHostDeclarations]),
       ...geaUartHostMethods.map((method): [string, string[]] => [`gea::host::Uart.${method}`, geaHostDeclarations]),

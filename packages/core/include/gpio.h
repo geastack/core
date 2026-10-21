@@ -24,6 +24,32 @@ public:
 	// Reads low as false. A pin that was never configured, or a platform with no
 	// GPIO, also reads false — callers that care must check configureInput().
 	static bool read(int pin);
+
+	// The ECMA-419 Digital modes, with the same numbers Moddable uses, so the
+	// TS classes hand them straight through.
+	enum Mode : int {
+		Input = 0,
+		InputPullUp = 1,
+		InputPullDown = 2,
+		InputPullUpDown = 3,
+		Output = 8,
+		OutputOpenDrain = 9,
+	};
+	// Edge masks for watch().
+	static constexpr int kRising = 1;
+	static constexpr int kFalling = 2;
+
+	// configureInput/configureOutput for every mode above. False for a mode
+	// this chip cannot do on this pin.
+	static bool configure(int pin, int mode);
+
+	// Interrupts on an input's edges (kRising | kFalling). Each edge sets bit
+	// `slot` (0-31) of the mask takeEdges() returns and clears; nothing else
+	// runs in interrupt context. False when this platform or pin has no edge
+	// interrupt, and the caller then polls read() instead.
+	static bool watch(int pin, int edges, int slot);
+	static void unwatch(int pin);
+	static unsigned takeEdges();
 };
 
 // WS2812-family LED on one data pin: the "onboard RGB LED" of most ESP32-S3

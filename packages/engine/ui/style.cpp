@@ -17818,6 +17818,22 @@ void endStyleMountBatch()
 		if (!covered) topRoots.push_back(node);
 	}
 
+	// `:root` matches the tree root, and mount() hangs the app under a tagless,
+	// classless wrapper that no class change ever queues. Left unstyled, its
+	// `:root { --x: ... }` declarations never land, every var() below it falls
+	// back to nothing (no backgrounds, default text colour), and repaints then
+	// draw over stale pixels. Style each pending subtree's tree root first so
+	// its custom properties exist before descendants resolve them.
+	std::vector<int> styledTreeRoots;
+	for (const int node : topRoots) {
+		int treeRoot = node;
+		while (state.nodes[treeRoot].parent >= 0) treeRoot = state.nodes[treeRoot].parent;
+		if (treeRoot == node || g_pendingRecomputeMark.contains(treeRoot)) continue;
+		if (std::find(styledTreeRoots.begin(), styledTreeRoots.end(), treeRoot) != styledTreeRoots.end()) continue;
+		styledTreeRoots.push_back(treeRoot);
+		recomputeNodeClassStyles(treeRoot);
+	}
+
 	// Incremental recompute: a near-root class change (e.g. a theme switch) only
 	// re-styles nodes that actually depend on what changed; the rest keep their
 	// already-correct computed style. Equivalent to recomputeSubtreeClassStyles but
