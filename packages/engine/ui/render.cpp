@@ -540,6 +540,7 @@ int gLastScrollUiFrame = -1000;
 			bool commandsExternal = false;
 			int commandCount = 0;
 			bool imageReferences[gea::framework::graphics::kImageMax]{};
+			int imageReferenceCount = 0; // how many imageReferences are set
 			bool textClippedBackgrounds = false;
 			// Sticky: an append() was dropped because the command buffer is full.
 			// Reset by clear(); lets a caller detect a truncated record.
@@ -11320,12 +11321,16 @@ int gLastScrollUiFrame = -1000;
 	void DisplayList::retainImage(int id)
 	{
 		auto &images = gea::framework::graphics::ImageStore::instance();
-		if (id >= 0 && id < gea::framework::graphics::kImageMax && !state.imageReferences[id])
+		if (id >= 0 && id < gea::framework::graphics::kImageMax && !state.imageReferences[id]) {
 			state.imageReferences[id] = images.retain(id);
+			state.imageReferenceCount += state.imageReferences[id];
+		}
 	}
 
 	void DisplayList::pruneImageReferences()
 	{
+		// A list that holds no image has nothing to release: skip the walk.
+		if (!state.imageReferenceCount) return;
 		bool referenced[gea::framework::graphics::kImageMax]{};
 		auto &images = gea::framework::graphics::ImageStore::instance();
 		// Background tiles blit one image many times in a row: look each run's
@@ -11345,6 +11350,7 @@ int gLastScrollUiFrame = -1000;
 		for (int id = 0; id < gea::framework::graphics::kImageMax; ++id) {
 			if (state.imageReferences[id] && !referenced[id]) {
 				state.imageReferences[id] = false;
+				--state.imageReferenceCount;
 				images.release(id);
 			}
 		}
