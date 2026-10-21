@@ -30,6 +30,11 @@
 #define GEA_TEXT_HOT_SRAM
 #endif
 
+#if GEA_CSS_WRITING_MODE
+// render.cpp: the replaying core (0 or 1), for per-core scratch.
+extern "C" int gea_current_render_core();
+#endif
+
 namespace gea::embedded::ui {
 
 namespace {
@@ -1240,6 +1245,11 @@ public:
 			drawBitmapWrapped(text, x, y, maxWidth, color, scale, textAlign, containerWidth, lineHeight, clipX0, clipY0, clipX1, clipY1, firstLineIndent, alignLast, hangSpaces, lineLimit, ellipsis, coverageSink);
 	}
 
+#if GEA_CSS_WRITING_MODE
+	// Paints a DrawText command whose `vertical` is set; drawWrapped never sees one.
+	static void drawVertical(const DisplayCommand &command);
+#endif
+
 private:
 	// CSS block-ellipsis for the last painted line of a clamped block: the
 	// string, whether it is the default one, and the room from the run's x to
@@ -1865,6 +1875,11 @@ private:
 		for (; bytes > 0 && line[bytes - 1] == ' '; --bytes) width += spaceAdvance;
 		return width;
 	}
+
+#if GEA_CSS_WRITING_MODE
+	template <class Advance, class Paint>
+	static void drawVerticalLines(const DisplayCommand &command, const char *text, int glyphHeight, int spaceAdvance, Advance advance, Paint paint);
+#endif
 };
 
 }  // namespace
@@ -2013,9 +2028,10 @@ void Tree::setText(int node, const char *text)
 	// bound, matching the previous FPS-counter behavior. For in-flow text we
 	// require an explicit style width, including percentages already resolved
 	// by the stylesheet, so wrapping is measured against the same fixed box.
+	// A vertical run (RenderState::vertical_flow) measures across its columns.
 	if (target.layout.width > 0 && target.layout.height > 0 &&
 	    target.parent >= 0 && target.first_child < 0 &&
-	    !hasTransformState(target)) {
+	    !hasTransformState(target) && !target.render.vertical_flow) {
 		const bool absolute = target.computedStyle().position == 1;
 		const bool fixedWidth = target.computedStyle().width != kUnset || target.computedStyle().width_percent != kUnset;
 		if (absolute || fixedWidth) {
@@ -2311,6 +2327,12 @@ int TextRenderer::reflowToBoxWidth(int id)
 
 void TextRenderer::drawWrapped(const DisplayCommand &command)
 {
+#if GEA_CSS_WRITING_MODE
+	if (command.text.vertical) {
+		TextDrawer::drawVertical(command);
+		return;
+	}
+#endif
 	TextDrawer::drawWrapped(command);
 }
 
@@ -2348,6 +2370,10 @@ void TextRenderer::drawWrapped(const char *text, int x, int y, int maxWidth, gea
 void TextRenderer::unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
                                     int width, std::uint8_t *outCoverage)
 {
+#if GEA_CSS_WRITING_MODE
+	// Columns of turned glyphs add no text-clip coverage.
+	if (command.text.vertical) return;
+#endif
 	TextDrawer::unionCoverageRow(command, screenY, screenX, width, outCoverage);
 }
 
@@ -2801,6 +2827,7 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 	cmd->text.text = n->text.c_str();
 	cmd->text.textBytes = static_cast<uint16_t>(saturatedTextBytes(n->text.size()));
 	cmd->text.collapsible = n->text.collapsible() ? 1 : 0;
+	cmd->text.vertical = 0;
 	cmd->text.x = drawX; cmd->text.y = drawY;
 	cmd->text.maxWidth = drawW;
 	cmd->text.color = n->computedStyle().text_color;
@@ -2856,5 +2883,175 @@ void GEA_TEXT_HOT_SRAM TextRenderer::record(const Node &node, uint8_t parentAlph
 
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx, by, bw, bh);
 }
+
+#if GEA_CSS_WRITING_MODE
+// A run its vertical flow transposed (RenderState::vertical_flow): the box is
+// physical, the lines are columns across it and the inline axis runs down.
+// Decorations, emphasis marks, clamps and ellipses are horizontal-only.
+__attribute__((noinline)) void TextRenderer::recordVertical(const Node &node, uint8_t parentAlpha)
+{
+	const ComputedStyle &style = node.computedStyle();
+	const int x = node.layout.x, y = node.layout.y, w = node.layout.width, h = node.layout.height;
+	if (node.text.empty() || w <= 0 || h <= 0) return;
+	// Glyphs taller than the line advance reach past the columns.
+	const int pad = 2 + std::max(0, static_cast<int>(style.font_size) - style.line_height);
+	const int bx = x - pad, by = y - pad, bw = w + 2 * pad, bh = h + 2 * pad;
+	const uint8_t alpha = combineAlpha(parentAlpha, style.text_alpha);
+	if (alpha != parentAlpha) appendAlphaCommand(alpha, bx, by, bw, bh);
+	if (DisplayCommand *cmd = DisplayList::instance().append()) {
+		cmd->type = DisplayCommandType::DrawText;
+		cmd->bx = bx; cmd->by = by; cmd->bw = bw; cmd->bh = bh;
+		cmd->text.text = node.text.c_str();
+		cmd->text.textBytes = static_cast<uint16_t>(saturatedTextBytes(node.text.size()));
+		cmd->text.collapsible = node.text.collapsible() ? 1 : 0;
+		cmd->text.vertical = node.render.vertical_flow;
+		// Lines stack from the content box's left edge (vertical-lr) or its
+		// right edge (vertical-rl); each starts at its top.
+		cmd->text.x = static_cast<int16_t>(node.render.vertical_flow == 1 ? x + boxInset(style, 3) : x + w - boxInset(style, 1));
+		cmd->text.y = static_cast<int16_t>(y + boxInset(style, 0));
+		cmd->text.maxWidth = static_cast<int16_t>(std::max(0, h - boxInsets(style, false)));
+		cmd->text.containerWidth = cmd->text.maxWidth;
+		cmd->text.color = style.text_color;
+		cmd->text.scale = style.font_size > 0 ? static_cast<float>(style.font_size) / kBitmapFontHeight : 1.0f;
+		cmd->text.align = static_cast<int8_t>((node.render.inline_baseline & 2) ? 0 : LayoutEngine::physicalTextAlign(node));
+		cmd->text.textTransform = style.text_transform;
+		cmd->text.lineHeight = style.line_height;
+		cmd->text.fontId = style.font_id;
+		cmd->text.whiteSpace = style.white_space;
+		cmd->text.textOverflow = 0;
+		cmd->text.maxHeight = 0;
+		cmd->text.firstLineIndent = node.layout.inline_indent;
+		cmd->text.alignLast = -1;
+		cmd->text.lineLimit = 0;
+		cmd->text.blockEllipsis = 0;
+		cmd->text.ellipsisWidth = 0;
+		cmd->text.ellipsisStyle = {};
+		cmd->text.emphasis = 0;
+		cmd->text.emphasisColor = 0;
+	}
+	if (alpha != parentAlpha) appendAlphaCommand(parentAlpha, bx, by, bw, bh);
+}
+
+namespace {
+
+// Breaks lines as the horizontal drawers do, at the run's inline size, and
+// lays each out as a column: the next one to its right (vertical-lr) or left
+// (vertical-rl). paint(cp, pen, right, clipY0, clipY1) draws one glyph turned
+// a quarter clockwise, its line box's top edge on x `right`, its start on y `pen`.
+template <class Advance, class Paint>
+void TextDrawer::drawVerticalLines(const DisplayCommand &command, const char *text, int glyphHeight, int spaceAdvance, Advance advance, Paint paint)
+{
+	const int whiteSpace = command.text.whiteSpace;
+	const int maxWidth = whiteSpace == 1 || whiteSpace == 2 ? 32767 : command.text.maxWidth;
+	const int indent = command.text.firstLineIndent;
+	const int lineAdvance = command.text.lineHeight > 0 ? command.text.lineHeight : glyphHeight;
+	const int align = command.text.align;
+	int clipX0, clipY0, clipX1, clipY1;
+	gea::platform::display::Display::clip(&clipX0, &clipY0, &clipX1, &clipY1);
+	const char *p = text;
+	for (int line = 0; *p; ++line) {
+		const WrappedLine wrapped = nextWrappedLine(p, std::max(1, line == 0 ? maxWidth - indent : maxWidth), advance);
+		if (wrapped.consumedBytes <= 0) break;
+		const int column = command.text.vertical == 1 ? command.text.x + line * lineAdvance : command.text.x - (line + 1) * lineAdvance;
+		// Where the line box's top edge lands once it is turned.
+		const int right = column + lineAdvance - 1;
+		if (column <= clipX1 && right >= clipX0) {
+			const int hanging = align ? hangingSpaceWidth(p, wrapped.renderBytes, spaceAdvance) : 0;
+			const int trimmed = line == 0 && indent < 0 ? -indent : 0;
+			int pen = command.text.y + (line == 0 ? indent : 0) + alignedOffset(align, command.text.containerWidth, wrapped.width - hanging - trimmed);
+			const char *end = p + wrapped.renderBytes;
+			for (const char *q = p; q < end && *q;) {
+				const int cp = nextUtf8Codepoint(q);
+				const int following = q < end ? followingTextCodepoint(q) : 0;
+				paint(cp, pen, right, clipY0, clipY1);
+				pen += advance(cp, following);
+			}
+		}
+		p += wrapped.consumedBytes;
+	}
+}
+
+// A turned glyph goes out through one drawImage per tile of this many pixels,
+// not a fillRect per span. One bank per render core: both may replay at once.
+constexpr int kTurnedGlyphTilePixels = 256;
+struct TurnedGlyphTile {
+	gea::framework::graphics::pixel::native_t color[kTurnedGlyphTilePixels];
+	std::uint8_t coverage[kTurnedGlyphTilePixels];
+};
+TurnedGlyphTile gTurnedGlyphTiles[2];
+
+// Paints a glyph `rows` tall and `columns` wide turned a quarter clockwise,
+// its turned top-left at (x, y): glyph row r lands rows - 1 - r px right of x,
+// column c on y + c. coverage(r, c) is the glyph's own coverage. Tiles take
+// whole turned rows; columns outside the clip are skipped, drawImage clips x.
+template <class Coverage>
+void blitTurnedGlyph(TurnedGlyphTile &tile, int x, int y, int rows, int columns, int clipY0, int clipY1, Coverage coverage)
+{
+	for (int r0 = 0; r0 < rows; r0 += kTurnedGlyphTilePixels) {
+		const int width = std::min(kTurnedGlyphTilePixels, rows - r0);
+		const int band = kTurnedGlyphTilePixels / width;
+		for (int c0 = std::max(0, clipY0 - y); c0 < columns && y + c0 <= clipY1; c0 += band) {
+			const int c1 = std::min({columns, c0 + band, clipY1 - y + 1});
+			std::uint8_t *out = tile.coverage;
+			for (int c = c0; c < c1; ++c, out += width)
+				for (int r = r0; r < r0 + width; ++r) out[r0 + width - 1 - r] = coverage(r, c);
+			gea::platform::display::Display::blitImage(tile.color, tile.coverage, width, c1 - c0, x + rows - r0 - width, y + c0);
+		}
+	}
+}
+
+// Paints the run's lines as columns of glyphs turned a quarter clockwise, with
+// the run's font, or the 8x16 bitmap font scaled as measureBitmap lays it out.
+// The display's alpha applies to every tile as it is.
+__attribute__((noinline)) void TextDrawer::drawVertical(const DisplayCommand &command)
+{
+	std::string transformed;
+	const char *text = textWithTransform(command.text.text, command.text.textTransform, transformed, command.text.whiteSpace,
+	                                     command.text.collapsible != 0);
+	if (!text || !text[0]) return;
+	TurnedGlyphTile &tile = gTurnedGlyphTiles[gea_current_render_core() & 1];
+	std::fill_n(tile.color, kTurnedGlyphTilePixels, command.text.color);
+	const bool hangSpaces = command.text.align && (command.text.whiteSpace == 0 || command.text.whiteSpace == 4);
+#ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
+	const int fontSize = static_cast<int>(command.text.scale * kBitmapFontHeight + 0.5f);
+	const gea::framework::graphics::RasterizedFont font =
+	    gea::framework::graphics::FontRegistry::rasterizedFamily(command.text.fontId, fontSize);
+	if (command.text.fontId >= 0 && font.valid()) {
+		const int glyphHeight = font.lineHeight();
+		const int lineAdvance = command.text.lineHeight > 0 ? command.text.lineHeight : glyphHeight;
+		const int lineBoxOffset = command.text.lineHeight > 0 ? (lineAdvance - glyphHeight) / 2 : 0;
+		gea::framework::graphics::Glyph space{};
+		const int spaceAdvance = hangSpaces ? (font.glyph(' ', &space) ? space.advance : font.sizePx() / 2) : 0;
+		drawVerticalLines(command, text, glyphHeight, spaceAdvance, [&font](int cp, int next) { return font.advance(cp, next); },
+		                  [&font, &tile, lineBoxOffset](int cp, int pen, int right, int clipY0, int clipY1) {
+			                  gea::framework::graphics::Glyph glyph{};
+			                  if (!font.glyph(cp, &glyph) || glyph.width <= 0 || glyph.height <= 0) return;
+			                  const int top = lineBoxOffset + font.ascender() - glyph.bearingY;
+			                  blitTurnedGlyph(tile, right - top - glyph.height + 1, pen + glyph.bearingX, glyph.height, glyph.width, clipY0, clipY1,
+			                                  [&font, &glyph](int row, int col) { return font.coverage(glyph, row, col); });
+		                  });
+		return;
+	}
+#endif
+	// Scaled cells, at most a tile tall and wide; each cell row and column maps to
+	// a source row and bit once per run, not per pixel.
+	const float scale = command.text.scale < 0.1f ? 1.0f : command.text.scale;
+	const int glyphWidth = std::clamp(static_cast<int>(kBitmapFontWidth * scale + 0.5f), 1, kTurnedGlyphTilePixels);
+	const int glyphHeight = std::clamp(static_cast<int>(kBitmapFontHeight * scale + 0.5f), 1, kTurnedGlyphTilePixels);
+	std::uint8_t sourceRow[kTurnedGlyphTilePixels], sourceBit[kTurnedGlyphTilePixels];
+	for (int row = 0; row < glyphHeight; ++row) sourceRow[row] = static_cast<std::uint8_t>(row * kBitmapFontHeight / glyphHeight);
+	for (int col = 0; col < glyphWidth; ++col) sourceBit[col] = static_cast<std::uint8_t>(0x80 >> (col * kBitmapFontWidth / glyphWidth));
+	const auto &bitmap = gea::framework::graphics::FontRegistry::bitmap8x16();
+	drawVerticalLines(command, text, glyphHeight, hangSpaces ? glyphWidth : 0, [glyphWidth](int, int) { return glyphWidth; },
+	                  [&bitmap, &tile, &sourceRow, &sourceBit, glyphWidth, glyphHeight](int cp, int pen, int right, int clipY0, int clipY1) {
+		                  const std::uint8_t *bits = bitmap.glyphRows(cp);
+		                  const std::uint8_t *rows = sourceRow, *columns = sourceBit;
+		                  blitTurnedGlyph(tile, right - glyphHeight + 1, pen, glyphHeight, glyphWidth, clipY0, clipY1,
+		                                  [bits, rows, columns](int row, int col) -> std::uint8_t { return (bits[rows[row]] & columns[col]) ? 255 : 0; });
+	                  });
+}
+
+}  // namespace
+#endif
 
 }  // namespace gea::embedded::ui

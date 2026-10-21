@@ -1235,6 +1235,50 @@ const LogicalPair *logicalPairFor(const char *property, StyleDeclaration declara
 	return nullptr;
 }
 
+// CSS Logical 4, 2: the physical property a flow-relative one maps to with the
+// element's own writing mode and direction. `declaration` is its horizontal-tb
+// ltr mapping (physicalLogicalLonghand, LogicalPair), which a document
+// without vertical or right-to-left content keeps. Those inherit from the
+// ancestors the cascade already resolved.
+CssDeclarationId flowRelativeDeclaration(int nodeId, CssDeclarationId declaration)
+{
+	const TreeState &state = treeState();
+	if ((!state.verticalWritingSeen && !state.rtlSeen) || nodeId < 0 || nodeId >= state.nodeCount) return declaration;
+	int mode = -1, direction = -1;
+	for (int id = nodeId; id >= 0 && (mode < 0 || direction < 0); id = state.nodes[id].parent) {
+		const ComputedStyle &style = state.nodes[id].computedStyle();
+		if (mode < 0) mode = style.writing_mode;
+		if (direction < 0) direction = style.direction;
+	}
+	const bool vertical = mode > 0, rtl = direction == 1;
+	if (!vertical && !rtl) return declaration;
+	if (vertical) {
+		static constexpr CssDeclarationId sizes[][2] = {
+			{CssDeclarationId::Width, CssDeclarationId::Height},
+			{CssDeclarationId::MinWidth, CssDeclarationId::MinHeight},
+			{CssDeclarationId::MaxWidth, CssDeclarationId::MaxHeight}};
+		for (const auto &size : sizes) {
+			if (declaration == size[0]) return size[1];
+			if (declaration == size[1]) return size[0];
+		}
+	}
+	// Sides in top, right, bottom, left order: block-start, inline-end,
+	// block-end and inline-start in the horizontal-tb ltr mapping. The block
+	// axis starts on the left in vertical-lr and sideways-lr and on the right
+	// in vertical-rl and sideways-rl; lines run down, but up in sideways-lr.
+	const int blockStart = mode == 0 ? 0 : mode == 1 || mode == 4 ? 3 : 1;
+	const int inlineStart = ((mode == 0 ? 3 : mode == 4 ? 2 : 0) + (rtl ? 2 : 0)) % 4;
+	const int physical[4] = {blockStart, (inlineStart + 2) % 4, (blockStart + 2) % 4, inlineStart};
+	static constexpr CssDeclarationId sides[] = {
+		CssDeclarationId::MarginTop, CssDeclarationId::PaddingTop, CssDeclarationId::Top, CssDeclarationId::BorderTop,
+		CssDeclarationId::BorderTopWidth, CssDeclarationId::BorderTopColor, CssDeclarationId::BorderTopStyle};
+	for (const CssDeclarationId first : sides) {
+		const int side = static_cast<int>(declaration) - static_cast<int>(first);
+		if (side >= 0 && side < 4) return static_cast<CssDeclarationId>(static_cast<int>(first) + physical[side]);
+	}
+	return declaration;
+}
+
 CssDeclarationId classifyDeclaration(const char *property)
 {
 	if (!property || !*property) return CssDeclarationId::Unknown;
@@ -1729,6 +1773,10 @@ struct CssRule {
 	std::uint16_t valueText;
 	std::uint16_t mediaText;
 	bool userAgent = false;
+	// A flow-relative longhand: `declaration` is its horizontal-tb ltr
+	// mapping, which the cascade moves to each element's writing mode and
+	// direction (flowRelativeDeclaration). Such a rule keeps its value text.
+	bool logical = false;
 #if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 	std::string debuggerSelector;
 #endif
@@ -2708,6 +2756,10 @@ CssRule makeCssRule(CssRule::SelectorType selectorType,
 	CssText media)
 {
 	const CssDeclarationId declaration = classifyDeclaration(property);
+	// Its physical property depends on the element, so it is applied from text.
+	const char *name = property.c_str();
+	const bool logical = (std::strstr(name, "inline") || std::strstr(name, "block") || std::strstr(name, "start") || std::strstr(name, "end")) &&
+	                     physicalLogicalLonghand(name) != nullptr;
 	const CssAtomId selectorAtom = selectorType == CssRule::SelectorType::Class ? atomForText(selector) : kInvalidCssAtom;
 	const int16_t selectorTagId = selectorType == CssRule::SelectorType::Element ? internTag(selector.c_str()) : -1;
 	const std::uint16_t selectorPlan = selectorType == CssRule::SelectorType::Selector ? compileSelectorPlan(selector) : kNoSelectorPlan;
@@ -2716,7 +2768,7 @@ CssRule makeCssRule(CssRule::SelectorType selectorType,
 	    : kInvalidCssAtom;
 	const std::uint16_t compiledValue = declaration == CssDeclarationId::Custom
 	    ? compileCustomPropertyValue(value)
-	    : compileCssValue(declaration, value);
+	    : logical ? kNoCompiledCssValue : compileCssValue(declaration, value);
 #if GEA_CSS_ANIMATIONS
 	const std::uint16_t compiledAnimationSpec = declaration == CssDeclarationId::Animation
 	    ? compileCssAnimationSpec(value)
@@ -2758,6 +2810,7 @@ CssRule makeCssRule(CssRule::SelectorType selectorType,
 #endif
 	             selectorAtom, propertyAtom, selectorTagId, selectorPlan, mediaPlan,
 	             propertyText, valueText, mediaText};
+	rule.logical = logical;
 #if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 	rule.debuggerSelector = selector.str();
 	if (selectorType == CssRule::SelectorType::Class) rule.debuggerSelector.insert(0, ".");
@@ -8635,7 +8688,10 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	case Property::Clear: style.clear_side = value; return true;
 #endif
 #if GEA_CSS_WRITING_MODE
-	case Property::WritingMode: style.writing_mode = value; return true;
+	case Property::WritingMode:
+		if (value > 0) treeState().verticalWritingSeen = true;
+		style.writing_mode = value;
+		return true;
 	case Property::Direction:
 		if (value == 1) treeState().rtlSeen = true;
 		style.direction = value;
@@ -10808,8 +10864,8 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 		if (!pair) return true;
 		const auto parts = pair->split ? splitFunctionAwareWords(value) : std::vector<std::string>{value};
 		if (parts.empty() || parts.size() > 2) return true;
-		applyKnownResolvedPropertyWithSource(node, pair->first, parts[0], source);
-		applyKnownResolvedPropertyWithSource(node, pair->second, parts.size() > 1 ? parts[1] : parts[0], source);
+		applyKnownResolvedPropertyWithSource(node, flowRelativeDeclaration(node.id(), pair->first), parts[0], source);
+		applyKnownResolvedPropertyWithSource(node, flowRelativeDeclaration(node.id(), pair->second), parts.size() > 1 ? parts[1] : parts[0], source);
 		return true;
 	}
 	case CssDeclarationId::Padding:
@@ -12448,7 +12504,8 @@ void applyRulePropertyWithCompiledValue(NodeHandle node,
 	const int64_t _bt = recNow();
 	struct BodyTimer { int64_t s; ~BodyTimer() { g_profBodyUs += recNow() - s; } } _bodyTimer{_bt};
 #endif
-	if (applyKnownResolvedPropertyWithSource(node, rule.declaration, value, source)) return;
+	const CssDeclarationId declaration = rule.logical ? flowRelativeDeclaration(nodeId, rule.declaration) : rule.declaration;
+	if (applyKnownResolvedPropertyWithSource(node, declaration, value, source)) return;
 	applyPropertyWithSource(node,
 	                        cssRuleTextForHandle(rule.propertyText).str(),
 	                        rawValue.str(),
@@ -17109,8 +17166,10 @@ bool setsFontMetrics(CssDeclarationId declaration)
 
 void applyActiveRuleSpanToNode(int node, const ActiveRulePlan &plan, int bucketId, int metricsOnly = 0)
 {
+	// The first pass also settles the writing mode and direction that
+	// flow-relative properties map with (flowRelativeDeclaration).
 	auto matchesMetrics = [metricsOnly](CssDeclarationId declaration) {
-		return metricsOnly == 1 ? setsFontMetrics(declaration)
+		return metricsOnly == 1 ? setsFontMetrics(declaration) || declaration == CssDeclarationId::WritingMode || declaration == CssDeclarationId::Direction
 		    : declaration == CssDeclarationId::Font || declaration == CssDeclarationId::LineHeight;
 	};
 	const NodeHandle nodeHandle(node);
@@ -17156,7 +17215,7 @@ void applyActiveRuleSpansToNode(int node, const ActiveRulePlan &plan, int custom
 	if (const NodeRareData *rd = rareDataFor(node))
 		for (std::size_t i = 0; i < rd->inlineStyles.size(); ++i) {
 			const auto &entry = rd->inlineStyles.at(i);
-			if (isFontMetricProperty(entry.property))
+			if (isFontMetricProperty(entry.property) || entry.property == Property::WritingMode || entry.property == Property::Direction)
 				Tree::instance().setStyleFromClass(node, entry.property, entry.value);
 		}
 	const int previousFontNode = g_resolvedFontNode;

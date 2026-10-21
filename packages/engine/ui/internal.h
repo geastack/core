@@ -263,6 +263,10 @@ void rootScrollImageHoldTick();
 				// NodeText::collapsible of the text: white-space collapsing may
 				// change it, so the draw normalizes a copy. 0 skips that outright.
 				uint8_t collapsible;
+				// RenderState::vertical_flow of the run: its lines are columns,
+				// left to right from x (1) or right to left from x (2), with the
+				// glyphs turned clockwise; maxWidth is then the content height.
+				uint8_t vertical;
 			} text;
 			struct
 			{
@@ -690,6 +694,10 @@ void rootScrollImageHoldTick();
 		// `atLineStart`, as CSS does when a line box begins.
 		static InlineFlowMeasure measureInlineFlow(const Node &node, int firstAvail, int contentWidth, bool atLineStart);
 		static void record(const Node &node, uint8_t parentAlpha = 255);
+#if GEA_CSS_WRITING_MODE
+		// record() for a run its vertical flow laid out (RenderState::vertical_flow).
+		static void recordVertical(const Node &node, uint8_t parentAlpha = 255);
+#endif
 		static void unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
 		                             int width, uint8_t *outCoverage);
 		// Paints a DrawText command.

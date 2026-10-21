@@ -429,6 +429,10 @@ struct TreeState {
 	// the answer is ltr without the walk. Never cleared: it only guards a
 	// fast path.
 	bool rtlSeen = false;
+	// A vertical or sideways writing mode was set on some node. writing-mode
+	// inherits the same way, so while this stays false every box is
+	// horizontal-tb without the walk. Never cleared.
+	bool verticalWritingSeen = false;
 
 	// Focus + caret state for `<input>` elements. -1 means no input is
 	// focused. caretLastFlipMs/caretVisible drive the blink animation —

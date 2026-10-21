@@ -179,6 +179,7 @@ void InputRenderer::record(int id)
 			const std::size_t contentBytes = std::strlen(content);
 			cmd->text.textBytes = static_cast<uint16_t>(contentBytes > 65535 ? 65535 : contentBytes);
 			cmd->text.collapsible = hasCollapsibleWhitespace(content) ? 1 : 0;
+			cmd->text.vertical = 0;
 		}
 	}
 

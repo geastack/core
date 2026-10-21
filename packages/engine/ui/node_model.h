@@ -1726,6 +1726,14 @@ struct RenderState {
 	// Bit 1: the line layout already applied text-align to this box's line, so
 	// the run draws start-aligned in its own box.
 	uint8_t inline_baseline : 2;
+	// 1 (vertical-lr) or 2 (vertical-rl) on a box its vertical flow laid out
+	// in the logical frame and transposed (layout.cpp, VerticalFlow): a text
+	// run draws its lines as columns. In the same byte as the bits above.
+#if GEA_CSS_WRITING_MODE
+	uint8_t vertical_flow : 2;
+#else
+	static constexpr uint8_t vertical_flow = 0;
+#endif
 	// Only one paint shortcut may own this scratch space. Mixed changes use
 	// the ordinary dirty-region replay. The recolor destination is bg_color.
 	union {

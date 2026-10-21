@@ -16,6 +16,7 @@
 #include <vector>
 #include <memory>
 #include <cstdlib>
+#include <type_traits>
 #if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
 #endif
@@ -270,6 +271,28 @@ int resolvePercentSize(int basis, int percent)
 	return static_cast<int>((numerator + (numerator >= 0 ? 500 : -500)) / 1000);
 }
 
+#if GEA_CSS_WRITING_MODE
+// The root of the vertical flow being laid out in its logical frame (see
+// VerticalFlow), or -1. Its boxes and styles are logical until it finishes.
+int gVerticalFlowRoot = -1;
+#endif
+// static_block_axis of an out-of-flow box once its vertical flow finished:
+// placed against a containing block inside the flow, or, with that block
+// outside it, left at its static position for the axes without insets.
+constexpr uint8_t kVerticalFlowPlaced = 3, kVerticalFlowStatic = 4;
+
+// Whether `id` is the root of the vertical flow being laid out. It establishes
+// a formatting context: its logical frame ends at its edges.
+bool verticalFlowRoot(int id)
+{
+#if GEA_CSS_WRITING_MODE
+	return id == gVerticalFlowRoot;
+#else
+	(void)id;
+	return false;
+#endif
+}
+
 // Probe the existing formatting algorithms without rewriting authored style.
 // A stack of constraints keeps nested measurements finite and allocates no
 // per-node storage; a final phase supplies the selected used border-box size.
@@ -296,6 +319,10 @@ int intrinsicSizeConstraint(const Node &node, bool horizontal)
 	const Node *current = &node;
 	for (;;) {
 		if (auto *scope = intrinsicSizeScope(*current, horizontal)) return scope->constraint;
+#if GEA_CSS_WRITING_MODE
+		// Probes outside a vertical flow measure physical axes.
+		if (current - Tree::instance().nodes() == gVerticalFlowRoot) return 0;
+#endif
 		const int expression = horizontal ? current->computedStyle().width_expression : current->computedStyle().height_expression;
 		if (current->parent < 0 || (horizontal ? current->computedStyle().width : current->computedStyle().height) != kUnset ||
 		    (expression >= 0 && !layoutSizeExpressionUsesPercentage(
@@ -362,6 +389,10 @@ bool percentageHeightDependsOnIntrinsicSize(const Node &node)
 	if (isOutOfFlowPosition(node.computedStyle().position)) return false;
 	const Node *current = &node;
 	while (current->parent >= 0) {
+#if GEA_CSS_WRITING_MODE
+		// A vertical flow's root stands at the top of its logical frame.
+		if (current - Tree::instance().nodes() == gVerticalFlowRoot) return false;
+#endif
 		const Node &parent = Tree::instance().nodes()[current->parent];
 		if (isIntrinsicSizeExpression(parent.computedStyle().height_expression)) return true;
 		if (parent.computedStyle().height != kUnset || isOutOfFlowPosition(parent.computedStyle().position)) return false;
@@ -678,6 +709,7 @@ int resolvedStyleHeight(const Node &node, int basis)
 
 int writingMode(const Node &node)
 {
+	if (!treeState().verticalWritingSeen) return 0;
 	const Node *current = &node;
 	while (current->computedStyle().writing_mode < 0 && current->parent >= 0)
 		current = &Tree::instance().nodes()[current->parent];
@@ -1308,7 +1340,11 @@ public:
 					if (m.lineCount > 0 && haveLineMetrics) {
 						// Its first WORD does not fit what is left: the run starts the
 						// next line box rather than overflowing it or being cut open.
-						if (pen > 0 && m.firstLineWidth > firstAvail && !collapsibleSpaceOnly(subject)) break;
+						// Collapsible spaces that end the line hang outside it.
+						if (pen > 0 && m.firstLineWidth - m.firstLineTrailingSpace > firstAvail && !collapsibleSpaceOnly(subject)) break;
+						// Nor when the word it ends goes on into the items after it.
+						if (pen > 0 && m.lineCount == 1 && !m.endsWithBreak && (j == 0 || trailingSoftWrap(nodes[children_[j - 1]]) || leadingSoftWrap(cn)) &&
+						    m.firstLineWidth - m.firstLineTrailingSpace + gluedAfter(nodes, j) > firstAvail && !collapsibleSpaceOnly(subject)) break;
 						const int boxH = m.lineCount * m.lineAdvance + padV;
 						const bool wraps = m.lineCount > 1 || m.endsWithBreak;
 						const int boxW = wraps ? rest + padH : m.firstLineWidth + padH;
@@ -1744,6 +1780,26 @@ public:
 				break;
 			}
 			width += item.layout.width + item.computedStyle().margin[1] + item.computedStyle().margin[3] - collapsedLead(nodes, k, lineStart && k == j);
+		}
+		return width;
+	}
+
+	// Width of the items after children_[j] that no soft wrap opportunity
+	// separates from it: the rest of the word it ends, which shares its line.
+	int gluedAfter(const Node *nodes, int j) const
+	{
+		int width = 0;
+		for (int k = j + 1; k < childCount_; ++k) {
+			const Node &item = nodes[children_[k]];
+			if (isLineBreak(item) || trailingSoftWrap(nodes[children_[k - 1]]) || leadingSoftWrap(item)) break;
+			const int inner = isFragmentableRun(item) ? -1 : transparentInlineRun(item);
+			if (isFragmentableRun(item) || inner >= 0) {
+				const int word = TextRenderer::firstUnbreakableWidth(inner >= 0 ? nodes[inner] : item);
+				width += item.computedStyle().margin[3] + word;
+				if (word < item.layout.width) break;
+				continue;
+			}
+			width += item.layout.width + item.computedStyle().margin[1] + item.computedStyle().margin[3];
 		}
 		return width;
 	}
@@ -2786,8 +2842,10 @@ private:
 			return TextRenderer::baselineOffset(childNode, last);
 		// An inline-block takes its last line box's baseline, or its bottom
 		// margin edge when it has none or clips its overflow (CSS 2.2 10.8.1).
+		// Lines across this one give none along it either (CSS Inline 3, 4.1.2).
 		if (childNode.type == NodeType::View && childNode.computedStyle().display == kDisplayBlock && isAtomicInline(childNode.computedStyle())) {
-			const int line = overflowEstablishesContext(childNode.computedStyle()) ? -1 : lastLineBaseline(childNode);
+			const bool orthogonal = (writingMode(childNode) != 0) != (writingMode(node_) != 0);
+			const int line = overflowEstablishesContext(childNode.computedStyle()) || orthogonal ? -1 : lastLineBaseline(childNode);
 			return line >= 0 ? line : childNode.layout.height + childNode.computedStyle().margin[2];
 		}
 		// An inline wrapper (a <span> around text) carries no text of its own, so
@@ -2807,6 +2865,14 @@ private:
 			}
 		}
 		if (inlineRow_ && contentlessInlineBox(childNode)) return TextRenderer::inlineFontMetrics(childNode.computedStyle()).ascent;
+		// Bitmap-font text has no glyph metrics: its baseline is the bottom of a
+		// line box, its first one when it wraps, so the items beside that line do
+		// not drop to its last.
+		if (childNode.type == NodeType::Text && !last) {
+			const ComputedStyle &style = childNode.computedStyle();
+			const int firstLineBottom = boxInset(style, 0) + (style.line_height > 0 ? style.line_height : style.font_size > 0 ? style.font_size : 16);
+			if (childNode.layout.height > firstLineBottom) return firstLineBottom;
+		}
 		return childNode.layout.height + (inlineRow_ ? childNode.computedStyle().margin[2] : 0);
 	}
 
@@ -2939,13 +3005,14 @@ bool splitInlineWrapper(const Node *nodes, int id)
 	if (!inlineBoxView(n) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
 	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.computedStyle(), true) || boxInsets(n.computedStyle(), false) ||
 	    n.computedStyle().margin[1] || n.computedStyle().margin[3] || n.computedStyle().opacity != 255 || overflowEstablishesContext(n.computedStyle())) return false;
-	bool containsBlock = false;
+	bool containsBlock = false, outOfFlow = false, inFlow = false;
 	for (int c = n.first_child; c >= 0; c = nodes[c].next_sibling) {
 		const Node &child = nodes[c];
 		if (isDisplayNone(child.computedStyle())) continue;
 		// Out-of-flow children stay with the wrapper, whose fragments contain them
 		// (LayoutNodePass::positionFragmentedInlineChildren).
-		if (isOutOfFlowPosition(child.computedStyle().position)) continue;
+		if (isOutOfFlowPosition(child.computedStyle().position)) { outOfFlow = true; continue; }
+		inFlow |= child.type != NodeType::Text || child.text.find_first_not_of(" \t\r\n\f") != std::string::npos;
 		// A float inside an inline belongs to the enclosing block's float context.
 		if (child.computedStyle().float_side) { containsBlock = true; continue; }
 		// A forced break splits the inline across line boxes.
@@ -2953,7 +3020,9 @@ bool splitInlineWrapper(const Node *nodes, int id)
 		if (blockLevelView(child)) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
-	return containsBlock;
+	// Out-of-flow children beside content take their static positions on the
+	// lines that content wraps across, which a box of its own would not share.
+	return containsBlock || (outOfFlow && inFlow);
 }
 
 // An inline box with visible decorations split by an in-flow block (CSS 2.2
@@ -2997,6 +3066,32 @@ void visitFormattingChildren(const Node *nodes, int parent, const Visit &visit, 
 	}
 }
 
+#if GEA_CSS_WRITING_MODE
+// CSS Writing Modes 3, 7: a vertical-lr or vertical-rl block container that
+// formats inline content or columns lays its subtree out in the logical
+// frame, where the inline axis runs across and the block axis down, with the
+// horizontal algorithms; finish() then turns every box below it physical. Its
+// own box stays physical: its parent sizes and places it. While it runs, the
+// subtree's styles are rotated into that frame and gVerticalFlowRoot names it.
+class VerticalFlow {
+public:
+	// 1 (vertical-lr) or 2 (vertical-rl) when node `id` starts a vertical
+	// flow, else 0. Only one runs at a time, and its subtree must keep one
+	// writing mode and hold no replaced content.
+	static int modeFor(const Node *nodes, int id);
+	VerticalFlow(int root, int mode);
+	void finish();
+
+private:
+	struct SavedStyle { int id; ComputedStyle style; int16_t rotatedRare; };
+	void enter(Node *nodes, int id);
+	int root_, mode_;
+	// Shared by every flow, as flows never nest: cleared, never freed.
+	static inline std::vector<SavedStyle> saved_;
+	static inline std::vector<int> placed_;
+};
+#endif
+
 class LayoutNodePass {
 public:
 	LayoutNodePass(LayoutEngine &engine, int id, int availWidth, int availHeight)
@@ -3011,6 +3106,9 @@ public:
 		if (NodeRareData *rare = rareDataFor(id_)) rare->firstLineBackground.lineValid = false;
 #endif
 		if (isDisplayNone(node_.computedStyle())) return;
+#if GEA_CSS_WRITING_MODE
+		const int verticalFlow = treeState().verticalWritingSeen ? verticalFlowMode() : 0;
+#endif
 		prepareOwnSize();
 
 		if (isLineBreak(node_) && LayoutEngine::isInlineLevelNode(node_) &&
@@ -3044,6 +3142,19 @@ public:
 #endif
 			rare->inlineParts.clear();
 		}
+#if GEA_CSS_WRITING_MODE
+		if (verticalFlow) {
+			VerticalFlow flow(id_, verticalFlow);
+			layoutOwnContent();
+			flow.finish();
+			return;
+		}
+#endif
+		layoutOwnContent();
+	}
+
+	void layoutOwnContent()
+	{
 #if GEA_CSS_MULTICOL
 		const ColumnGeometry columns = columnGeometry();
 		if (columns.count > 0) layoutColumns(columns);
@@ -3052,6 +3163,16 @@ public:
 		layoutContent();
 #endif
 	}
+
+#if GEA_CSS_WRITING_MODE
+	// Clears this box's vertical-flow mark, which VerticalFlow::finish sets
+	// again on the boxes it transposes, and says whether it starts one.
+	int verticalFlowMode()
+	{
+		node_.render.vertical_flow = 0;
+		return VerticalFlow::modeFor(nodes_, id_);
+	}
+#endif
 
 	void layoutContent()
 	{
@@ -3118,6 +3239,14 @@ public:
 	void repositionChildren()
 	{
 		if (node_.type == NodeType::Text || node_.type == NodeType::Image) return;
+#if GEA_CSS_WRITING_MODE
+		if (const int mode = treeState().verticalWritingSeen ? verticalFlowMode() : 0) {
+			VerticalFlow flow(id_, mode);
+			repositionChildren();
+			flow.finish();
+			return;
+		}
+#endif
 		invalidateInlineChildMetadata();
 #if GEA_CSS_FIRST_LINE
 		if (NodeRareData *rare = rareDataFor(id_)) rare->firstLineBackground.lineValid = false;
@@ -3422,7 +3551,8 @@ private:
 		    n.computedStyle().display != kDisplayBlock || isFlowRoot(n.computedStyle()) || (blockBox(n) && n.computedStyle().align_content != 0) || clampsLines(n) ||
 		    overflowEstablishesContext(n.computedStyle()) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].computedStyle()) ||
-		                      writingMode(n) != writingMode(nodes_[n.parent])));
+		                      writingMode(n) != writingMode(nodes_[n.parent]))) ||
+		    verticalFlowRoot(static_cast<int>(&n - nodes_));
 	}
 
 	void encloseFloatDescendants()
@@ -4698,24 +4828,30 @@ private:
 	}
 
 	// A positioned inline split into fragments across this block's lines is
-	// the containing block of its out-of-flow children: the rect from its first
-	// fragment's inline-start and block-start edges to its last fragment's
+	// the containing block of its out-of-flow descendants: the rect from its
+	// first fragment's inline-start and block-start edges to its last fragment's
 	// inline-end and block-end edges (CSS Position 3, 3.2). Its box, otherwise
 	// empty at its parent's origin, takes that rect, its in-flow content keeps
-	// its place, and its out-of-flow children are positioned against it.
+	// its place, and its out-of-flow children are positioned against it; those
+	// of the unpositioned inlines split inside it follow in the global pass.
 	void positionFragmentedInlineChildren()
 	{
 		if (!splitInlineChildren_) return;
+		auto containsOutOfFlow = [&](auto &&self, int parent) -> bool {
+			for (int k = nodes_[parent].first_child; k >= 0; k = nodes_[k].next_sibling) {
+				if (isDisplayNone(nodes_[k].computedStyle())) continue;
+				if (isOutOfFlowPosition(nodes_[k].computedStyle().position) ||
+				    (splitInlineWrapper(nodes_, k) && !establishesAbsoluteContainingBlock(nodes_[k]) && self(self, k))) return true;
+			}
+			return false;
+		};
 		auto visit = [&](auto &&self, int parent, int originX, int originY) -> void {
 			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
 				if (!splitInlineWrapper(nodes_, c)) continue;
 				Node &wrapper = nodes_[c];
 				int x = originX + wrapper.layout.x, y = originY + wrapper.layout.y;
-				bool contains = false;
-				for (int k = wrapper.first_child; k >= 0 && !contains; k = nodes_[k].next_sibling)
-					contains = !isDisplayNone(nodes_[k].computedStyle()) && isOutOfFlowPosition(nodes_[k].computedStyle().position);
 				int rect[4];
-				if (contains && establishesAbsoluteContainingBlock(wrapper) && fragmentRect(c, x, y, rect)) {
+				if (establishesAbsoluteContainingBlock(wrapper) && containsOutOfFlow(containsOutOfFlow, c) && fragmentRect(c, x, y, rect)) {
 					const int dx = rect[0] - x, dy = rect[1] - y;
 					wrapper.layout.x = clampInt16(wrapper.layout.x + dx);
 					wrapper.layout.y = clampInt16(wrapper.layout.y + dy);
@@ -4764,9 +4900,33 @@ private:
 		inlineExtent(a, first.x, firstLeft, firstRight, firstLastLeft, firstLastRight);
 		inlineExtent(b, last.x, lastFirstLeft, lastFirstRight, lastLeft, lastRight);
 		int left = firstLeft, right = lastRight;
-		if (rightToLeft(nodes_[wrapper])) {
+		// The fragments run in the direction of the block's lines, whatever the
+		// inline's own (as LayoutNG builds this rect).
+		if (rightToLeft(node_)) {
+			// Lines keep their items in left-to-right order, so the first line's
+			// right edge and the last line's left edge are the extremes of the
+			// items sharing those lines.
 			left = lastLeft;
 			right = firstRight;
+			const int lastBottom = last.y + b.layout.height;
+			auto extremes = [&](auto &&self, int parent, int ox, int oy) -> void {
+				for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+					const Node &child = nodes_[c];
+					if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || child.computedStyle().float_side ||
+					    isLineBreak(child) || blockBox(child) || suppressAnonymousWhitespace(nodes_, parent, c)) continue;
+					if (child.type == NodeType::Text && child.text.find_first_not_of(" \t\r\n\f") == std::string::npos) continue;
+					const int x = ox + child.layout.x, y = oy + child.layout.y;
+					if (splitInlineWrapper(nodes_, c)) {
+						self(self, c, x, y);
+						continue;
+					}
+					int startFirst, endFirst, startLast, endLast;
+					inlineExtent(child, x, startFirst, endFirst, startLast, endLast);
+					if (y == first.y) right = std::max(right, endFirst);
+					if (y + child.layout.height == lastBottom) left = std::min(left, startLast);
+				}
+			};
+			extremes(extremes, wrapper, originX, originY);
 		}
 		rect[0] = left;
 		rect[1] = first.y;
@@ -5028,6 +5188,20 @@ void layoutAbsoluteNode(int node, int containing, int areaX, int areaWidth, int 
 	if (absolute.type != NodeType::View || writingMode(absolute) != 0 ||
 	    hasExplicitWidth(absolute) || isIntrinsicSizeExpression(absolute.computedStyle().width_expression) ||
 	    (left && right) || (preferredRatio(absolute) > 0 && hasExplicitHeight(absolute))) {
+#if GEA_CSS_WRITING_MODE
+		// A vertical box's inline size is its height: with both vertical insets
+		// it is known before its lines are laid out, and its width follows them.
+		if (absolute.type == NodeType::View && writingMode(absolute) != 0 && !hasExplicitHeight(absolute) &&
+		    !isIntrinsicSizeExpression(absolute.computedStyle().height_expression) &&
+		    hasPositionOffsetValue<0>(absolute) && hasPositionOffsetValue<2>(absolute)) {
+			const int height = areaHeight - resolvedPositionOffsetForBasis<0>(absolute, areaHeight) - resolvedPositionOffsetForBasis<2>(absolute, areaHeight) -
+			                   absolute.computedStyle().margin[0] - absolute.computedStyle().margin[2];
+			IntrinsicSizeScope scope(absolute, 0, false);
+			scope.borderSize = clampLayoutSize(absolute, std::max(0, height), false);
+			engine.layoutNode(node, areaWidth, areaHeight);
+			return;
+		}
+#endif
 		engine.layoutNode(node, areaWidth, areaHeight);
 		return;
 	}
@@ -5097,9 +5271,11 @@ void positionAbsoluteNodeInContainingBlock(int node, int containing, Node *nodes
 	stretchAbsoluteNodeToContainingBlock(node, areaWidth, areaHeight, nodes);
 	int parentOffsetX = 0, parentOffsetY = 0;
 	offsetFromAncestorToNode(containing, parent, nodes, &parentOffsetX, &parentOffsetY);
-	if (!hasPositionOffsetValue<3>(absolute) && !hasPositionOffsetValue<1>(absolute))
+	// A vertical flow left the static position of a box it could not place.
+	const bool staticPlaced = layoutState(node).static_block_axis == kVerticalFlowStatic;
+	if (!staticPlaced && !hasPositionOffsetValue<3>(absolute) && !hasPositionOffsetValue<1>(absolute))
 		absolute.layout.x = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, true, &containingNode, areaX - parentOffsetX, areaWidth);
-	if (!hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute))
+	if (!staticPlaced && !hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute))
 		absolute.layout.y = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, false, &containingNode, areaY - parentOffsetY, areaHeight);
 
 	int containingX = absolute.layout.x + parentOffsetX, offset = 0;
@@ -5132,7 +5308,7 @@ void resolvePositionedDescendants(int node, int root, Node *nodes)
 {
 	for (int child = nodes[node].first_child; child >= 0; child = nodes[child].next_sibling) {
 		if (isDisplayNone(nodes[child].computedStyle())) continue;
-		if (isOutOfFlowPosition(nodes[child].computedStyle().position))
+		if (isOutOfFlowPosition(nodes[child].computedStyle().position) && layoutState(child).static_block_axis != kVerticalFlowPlaced)
 			positionAbsoluteNodeInContainingBlock(child, containingBlockForAbsoluteNode(child, root, nodes), nodes);
 		resolvePositionedDescendants(child, root, nodes);
 	}
@@ -5141,6 +5317,292 @@ void resolvePositionedDescendants(int node, int root, Node *nodes)
 void resolveAbsoluteContainingBlocks(int root)
 {
 	resolvePositionedDescendants(root, root, Tree::instance().nodes());
+}
+
+#if GEA_CSS_WRITING_MODE
+// The physical side each logical side (top, right, bottom, left) reads in the
+// frame of a vertical-lr (1) or vertical-rl (2) flow: the block axis starts at
+// the left or right edge, and the line-left edge is on top.
+constexpr int kVerticalFlowSide[3][4] = {{0, 1, 2, 3}, {3, 2, 1, 0}, {1, 2, 3, 0}};
+
+// Writes a style field this build keeps; one it folded to a constant stays.
+template <class Field, class Value>
+void assignStyleField(Field &field, Value value)
+{
+	if constexpr (!std::is_const_v<Field>) field = static_cast<Field>(value);
+}
+
+template <class A, class B>
+void swapStyleFields(A &a, B &b)
+{
+	const auto first = a, second = b;
+	assignStyleField(a, second);
+	assignStyleField(b, first);
+}
+
+template <class Sides>
+void rotateStyleSides(Sides &sides, const int *from)
+{
+	const int values[4] = {sides[0], sides[1], sides[2], sides[3]};
+	for (int i = 0; i < 4; ++i) assignStyleField(sides[i], values[from[i]]);
+}
+
+[[maybe_unused]] void rotateRareStyle(RareStyle &rare, const int *from)
+{
+	rotateStyleSides(rare.border_side_width, from);
+	rotateStyleSides(rare.margin_expression, from);
+	rotateStyleSides(rare.padding_expression, from);
+	float ratio = 0;
+	const int bits = rare.aspect_ratio;
+	std::memcpy(&ratio, &bits, sizeof(ratio));
+	if (ratio != 0 && std::isfinite(ratio)) {
+		ratio = 1 / ratio;
+		int inverse = 0;
+		std::memcpy(&inverse, &ratio, sizeof(inverse));
+		assignStyleField(rare.aspect_ratio, inverse);
+	}
+}
+
+[[maybe_unused]] bool rareStyleHasAxes(const RareStyle &rare)
+{
+	for (int side = 0; side < 4; ++side)
+		if (rare.border_side_width[side] || rare.margin_expression[side] >= 0 || rare.padding_expression[side] >= 0) return true;
+	return rare.aspect_ratio != 0;
+}
+
+// Rotates a style into the logical frame of a vertical flow: sizes swap axes,
+// box sides and insets move round, and the root reads as horizontal-tb so
+// its subtree inherits that. Returns the rare-style entry a rotated copy
+// needed, or -1.
+int16_t rotateVerticalStyle(ComputedStyle &s, int mode, bool root)
+{
+	const int *from = kVerticalFlowSide[mode];
+	swapStyleFields(s.width, s.height);
+	swapStyleFields(s.width_percent, s.height_percent);
+	swapStyleFields(s.min_width, s.min_height);
+	swapStyleFields(s.max_width, s.max_height);
+	swapStyleFields(s.width_expression, s.height_expression);
+	swapStyleFields(s.overflow_x, s.overflow_y);
+	rotateStyleSides(s.margin, from);
+	rotateStyleSides(s.padding, from);
+#if GEA_CSS_POSITION_PX_ALL
+	rotateStyleSides(s.pos_offsets, from);
+#else
+	const int px[4] = {s.pos_top, s.pos_right, s.pos_bottom, s.pos_left};
+	assignStyleField(s.pos_top, px[from[0]]);
+	assignStyleField(s.pos_right, px[from[1]]);
+	assignStyleField(s.pos_bottom, px[from[2]]);
+	assignStyleField(s.pos_left, px[from[3]]);
+#endif
+#if GEA_CSS_POSITION_PERCENT_ALL
+	rotateStyleSides(s.pos_offset_percent, from);
+#else
+	const int percent[4] = {s.pos_percent_top, s.pos_percent_right, s.pos_percent_bottom, s.pos_percent_left};
+	assignStyleField(s.pos_percent_top, percent[from[0]]);
+	assignStyleField(s.pos_percent_right, percent[from[1]]);
+	assignStyleField(s.pos_percent_bottom, percent[from[2]]);
+	assignStyleField(s.pos_percent_left, percent[from[3]]);
+#endif
+	int autoSides = 0;
+	for (int side = 0; side < 4; ++side)
+		if (s.margin_auto & (1 << from[side])) autoSides |= 1 << side;
+	assignStyleField(s.margin_auto, autoSides | (s.margin_auto & ~15));
+	s.writing_mode = root ? 0 : -1;
+#if GEA_CSS_RARE_STYLE && GEA_EMBEDDED_RARE_STYLE_INLINE
+	rotateRareStyle(s.rare, from);
+#elif GEA_CSS_RARE_STYLE
+	if (s.rare_style >= 0 && rareStyleHasAxes(rstyle(s))) {
+		const RareStyle rare = rstyle(s);
+		s.rare_style = -1;
+		RareStyle &rotated = rstyleMut(s);
+		rotated = rare;
+		rotateRareStyle(rotated, from);
+		return s.rare_style;
+	}
+#endif
+	return -1;
+}
+
+// Logical boxes from physical ones, children before their parents.
+void verticalFlowToLogical(Node *nodes, int parent, int mode)
+{
+	for (int c = nodes[parent].first_child; c >= 0; c = nodes[c].next_sibling) {
+		verticalFlowToLogical(nodes, c, mode);
+		LayoutBox &box = nodes[c].layout;
+		const int x = box.x, y = box.y, width = box.width, height = box.height;
+		box.width = clampLayoutExtent(height);
+		box.height = clampLayoutExtent(width);
+		box.x = clampInt16(y);
+		box.y = clampInt16(mode == 1 ? x : nodes[parent].layout.width - x - width);
+#if GEA_CSS_SCROLLING
+		std::swap(box.scroll_content_width, box.scroll_content_height);
+		std::swap(box.scroll_x, box.scroll_y);
+#endif
+	}
+}
+
+// Physical boxes from logical ones, parents before their children: a
+// vertical-rl box measures its block offset from its parent's right edge.
+void verticalFlowToPhysical(Node *nodes, int parent, int mode)
+{
+	auto &engine = LayoutEngine::instance();
+	for (int c = nodes[parent].first_child; c >= 0; c = nodes[c].next_sibling) {
+		Node &node = nodes[c];
+		LayoutBox &box = node.layout;
+		const int x = box.x, y = box.y, width = box.width, height = box.height;
+		box.width = clampLayoutExtent(height);
+		box.height = clampLayoutExtent(width);
+		box.y = clampInt16(x);
+		box.x = clampInt16(mode == 1 ? y : nodes[parent].layout.width - y - height);
+#if GEA_CSS_SCROLLING
+		std::swap(box.scroll_content_width, box.scroll_content_height);
+		std::swap(box.scroll_x, box.scroll_y);
+#endif
+		node.render.vertical_flow = static_cast<uint8_t>(mode);
+		if (NodeRareData *rare = rareDataFor(c)) {
+			for (InlinePart &part : rare->inlineParts) {
+				const int px = part.x, py = part.y, pw = part.width, ph = part.height;
+				part.width = clampInt16(ph);
+				part.height = clampInt16(pw);
+				part.y = clampInt16(px);
+				part.x = clampInt16(mode == 1 ? py : box.width - py - ph);
+				int sides = 0;
+				for (int side = 0; side < 4; ++side)
+					if (part.sides & (1 << side)) sides |= 1 << kVerticalFlowSide[mode][side];
+				part.sides = static_cast<std::uint8_t>(sides | (part.sides & ~15));
+			}
+		}
+		// Its memo holds logical sizes; the next layout starts over.
+		engine.invalidateMemo(c);
+		verticalFlowToPhysical(nodes, c, mode);
+	}
+}
+
+int VerticalFlow::modeFor(const Node *nodes, int id)
+{
+	if (gVerticalFlowRoot >= 0) return 0;
+	const Node &node = nodes[id];
+	const ComputedStyle &style = node.computedStyle();
+	if (node.type != NodeType::View || style.display != kDisplayBlock || style.flex_direction_explicit || clampsLines(node)) return 0;
+	const int mode = writingMode(node);
+	if (mode != 1 && mode != 2) return 0;
+	bool content = isMulticolContainer(node);
+	if (!content)
+		visitFormattingChildren(nodes, id, [&](int c) {
+			const Node &child = nodes[c];
+			if (!content && !isDisplayNone(child.computedStyle()) && !isOutOfFlowPosition(child.computedStyle().position) &&
+			    !suppressAnonymousWhitespace(nodes, child.parent, c) && LayoutEngine::isInlineLevelNode(child)) content = true;
+		});
+	if (!content) return 0;
+	auto uniform = [&](auto &&self, int parent) -> bool {
+		for (int c = nodes[parent].first_child; c >= 0; c = nodes[c].next_sibling) {
+			const Node &child = nodes[c];
+			const int own = child.computedStyle().writing_mode;
+			if ((child.type != NodeType::View && child.type != NodeType::Text) || (own >= 0 && own != mode) ||
+			    std::strcmp(tagFromId(child.tag_id), "input") == 0 || !self(self, c)) return false;
+		}
+		return true;
+	};
+	return uniform(uniform, id) ? mode : 0;
+}
+
+VerticalFlow::VerticalFlow(int root, int mode) : root_(root), mode_(mode)
+{
+	Node *nodes = Tree::instance().nodes();
+	saved_.clear();
+	placed_.clear();
+	verticalFlowToLogical(nodes, root, mode);
+	enter(nodes, root);
+	LayoutBox &box = nodes[root].layout;
+	std::swap(box.width, box.height);
+#if GEA_CSS_SCROLLING
+	std::swap(box.scroll_content_width, box.scroll_content_height);
+	std::swap(box.scroll_x, box.scroll_y);
+#endif
+	// The parent measured or based this box on physical axes.
+	for (auto *scope = gIntrinsicSizeScope; scope; scope = scope->previous)
+		if (&scope->node == &nodes[root]) scope->horizontal = !scope->horizontal;
+	for (auto *scope = gFlexBasisScope; scope; scope = scope->previous)
+		if (&scope->node == &nodes[root]) scope->horizontal = !scope->horizontal;
+	gVerticalFlowRoot = root;
+}
+
+void VerticalFlow::enter(Node *nodes, int id)
+{
+	const ComputedStyle original = nodes[id].computedStyle();
+	ComputedStyle rotated = original;
+	const int16_t rare = rotateVerticalStyle(rotated, mode_, id == root_);
+	saved_.push_back({id, original, rare});
+	nodes[id].mutableStyle() = rotated;
+	for (int c = nodes[id].first_child; c >= 0; c = nodes[c].next_sibling) enter(nodes, c);
+}
+
+void VerticalFlow::finish()
+{
+	Node *nodes = Tree::instance().nodes();
+	// An out-of-flow box whose containing block is in the flow takes its place
+	// against it here, in the logical frame; the global pass then skips it.
+	auto inFlow = [&](int id) {
+		while (id >= 0 && id != root_) id = nodes[id].parent;
+		return id == root_;
+	};
+	auto place = [&](auto &&self, int parent) -> void {
+		for (int c = nodes[parent].first_child; c >= 0; c = nodes[c].next_sibling) {
+			if (isDisplayNone(nodes[c].computedStyle())) continue;
+			if (isOutOfFlowPosition(nodes[c].computedStyle().position)) {
+				const int containing = containingBlockForAbsoluteNode(c, -1, nodes);
+				if (containing >= 0 && inFlow(containing)) {
+					positionAbsoluteNodeInContainingBlock(c, containing, nodes);
+					placed_.push_back(c);
+				}
+			}
+			self(self, c);
+		}
+	};
+	place(place, root_);
+	gVerticalFlowRoot = -1;
+	for (auto *scope = gIntrinsicSizeScope; scope; scope = scope->previous)
+		if (&scope->node == &nodes[root_]) scope->horizontal = !scope->horizontal;
+	for (auto *scope = gFlexBasisScope; scope; scope = scope->previous)
+		if (&scope->node == &nodes[root_]) scope->horizontal = !scope->horizontal;
+	for (auto it = saved_.rbegin(); it != saved_.rend(); ++it) {
+		nodes[it->id].mutableStyle() = it->style;
+		releaseRareStyle(it->rotatedRare);
+		nodes[it->id].internComputedStyle();
+	}
+	LayoutBox &box = nodes[root_].layout;
+	std::swap(box.width, box.height);
+#if GEA_CSS_SCROLLING
+	std::swap(box.scroll_content_width, box.scroll_content_height);
+	std::swap(box.scroll_x, box.scroll_y);
+#endif
+	nodes[root_].render.vertical_flow = static_cast<uint8_t>(mode_);
+	verticalFlowToPhysical(nodes, root_, mode_);
+	auto mark = [&](auto &&self, int parent) -> void {
+		for (int c = nodes[parent].first_child; c >= 0; c = nodes[c].next_sibling) {
+			if (isOutOfFlowPosition(nodes[c].computedStyle().position))
+				layoutState(c).static_block_axis = std::find(placed_.begin(), placed_.end(), c) != placed_.end() ? kVerticalFlowPlaced : kVerticalFlowStatic;
+			self(self, c);
+		}
+	};
+	mark(mark, root_);
+}
+#endif
+
+// The offset relative positioning added to a box's place in the flow (CSS 2.2
+// 9.4.3). The boxes inside it move with it, an out-of-flow box at its static
+// position too, so that position is found from the flow without it.
+int relativeShift(const Node &node, bool horizontal)
+{
+	if (node.computedStyle().position != 2 || node.parent < 0) return 0;
+	const Node &parent = Tree::instance().nodes()[node.parent];
+	const Node &basisBox = isDisplayGrid(parent.computedStyle()) ? node : parent;
+	const int basis = horizontal ? basisBox.layout.width : basisBox.layout.height;
+	if (horizontal)
+		return hasPositionOffsetValue<3>(node) ? resolvedPositionOffsetForBasis<3>(node, basis)
+		     : hasPositionOffsetValue<1>(node) ? -resolvedPositionOffsetForBasis<1>(node, basis) : 0;
+	return hasPositionOffsetValue<0>(node) ? resolvedPositionOffsetForBasis<0>(node, basis)
+	     : hasPositionOffsetValue<2>(node) ? -resolvedPositionOffsetForBasis<2>(node, basis) : 0;
 }
 
 }  // namespace
@@ -5264,10 +5726,11 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 		const bool nextLine = blockLevelView(childNode) && position.afterContent && writingMode(parent) == 0;
 		// A box inside a split inline wrapper was placed by an ancestor's lines;
 		// the wrappers in between may have moved to their fragment rectangles.
+		// A relatively positioned one takes the box along.
 		int dx = 0, dy = 0, cursor = static_cast<int>(&parent - treeNodes);
 		for (; cursor >= 0 && cursor != position.flowNode; cursor = treeNodes[cursor].parent) {
-			dx += treeNodes[cursor].layout.x;
-			dy += treeNodes[cursor].layout.y;
+			dx += treeNodes[cursor].layout.x - relativeShift(treeNodes[cursor], true);
+			dy += treeNodes[cursor].layout.y - relativeShift(treeNodes[cursor], false);
 		}
 		if (cursor < 0) dx = dy = 0;
 		if (horizontal) {
@@ -5281,7 +5744,7 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 				int inlineOffset = 0;
 				int cursor = static_cast<int>(&parent - treeNodes);
 				while (cursor >= 0 && isCssInlineLevelBox(treeNodes[cursor])) {
-					inlineOffset += treeNodes[cursor].layout.x;
+					inlineOffset += treeNodes[cursor].layout.x - relativeShift(treeNodes[cursor], true);
 					cursor = treeNodes[cursor].parent;
 				}
 				const int origin = cursor >= 0 ? boxInset(treeNodes[cursor].computedStyle(), 3) - inlineOffset : 0;
@@ -5475,14 +5938,33 @@ bool LayoutEngine::rightToLeftDirection(const Node &node)
 	return rightToLeft(node);
 }
 
+namespace {
+
+// The block whose line boxes a run's start and end align to: its direction
+// decides, not that of an inline box around the run (CSS Text 3, 7.1). Out of
+// line, so physicalTextAlign keeps its few registers.
+__attribute__((noinline)) const Node &lineBlock(const Node &node)
+{
+	const Node *nodes = Tree::instance().nodes();
+	const Node *block = &node;
+	while (block->parent >= 0 && (block->type == NodeType::Text ||
+	       (inlineBoxView(*block) && !isAtomicInline(block->computedStyle()) &&
+	        !isOutOfFlowPosition(block->computedStyle().position) && !block->computedStyle().float_side)))
+		block = &nodes[block->parent];
+	return *block;
+}
+
+}  // namespace
+
 int LayoutEngine::physicalTextAlign(const Node &node)
 {
+	// Without an rtl node every block is ltr, so the walk is skipped (rightToLeft).
 	switch (node.computedStyle().text_align) {
 	case 1: return 1;
 	case 2: return 2;
 	case 3: return 0;
-	case 4: return rightToLeft(node) ? 0 : 2;
-	default: return rightToLeft(node) ? 2 : 0;
+	case 4: return treeState().rtlSeen && rightToLeft(lineBlock(node)) ? 0 : 2;
+	default: return treeState().rtlSeen && rightToLeft(lineBlock(node)) ? 2 : 0;
 	}
 }
 
@@ -5854,6 +6336,12 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	Node *nodes = tree.nodes();
 	const int nodeCount = tree.nodeCount();
 	if (scope < 0 || scope >= nodeCount) return false;
+#if GEA_CSS_WRITING_MODE
+	// A vertical flow lays out whole, from its root (VerticalFlow): a scope
+	// inside one moves up to that root.
+	while (nodes[scope].render.vertical_flow && nodes[scope].parent >= 0 && nodes[nodes[scope].parent].render.vertical_flow)
+		scope = nodes[scope].parent;
+#endif
 	Node &a = nodes[scope];
 	auto &persistent = layoutState(scope);
 	if (persistent.memo_pass == 0) {
@@ -5949,7 +6437,7 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	// its containing block are inside the scope, in the same relative space).
 	for (int i = 0; i < nodeCount; ++i) {
 		if (isDisplayNone(nodes[i].computedStyle()) || !isOutOfFlowPosition(nodes[i].computedStyle().position) || nodes[i].parent < 0) continue;
-		if (!inScope(i) || i == scope) continue;
+		if (!inScope(i) || i == scope || layoutState(i).static_block_axis == kVerticalFlowPlaced) continue;
 		const int containing = containingBlockForAbsoluteNode(i, scope, nodes);
 		if (containing < 0) continue;
 		positionAbsoluteNodeInContainingBlock(i, containing, nodes);

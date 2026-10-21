@@ -8244,17 +8244,31 @@ int gLastScrollUiFrame = -1000;
 			// Column k of a multicol container shows its flow thread's band
 			// [k * height, (k + 1) * height). The first column stays open above and
 			// the last below, so ink overflowing the fragmentation edges still shows.
+			// In a vertical flow (RenderState::vertical_flow) its block axis runs
+			// right from the content box's left edge, or left from its right edge.
 			static bool appendColumnClip(DisplayList &list, const Node &n, const MulticolLayout &columns, int k)
 			{
 				DisplayCommand *cmd = list.append();
 				if (!cmd)
 					return false;
-				const int top = n.layout.y + boxInset(n.computedStyle(), 0);
-				const int y0 = k == 0 ? -16384 : top;
-				const int y1 = k == columns.used - 1 && !columns.discard ? 16383 : top + columns.height;
+				const bool first = k == 0, last = k == columns.used - 1 && !columns.discard;
+				int x0 = -16384, x1 = 16383, y0 = -16384, y1 = 16383;
+				if (n.render.vertical_flow == 1) {
+					const int left = n.layout.x + boxInset(n.computedStyle(), 3);
+					x0 = first ? -16384 : left;
+					x1 = last ? 16383 : left + columns.height;
+				} else if (n.render.vertical_flow == 2) {
+					const int right = n.layout.x + n.layout.width - boxInset(n.computedStyle(), 1);
+					x0 = last ? -16384 : right - columns.height;
+					x1 = first ? 16383 : right;
+				} else {
+					const int top = n.layout.y + boxInset(n.computedStyle(), 0);
+					y0 = first ? -16384 : top;
+					y1 = last ? 16383 : top + columns.height;
+				}
 				cmd->type = DisplayCommandType::PushClip;
-				cmd->bx = cmd->clip.x = -16384;
-				cmd->bw = cmd->clip.w = 32767;
+				cmd->bx = cmd->clip.x = static_cast<int16_t>(x0);
+				cmd->bw = cmd->clip.w = static_cast<int16_t>(x1 - x0);
 				cmd->by = cmd->clip.y = static_cast<int16_t>(y0);
 				cmd->bh = cmd->clip.h = static_cast<int16_t>(y1 - y0);
 				cmd->clip.nodeId = -1;
@@ -8275,16 +8289,21 @@ int gLastScrollUiFrame = -1000;
 
 			// Paints the flow thread recorded at [begin, end) into every further
 			// column box: a copy translated k columns along the inline direction and
-			// k column heights up. In rtl the columns progress from the right edge.
+			// k column heights back along the block direction. In rtl the columns
+			// progress from the inline-end edge. A vertical flow's inline direction
+			// runs down and its block direction across.
 			static void replicateColumns(DisplayList &list, const Node &n, const MulticolLayout &columns, int begin, int end)
 			{
 				const bool rtl = LayoutEngine::rightToLeftDirection(n);
-				const int contentWidth = n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
+				const int vertical = n.render.vertical_flow;
+				const int contentInline = vertical ? n.layout.height - boxInset(n.computedStyle(), 0) - boxInset(n.computedStyle(), 2)
+				                                   : n.layout.width - boxInset(n.computedStyle(), 1) - boxInset(n.computedStyle(), 3);
 				const int step = rtl ? -(columns.width + columns.gap) : columns.width + columns.gap;
-				const int start = rtl ? contentWidth - columns.width : 0;
+				const int start = rtl ? contentInline - columns.width : 0;
+				const int back = vertical == 2 ? columns.height : -columns.height;
 				if (start != 0)
 					for (int ci = begin; ci < end; ++ci)
-						DisplayCommandTranslator::translate(&state.commands[ci], start, 0);
+						DisplayCommandTranslator::translate(&state.commands[ci], vertical ? 0 : start, vertical ? start : 0);
 				appendColumnPop(list);
 				for (int k = 1; k < columns.used; ++k) {
 					if (!appendColumnClip(list, n, columns, k))
@@ -8296,7 +8315,7 @@ int gLastScrollUiFrame = -1000;
 						if (!cmd)
 							break;
 						*cmd = copy;
-						DisplayCommandTranslator::translate(cmd, k * step, -k * columns.height);
+						DisplayCommandTranslator::translate(cmd, vertical ? k * back : k * step, vertical ? k * step : -k * columns.height);
 					}
 					columnCopies().push_back({copyBegin, state.commandCount, copyBegin - begin});
 					appendColumnPop(list);
@@ -8440,6 +8459,10 @@ int gLastScrollUiFrame = -1000;
 
 				if (paintsOwnBox && n->type == NodeType::Text)
 				{
+#if GEA_CSS_WRITING_MODE
+					if (n->render.vertical_flow) TextRenderer::recordVertical(*n, draw_alpha);
+					else
+#endif
 					TextRenderer::record(*n, draw_alpha);
 				}
 				else if (paintsOwnBox && n->type == NodeType::Image)
@@ -8502,6 +8525,8 @@ int gLastScrollUiFrame = -1000;
 					child_cy0 = -32768;
 					child_cy1 = 32767;
 					child_cx1 = 32767;
+					// A vertical flow thread runs across, to either side.
+					if (n->render.vertical_flow) child_cx0 = -32768;
 					if (appendColumnClip(list, *n, columns, 0)) columnFlowBegin = state.commandCount;
 				}
 #endif
@@ -14481,6 +14506,11 @@ int gLastScrollUiFrame = -1000;
 				!isNativeTextInputView(*n))
 		{
 			ViewRenderer::recordBox(*n);
+#if GEA_CSS_WRITING_MODE
+			if (n->type == NodeType::Text && n->render.vertical_flow)
+				TextRenderer::recordVertical(*n);
+			else
+#endif
 			if (n->type == NodeType::Text)
 				TextRenderer::record(*n);
 			else if (n->type == NodeType::Image)
