@@ -15,6 +15,7 @@
 #include "../ui/style.h"
 #include "easing.h"
 #include "interpolate.h"
+#include "pixel.h"
 
 namespace gea::css {
 
@@ -218,15 +219,23 @@ inline double sampleSegment(const Animation &a, const Keyframe &k0, const Keyfra
   const double eased = a.easing.kind() == EasingKind::Linear ? localT : a.easing(localT);
 
   if (a.kind == ValueKind::Color) {
-    return static_cast<double>(
-        lerpColor565(static_cast<int>(std::llround(k0.value)), static_cast<int>(std::llround(k1.value)), eased));
+    // Color keyframes hold native style values, which are 32-bit colors on
+    // RGBA8888 and ARGB8888 builds.
+    const int from = static_cast<int>(std::llround(k0.value));
+    const int to = static_cast<int>(std::llround(k1.value));
+#if GEA_PIXEL_FORMAT_IS_8888
+    return static_cast<double>(lerpColor8888(from, to, eased));
+#else
+    return static_cast<double>(lerpColor565(from, to, eased));
+#endif
   }
   return lerp(k0.value, k1.value, eased);
 }
 
 // Sample the property value at timeline progress p (0..1 within one iteration):
 // find the bracketing keyframes, ease the in-segment progress, interpolate per
-// kind. Returns the value to apply (degrees for Angle, RGB565 for Color).
+// kind. Returns the value to apply (degrees for Angle, the native style value
+// for Color).
 inline double sampleTrack(const Animation &a, double p)
 {
   const auto &kf = a.keyframes;
