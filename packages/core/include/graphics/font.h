@@ -134,6 +134,8 @@ const RasterizedFontData *lookupFontForFamily(int familyId, int sizePx);
 int lookupFontFamily(const char *family);
 const char *lookupFontFamilyName(int familyId);
 const std::uint8_t *lookupRuntimeTtfFontForFamily(int familyId, unsigned long *length);
+// False rasterizes the family's runtime TTF glyphs without antialiasing.
+bool runtimeTtfFontAntialiased(int familyId);
 void ensureLinked();
 
 }  // namespace generated

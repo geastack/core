@@ -391,6 +391,7 @@ bool hasExplicitHeight(const Node &node)
 // contexts are single units. Child coordinates are still parent-relative.
 int writingMode(const Node &node);
 bool emptyInlineBox(const Node &node);
+bool contentlessInlineBox(const Node &node);
 int containingBlockForAbsoluteNode(int node, int root, Node *nodes);
 
 struct LineClampWalk {
@@ -1379,7 +1380,9 @@ public:
 								                              j, m.firstLineTrailingSpace});
 					}
 				}
-				const int outerHeight = cn.computedStyle().margin[0] + cn.layout.height + cn.computedStyle().margin[2];
+				const bool edgeAligned = cn.computedStyle().vertical_align == 1 || cn.computedStyle().vertical_align == 2;
+				// A contentless inline box adds no height to its line (lineExtent).
+				const int outerHeight = edgeAligned && !contentlessInlineBox(cn) ? cn.computedStyle().margin[0] + cn.layout.height + cn.computedStyle().margin[2] : 0;
 				if (cn.computedStyle().vertical_align) lineAligned = true;
 				if (cn.computedStyle().vertical_align == 1) topItemHeight = std::max(topItemHeight, outerHeight);
 				else if (cn.computedStyle().vertical_align == 2) bottomItemHeight = std::max(bottomItemHeight, outerHeight);
@@ -1447,9 +1450,12 @@ public:
 
 			// text-align moves a line of single-line items as a whole. A text run
 			// that owns its line, or wraps across lines, is aligned by the drawer.
+			// An inline box whose content fits one line is part of its parent's
+			// line, which aligns the box whole: inside it nothing moves.
 			const int contentEnd = j > i && isLineBreak(nodes[children_[j - 1]]) ? j - 1 : j;
 			const bool soleRun = !lineIsContinuation && contentEnd - i == 1 && nodes[children_[i]].type == NodeType::Text;
-			const int align = !lineIsContinuation && wrapIdx < 0 && !soleRun && contentEnd > i ? LayoutEngine::physicalTextAlign(node_) : 0;
+			const bool boxLine = inlineBox && i == 0 && j >= childCount_;
+			const int align = !boxLine && !lineIsContinuation && wrapIdx < 0 && !soleRun && contentEnd > i ? LayoutEngine::physicalTextAlign(node_) : 0;
 			int lineShift = 0;
 			if (align) {
 				const int used = pen - hangingSpace(nodes[children_[contentEnd - 1]]);
@@ -1457,7 +1463,7 @@ public:
 				for (int id : lineStaticChildren) ensureRareData(id).inlineStaticPosition.x += lineShift;
 			}
 			placeLineItems(nodes, i, j, contentLeft, contentW, lineTop, lineCross, baseline, penStart,
-			               !lineIsContinuation, lineShift, align != 0);
+			               !lineIsContinuation, lineShift, align != 0 || boxLine);
 #if GEA_CSS_FIRST_LINE
 			if (i == 0 && captureFirstLine) {
 				int firstFormattedLineHeight = actualLineCross;
@@ -1809,7 +1815,10 @@ public:
 				}
 			}
 
-			int y = baseline - childBaseline(cn);
+			// A contentless inline box spans its font's content area, which its
+			// own pass sized (autosizeEmptyNode). A line without content is
+			// zero-height (CSS 2.2 9.4.2): on one the box starts at its top.
+			int y = baseline - (lineCross == 0 && contentlessInlineBox(cn) ? 0 : childBaseline(cn));
 			if (cn.computedStyle().vertical_align == 1) y = lineTop + cn.computedStyle().margin[0];
 			else if (cn.computedStyle().vertical_align == 2) y = lineTop + lineCross - cn.layout.height - cn.computedStyle().margin[2];
 			else y += verticalAlignShift(cn);
@@ -2737,7 +2746,8 @@ private:
 	void lineExtent(const Node &item, int &ascent, int &descent) const
 	{
 		const int shift = verticalAlignShift(item);
-		if (item.computedStyle().vertical_align >= 3) alignedBox(item, ascent, descent);
+		if (contentlessInlineBox(item)) ascent = descent = 0;
+		else if (item.computedStyle().vertical_align >= 3) alignedBox(item, ascent, descent);
 		else {
 			ascent = item.computedStyle().margin[0] + childBaseline(item);
 			descent = item.layout.height + item.computedStyle().margin[2] - childBaseline(item);
@@ -2796,6 +2806,7 @@ private:
 				return inner.layout.y + childBaseline(inner, last);
 			}
 		}
+		if (inlineRow_ && contentlessInlineBox(childNode)) return TextRenderer::inlineFontMetrics(childNode.computedStyle()).ascent;
 		return childNode.layout.height + (inlineRow_ ? childNode.computedStyle().margin[2] : 0);
 	}
 
@@ -2895,6 +2906,21 @@ int multicolGap(const Node &node, int available)
 bool emptyInlineBox(const Node &node)
 {
 	return !boxInsets(node.computedStyle(), true) && !boxInsets(node.computedStyle(), false) && FlexLayoutPass::paintsNoBox(node);
+}
+
+// An inline box with nothing in flow, nothing of its own to paint and no
+// authored size. On a line it still has its font's content area (CSS 2.2
+// 10.6.1), where its out-of-flow children find their containing block, but as
+// before it adds no height to the line.
+bool contentlessInlineBox(const Node &node)
+{
+	// Line layout asks for every item: text and boxes with width leave first.
+	if (node.type != NodeType::View || node.layout.width != 0) return false;
+	const Node *nodes = Tree::instance().nodes();
+	const int id = static_cast<int>(&node - nodes);
+	for (int c = node.first_child; c >= 0; c = nodes[c].next_sibling)
+		if (!isDisplayNone(nodes[c].computedStyle()) && !isOutOfFlowPosition(nodes[c].computedStyle().position) && !suppressAnonymousWhitespace(nodes, id, c)) return false;
+	return inlineBoxView(node) && !isLineBreak(node) && !isAtomicInline(node.computedStyle()) && !hasExplicitWidth(node) && !hasExplicitHeight(node) && emptyInlineBox(node);
 }
 
 // A view that is block-level in its parent: neither an inline box nor an
@@ -4451,6 +4477,13 @@ private:
 	{
 		if (!hasExplicitWidth(node_)) node_.layout.width = boxInset(node_.computedStyle(), 1) + boxInset(node_.computedStyle(), 3);
 		if (!hasExplicitHeight(node_)) node_.layout.height = boxInset(node_.computedStyle(), 0) + boxInset(node_.computedStyle(), 2);
+		// A contentless inline box on a line spans its font's content area (CSS
+		// 2.2 10.6.1); a flex or grid item is blockified and stays empty.
+		if (node_.parent >= 0 && nodes_[node_.parent].computedStyle().display == kDisplayBlock && !nodes_[node_.parent].computedStyle().flex_direction_explicit &&
+		    !node_.computedStyle().float_side && !isOutOfFlowPosition(node_.computedStyle().position) && contentlessInlineBox(node_)) {
+			const auto metrics = TextRenderer::inlineFontMetrics(node_.computedStyle());
+			node_.layout.height = clampLayoutExtent(metrics.ascent + metrics.descent);
+		}
 		node_.layout.width = clampLayoutSize(node_, node_.layout.width, true);
 		node_.layout.height = clampLayoutSize(node_, node_.layout.height, false);
 #if GEA_CSS_SCROLLING
@@ -5239,6 +5272,7 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 		if (cursor < 0) dx = dy = 0;
 		if (horizontal) {
 			int x = position.x - dx;
+			bool anchorRight = position.anchorRight;
 			if (position.continuationLine || nextLine) {
 				// Resolve fragmented inline origins here, after ancestor layout has
 				// finalized their first-fragment x positions. A new line starts at
@@ -5252,13 +5286,19 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 				}
 				const int origin = cursor >= 0 ? boxInset(treeNodes[cursor].computedStyle(), 3) - inlineOffset : 0;
 				x = (nextLine ? 0 : position.x) + origin;
+				// The block that box would be starts on its block's inline-start
+				// edge, the right one in a right-to-left block (CSS 2.2 10.3.7).
+				if (nextLine && cursor >= 0 && rightToLeft(treeNodes[cursor])) {
+					x = treeNodes[cursor].layout.width - boxInset(treeNodes[cursor].computedStyle(), 1) - inlineOffset;
+					anchorRight = true;
+				}
 			}
 			// The static-position rectangle has no inline size, so an explicit
 			// justify-self centers or ends the margin box on it.
 			const int justify = rstyle(childNode.computedStyle()).justify_self;
 			const int free = -(childNode.layout.width + childNode.computedStyle().margin[1] + childNode.computedStyle().margin[3]);
 			const int used = justify > 0 && writingMode(parent) == 0 ? usedGridAlignment(parent, childNode, justify, free, true, true)
-			                 : position.anchorRight ? 2 : 6;
+			                 : anchorRight ? 2 : 6;
 			return x + childNode.computedStyle().margin[3] + (used == 1 ? roundedHalf(free) : used == 2 ? free : 0);
 		}
 		// The static-position rectangle spans the line box's block extent, so an

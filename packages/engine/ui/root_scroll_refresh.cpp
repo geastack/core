@@ -336,8 +336,8 @@ struct StickyMove {
 	PaintBounds old, now;
 };
 
-// translateSubtreeCommands walks every node's ancestors and every clip
-// command's; a sticky box's subtree is a few nodes, so move it node by node
+// translateSubtreeCommands walks the subtree and every clip command's
+// ancestors; a sticky box's subtree is a few nodes, so move it node by node
 // (each node with children scans the list once for its clip scopes).
 int countInnerNodes(const TreeState &state, int id, int limit)
 {

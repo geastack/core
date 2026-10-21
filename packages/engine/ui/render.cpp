@@ -12183,23 +12183,35 @@ int gLastScrollUiFrame = -1000;
 			return;
 		Tree &tree = Tree::instance();
 		Node *nodes = tree.nodes();
+		const int count = tree.nodeCount();
 		auto belongsToSubtree = [&](int id) {
-			for (int cursor = id; cursor >= 0 && cursor < tree.nodeCount(); cursor = nodes[cursor].parent)
+			for (int cursor = id; cursor >= 0 && cursor < count; cursor = nodes[cursor].parent)
 				if (cursor == node)
 					return true;
 			return false;
 		};
-		for (int id = 0; id < tree.nodeCount(); id++)
+		// Walk the subtree itself in pre-order: a moved row costs its own nodes,
+		// not a test of every node's ancestry.
+		for (int id = node; id >= 0 && id < count;)
 		{
-			if (!belongsToSubtree(id) || !state.hasNodeScratchFor(id))
-				continue;
-			const int start = state.nodeDrawStart[id];
-			const int end = state.nodeDrawEnd[id];
-			if (start >= 0 && end > start && end <= state.commandCount)
+			if (state.hasNodeScratchFor(id))
 			{
-				for (int ci = start; ci < end; ci++)
-					DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+				const int start = state.nodeDrawStart[id];
+				const int end = state.nodeDrawEnd[id];
+				if (start >= 0 && end > start && end <= state.commandCount)
+				{
+					for (int ci = start; ci < end; ci++)
+						DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+				}
 			}
+			if (nodes[id].first_child >= 0)
+			{
+				id = nodes[id].first_child;
+				continue;
+			}
+			while (id != node && nodes[id].next_sibling < 0)
+				id = nodes[id].parent;
+			id = id == node ? -1 : nodes[id].next_sibling;
 		}
 		// Clip scopes sit outside node paint ranges. Scan the command buffer once
 		// after translating all paint ranges, rather than once per descendant.

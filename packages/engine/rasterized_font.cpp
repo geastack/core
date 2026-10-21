@@ -411,6 +411,11 @@ void ensureRuntimeGlyphCoverage(const RasterizedFontData *data, const Glyph &gly
 	    scale,
 	    scale,
 	    slotGlyph.codepoint);
+	// Without antialiasing a pixel is covered when most of it is inside the outline.
+	if (generated::runtimeTtfFontAntialiased(slot->familyId)) return;
+	std::uint8_t *pixels = slot->atlas + slotGlyph.sourceY * data->atlasWidth + slotGlyph.sourceX;
+	for (int row = 0; row < slotGlyph.height; row++)
+		for (int x = 0; x < slotGlyph.width; x++) pixels[row * data->atlasWidth + x] = pixels[row * data->atlasWidth + x] >= 128 ? 255 : 0;
 }
 
 const RasterizedFontData *runtimeTtfFontForFamily(int familyId, int sizePx)
@@ -606,6 +611,12 @@ __attribute__((weak)) const std::uint8_t *lookupRuntimeTtfFontForFamily(int fami
 	(void)familyId;
 	if (length) *length = 0;
 	return nullptr;
+}
+
+__attribute__((weak)) bool runtimeTtfFontAntialiased(int familyId)
+{
+	(void)familyId;
+	return true;
 }
 
 }  // namespace generated
