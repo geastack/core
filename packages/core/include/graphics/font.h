@@ -156,6 +156,8 @@ const std::uint8_t *lookupRuntimeTtfFontForFamily(int familyId, unsigned long *l
 // Codepoints beyond printable ASCII that runtime TTF slots must cover: the
 // generator's raster baseline plus every `--gea-font-charset` the app declares.
 const int *runtimeTtfDeclaredCodepoints(int *count);
+// False rasterizes the family's runtime TTF glyphs without antialiasing.
+bool runtimeTtfFontAntialiased(int familyId);
 void ensureLinked();
 
 }  // namespace generated
