@@ -247,6 +247,8 @@ enum class Property : int {
 	BorderImageOutset,
 	BorderImageRepeat,
 	LineClampAuto,
+	BorderSpacing,  // horizontal px in the low 16 bits, vertical above
+	BorderCollapse,
 	Count
 };
 
@@ -442,7 +444,9 @@ enum class StyleDeclaration : std::uint8_t {
 	BorderBlockColor,
 	BorderInlineStyle,
 	BorderBlockStyle,
-	VerticalAlign
+	VerticalAlign,
+	BorderSpacing,
+	BorderCollapse
 };
 
 class Style {
