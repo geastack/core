@@ -255,6 +255,17 @@
 #define GEA_CSS_BACKGROUND_LAYERS 1
 #endif
 
+// background-image url() layers: raster images placed, repeated and clipped
+// like the gradient layers (CSS Backgrounds 3, section 3.3). Needs the layer
+// lists. Off, a url() layer paints nothing, as before, RareStyle carries no
+// image list and the placed-background recorder carries no blit path.
+#ifndef GEA_CSS_BACKGROUND_IMAGES
+#define GEA_CSS_BACKGROUND_IMAGES GEA_CSS_BACKGROUND_LAYERS
+#endif
+#if GEA_CSS_BACKGROUND_IMAGES && !GEA_CSS_BACKGROUND_LAYERS
+#error "GEA_CSS_BACKGROUND_IMAGES needs GEA_CSS_BACKGROUND_LAYERS"
+#endif
+
 // border-image with a linear-gradient() source (CSS Backgrounds 3, section 6).
 // Off, the properties are unknown, RareStyle carries no handles, and the
 // record and dirty-rect paths carry no border-image checks.

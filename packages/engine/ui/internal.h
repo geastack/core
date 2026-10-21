@@ -336,6 +336,9 @@ void rootScrollImageHoldTick();
 				// surface (2 px/byte on GRAY4, 4 px/byte on GRAY2) rather than an
 				// unpacked decoded image, so the blit must unpack it.
 				uint8_t sourcePacked;
+				// A background image tile: it also clips to bx/by/bw/bh, since
+				// dirty-region replays skip the layer's clip commands.
+				uint8_t boundsClip;
 			} blit;
 			struct
 			{
@@ -343,6 +346,7 @@ void rootScrollImageHoldTick();
 				const uint8_t *alpha;
 				int16_t sourceWidth, sourceHeight, dx, dy, dw, dh;
 				int16_t tl, tr, br, bl;
+				uint8_t boundsClip; // as blit.boundsClip
 			} scaledBlit;
 			struct
 			{
@@ -746,6 +750,8 @@ void rootScrollImageHoldTick();
 	public:
 		static void layout(int id);
 		static void record(const Node &node);
+		// Natural width / height of a loaded image, 0 without one.
+		static double naturalRatio(const Node &node);
 	};
 
 	class CanvasRenderer

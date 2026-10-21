@@ -5627,6 +5627,22 @@ int gLastScrollUiFrame = -1000;
 			canvas->markDirty(x0, y0, x1, y1);
 		}
 
+#if GEA_CSS_BACKGROUND_IMAGES
+		// A background image tile (blit.boundsClip): drawn under its bounds, which
+		// the dirty-region replays need since they skip the layer's clip.
+		__attribute__((noinline)) void drawBoundedBlit(const DisplayCommand &c)
+		{
+			using gea::platform::display::Display;
+			Display::pushClip(c.bx, c.by, c.bw, c.bh);
+			if (c.type == DisplayCommandType::BlitImage)
+				Display::blitImage(c.blit.pixels, c.blit.alpha, c.blit.sourceWidth, c.blit.sourceHeight, c.blit.dx, c.blit.dy);
+			else
+				Display::blitImageScaled(c.scaledBlit.pixels, c.scaledBlit.alpha, c.scaledBlit.sourceWidth, c.scaledBlit.sourceHeight,
+				                         c.scaledBlit.dx, c.scaledBlit.dy, c.scaledBlit.dw, c.scaledBlit.dh);
+			Display::popClip();
+		}
+#endif
+
 		void drawProjectedImage(const DisplayCommand &command)
 		{
 			auto *canvas = gea::platform::display::Display::canvas();
@@ -7995,6 +8011,9 @@ int gLastScrollUiFrame = -1000;
 						break;
 					}
 #endif
+#if GEA_CSS_BACKGROUND_IMAGES
+					if (c.blit.boundsClip) { drawBoundedBlit(c); break; }
+#endif
 					gea::platform::display::Display::blitImage(c.blit.pixels, c.blit.alpha, c.blit.sourceWidth, c.blit.sourceHeight,
 																										 c.blit.dx, c.blit.dy);
 					break;
@@ -8011,6 +8030,9 @@ int gLastScrollUiFrame = -1000;
 						gScrollImageHoldPending = true;
 						break;
 					}
+#endif
+#if GEA_CSS_BACKGROUND_IMAGES
+					if (c.scaledBlit.boundsClip) { drawBoundedBlit(c); break; }
 #endif
 					if ((c.scaledBlit.tl > 0 || c.scaledBlit.tr > 0 || c.scaledBlit.br > 0 || c.scaledBlit.bl > 0) &&
 							gea::platform::display::Display::canvas())
@@ -11306,12 +11328,17 @@ int gLastScrollUiFrame = -1000;
 	{
 		bool referenced[gea::framework::graphics::kImageMax]{};
 		auto &images = gea::framework::graphics::ImageStore::instance();
+		// Background tiles blit one image many times in a row: look each run's
+		// pixels up once (the lookup locks the store and scans its slots).
+		const gea::framework::graphics::pixel::native_t *lastPixels = nullptr;
 		for (int i = 0; i < state.commandCount; ++i) {
 			const auto &command = state.commands[i];
 			const gea::framework::graphics::pixel::native_t *pixels = nullptr;
 			if (command.type == DisplayCommandType::BlitImage) pixels = command.blit.pixels;
 			else if (command.type == DisplayCommandType::BlitImageScaled) pixels = command.scaledBlit.pixels;
 			else if (command.type == DisplayCommandType::BlitImageProjected) pixels = command.projectedBlit.pixels;
+			if (!pixels || pixels == lastPixels) continue;
+			lastPixels = pixels;
 			const int id = images.idForPixels(pixels);
 			if (id >= 0) referenced[id] = true;
 		}

@@ -186,8 +186,9 @@ void resetNativeHost()
 	gea::platform::display::Display::setAA(0);
 	gea::embedded::ui::Document::instance().clear();
 	resetDisplay();
+	// disposeAll() keeps an image that is still referenced (a stylesheet's url()
+	// image) until its last release, so the pixels it was given stay allocated.
 	imageStore().disposeAll();
-	gTestImagePixels.clear();
 	gStorage.clear();
 	gAssetDataImageCache.clear();
 	gAssetPathImageCache.clear();

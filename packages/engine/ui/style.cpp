@@ -70,6 +70,11 @@
 #define GEA_CSS_RULE_CANDIDATE_INLINE_CACHE_ENTRIES 16
 #endif
 
+#if GEA_CSS_BACKGROUND_IMAGES
+// host/image.cpp: an image by asset or file path, as <img src> resolves it.
+extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned);
+#endif
+
 namespace gea::embedded::ui {
 
 namespace {
@@ -1643,6 +1648,32 @@ int storeBackgroundPlacementList(const std::vector<CssBackgroundPair> &list)
 	lists.push_back(list); return static_cast<int>(lists.size()-1);
 }
 
+#if GEA_CSS_BACKGROUND_IMAGES
+// The url() layers of each background, by handle (RareStyle::bg_image_list).
+std::vector<std::vector<StyleValues::BackgroundImageLayer>> &backgroundImageLists()
+{
+	static std::vector<std::vector<StyleValues::BackgroundImageLayer>> lists;
+	return lists;
+}
+int storeBackgroundImageList(const std::vector<StyleValues::BackgroundImageLayer> &list)
+{
+	auto &lists = backgroundImageLists();
+	for (std::size_t i = 0; i < lists.size(); ++i)
+		if (std::equal(list.begin(), list.end(), lists[i].begin(), lists[i].end(),
+		               [](const auto &a, const auto &b) { return a.layer == b.layer && a.image == b.image; })) return static_cast<int>(i);
+	lists.push_back(list);
+	return static_cast<int>(lists.size() - 1);
+}
+// The stylesheet's url() images by path. Each holds one ImageStore reference,
+// so the image outlives its host cache, released when the compiled
+// backgrounds are cleared.
+std::vector<std::pair<std::string, int>> &backgroundUrlImages()
+{
+	static std::vector<std::pair<std::string, int>> images;
+	return images;
+}
+#endif
+
 struct CssCompiledValue {
 	CssCompiledKind kind = CssCompiledKind::None;
 	CssDeclarationId declaration = CssDeclarationId::Unknown;
@@ -1714,7 +1745,19 @@ struct CssCompiledBackground {
 	std::uint8_t hasGradient = 0;
 	std::uint8_t hasOverlayGradient = 0;
 	std::uint8_t hasRadialGradient = 0;
+#if GEA_CSS_BACKGROUND_IMAGES
+	std::int32_t imageList = -1; // storeBackgroundImageList handle of the url() layers
+#endif
 };
+
+constexpr bool hasBackgroundImageList([[maybe_unused]] const CssCompiledBackground &background)
+{
+#if GEA_CSS_BACKGROUND_IMAGES
+	return background.imageList >= 0;
+#else
+	return false;
+#endif
+}
 
 struct CssCompiledGridTrack {
 	std::int8_t type = 0;
@@ -2547,6 +2590,11 @@ void clearCompiledCssBackgrounds()
 	borderImageSideLists().clear();
 #endif
 	backgroundPlacementLists().clear();
+#if GEA_CSS_BACKGROUND_IMAGES
+	backgroundImageLists().clear();
+	for (const auto &[path, image] : backgroundUrlImages()) gea::framework::graphics::ImageStore::instance().release(image);
+	backgroundUrlImages().clear();
+#endif
 }
 
 std::vector<CssCompiledGridTemplate> &compiledCssGridTemplates()
@@ -7731,9 +7779,12 @@ int compileBackgroundPlacement(CssDeclarationId declaration, const std::string &
 			return parseCompiledLengthSpec(word, out, allowAuto);
 		};
 		if (declaration == CssDeclarationId::BackgroundSize) {
-			if (parts.size() == 1 && (parts[0] == "cover" || parts[0] == "contain"))
-				pair.x.unit = pair.y.unit = CssLengthUnit::Auto; // Gradients have no intrinsic ratio.
-			else {
+			// Gradients have no intrinsic ratio: contain (a = 1) and cover (a = 2)
+			// size them as auto does; images keep their ratio.
+			if (parts.size() == 1 && (parts[0] == "cover" || parts[0] == "contain")) {
+				pair.x.unit = pair.y.unit = CssLengthUnit::Auto;
+				pair.a = parts[0] == "contain" ? 1 : 2;
+			} else {
 				if (parts.size() > 2 || !length(parts[0], pair.x, true)) return -2;
 				if (parts.size() == 1) pair.y.unit = CssLengthUnit::Auto;
 				else if (!length(parts[1], pair.y, true)) return -2;
@@ -7790,6 +7841,28 @@ void applyBackgroundHandle(NodeHandle node, int handle, bool shorthand, StyleApp
 	setStyleValue(node, Property::HasBackground, 1, source);
 }
 
+#if GEA_CSS_BACKGROUND_IMAGES
+// The image a background layer names with url(): -2 without one, -1 when it
+// does not load. Each path loads once and stays loaded with the stylesheet.
+int backgroundUrlImage(const std::string &layer)
+{
+	const std::size_t start = toLowerAscii(layer).find("url(");
+	if (start == std::string::npos) return -2;
+	const std::size_t end = layer.find(')', start + 4);
+	if (end == std::string::npos) return -1;
+	std::string path = trimCssValue(layer.substr(start + 4, end - start - 4));
+	if (path.size() >= 2 && (path.front() == '"' || path.front() == '\'') && path.back() == path.front()) path = path.substr(1, path.size() - 2);
+	auto &loaded = backgroundUrlImages();
+	for (const auto &[name, image] : loaded) if (name == path) return image;
+	bool owned = false;
+	const int image = static_cast<int>(gea_host_image_acquire_asset_path(path.c_str(), &owned));
+	// An owned image comes with its reference; a host-cached one gets its own.
+	if (image >= 0 && !owned) gea::framework::graphics::ImageStore::instance().retain(image);
+	loaded.emplace_back(path, image);
+	return image;
+}
+#endif
+
 bool compileBackgroundValue(const std::string &value, CssCompiledValue &compiled)
 {
 	const std::string lower = toLowerAscii(value);
@@ -7811,8 +7884,17 @@ bool compileBackgroundValue(const std::string &value, CssCompiledValue &compiled
 		if (clip < 0) return false;
 		background.clip = clip;
 	}
+#if GEA_CSS_BACKGROUND_IMAGES
+	std::vector<StyleValues::BackgroundImageLayer> images;
+#endif
 	for (std::size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
 		const auto &layerValue = layers[layerIndex];
+#if GEA_CSS_BACKGROUND_IMAGES
+		if (const int image = backgroundUrlImage(layerValue); image >= -1) {
+			images.push_back({static_cast<std::uint16_t>(layerIndex), static_cast<std::int16_t>(image)});
+			continue;
+		}
+#endif
 		bool matchedLineLayer = false;
 		if (compileGradientLineLayer(layerValue, background, matchedLineLayer)) continue;
 		if (matchedLineLayer) return false;
@@ -7838,7 +7920,10 @@ bool compileBackgroundValue(const std::string &value, CssCompiledValue &compiled
 		}
 		if (toLowerAscii(layerValue).find("var(") != std::string::npos) return false;
 	}
-	if (!background.hasGradient && !background.hasRadialGradient && !background.gridAxes &&
+#if GEA_CSS_BACKGROUND_IMAGES
+	if (!images.empty()) background.imageList = storeBackgroundImageList(images);
+#endif
+	if (!background.hasGradient && !background.hasRadialGradient && !background.gridAxes && !hasBackgroundImageList(background) &&
 	    !color.valid && !(compiled.declaration == CssDeclarationId::Background &&
 	        std::all_of(layers.begin(), layers.end(), [](const auto &layer) {
 		        const auto words = splitWords(layer);
@@ -9947,8 +10032,17 @@ void applyBackgroundValue(NodeHandle node, const std::string &value, StyleApplic
 	if (layers.empty() || layers.size() > 65535) return;
 	background.layerCount = layers.size();
 	if (shorthand) { const int clip = compileBackgroundClip(value, true); if (clip < 0) return; background.clip = clip; }
+#if GEA_CSS_BACKGROUND_IMAGES
+	std::vector<StyleValues::BackgroundImageLayer> images;
+#endif
 	for (std::size_t layerIndex = 0; layerIndex < layers.size(); ++layerIndex) {
 		const auto &layer = layers[layerIndex];
+#if GEA_CSS_BACKGROUND_IMAGES
+		if (const int image = backgroundUrlImage(layer); image >= -1) {
+			images.push_back({static_cast<std::uint16_t>(layerIndex), static_cast<std::int16_t>(image)});
+			continue;
+		}
+#endif
 		const auto line = parseGradientLineLayer(layer, node.id());
 		if (line.valid) {
 			background.gridAxes |= line.vertical ? 1 : 2;
@@ -9971,7 +10065,10 @@ void applyBackgroundValue(NodeHandle node, const std::string &value, StyleApplic
 		const auto radial = parseRadialGradient(layer);
 		if (radial.valid) { background.radialLayer = layerIndex; background.radialGradient = compileRadialGradientLayer(radial); background.hasRadialGradient = 1; }
 	}
-	if (!color.valid && !background.hasGradient && !background.hasRadialGradient && !background.gridAxes) return;
+#if GEA_CSS_BACKGROUND_IMAGES
+	if (!images.empty()) background.imageList = storeBackgroundImageList(images);
+#endif
+	if (!color.valid && !background.hasGradient && !background.hasRadialGradient && !background.gridAxes && !hasBackgroundImageList(background)) return;
 	const auto handle = storeCompiledCssBackground(background);
 	if (handle != kNoCompiledCssBackground) applyBackgroundHandle(node, handle, shorthand, source);
 }
@@ -11591,7 +11688,13 @@ bool applyBackgroundImageToStyle(ComputedStyle &style, int handle, int nodeId)
 	if (!lineY) axes &= ~2u;
 	const RareStyle &current = rstyle(style);
 	const bool hasGradient = background && background->hasGradient;
-	if (current.bg_gradient_layer == (background ? background->gradientLayer : 0) &&
+#if GEA_CSS_BACKGROUND_IMAGES
+	const std::int32_t imageList = background ? background->imageList : -1;
+#else
+	constexpr std::int32_t imageList = -1;
+#endif
+	if (current.bg_image_list == imageList &&
+	    current.bg_gradient_layer == (background ? background->gradientLayer : 0) &&
 	    current.bg_overlay_gradient_layer == (background ? background->overlayLayer : 0) &&
 	    current.bg_radial_gradient_layer == (background ? background->radialLayer : 0) &&
 	    current.bg_image_layer_count == (background ? background->layerCount : 1) &&
@@ -11605,6 +11708,9 @@ bool applyBackgroundImageToStyle(ComputedStyle &style, int handle, int nodeId)
 	RareStyle &rs = rstyleMut(style);
 #if GEA_CSS_BACKGROUND_LAYERS
 	rs.bg_image_layer_count = background ? background->layerCount : 1;
+#endif
+#if GEA_CSS_BACKGROUND_IMAGES
+	rs.bg_image_list = imageList;
 #endif
 #if GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS
 	rs.bg_gradient_layer = background ? background->gradientLayer : 0;
@@ -19158,7 +19264,8 @@ int StyleValues::backgroundClip(const ComputedStyle &style, int layer)
 }
 
 BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style, int nodeId, int layer,
-                                                     int x, int y, int width, int height)
+                                                     int x, int y, int width, int height,
+                                                     int intrinsicWidth, int intrinsicHeight)
 {
 	const auto &r = rstyle(style);
 	auto entry = [&](int handle) -> const CssBackgroundPair * {
@@ -19195,9 +19302,26 @@ BackgroundPlacement StyleValues::backgroundPlacement(const ComputedStyle &style,
 		return value.isAuto ? automatic : roundToInt(value.isPercent ? value.value*basis/1000.0 : value.value);
 	};
 	out.width = width; out.height = height;
+	const bool image = intrinsicWidth > 0 && intrinsicHeight > 0;
+	if (image) { out.width = intrinsicWidth; out.height = intrinsicHeight; }
 	if (const auto *v = entry(r.bg_size_list)) {
-		out.width = std::max(0, length(v->x, width, width));
-		out.height = std::max(0, length(v->y, height, height));
+		if (!image) {
+			out.width = std::max(0, length(v->x, width, width));
+			out.height = std::max(0, length(v->y, height, height));
+		} else if (v->a) {
+			// contain fits the image in the area, cover fills the area with it.
+			const double scaleX = static_cast<double>(width) / intrinsicWidth, scaleY = static_cast<double>(height) / intrinsicHeight;
+			const double scale = v->a == 1 ? std::min(scaleX, scaleY) : std::max(scaleX, scaleY);
+			out.width = std::max(1, roundToInt(intrinsicWidth * scale));
+			out.height = std::max(1, roundToInt(intrinsicHeight * scale));
+		} else {
+			// An auto side follows the other through the image's ratio, or is intrinsic.
+			const int w = length(v->x, width, -1), h = length(v->y, height, -1);
+			if (w >= 0) out.width = w;
+			if (h >= 0) out.height = h;
+			if (w >= 0 && h < 0) out.height = roundToInt(static_cast<double>(w) * intrinsicHeight / intrinsicWidth);
+			if (h >= 0 && w < 0) out.width = roundToInt(static_cast<double>(h) * intrinsicWidth / intrinsicHeight);
+		}
 	}
 	if (out.repeatX == 2 && out.width > 0) out.width = std::max(1, width / std::max(1, roundToInt(static_cast<double>(width)/out.width)));
 	if (out.repeatY == 2 && out.height > 0) out.height = std::max(1, height / std::max(1, roundToInt(static_cast<double>(height)/out.height)));
@@ -19213,6 +19337,18 @@ bool StyleValues::applyBackgroundImage(ComputedStyle &style, int handle, int nod
 {
 	return applyBackgroundImageToStyle(style, handle, nodeId);
 }
+
+#if GEA_CSS_BACKGROUND_IMAGES
+const StyleValues::BackgroundImageLayer *StyleValues::backgroundImageLayers(const ComputedStyle &style, int &count)
+{
+	const auto &lists = backgroundImageLists();
+	const int handle = rstyle(style).bg_image_list;
+	count = 0;
+	if (handle < 0 || handle >= static_cast<int>(lists.size())) return nullptr;
+	count = static_cast<int>(lists[handle].size());
+	return lists[handle].data();
+}
+#endif
 
 
 void beginStyleMountBatch()

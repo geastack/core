@@ -5,6 +5,9 @@
 #include "style_values.h"
 #include "tree_state.h"
 #include <pixel.h>
+#if GEA_CSS_BACKGROUND_IMAGES
+#include <image.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -1901,22 +1904,87 @@ void recordOverlayLinearGradientBackground(const Node &node)
 	appendOverlayLinearGradientRectRaw(node, node.layout.x, node.layout.y, w, h);
 }
 
+#if GEA_CSS_BACKGROUND_IMAGES
+// A decoded url() layer image.
+struct BackgroundImage {
+	int id = -1, width = 0, height = 0;
+	const gea::framework::graphics::pixel::native_t *pixels = nullptr;
+	const uint8_t *alpha = nullptr;
+};
+
+// One tile of a url() layer at (x, y), w x h: a blit, scaled unless the tile
+// has the image's own size. It clips to its bounds, which the caller sets.
+DisplayCommand *appendBackgroundImageTile(const BackgroundImage &image, int x, int y, int w, int h)
+{
+	DisplayCommand *cmd = DisplayList::instance().append();
+	if (!cmd) return nullptr;
+	DisplayList::instance().retainImage(image.id);
+	if (w == image.width && h == image.height) {
+		cmd->type = DisplayCommandType::BlitImage;
+		cmd->blit.pixels = image.pixels;
+		cmd->blit.alpha = image.alpha;
+		cmd->blit.sourceWidth = static_cast<int16_t>(image.width);
+		cmd->blit.sourceHeight = static_cast<int16_t>(image.height);
+		cmd->blit.dx = static_cast<int16_t>(x);
+		cmd->blit.dy = static_cast<int16_t>(y);
+		cmd->blit.sourcePacked = 0;
+		cmd->blit.boundsClip = 1;
+	} else {
+		cmd->type = DisplayCommandType::BlitImageScaled;
+		cmd->scaledBlit.pixels = image.pixels;
+		cmd->scaledBlit.alpha = image.alpha;
+		cmd->scaledBlit.sourceWidth = static_cast<int16_t>(image.width);
+		cmd->scaledBlit.sourceHeight = static_cast<int16_t>(image.height);
+		cmd->scaledBlit.dx = static_cast<int16_t>(x);
+		cmd->scaledBlit.dy = static_cast<int16_t>(y);
+		cmd->scaledBlit.dw = static_cast<int16_t>(w);
+		cmd->scaledBlit.dh = static_cast<int16_t>(h);
+		cmd->scaledBlit.tl = cmd->scaledBlit.tr = cmd->scaledBlit.br = cmd->scaledBlit.bl = 0;
+		cmd->scaledBlit.boundsClip = 1;
+	}
+	return cmd;
+}
+#endif
+
 // Background positioning and painting areas are distinct. In particular, the
 // document canvas paints beyond the root box without stretching its images.
 bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canvas)
 {
 	const auto &r = rstyle(source.computedStyle());
 	if (!canvas && r.bg_size_list < 0 && r.bg_position_list < 0 && r.bg_repeat_list < 0 &&
-	    r.bg_attachment_list < 0 && r.bg_origin_list < 0) return false;
+	    r.bg_attachment_list < 0 && r.bg_origin_list < 0 && r.bg_image_list < 0) return false;
 	if (ViewGeometry::hasTransformChain(geometry, false)) return false;
 	const int nodeId = ViewGeometry::nodeIndex(geometry);
+#if GEA_CSS_BACKGROUND_IMAGES
+	int imageLayers = 0;
+	const auto *images = r.bg_image_list >= 0 ? StyleValues::backgroundImageLayers(source.computedStyle(), imageLayers) : nullptr;
+#endif
 	for (int layer = r.bg_image_layer_count-1; layer >= 0; --layer) {
 		const bool linear = source.computedStyle().bg_fill == 1 && layer == r.bg_gradient_layer;
 		const bool overlay = r.bg_overlay_gradient && layer == r.bg_overlay_gradient_layer;
 		const bool radial = r.bg_radial_gradient && layer == r.bg_radial_gradient_layer;
-		if (!linear && !overlay && !radial) continue;
+#if GEA_CSS_BACKGROUND_IMAGES
+		BackgroundImage image;
+		for (int i = 0; i < imageLayers; ++i)
+			if (images[i].layer == layer && images[i].image >= 0) {
+				auto &store = gea::framework::graphics::ImageStore::instance();
+				image.id = images[i].image;
+				image.pixels = store.currentPixels(image.id);
+				image.alpha = store.currentAlpha(image.id);
+				image.width = store.width(image.id);
+				image.height = store.height(image.id);
+			}
+		const bool raster = image.pixels && image.width > 0 && image.height > 0;
+#else
+		constexpr bool raster = false;
+#endif
+		if (!linear && !overlay && !radial && !raster) continue;
 		const auto p = StyleValues::backgroundPlacement(source.computedStyle(), nodeId, layer,
-		    geometry.layout.x, geometry.layout.y, geometry.layout.width, geometry.layout.height);
+		    geometry.layout.x, geometry.layout.y, geometry.layout.width, geometry.layout.height
+#if GEA_CSS_BACKGROUND_IMAGES
+		    , raster ? image.width : 0, raster ? image.height : 0
+#endif
+		    );
 		if (p.width <= 0 || p.height <= 0) continue;
 		int x = canvas ? 0 : geometry.layout.x, y = canvas ? 0 : geometry.layout.y;
 		int w = canvas ? treeState().mountedWidth : geometry.layout.width;
@@ -1955,6 +2023,10 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 				const int tx = std::lround(ax.start+col*ax.step), ty = std::lround(ay.start+row*ay.step);
 				if (tx >= cx+cw || ty >= cy+ch || tx+p.width <= cx || ty+p.height <= cy) continue;
 				DisplayCommand *paint = nullptr;
+#if GEA_CSS_BACKGROUND_IMAGES
+				if (raster) paint = appendBackgroundImageTile(image, tx, ty, p.width, p.height);
+				else
+#endif
 				if (linear) paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height);
 				else if (radial) paint = appendRadialGradientRectRaw(source,tx,ty,p.width,p.height);
 				else paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height,
@@ -1965,12 +2037,12 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 				// Radius belongs to the painting box, never to each repeated image.
 				if (paint) {
 					auto &cmd = *paint;
-					if (radial) cmd.radialGradient.tl = cmd.radialGradient.tr = cmd.radialGradient.br = cmd.radialGradient.bl = 0;
-					else cmd.gradient.tl = cmd.gradient.tr = cmd.gradient.br = cmd.gradient.bl = 0;
+					if (!raster && radial) cmd.radialGradient.tl = cmd.radialGradient.tr = cmd.radialGradient.br = cmd.radialGradient.bl = 0;
+					else if (!raster) cmd.gradient.tl = cmd.gradient.tr = cmd.gradient.br = cmd.gradient.bl = 0;
 					cmd.bx = std::max(cx, tx); cmd.by = std::max(cy, ty);
 					cmd.bw = std::min(cx+cw,tx+p.width)-cmd.bx; cmd.bh = std::min(cy+ch,ty+p.height)-cmd.by;
 #if GEA_GRADIENT_BOUNDS_CLIP
-					if (!radial) cmd.gradient.boundsClip = boundsClip;
+					if (!radial && !raster) cmd.gradient.boundsClip = boundsClip;
 #endif
 				}
 			}

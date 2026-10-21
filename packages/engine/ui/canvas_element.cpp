@@ -2687,6 +2687,7 @@ void CanvasRenderer::record(const Node &node)
 	// grayscale targets that is sub-byte packed (2 px/byte on GRAY4, 4 px/byte on
 	// GRAY2), so flag it for the blit to unpack.
 	cmd->blit.sourcePacked = GEA_PIXEL_STORAGE_PACKED ? 1 : 0;
+	cmd->blit.boundsClip = 0;
 }
 
 #endif

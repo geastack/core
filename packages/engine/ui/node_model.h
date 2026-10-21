@@ -454,6 +454,11 @@ struct RareStyle {
 #endif
 	int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
 	int32_t bg_attachment_list = -1, bg_origin_list = -1;
+#if GEA_CSS_BACKGROUND_IMAGES
+	// Interned list of the url() layers, each layer index with its image
+	// (StyleValues::backgroundImageLayers). -1: none.
+	int32_t bg_image_list = -1;
+#endif
 #else
 	static constexpr uint16_t bg_image_layer_count = 1; // Includes none layers.
 	static constexpr int32_t bg_size_list = -1, bg_position_list = -1, bg_repeat_list = -1;
@@ -471,6 +476,9 @@ struct RareStyle {
 #endif
 #if !GEA_CSS_BACKGROUND_BLEND
 	static constexpr uint8_t bg_blend = 0;
+#endif
+#if !GEA_CSS_BACKGROUND_IMAGES
+	static constexpr int32_t bg_image_list = -1;
 #endif
 #if !GEA_CSS_BORDER_IMAGE
 	static constexpr uint8_t border_image_source = 0;
@@ -1188,7 +1196,7 @@ inline bool styleHasColumns(const ComputedStyle &style)
 inline bool styleHasBackgroundImage(const ComputedStyle &style)
 {
 	const auto &rare = rstyle(style);
-	return style.bg_fill != 0 || rare.bg_radial_gradient || rare.bg_overlay_gradient || rare.bg_grid_axes;
+	return style.bg_fill != 0 || rare.bg_radial_gradient || rare.bg_overlay_gradient || rare.bg_grid_axes || rare.bg_image_list >= 0;
 }
 
 // Authored inheritance stays in the property override; ComputedStyle always

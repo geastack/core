@@ -764,7 +764,9 @@ double preferredRatio(const Node &node)
 	const int bits = (GEA_CSS_ASPECT_RATIO ? rstyle(node.computedStyle()).aspect_ratio : 0);
 	std::memcpy(&ratio, &bits, sizeof(ratio));
 	if (!std::isfinite(ratio)) return 0;
-	if (ratio < 0 && node.type == NodeType::Image && node.image_id >= 0) return 0;
+	// A loaded image uses its natural ratio unless one is authored without
+	// `auto` (CSS Sizing 4, 5.1).
+	if (ratio <= 0 && node.type == NodeType::Image && node.image_id >= 0) return ImageRenderer::naturalRatio(node);
 	return std::abs(static_cast<double>(ratio));
 }
 
@@ -772,12 +774,12 @@ int ratioTransferredSize(const Node &node, int crossBorderSize, bool horizontal)
 {
 	const double ratio = preferredRatio(node);
 	if (ratio <= 0) return 0;
-	// `auto <ratio>` (stored negative) sizes the content box whatever box-sizing
-	// says (CSS Sizing 4, 5.1).
+	// `auto <ratio>` (stored negative) and an image's natural ratio (nothing
+	// stored) size the content box whatever box-sizing says (CSS Sizing 4, 5.1).
 	float stored = 0;
 	const int bits = rstyle(node.computedStyle()).aspect_ratio;
 	std::memcpy(&stored, &bits, sizeof(stored));
-	const bool contentBox = !node.computedStyle().box_sizing || stored < 0;
+	const bool contentBox = !node.computedStyle().box_sizing || stored <= 0;
 	const int crossEdges = contentBox ? boxInsets(node.computedStyle(), !horizontal) : 0;
 	const int mainEdges = contentBox ? boxInsets(node.computedStyle(), horizontal) : 0;
 	const double value = std::max(0, crossBorderSize - crossEdges) * (horizontal ? ratio : 1 / ratio) + mainEdges;
@@ -836,8 +838,9 @@ void applyPreferredRatio(Node &node, int availableWidth, int availableHeight)
 	}
 	if (!width && !height) {
 		// Normal block flow supplies a definite inline size. Shrink-to-fit
-		// contexts keep the intrinsic width measured from their contents.
-		if (!flexItem && !node.computedStyle().float_side && !isOutOfFlowPosition(node.computedStyle().position))
+		// contexts keep the intrinsic width measured from their contents, and
+		// an image its natural width (CSS 2.2 10.3.2).
+		if (node.type != NodeType::Image && !flexItem && !node.computedStyle().float_side && !isOutOfFlowPosition(node.computedStyle().position))
 			node.layout.width = clampLayoutSize(node, availableWidth - node.computedStyle().margin[1] - node.computedStyle().margin[3], true);
 		width = true;
 	}
@@ -2725,7 +2728,9 @@ private:
 					childNode.layout.height = lineCrossSize - crossMarginBefore - crossMarginAfter;
 					engine_.repositionChildren(child);
 				}
-			} else if (!hasExplicitWidth(childNode) && !isIntrinsicSizeExpression(childNode.computedStyle().width_expression)) {
+			} else if (!hasExplicitWidth(childNode) && !isIntrinsicSizeExpression(childNode.computedStyle().width_expression) &&
+			           (node_.computedStyle().display == kDisplayFlex || childNode.type != NodeType::Image)) {
+				// Block flow does not stretch a replaced image (CSS 2.2 10.3.4).
 				childNode.layout.width = lineCrossSize - crossMarginBefore - crossMarginAfter;
 				engine_.repositionChildren(child);
 			}

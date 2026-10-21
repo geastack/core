@@ -121,6 +121,15 @@ void ImageRenderer::layout(int id)
 	n->layout.height = clampBorderBoxSize(n->computedStyle(), n->layout.height, false);
 }
 
+double ImageRenderer::naturalRatio(const Node &node)
+{
+	if (!GEA_UI_IMAGE_NODES || node.image_id < 0) return 0;
+	auto &images = gea::framework::graphics::ImageStore::instance();
+	const int iw = images.width(node.image_id);
+	const int ih = images.height(node.image_id);
+	return iw > 0 && ih > 0 ? static_cast<double>(iw) / ih : 0;
+}
+
 void ImageRenderer::record(const Node &node)
 {
 	const Node *n = &node;
@@ -180,6 +189,7 @@ void ImageRenderer::record(const Node &node)
 		cmd->blit.dx = fit.x;
 		cmd->blit.dy = fit.y;
 		cmd->blit.sourcePacked = 0;  // decoded images are unpacked (one value per byte)
+		cmd->blit.boundsClip = 0;
 		return;
 	}
 
@@ -196,6 +206,7 @@ void ImageRenderer::record(const Node &node)
 	cmd->scaledBlit.dy = fit.y;
 	cmd->scaledBlit.dw = fit.width;
 	cmd->scaledBlit.dh = fit.height;
+	cmd->scaledBlit.boundsClip = 0;
 	setScaledBlitRadius(cmd, *n);
 }
 
