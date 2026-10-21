@@ -87,6 +87,10 @@ bool isLayoutProperty(Property prop)
 	case Property::Float:
 #endif
 	case Property::MarginTrim:
+#if GEA_CSS_TABLES
+	case Property::BorderSpacing:
+	case Property::BorderCollapse:
+#endif
 	case Property::MaxLines:
 	case Property::LineClampContinue:
 	case Property::BlockEllipsis:
@@ -335,12 +339,20 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		// <span> as block-level (stacks) rather than its default inline behaviour.
 #if GEA_CSS_DISPLAY_EXPLICIT
 		// Keyword bits above the box kind (flow-root) are recorded with it.
-		if (style.display_explicit != (kDisplayExplicit | (value >> kDisplayFlagShift))) {
-			style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+		if (style.display_explicit != (kDisplayExplicit | ((value >> kDisplayFlagShift) & 7))) {
+			style.display_explicit = kDisplayExplicit | ((value >> kDisplayFlagShift) & 7);
 			changed = 1;
 		}
 #endif
 		if (style.display != (value & kDisplayKindMask)) { style.display = value & kDisplayKindMask; changed = 1; }
+#if GEA_CSS_TABLES
+		// A table part's role; a box that is no part never touches RareStyle.
+		if (const int role = (value >> kTableRoleShift) & 15; role != tableRole(style)) {
+			style.table_part = role != 0;
+			rstyleMut(style).table_role = role;
+			changed = 1;
+		}
+#endif
 		break;
 #if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
@@ -371,6 +383,16 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 #endif
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: if ((GEA_CSS_MARGIN_TRIM ? rstyle(style).margin_trim : 0) != value) { rstyleMut(style).margin_trim = value; changed = 1; } break;
+#endif
+#if GEA_CSS_TABLES
+	case Property::BorderSpacing:
+		if (rstyle(style).border_spacing_x != (value & 0xffff) || rstyle(style).border_spacing_y != (value >> 16)) {
+			rstyleMut(style).border_spacing_x = value & 0xffff;
+			rstyleMut(style).border_spacing_y = value >> 16;
+			changed = 1;
+		}
+		break;
+	case Property::BorderCollapse: if (rstyle(style).border_collapse != value) { rstyleMut(style).border_collapse = value; changed = 1; } break;
 #endif
 #if GEA_CSS_LINE_CLAMP
 	case Property::MaxLines: if (rstyle(style).max_lines != value) { rstyleMut(style).max_lines = value; changed = 1; } break;

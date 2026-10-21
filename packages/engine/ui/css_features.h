@@ -287,6 +287,14 @@
 #define GEA_CSS_TEXT_EMPHASIS 1
 #endif
 
+// Table layout (CSS 2.2 section 17): display table and its parts, automatic
+// column widths, border-spacing and border-collapse. Off, the table display
+// values compute to block, ComputedStyle carries no table bit, RareStyle no
+// table fields, and layout has no table pass.
+#ifndef GEA_CSS_TABLES
+#define GEA_CSS_TABLES 1
+#endif
+
 // position: sticky (CSS Position 3). Off, sticky parses as static, the
 // absolute-coordinate pass tracks no scrollport, and the root scroll-only
 // refresh never stands down for sticky boxes.

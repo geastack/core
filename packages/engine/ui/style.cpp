@@ -408,6 +408,8 @@ bool styleEqualExceptTextPaint(const ComputedStyle &a, const ComputedStyle &b)
 	    a.float_side != b.float_side ||
 	    a.clear_side != b.clear_side ||
 	    ar.margin_trim != br.margin_trim ||
+	    a.table_part != b.table_part || ar.table_role != br.table_role || ar.border_collapse != br.border_collapse ||
+	    ar.border_spacing_x != br.border_spacing_x || ar.border_spacing_y != br.border_spacing_y ||
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
 	    ar.block_ellipsis != br.block_ellipsis ||
@@ -654,6 +656,8 @@ bool styleEqualExceptLocalDisplayCommands(const ComputedStyle &a, const Computed
 	    a.float_side != b.float_side ||
 	    a.clear_side != b.clear_side ||
 	    ar.margin_trim != br.margin_trim ||
+	    a.table_part != b.table_part || ar.table_role != br.table_role || ar.border_collapse != br.border_collapse ||
+	    ar.border_spacing_x != br.border_spacing_x || ar.border_spacing_y != br.border_spacing_y ||
 	    ar.max_lines != br.max_lines ||
 	    ar.line_clamp_flags != br.line_clamp_flags ||
 	    ar.block_ellipsis != br.block_ellipsis ||
@@ -1445,6 +1449,10 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "text-emphasis-position") == 0) return CssDeclarationId::TextEmphasisPositionDeclaration;
 #endif
 	if (std::strcmp(property, "vertical-align") == 0) return CssDeclarationId::VerticalAlign;
+#if GEA_CSS_TABLES
+	if (std::strcmp(property, "border-spacing") == 0) return CssDeclarationId::BorderSpacing;
+	if (std::strcmp(property, "border-collapse") == 0) return CssDeclarationId::BorderCollapse;
+#endif
 	if (std::strcmp(property, "text-decoration") == 0 || std::strcmp(property, "text-decoration-line") == 0) return CssDeclarationId::TextDecoration;
 	if (std::strcmp(property, "text-transform") == 0) return CssDeclarationId::TextTransform;
 	if (std::strcmp(property, "white-space") == 0) return CssDeclarationId::WhiteSpace;
@@ -5189,6 +5197,15 @@ int displayValue(const std::string &value)
 	if (value == "flow-root") return kDisplayBlock | (kDisplayFlowRoot << kDisplayFlagShift);
 	if (value == "inline") return kDisplayBlock | (kDisplayInline << kDisplayFlagShift);
 	if (value == "inline-block") return kDisplayBlock | ((kDisplayInline | kDisplayFlowRoot) << kDisplayFlagShift);
+#if GEA_CSS_TABLES
+	if (value.compare(0, 5, "table") == 0) {
+		static const char *const parts[] = {"table", "table-row-group", "table-header-group", "table-footer-group",
+		                                    "table-row", "table-cell", "table-caption", "table-column", "table-column-group"};
+		for (int role = kTableRoleTable; role <= kTableRoleColumnGroup; ++role)
+			if (value == parts[role - 1])
+				return (role >= kTableRoleColumn ? kDisplayNone : kDisplayBlock) | (role << kTableRoleShift);
+	}
+#endif
 	return kDisplayBlock;
 }
 
@@ -8672,9 +8689,15 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 	switch (property) {
 	case Property::Display:
 #if GEA_CSS_DISPLAY_EXPLICIT
-		style.display_explicit = kDisplayExplicit | (value >> kDisplayFlagShift);
+		style.display_explicit = kDisplayExplicit | ((value >> kDisplayFlagShift) & 7);
 #endif
 		style.display = value & kDisplayKindMask;
+#if GEA_CSS_TABLES
+		if (const int role = (value >> kTableRoleShift) & 15; role != tableRole(style)) {
+			style.table_part = role != 0;
+			rstyleMut(style).table_role = role;
+		}
+#endif
 		return true;
 #if GEA_CSS_FLEX_DIRECTION
 	case Property::FlexDirection:
@@ -8745,6 +8768,10 @@ bool setClassRuleValueFastUnchecked(Node &target, Property property, int value)
 #endif
 #if GEA_CSS_MARGIN_TRIM
 	case Property::MarginTrim: rstyleMut(style).margin_trim = value; return true;
+#if GEA_CSS_TABLES
+	case Property::BorderSpacing: rstyleMut(style).border_spacing_x = value & 0xffff; rstyleMut(style).border_spacing_y = value >> 16; return true;
+	case Property::BorderCollapse: rstyleMut(style).border_collapse = value; return true;
+#endif
 #endif
 #if GEA_CSS_LINE_CLAMP
 	case Property::MaxLines: rstyleMut(style).max_lines = static_cast<uint8_t>(value); return true;
@@ -11147,6 +11174,20 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::VerticalAlign:
 		if (const int align = verticalAlignValue(value); align >= 0) setStyleValue(node, Property::VerticalAlign, align, source);
 		return true;
+#if GEA_CSS_TABLES
+	case CssDeclarationId::BorderSpacing: {
+		// One length for both axes, or horizontal then vertical (CSS 2.2 17.6.1).
+		const auto lengths = splitWords(trimCssValue(value));
+		if (lengths.empty() || lengths.size() > 2) return true;
+		const int x = std::clamp(parseLengthForNode(lengths[0], nodeId, LengthAxis::None), 0, 32767);
+		const int y = lengths.size() > 1 ? std::clamp(parseLengthForNode(lengths[1], nodeId, LengthAxis::None), 0, 32767) : x;
+		setStyleValue(node, Property::BorderSpacing, x | (y << 16), source);
+		return true;
+	}
+	case CssDeclarationId::BorderCollapse:
+		setStyleValue(node, Property::BorderCollapse, toLowerAscii(trimCssValue(value)) == "collapse", source);
+		return true;
+#endif
 	case CssDeclarationId::TextDecoration:
 		setStyleValue(node, Property::TextDecoration, textDecorationValue(value), source);
 		return true;
@@ -12779,6 +12820,10 @@ bool removeInlineStyleProperty(NodeHandle node, const std::string &property)
 	if (property == "box-sizing") return removeInlineStyleProperties(id, {Property::BoxSizing});
 	if (property == "float") return removeInlineStyleProperties(id, {Property::Float});
 	if (property == "margin-trim") return removeInlineStyleProperties(id, {Property::MarginTrim});
+#if GEA_CSS_TABLES
+	if (property == "border-spacing") return removeInlineStyleProperties(id, {Property::BorderSpacing});
+	if (property == "border-collapse") return removeInlineStyleProperties(id, {Property::BorderCollapse});
+#endif
 	if (property == "line-clamp" || property == "-webkit-line-clamp")
 		return removeInlineStyleProperties(id, {Property::MaxLines, Property::LineClampContinue, Property::LineClampDiscard, Property::BlockEllipsis, Property::BlockEllipsisString, Property::LineClampAuto});
 	if (property == "max-lines") return removeInlineStyleProperties(id, {Property::MaxLines});

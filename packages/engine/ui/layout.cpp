@@ -296,6 +296,26 @@ bool verticalFlowRoot(int id)
 // Probe the existing formatting algorithms without rewriting authored style.
 // A stack of constraints keeps nested measurements finite and allocates no
 // per-node storage; a final phase supplies the selected used border-box size.
+#if GEA_CSS_TABLES
+// Numbers the open layout pass (LayoutEngine::Pass). A table keeps its column
+// measures for the rest of the pass that took them: nothing they depend on
+// changes during one.
+std::uint32_t gLayoutPassSerial = 0;
+bool gLayoutPassOpen = false;
+constexpr int kTableColumns = 32;
+// Column measures by table for the rest of the pass that took them: a
+// parent's second layout of the table, such as the scoped relayout's
+// repositioning, measures no cell again.
+struct TableMeasures {
+	int table = -1;
+	std::uint32_t pass = 0;
+	int columns = 0;
+	bool minimums = false;
+	std::int16_t min[kTableColumns], max[kTableColumns];
+};
+TableMeasures gTableMeasures[4];
+int gTableMeasuresNext = 0;
+#endif
 struct IntrinsicSizeScope;
 IntrinsicSizeScope *gIntrinsicSizeScope = nullptr;
 struct IntrinsicSizeScope {
@@ -2729,8 +2749,10 @@ private:
 					engine_.repositionChildren(child);
 				}
 			} else if (!hasExplicitWidth(childNode) && !isIntrinsicSizeExpression(childNode.computedStyle().width_expression) &&
-			           (node_.computedStyle().display == kDisplayFlex || childNode.type != NodeType::Image)) {
-				// Block flow does not stretch a replaced image (CSS 2.2 10.3.4).
+			           (node_.computedStyle().display == kDisplayFlex ||
+			            (childNode.type != NodeType::Image && tableRole(childNode.computedStyle()) != kTableRoleTable))) {
+				// Block flow does not stretch a replaced image (CSS 2.2 10.3.4) or
+				// a table, whose automatic width is its own (17.5.2).
 				childNode.layout.width = lineCrossSize - crossMarginBefore - crossMarginAfter;
 				engine_.repositionChildren(child);
 			}
@@ -2955,7 +2977,7 @@ bool isMulticolContainer(const Node &node)
 {
 	const RareStyle &rs = rstyle(node.computedStyle());
 	if ((rs.column_count <= 0 && rs.column_width <= 0) || node.type != NodeType::View || node.computedStyle().display != kDisplayBlock ||
-	    (LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node))) return false;
+	    tableRole(node.computedStyle()) == kTableRoleTable || (LayoutEngine::isCssInlineLevelBox(node) && LayoutEngine::isInlineLevelNode(node))) return false;
 	const Node *nodes = Tree::instance().nodes();
 	for (int c = node.first_child; c >= 0; c = nodes[c].next_sibling)
 		if (rstyle(nodes[c].computedStyle()).line_clamp_flags & 64) return false;
@@ -3160,6 +3182,12 @@ public:
 
 	void layoutOwnContent()
 	{
+#if GEA_CSS_TABLES
+		if (tableRole(node_.computedStyle()) == kTableRoleTable) {
+			layoutTable(false);
+			return;
+		}
+#endif
 #if GEA_CSS_MULTICOL
 		const ColumnGeometry columns = columnGeometry();
 		if (columns.count > 0) layoutColumns(columns);
@@ -3256,6 +3284,12 @@ public:
 #if GEA_CSS_FIRST_LINE
 		if (NodeRareData *rare = rareDataFor(id_)) rare->firstLineBackground.lineValid = false;
 #endif
+#if GEA_CSS_TABLES
+		if (tableRole(node_.computedStyle()) == kTableRoleTable) {
+			layoutTable(true);
+			return;
+		}
+#endif
 #if GEA_CSS_MULTICOL
 		// A multicol container's content keeps the column width it was laid out in.
 		const ColumnGeometry columns = columnGeometry();
@@ -3307,6 +3341,333 @@ public:
 		positionAbsoluteChildren();
 		applyRelativeOffsets();
 	}
+
+#if GEA_CSS_TABLES
+	// A table row: a row part, or a run of other boxes in a row group or the
+	// table that CSS wraps in an anonymous row (node -1: from `first` among the
+	// children of `parent`).
+	struct TableRow {
+		int node, group, first, parent;
+	};
+	static constexpr int kTableRows = 128;
+
+	static bool tableRowBoundary(const Node &node)
+	{
+		const int role = tableRole(node.computedStyle());
+		return (role >= kTableRoleRowGroup && role <= kTableRoleRow) || role == kTableRoleCaption;
+	}
+
+	bool tableInFlow(int parent, int child) const
+	{
+		const Node &node = nodes_[child];
+		return !isDisplayNone(node.computedStyle()) && !isOutOfFlowPosition(node.computedStyle().position) &&
+		       !suppressAnonymousWhitespace(nodes_, parent, child);
+	}
+
+	// Rows in display order (CSS 2.2 17.2): header groups, the body rows and
+	// groups in document order, then footer groups.
+	int collectTableRows(TableRow *rows) const
+	{
+		int count = 0;
+		auto addRows = [&](auto &&self, int parent, int group) -> void {
+			for (int c = nodes_[parent].first_child; c >= 0 && count < kTableRows; c = nodes_[c].next_sibling) {
+				if (!tableInFlow(parent, c)) continue;
+				const int role = tableRole(nodes_[c].computedStyle());
+				if (role == kTableRoleRow) rows[count++] = {c, group, c, parent};
+				else if (role == kTableRoleRowGroup && group < 0) self(self, c, c);
+				else if (!tableRowBoundary(nodes_[c])) {
+					rows[count++] = {-1, group, c, parent};
+					while (nodes_[c].next_sibling >= 0 && !tableRowBoundary(nodes_[nodes_[c].next_sibling])) c = nodes_[c].next_sibling;
+				}
+			}
+		};
+		auto addGroups = [&](int role) {
+			for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling)
+				if (tableRole(nodes_[c].computedStyle()) == role && tableInFlow(id_, c)) addRows(addRows, c, c);
+		};
+		addGroups(kTableRoleHeaderGroup);
+		addRows(addRows, id_, -1);
+		addGroups(kTableRoleFooterGroup);
+		return count;
+	}
+
+	// Calls fn for each box of a row: the children of a row part, or an
+	// anonymous row's run up to the next row part.
+	template <typename Fn>
+	void forEachTableRowItem(const TableRow &row, Fn &&fn) const
+	{
+		const int parent = row.node >= 0 ? row.node : row.parent;
+		for (int c = row.node >= 0 ? nodes_[row.node].first_child : row.first; c >= 0; c = nodes_[c].next_sibling) {
+			if (row.node < 0 && c != row.first && tableRowBoundary(nodes_[c])) break;
+			if (tableInFlow(parent, c)) fn(c);
+		}
+	}
+
+	// A cell's min- (constraint 1) or max-content (2) border-box width (CSS 2.2
+	// 17.5.2.2): its content measured as if its width were auto, a specified
+	// width replacing the maximum but never below the minimum. Any other box
+	// among cells is the content of an anonymous cell and keeps its own width
+	// and margins.
+	int measureTableCell(int item, int constraint)
+	{
+		Node &cell = nodes_[item];
+		const auto &style = cell.computedStyle();
+		auto measure = [&](int mode) {
+			IntrinsicSizeScope scope(cell, mode, true);
+			engine_.layoutNode(item, mode == 1 ? 1 : 32767, paddedHeight(), true);
+			return static_cast<int>(cell.layout.width);
+		};
+		if (tableRole(style) != kTableRoleCell) return measure(constraint) + style.margin[1] + style.margin[3];
+		FlexBasisScope automatic(cell, true, kUnset);
+		if (constraint == 1 || style.width == kUnset) return measure(constraint);
+		return std::max(measure(1), contentSizeToBorderSize(style, style.width, true));
+	}
+
+	// This table's measures from earlier in the open pass (gTableMeasures).
+	// Copied in and out, since tables nested in cells take slots meanwhile.
+	const TableMeasures *keptTableMeasures() const
+	{
+		if (!gLayoutPassOpen) return nullptr;
+		for (const auto &kept : gTableMeasures)
+			if (kept.table == id_ && kept.pass == gLayoutPassSerial) return &kept;
+		return nullptr;
+	}
+
+	void keepTableMeasures(int columns, bool minimums, const int *minWidths, const int *maxWidths)
+	{
+		if (!gLayoutPassOpen) return;
+		TableMeasures *slot = nullptr;
+		for (auto &kept : gTableMeasures)
+			if (kept.table == id_ && kept.pass == gLayoutPassSerial) slot = &kept;
+		if (!slot) {
+			slot = &gTableMeasures[gTableMeasuresNext];
+			gTableMeasuresNext = (gTableMeasuresNext + 1) % 4;
+		}
+		slot->table = id_;
+		slot->pass = gLayoutPassSerial;
+		slot->columns = columns;
+		slot->minimums = minimums;
+		for (int c = 0; c < columns; ++c) {
+			slot->min[c] = static_cast<std::int16_t>(std::min(minWidths[c], 32767));
+			slot->max[c] = static_cast<std::int16_t>(std::min(maxWidths[c], 32767));
+		}
+	}
+
+	// Each column's widest measure of its cells for one constraint.
+	int measureTableColumns(const TableRow *rows, int rowCount, int constraint, int *widths)
+	{
+		int columns = 0;
+		for (int r = 0; r < rowCount; ++r) {
+			int column = 0;
+			forEachTableRowItem(rows[r], [&](int item) {
+				if (column >= kTableColumns) return;
+				widths[column] = std::max(widths[column], measureTableCell(item, constraint));
+				++column;
+			});
+			columns = std::max(columns, column);
+		}
+		return columns;
+	}
+
+	// Lays a cell out at exactly its column width; another box fills it.
+	void layoutTableCell(int item, int width)
+	{
+		Node &cell = nodes_[item];
+		const auto &style = cell.computedStyle();
+		if (tableRole(style) != kTableRoleCell) {
+			engine_.layoutNode(item, width, paddedHeight());
+			return;
+		}
+		FlexBasisScope exact(cell, true, std::max(0, style.box_sizing ? width : width - boxInsets(style, true)));
+		engine_.layoutNode(item, width, paddedHeight());
+	}
+
+	// Stretches a cell to its row and moves its content by vertical-align
+	// (top, middle, bottom; baseline aligns as top). An auto-height cell's
+	// laid-out height is its content's; otherwise the content's extent is
+	// measured, which relative offsets in it may skew.
+	void alignTableCell(Node &cell, int height)
+	{
+		const auto &style = cell.computedStyle();
+		int content = cell.layout.height - boxInsets(style, false);
+		if (hasExplicitHeight(cell)) {
+			const int top = boxInset(style, 0);
+			int bottom = top;
+			for (int c = cell.first_child; c >= 0; c = nodes_[c].next_sibling) {
+				const Node &child = nodes_[c];
+				if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position)) continue;
+				bottom = std::max<int>(bottom, child.layout.y + child.layout.height + child.computedStyle().margin[2]);
+			}
+			content = bottom - top;
+		}
+		const int room = height - boxInsets(style, false) - content;
+		cell.layout.height = clampLayoutExtent(height);
+		const int shift = room <= 0 ? 0 : style.vertical_align == 2 ? room : style.vertical_align == 3 ? room / 2 : 0;
+		if (!shift) return;
+		for (int c = cell.first_child; c >= 0; c = nodes_[c].next_sibling)
+			if (!isOutOfFlowPosition(nodes_[c].computedStyle().position)) nodes_[c].layout.y += shift;
+	}
+
+	// position: relative on a table part. A percentage resolves against the
+	// specified height of its parent, 0 when that is auto (CSS 2.2 10.5), and
+	// against its width.
+	void offsetTablePart(Node &part)
+	{
+		if (part.computedStyle().position != 2) return;
+		const Node &parent = nodes_[part.parent];
+		const int heightBasis = parent.computedStyle().height != kUnset ? parent.computedStyle().height : 0;
+		if (hasPositionOffset<0>(part)) part.layout.y += resolvedPositionOffsetWithBasis<0>(part, heightBasis);
+		else if (hasPositionOffset<2>(part)) part.layout.y -= resolvedPositionOffsetWithBasis<2>(part, heightBasis);
+		if (hasPositionOffset<3>(part)) part.layout.x += resolvedPositionOffsetWithBasis<3>(part, parent.layout.width);
+		else if (hasPositionOffset<1>(part)) part.layout.x -= resolvedPositionOffsetWithBasis<1>(part, parent.layout.width);
+	}
+
+	// CSS 2.2 section 17 for tables without spans. Columns take automatic widths
+	// (17.5.2.2): the minimum and maximum content widths of their cells, grown
+	// toward the table width. A table with an auto width shrinks to fit, and no
+	// parent stretches it. Rows take their tallest cell or specified height, and
+	// cells stretch to their row. Row groups and rows span the columns. border-
+	// spacing separates the cells, and border-collapse: collapse removes it.
+	// Captions sit above the rows, inside the table box. `assigned`: the table's
+	// own size is already set (repositionChildren).
+	__attribute__((noinline)) void layoutTable(bool assigned)
+	{
+		const auto &style = node_.computedStyle();
+		const RareStyle &rs = rstyle(style);
+		const int spacingX = rs.border_collapse ? 0 : rs.border_spacing_x;
+		const int spacingY = rs.border_collapse ? 0 : rs.border_spacing_y;
+		TableRow rows[kTableRows];
+		const int rowCount = collectTableRows(rows);
+
+		// Max-content widths first; the min-content ones matter only to a table
+		// narrower than those.
+		int minWidths[kTableColumns] = {}, maxWidths[kTableColumns] = {};
+		int columns = 0;
+		bool minimums = false;
+		if (const TableMeasures *kept = keptTableMeasures()) {
+			columns = kept->columns;
+			minimums = kept->minimums;
+			for (int c = 0; c < columns; ++c) {
+				minWidths[c] = kept->min[c];
+				maxWidths[c] = kept->max[c];
+			}
+		} else {
+			columns = measureTableColumns(rows, rowCount, 2, maxWidths);
+		}
+		int minSum = 0, maxSum = 0;
+		auto measureMinimums = [&] {
+			if (!minimums) measureTableColumns(rows, rowCount, 1, minWidths);
+			minimums = true;
+			minSum = 0;
+			for (int c = 0; c < columns; ++c) minSum += minWidths[c];
+		};
+		for (int c = 0; c < columns; ++c) maxSum += maxWidths[c];
+		const int edgesX = boxInsets(style, true) + (columns ? (columns + 1) * spacingX : 0);
+		if (!assigned) {
+			int width = clampLayoutSize(node_, hasExplicitWidth(node_) ? node_.layout.width : std::min<int>(node_.layout.width, maxSum + edgesX), true);
+			if (width < maxSum + edgesX) {
+				measureMinimums();
+				width = std::max(width, minSum + edgesX);
+			}
+			node_.layout.width = clampLayoutExtent(width);
+		}
+		const int available = std::max(0, node_.layout.width - edgesX);
+		if (available < maxSum) measureMinimums();
+		keepTableMeasures(columns, minimums, minWidths, maxWidths);
+		int widths[kTableColumns] = {};
+		int widthSum = 0;
+		for (int c = 0; c < columns; ++c) {
+			std::int64_t width = minWidths[c];
+			if (available >= maxSum) width = maxSum > 0 ? maxWidths[c] + std::int64_t(available - maxSum) * maxWidths[c] / maxSum : available / columns;
+			else if (available > minSum) width += std::int64_t(maxWidths[c] - minWidths[c]) * (available - minSum) / (maxSum - minSum);
+			widths[c] = static_cast<int>(width);
+			widthSum += widths[c];
+		}
+		if (columns && available > minSum) widths[columns - 1] += available - widthSum;
+
+		int columnX[kTableColumns] = {};
+		const int rowsLeft = boxInset(style, 3) + spacingX;
+		int x = rowsLeft;
+		for (int c = 0; c < columns; ++c) {
+			columnX[c] = x;
+			x += widths[c] + spacingX;
+		}
+		const int rowsWidth = columns ? x - spacingX - rowsLeft : 0;
+
+		int y = boxInset(style, 0);
+		for (int c = node_.first_child; c >= 0; c = nodes_[c].next_sibling) {
+			if (tableRole(nodes_[c].computedStyle()) != kTableRoleCaption || !tableInFlow(id_, c)) continue;
+			Node &caption = nodes_[c];
+			const auto &margin = caption.computedStyle().margin;
+			engine_.layoutNode(c, paddedWidth(), paddedHeight());
+			caption.layout.x = boxInset(style, 3) + margin[3];
+			caption.layout.y = y + margin[0];
+			y += margin[0] + caption.layout.height + margin[2];
+			offsetTablePart(caption);
+		}
+		if (rowCount) y += spacingY;
+
+		int group = -1, groupTop = 0;
+		auto closeGroup = [&](int bottom) {
+			if (group < 0) return;
+			Node &part = nodes_[group];
+			part.layout.x = rowsLeft;
+			part.layout.y = groupTop;
+			part.layout.width = clampLayoutExtent(rowsWidth);
+			part.layout.height = clampLayoutExtent(bottom - groupTop);
+			offsetTablePart(part);
+		};
+		for (int r = 0; r < rowCount; ++r) {
+			const TableRow &row = rows[r];
+			if (row.group != group) {
+				closeGroup(y - spacingY);
+				group = row.group;
+				groupTop = y;
+			}
+			int height = 0, column = 0;
+			forEachTableRowItem(row, [&](int item) {
+				if (column >= columns) return;
+				layoutTableCell(item, widths[column++]);
+				const Node &cell = nodes_[item];
+				const auto &margin = cell.computedStyle().margin;
+				const int outer = tableRole(cell.computedStyle()) == kTableRoleCell ? 0 : margin[0] + margin[2];
+				height = std::max<int>(height, cell.layout.height + outer);
+			});
+			if (row.node >= 0 && nodes_[row.node].computedStyle().height != kUnset)
+				height = std::max(height, contentSizeToBorderSize(nodes_[row.node].computedStyle(), nodes_[row.node].computedStyle().height, false));
+			// Table coordinates of the group's box and of the items' parent.
+			const int groupX = group >= 0 ? rowsLeft : 0, groupY = group >= 0 ? groupTop : 0;
+			const int parentX = row.node >= 0 ? rowsLeft : groupX, parentY = row.node >= 0 ? y : groupY;
+			if (row.node >= 0) {
+				Node &part = nodes_[row.node];
+				part.layout.x = rowsLeft - groupX;
+				part.layout.y = y - groupY;
+				part.layout.width = clampLayoutExtent(rowsWidth);
+				part.layout.height = clampLayoutExtent(height);
+			}
+			column = 0;
+			forEachTableRowItem(row, [&](int item) {
+				if (column >= columns) return;
+				Node &cell = nodes_[item];
+				const auto &margin = cell.computedStyle().margin;
+				const bool part = tableRole(cell.computedStyle()) == kTableRoleCell;
+				cell.layout.x = columnX[column++] - parentX + (part ? 0 : margin[3]);
+				cell.layout.y = y - parentY + (part ? 0 : margin[0]);
+				if (part) alignTableCell(cell, height);
+				offsetTablePart(cell);
+			});
+			if (row.node >= 0) offsetTablePart(nodes_[row.node]);
+			y += height + spacingY;
+		}
+		closeGroup(y - spacingY);
+
+		const int height = y + boxInset(style, 2);
+		if (assigned || hasExplicitHeight(node_)) node_.layout.height = clampLayoutExtent(std::max<int>(node_.layout.height, height));
+		else node_.layout.height = clampLayoutExtent(clampLayoutSize(node_, height, false));
+		updateScrollContentSize();
+		positionAbsoluteChildren();
+	}
+#endif
 
 	struct ColumnGeometry {
 		int count = 0, width = 0, gap = 0;
@@ -3552,8 +3913,11 @@ private:
 	// 5.1), just like display: flow-root and a line-clamp container.
 	bool establishesBlockContext(const Node &n) const
 	{
+		// Tables and cells are block formatting context roots (CSS 2.2 9.4.1);
+		// floats reach no other table part either, since the table places it.
 		return n.parent < 0 || isOutOfFlowPosition(n.computedStyle().position) || n.computedStyle().float_side ||
-		    n.computedStyle().display != kDisplayBlock || isFlowRoot(n.computedStyle()) || (blockBox(n) && n.computedStyle().align_content != 0) || clampsLines(n) ||
+		    n.computedStyle().display != kDisplayBlock || isFlowRoot(n.computedStyle()) || tableRole(n.computedStyle()) ||
+		    (blockBox(n) && n.computedStyle().align_content != 0) || clampsLines(n) ||
 		    overflowEstablishesContext(n.computedStyle()) || isMulticolContainer(n) ||
 		    (n.parent >= 0 && (nodes_[n.parent].computedStyle().display == kDisplayFlex || isDisplayGrid(nodes_[n.parent].computedStyle()) ||
 		                      writingMode(n) != writingMode(nodes_[n.parent]))) ||
@@ -3756,7 +4120,8 @@ private:
 				if (measureIntrinsic) engine_.layoutNode(id, contentWidth, contentHeight);
 				// This horizontal formatting context fills the inline size of
 				// parallel children. An orthogonal child's width is its block size.
-				if (!hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child))) {
+				if (!hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child)) &&
+				    tableRole(child.computedStyle()) != kTableRoleTable) {
 					const int width = clampLayoutSize(child, std::max(0, contentWidth - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
 					if (child.layout.width != width) {
 						child.layout.width = clampLayoutExtent(width);
@@ -4023,7 +4388,7 @@ private:
 			const bool block = !child.computedStyle().float_side && blockBox(child);
 			const int measuredOuterW = child.layout.width + child.computedStyle().margin[3] + child.computedStyle().margin[1];
 			const bool automaticWidth = block && !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) &&
-			    writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child));
+			    writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child)) && tableRole(child.computedStyle()) != kTableRoleTable;
 			// Ordinary blocks still fill their containing block beside floats;
 			// only their line boxes are shortened by float exclusions.
 			if (automaticWidth) {
@@ -6062,6 +6427,10 @@ std::size_t gLayoutMemoPeakBytes = 0;
 void LayoutEngine::beginLayoutPass()
 {
 	endLayoutPass();
+#if GEA_CSS_TABLES
+	++gLayoutPassSerial;
+	gLayoutPassOpen = true;
+#endif
 	gLayoutMemoCapacity = Tree::instance().nodeCount();
 	const std::size_t bytes = sizeof(LayoutPassMemo) * gLayoutMemoCapacity;
 	gLayoutMemo = bytes ? static_cast<LayoutPassMemo *>(gea::framework::memory::Allocator::allocatePreferSpiram(bytes)) : nullptr;
@@ -6080,6 +6449,9 @@ void LayoutEngine::beginLayoutPass()
 
 void LayoutEngine::endLayoutPass()
 {
+#if GEA_CSS_TABLES
+	gLayoutPassOpen = false;
+#endif
 	gea::framework::memory::Allocator::free(gLayoutMemo);
 	gLayoutMemo = nullptr;
 	gLayoutMemoCapacity = 0;
@@ -6346,6 +6718,10 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	// inside one moves up to that root.
 	while (nodes[scope].render.vertical_flow && nodes[scope].parent >= 0 && nodes[nodes[scope].parent].render.vertical_flow)
 		scope = nodes[scope].parent;
+#endif
+#if GEA_CSS_TABLES
+	// A table places its parts (layoutTable): a scope on one moves up to it.
+	while (tableRole(nodes[scope].computedStyle()) > kTableRoleTable && nodes[scope].parent >= 0) scope = nodes[scope].parent;
 #endif
 	Node &a = nodes[scope];
 	auto &persistent = layoutState(scope);

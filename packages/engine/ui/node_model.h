@@ -118,6 +118,11 @@ inline constexpr int8_t kDisplayFlowRoot = 2; // display: flow-root
 // display: inline on a block kind; with kDisplayFlowRoot it is inline-block, and
 // on a flex or grid kind inline-flex or inline-grid. Those three are atomic.
 inline constexpr int8_t kDisplayInline = 4;
+// A table display value carries its part's role above the flag bits
+// (RareStyle::table_role). Columns compute to none: they generate no box.
+inline constexpr int kTableRoleShift = 8;
+inline constexpr uint8_t kTableRoleTable = 1, kTableRoleRowGroup = 2, kTableRoleHeaderGroup = 3, kTableRoleFooterGroup = 4,
+                         kTableRoleRow = 5, kTableRoleCell = 6, kTableRoleCaption = 7, kTableRoleColumn = 8, kTableRoleColumnGroup = 9;
 inline constexpr int kPositionFixed = 3;
 // position: sticky stays in flow; the absolute-coordinate pass shifts it.
 inline constexpr int kPositionSticky = 4;
@@ -583,6 +588,17 @@ struct RareStyle {
 #else
 	static constexpr uint8_t line_clamp_flags = 0;
 #endif
+	// A table part's kTableRole* (ComputedStyle::table_part says it has one),
+	// border-collapse: collapse, and border-spacing in px.
+#if GEA_CSS_TABLES
+	uint8_t table_role = 0;
+	uint8_t border_collapse = 0;
+	int16_t border_spacing_x = 0, border_spacing_y = 0;
+#else
+	static constexpr uint8_t table_role = 0;
+	static constexpr uint8_t border_collapse = 0;
+	static constexpr int16_t border_spacing_x = 0, border_spacing_y = 0;
+#endif
 	};
 
 // Individual translation is applied outside the transform list. Its translation
@@ -598,7 +614,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_BLEND || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_IMAGE || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_BLEND || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_IMAGE || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_CLAMP || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_MULTICOL || GEA_CSS_SIDE_BORDERS || GEA_CSS_TABLES || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {
@@ -614,6 +630,13 @@ struct ComputedStyle {
 	uint8_t display_explicit : 3;
 #else
 	static constexpr uint8_t display_explicit = 0;
+#endif
+	// A table part (display: table and its parts): its role is
+	// rstyle().table_role. Shares the display byte.
+#if GEA_CSS_TABLES
+	uint8_t table_part : 1;
+#else
+	static constexpr uint8_t table_part = 0;
 #endif
 #if GEA_CSS_TEXT_ALIGN
 	int8_t text_align;  // 0 start, 1 center, 2 right, 3 left, 4 end
@@ -1400,6 +1423,13 @@ inline bool isDisplayGrid(const ComputedStyle &style)
 inline bool isFlowRoot(const ComputedStyle &style)
 {
 	return style.display == kDisplayBlock && (style.display_explicit & kDisplayFlowRoot);
+}
+
+// The kTableRole* of a table part, 0 for any other box: one bit test unless it
+// is a part.
+inline int tableRole(const ComputedStyle &style)
+{
+	return style.table_part ? rstyle(style).table_role : 0;
 }
 
 // inline-block, inline-flex and inline-grid sit on a line like an image, sized
