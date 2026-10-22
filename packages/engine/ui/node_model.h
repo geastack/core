@@ -77,6 +77,10 @@ inline float resolveOriginOffset(int origin, int extent)
 inline constexpr int kSizeMinContent = -2;
 inline constexpr int kSizeMaxContent = -3;
 inline constexpr int kSizeFitContent = -4;
+// stretch (CSS Sizing 4, 5.1.1): the box fills the space its containing block
+// leaves for it. Outside the intrinsic range, so the sites that measure
+// intrinsic keywords treat it as an automatic size.
+inline constexpr int kSizeStretch = -5;
 
 inline bool isIntrinsicSizeExpression(int value)
 {

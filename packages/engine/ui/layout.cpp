@@ -4256,6 +4256,15 @@ private:
 						engine_.repositionChildren(id);
 					}
 				}
+				// height: stretch fills a definite container height less the
+				// margins (CSS Sizing 4, 5.1.1); an indefinite one leaves it auto.
+				if (child.computedStyle().height_expression == kSizeStretch && hasExplicitHeight(node_)) {
+					const int height = clampLayoutSize(child, std::max(0, contentHeight - child.computedStyle().margin[0] - child.computedStyle().margin[2]), false);
+					if (child.layout.height != height) {
+						child.layout.height = clampLayoutExtent(height);
+						engine_.repositionChildren(id);
+					}
+				}
 				const int slack = contentWidth - child.layout.width - child.computedStyle().margin[1] - child.computedStyle().margin[3];
 				child.layout.x = boxInset(node_.computedStyle(), 3) + child.computedStyle().margin[3] + blockInlineOffset(child, slack);
 			}
@@ -5513,12 +5522,14 @@ private:
 		lastEnd = lastStart + lastWidth;
 	}
 
+	// An automatic size with both insets set, or a stretch size, fills the
+	// inset-modified containing block (CSS Position 3, 3.5; an unset inset
+	// takes the edge).
 	void stretchAbsoluteChild(int child, Node &childNode, int childAvailWidth, int childAvailHeight)
 	{
 		bool resized = false;
 		if (!hasExplicitWidth(childNode) && !isIntrinsicSizeExpression(childNode.computedStyle().width_expression) &&
-		    hasPositionOffset<3>(childNode) &&
-		    hasPositionOffset<1>(childNode)) {
+		    ((hasPositionOffset<3>(childNode) && hasPositionOffset<1>(childNode)) || childNode.computedStyle().width_expression == kSizeStretch)) {
 			int width = childAvailWidth - resolvedPositionOffsetWithBasis<3>(childNode, childAvailWidth) - resolvedPositionOffsetWithBasis<1>(childNode, childAvailWidth) -
 			            childNode.computedStyle().margin[1] - childNode.computedStyle().margin[3];
 			if (width < 0) width = 0;
@@ -5530,8 +5541,7 @@ private:
 		}
 
 		if (!hasExplicitHeight(childNode) && !isIntrinsicSizeExpression(childNode.computedStyle().height_expression) &&
-		    hasPositionOffset<0>(childNode) &&
-		    hasPositionOffset<2>(childNode)) {
+		    ((hasPositionOffset<0>(childNode) && hasPositionOffset<2>(childNode)) || childNode.computedStyle().height_expression == kSizeStretch)) {
 			int height = childAvailHeight - resolvedPositionOffsetWithBasis<0>(childNode, childAvailHeight) - resolvedPositionOffsetWithBasis<2>(childNode, childAvailHeight) -
 			             childNode.computedStyle().margin[0] - childNode.computedStyle().margin[2];
 			if (height < 0) height = 0;
@@ -5695,13 +5705,13 @@ void offsetFromAncestorToNode(int ancestor, int node, Node *nodes, int *outX, in
 	*outY = y;
 }
 
+// See LayoutNodePass::stretchAbsoluteChild.
 void stretchAbsoluteNodeToContainingBlock(int node, int containingWidth, int containingHeight, Node *nodes)
 {
 	Node &absolute = nodes[node];
 	bool resized = false;
 	if (!hasExplicitWidth(absolute) && !isIntrinsicSizeExpression(absolute.computedStyle().width_expression) &&
-	    hasPositionOffsetValue<3>(absolute) &&
-	    hasPositionOffsetValue<1>(absolute)) {
+	    ((hasPositionOffsetValue<3>(absolute) && hasPositionOffsetValue<1>(absolute)) || absolute.computedStyle().width_expression == kSizeStretch)) {
 		int width = containingWidth -
 		            resolvedPositionOffsetForBasis<3>(absolute, containingWidth) -
 		            resolvedPositionOffsetForBasis<1>(absolute, containingWidth) -
@@ -5715,8 +5725,7 @@ void stretchAbsoluteNodeToContainingBlock(int node, int containingWidth, int con
 	}
 
 	if (!hasExplicitHeight(absolute) && !isIntrinsicSizeExpression(absolute.computedStyle().height_expression) &&
-	    hasPositionOffsetValue<0>(absolute) &&
-	    hasPositionOffsetValue<2>(absolute)) {
+	    ((hasPositionOffsetValue<0>(absolute) && hasPositionOffsetValue<2>(absolute)) || absolute.computedStyle().height_expression == kSizeStretch)) {
 		int height = containingHeight -
 		             resolvedPositionOffsetForBasis<0>(absolute, containingHeight) -
 		             resolvedPositionOffsetForBasis<2>(absolute, containingHeight) -
@@ -5739,7 +5748,8 @@ void layoutAbsoluteNode(int node, int containing, int areaX, int areaWidth, int 
 	const bool left = hasPositionOffsetValue<3>(absolute), right = hasPositionOffsetValue<1>(absolute);
 	if (absolute.type != NodeType::View || writingMode(absolute) != 0 ||
 	    hasExplicitWidth(absolute) || isIntrinsicSizeExpression(absolute.computedStyle().width_expression) ||
-	    (left && right) || (preferredRatio(absolute) > 0 && hasExplicitHeight(absolute))) {
+	    (left && right) || absolute.computedStyle().width_expression == kSizeStretch ||
+	    (preferredRatio(absolute) > 0 && hasExplicitHeight(absolute))) {
 #if GEA_CSS_WRITING_MODE
 		// A vertical box's inline size is its height: with both vertical insets
 		// it is known before its lines are laid out, and its width follows them.
@@ -5827,8 +5837,18 @@ void positionAbsoluteNodeInContainingBlock(int node, int containing, Node *nodes
 	const bool staticPlaced = layoutState(node).static_block_axis == kVerticalFlowStatic;
 	if (!staticPlaced && !hasPositionOffsetValue<3>(absolute) && !hasPositionOffsetValue<1>(absolute))
 		absolute.layout.x = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, true, &containingNode, areaX - parentOffsetX, areaWidth);
-	if (!staticPlaced && !hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute))
+	if (!staticPlaced && !hasPositionOffsetValue<0>(absolute) && !hasPositionOffsetValue<2>(absolute)) {
 		absolute.layout.y = LayoutEngine::alignedAbsoluteOffset(nodes[parent], absolute, false, &containingNode, areaY - parentOffsetY, areaHeight);
+		// With both insets auto a stretched box fills from its static position
+		// to the containing block's end edge (CSS Position 3, 3.5.1).
+		if (absolute.computedStyle().height_expression == kSizeStretch && !hasExplicitHeight(absolute)) {
+			const int height = clampLayoutSize(absolute, std::max(0, areaY + areaHeight - (absolute.layout.y + parentOffsetY) - absolute.computedStyle().margin[2]), false);
+			if (absolute.layout.height != height) {
+				absolute.layout.height = clampLayoutExtent(height);
+				LayoutEngine::instance().repositionChildren(node);
+			}
+		}
+	}
 
 	int containingX = absolute.layout.x + parentOffsetX, offset = 0;
 	if (hasPositionOffsetValue<3>(absolute) && hasPositionOffsetValue<1>(absolute) &&

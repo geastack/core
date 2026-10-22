@@ -9599,9 +9599,10 @@ void setSizeValue(NodeHandle node,
 {
 	const std::string keyword = toLowerAscii(trimCssValue(value));
 	if ((lengthProperty == Property::Width || lengthProperty == Property::Height) &&
-	    (keyword == "min-content" || keyword == "max-content" || keyword == "fit-content")) {
+	    (keyword == "min-content" || keyword == "max-content" || keyword == "fit-content" || keyword == "stretch")) {
 		setStyleValue(node, lengthProperty == Property::Width ? Property::WidthExpression : Property::HeightExpression,
-		              keyword == "min-content" ? kSizeMinContent : keyword == "max-content" ? kSizeMaxContent : kSizeFitContent,
+		              keyword == "min-content" ? kSizeMinContent : keyword == "max-content" ? kSizeMaxContent :
+		              keyword == "fit-content" ? kSizeFitContent : kSizeStretch,
 		              source);
 		return;
 	}
