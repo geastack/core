@@ -1756,6 +1756,9 @@ struct CssCompiledBackground {
 #if GEA_CSS_BACKGROUND_IMAGES
 	std::int32_t imageList = -1; // storeBackgroundImageList handle of the url() layers
 #endif
+	// The placement longhands a shorthand sets beside its layers, as
+	// storeBackgroundPlacementList handles; -1 keeps a longhand's initial value.
+	std::int32_t sizeList = -1, positionList = -1, repeatList = -1, attachmentList = -1, originList = -1;
 };
 
 constexpr bool hasBackgroundImageList([[maybe_unused]] const CssCompiledBackground &background)
@@ -7843,6 +7846,62 @@ int compileBackgroundPlacement(CssDeclarationId declaration, const std::string &
 	return list.empty() ? -2 : storeBackgroundPlacementList(list);
 }
 
+// The placement longhands of a background shorthand's layers (CSS Backgrounds
+// 3, 3.10): <bg-position> [ / <bg-size> ]?, <repeat-style>, <attachment>, and
+// the first <box> as the origin (the second, and text, set the clip; images,
+// gradients and the colour are read elsewhere). Each longhand a layer sets is
+// compiled by its own parser, with the initial value for the layers that leave
+// it out. False on a word no longhand accepts.
+bool compileShorthandPlacement(const std::vector<std::string> &layers, CssCompiledBackground &background)
+{
+	struct Longhand { CssDeclarationId declaration; const char *initial; std::string joined; bool any = false; };
+	Longhand longhands[5] = {{CssDeclarationId::BackgroundSize, "auto"}, {CssDeclarationId::BackgroundPosition, "0% 0%"},
+	                         {CssDeclarationId::BackgroundRepeat, "repeat"}, {CssDeclarationId::BackgroundAttachment, "scroll"},
+	                         {CssDeclarationId::BackgroundOrigin, "padding-box"}};
+	auto numeric = [](const std::string &word) { return std::isdigit(static_cast<unsigned char>(word[0])) || word[0] == '.' || word[0] == '-' || word[0] == '+'; };
+	for (std::size_t index = 0; index < layers.size(); ++index) {
+		std::string values[5];
+		int boxes = 0;
+		bool sizing = false;
+		std::vector<std::string> tokens;
+		for (const auto &word : splitWords(toLowerAscii(layers[index]))) {
+			// A size follows its position after a slash that may touch either.
+			const std::size_t slash = word.find('(') == std::string::npos ? word.find('/') : std::string::npos;
+			if (slash == std::string::npos) { tokens.push_back(word); continue; }
+			if (slash > 0) tokens.push_back(word.substr(0, slash));
+			tokens.push_back("/");
+			if (slash + 1 < word.size()) tokens.push_back(word.substr(slash + 1));
+		}
+		auto append = [&](int longhand, const std::string &word) {
+			if (!values[longhand].empty()) values[longhand] += ' ';
+			values[longhand] += word;
+		};
+		for (const auto &word : tokens) {
+			if (word == "/") { sizing = true; continue; }
+			if (sizing && (word == "auto" || word == "cover" || word == "contain" || numeric(word))) { append(0, word); continue; }
+			sizing = false;
+			if (word == "repeat" || word == "no-repeat" || word == "repeat-x" || word == "repeat-y" || word == "round" || word == "space") append(2, word);
+			else if (word == "scroll" || word == "fixed" || word == "local") append(3, word);
+			else if (backgroundBoxValue(word) >= 0) { if (boxes++ == 0) append(4, word); }
+			else if (word == "left" || word == "right" || word == "top" || word == "bottom" || word == "center" || numeric(word)) append(1, word);
+			else if (word != "text" && word != "none" && word.find('(') == std::string::npos && word[0] != '#' && !parseCssColor(word).valid) return false;
+		}
+		for (int i = 0; i < 5; ++i) {
+			if (!values[i].empty()) longhands[i].any = true;
+			if (index) longhands[i].joined += ',';
+			longhands[i].joined += values[i].empty() ? longhands[i].initial : values[i];
+		}
+	}
+	for (int i = 0; i < 5; ++i) {
+		if (!longhands[i].any) continue;
+		const int handle = compileBackgroundPlacement(longhands[i].declaration, longhands[i].joined);
+		if (handle < 0) return false;
+		(i == 0 ? background.sizeList : i == 1 ? background.positionList : i == 2 ? background.repeatList :
+		 i == 3 ? background.attachmentList : background.originList) = handle;
+	}
+	return true;
+}
+
 void applyBackgroundHandle(NodeHandle node, int handle, bool shorthand, StyleApplicationSource source)
 {
 	if (!node || !backgroundImageIsValid(handle, node.id())) return;
@@ -7851,8 +7910,11 @@ void applyBackgroundHandle(NodeHandle node, int handle, bool shorthand, StyleApp
 		setStyleValue(node, Property::BackgroundColor, background ? background->colorStyle : 0, source);
 		setStyleValue(node, Property::BackgroundAlpha, background ? background->colorAlpha : 0, source);
 		setStyleValue(node, Property::BackgroundClip, background ? background->clip : 0, source);
-		for (Property p : {Property::BackgroundSizeList, Property::BackgroundPositionList, Property::BackgroundRepeatList,
-		                   Property::BackgroundAttachmentList, Property::BackgroundOriginList}) setStyleValue(node, p, -1, source);
+		setStyleValue(node, Property::BackgroundSizeList, background ? background->sizeList : -1, source);
+		setStyleValue(node, Property::BackgroundPositionList, background ? background->positionList : -1, source);
+		setStyleValue(node, Property::BackgroundRepeatList, background ? background->repeatList : -1, source);
+		setStyleValue(node, Property::BackgroundAttachmentList, background ? background->attachmentList : -1, source);
+		setStyleValue(node, Property::BackgroundOriginList, background ? background->originList : -1, source);
 	}
 	setStyleValue(node, Property::BackgroundImage, handle, source);
 	setStyleValue(node, Property::HasBackground, 1, source);
@@ -7900,6 +7962,7 @@ bool compileBackgroundValue(const std::string &value, CssCompiledValue &compiled
 		const int clip = compileBackgroundClip(value, true);
 		if (clip < 0) return false;
 		background.clip = clip;
+		if (!compileShorthandPlacement(layers, background)) return false;
 	}
 #if GEA_CSS_BACKGROUND_IMAGES
 	std::vector<StyleValues::BackgroundImageLayer> images;

@@ -1914,12 +1914,15 @@ struct BackgroundImage {
 
 // One tile of a url() layer at (x, y), w x h: a blit, scaled unless the tile
 // has the image's own size. It clips to its bounds, which the caller sets.
-DisplayCommand *appendBackgroundImageTile(const BackgroundImage &image, int x, int y, int w, int h)
+// corners: the painting area's corner radii when the tile covers it whole,
+// drawn by the rounded scaled blit; null or zero keeps the plain blits.
+DisplayCommand *appendBackgroundImageTile(const BackgroundImage &image, int x, int y, int w, int h, const int16_t *corners)
 {
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return nullptr;
 	DisplayList::instance().retainImage(image.id);
-	if (w == image.width && h == image.height) {
+	const bool rounded = corners && (corners[0] > 0 || corners[1] > 0 || corners[2] > 0 || corners[3] > 0);
+	if (w == image.width && h == image.height && !rounded) {
 		cmd->type = DisplayCommandType::BlitImage;
 		cmd->blit.pixels = image.pixels;
 		cmd->blit.alpha = image.alpha;
@@ -1939,7 +1942,10 @@ DisplayCommand *appendBackgroundImageTile(const BackgroundImage &image, int x, i
 		cmd->scaledBlit.dy = static_cast<int16_t>(y);
 		cmd->scaledBlit.dw = static_cast<int16_t>(w);
 		cmd->scaledBlit.dh = static_cast<int16_t>(h);
-		cmd->scaledBlit.tl = cmd->scaledBlit.tr = cmd->scaledBlit.br = cmd->scaledBlit.bl = 0;
+		cmd->scaledBlit.tl = rounded ? corners[0] : 0;
+		cmd->scaledBlit.tr = rounded ? corners[1] : 0;
+		cmd->scaledBlit.br = rounded ? corners[2] : 0;
+		cmd->scaledBlit.bl = rounded ? corners[3] : 0;
 		cmd->scaledBlit.boundsClip = 1;
 	}
 	return cmd;
@@ -1997,6 +2003,23 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 			x += inset[3]; y += inset[0]; w -= inset[1]+inset[3]; h -= inset[0]+inset[2];
 		}
 		if (w <= 0 || h <= 0) continue;
+		// Rounded corners clip the painting area (CSS Backgrounds 3, 5.3): the
+		// padding and content edges take the outer radii less the edges inside
+		// them. An image tile covering the whole area carries them itself, so
+		// every replay path cuts its corners; other tiles stay rectangular.
+		int16_t corners[4] = {0, 0, 0, 0};
+		bool rounded = false;
+		if (!canvas && clip <= 2 && raster && hasAnyRadius(geometry)) {
+			int16_t rx8[4], ry8[4];
+			resolvedBorderRadii8(geometry, rx8, ry8);
+			for (int i = 0; i < 4; ++i) {
+				const int sideX = i == 0 || i == 3 ? 3 : 1, sideY = i < 2 ? 0 : 2;
+				const int insetX = clip == 0 ? 0 : computedBorderWidth(geometry.computedStyle(), sideX) + (clip == 2 ? std::max<int>(0, geometry.computedStyle().padding[sideX]) : 0);
+				const int insetY = clip == 0 ? 0 : computedBorderWidth(geometry.computedStyle(), sideY) + (clip == 2 ? std::max<int>(0, geometry.computedStyle().padding[sideY]) : 0);
+				corners[i] = static_cast<int16_t>(std::max(0, (std::min(rx8[i] - 8 * insetX, ry8[i] - 8 * insetY) + 4) / 8));
+				rounded |= corners[i] > 0;
+			}
+		}
 		// Records the tiles that meet the area (cx, cy, cw, ch) under a clip to it.
 		// A border-area side's linear tiles also clip to their bounds, since the
 		// dirty-region replays skip clip commands. False when the list is full.
@@ -2024,7 +2047,8 @@ bool recordPlacedBackgrounds(const Node &geometry, const Node &source, bool canv
 				if (tx >= cx+cw || ty >= cy+ch || tx+p.width <= cx || ty+p.height <= cy) continue;
 				DisplayCommand *paint = nullptr;
 #if GEA_CSS_BACKGROUND_IMAGES
-				if (raster) paint = appendBackgroundImageTile(image, tx, ty, p.width, p.height);
+				if (raster) paint = appendBackgroundImageTile(image, tx, ty, p.width, p.height,
+				    rounded && tx == cx && ty == cy && p.width == cw && p.height == ch ? corners : nullptr);
 				else
 #endif
 				if (linear) paint = appendLinearGradientRectRaw(source,tx,ty,p.width,p.height);

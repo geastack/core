@@ -5630,13 +5630,19 @@ int gLastScrollUiFrame = -1000;
 
 #if GEA_CSS_BACKGROUND_IMAGES
 		// A background image tile (blit.boundsClip): drawn under its bounds, which
-		// the dirty-region replays need since they skip the layer's clip.
+		// the dirty-region replays need since they skip the layer's clip. A tile
+		// that covers a rounded painting area carries its corners (view.cpp,
+		// appendBackgroundImageTile) and keeps them in every replay.
 		__attribute__((noinline)) void drawBoundedBlit(const DisplayCommand &c)
 		{
 			using gea::platform::display::Display;
 			Display::pushClip(c.bx, c.by, c.bw, c.bh);
 			if (c.type == DisplayCommandType::BlitImage)
 				Display::blitImage(c.blit.pixels, c.blit.alpha, c.blit.sourceWidth, c.blit.sourceHeight, c.blit.dx, c.blit.dy);
+			else if ((c.scaledBlit.tl > 0 || c.scaledBlit.tr > 0 || c.scaledBlit.br > 0 || c.scaledBlit.bl > 0) && Display::canvas())
+				Display::canvas()->drawImageRounded(c.scaledBlit.pixels, c.scaledBlit.alpha, c.scaledBlit.sourceWidth, c.scaledBlit.sourceHeight,
+				                                    c.scaledBlit.dx, c.scaledBlit.dy, c.scaledBlit.dw, c.scaledBlit.dh,
+				                                    c.scaledBlit.tl, c.scaledBlit.tr, c.scaledBlit.br, c.scaledBlit.bl);
 			else
 				Display::blitImageScaled(c.scaledBlit.pixels, c.scaledBlit.alpha, c.scaledBlit.sourceWidth, c.scaledBlit.sourceHeight,
 				                         c.scaledBlit.dx, c.scaledBlit.dy, c.scaledBlit.dw, c.scaledBlit.dh);
