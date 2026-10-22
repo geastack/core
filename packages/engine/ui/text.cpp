@@ -2122,6 +2122,9 @@ int TextRenderer::baselineOffset(const Node &node, bool last)
 	const int lineAdvance = node.computedStyle().line_height > 0 ? node.computedStyle().line_height : font.lineHeight();
 	const int halfLeading = node.computedStyle().line_height > 0 ? (lineAdvance - font.lineHeight()) / 2 : 0;
 	int offset = boxInset(node.computedStyle(), 0) + halfLeading + font.ascender();
+	// A line clamp keeps the first line_clamp_lines lines: the last baseline is
+	// the last kept line's.
+	if (last && node.layout.line_clamp_lines > 0) return offset + (node.layout.line_clamp_lines - 1) * lineAdvance;
 	if (last) {
 		std::string storage;
 		const char *text = textForNode(node, storage);

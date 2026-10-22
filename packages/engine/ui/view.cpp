@@ -2973,13 +2973,26 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_point") ViewRenderer::
 	ViewGeometry::transformPoint(node, usePrevious, x, y, z, outX, outY);
 }
 
+// Whether a transformed ancestor hides the subtree: a hidden back face, or a
+// zero scale, whose matrix cannot be inverted and renders nothing (CSS
+// Transforms 2, 7). A zero z scale hides only a box outside a 3D rendering
+// context: inside one browsers paint the flattened subtree (the rig's
+// transform-scale-z control, a preserve-3d box under a perspective parent).
 bool ViewRenderer::backfaceSubtreeHidden(const Node &node)
 {
 	const auto &state = treeState();
 	for (int id = ViewGeometry::nodeIndex(node); id >= 0 && id < state.nodeCount; id = state.nodes[id].parent) {
 		const auto &ancestor = state.nodes[id];
-		if (ViewGeometry::hasTransformableBox(ancestor) && ancestor.computedStyle().backface_hidden &&
-		    !preserves3D(ancestor.computedStyle()) && ViewGeometry::backFacing(ancestor))
+		if (!ViewGeometry::hasTransformableBox(ancestor)) continue;
+		const RareStyle &rs = rstyle(ancestor.computedStyle());
+		if (rs.scale_x == 0 || rs.scale_y == 0 || rs.transform_scale_x == 0 || rs.transform_scale_y == 0) return true;
+		if ((rs.scale_z == 0 || rs.transform_scale_z == 0) && !preserves3D(ancestor.computedStyle())) {
+			const int parent = ancestor.parent;
+			const bool context = parent >= 0 && parent < state.nodeCount &&
+			    (preserves3D(state.nodes[parent].computedStyle()) || rstyle(state.nodes[parent].computedStyle()).perspective > 0);
+			if (!context) return true;
+		}
+		if (ancestor.computedStyle().backface_hidden && !preserves3D(ancestor.computedStyle()) && ViewGeometry::backFacing(ancestor))
 			return true;
 	}
 	return false;

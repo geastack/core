@@ -4167,12 +4167,18 @@ private:
 	}
 
 	// Where a block-level box sits in the free inline space of its horizontal
-	// container: auto margins take it (CSS 2.2 10.3.3); otherwise it starts at
-	// the container's start edge.
+	// container: auto margins take it (CSS 2.2 10.3.3); then a justify-self
+	// other than auto, normal or stretch (CSS Align 3, 6.1); otherwise it
+	// starts at the container's start edge.
 	int blockInlineOffset(const Node &child, int slack) const
 	{
 		const bool autoLeft = child.computedStyle().margin_auto & (1 << 3), autoRight = child.computedStyle().margin_auto & (1 << 1);
 		if (autoLeft || autoRight) return slack > 0 && autoLeft ? (autoRight ? slack / 2 : slack) : 0;
+		const int self = (GEA_CSS_JUSTIFY_SELF ? rstyle(child.computedStyle()).justify_self : -1);
+		if (const int justify = self >= 0 ? self : node_.computedStyle().justify_items; justify > 0) {
+			const int used = usedGridAlignment(node_, child, justify, slack, true);
+			return used == 1 ? roundedHalf(slack) : used == 2 ? slack : 0;
+		}
 		return rightToLeft(node_) ? slack : 0;
 	}
 
@@ -4626,7 +4632,8 @@ private:
 			// right-to-left flow one that does not fill the line hugs the right.
 			// A block formatting context beside floats centers with auto margins in
 			// the space between them.
-			const bool autoMargins = child.computedStyle().margin_auto & 10;
+			const int selfJustify = (GEA_CSS_JUSTIFY_SELF ? rstyle(child.computedStyle()).justify_self : -1);
+			const bool autoMargins = (child.computedStyle().margin_auto & 10) || (selfJustify >= 0 ? selfJustify : node_.computedStyle().justify_items) > 0;
 			const int x = (block && !independentBlock ? left + blockInlineOffset(child, right - left - outerW) :
 			               child.computedStyle().float_side == 2 ? right - outerW :
 			               independentBlock ? contextX + (autoMargins ? blockInlineOffset(child, contextFree) : 0) : left) -
@@ -4637,7 +4644,13 @@ private:
 			child.layout.y = boxInset(node_.computedStyle(), 0) + y + (block ? 0 : child.computedStyle().margin[0]);
 			if (block && !establishesBlockContext(child) && child.first_child >= 0) {
 				LayoutNodePass nested(engine_, children[i], area, contentHeight);
-				if (!nested.resolveInlineFormattingRow()) {
+				// A block of inline content keeps its own row layout unless a float
+				// reaches its top: then its lines are placed here, shortened by the
+				// floats beside them (CSS 2.2 9.5).
+				bool floatsReach = false;
+				for (const auto &f : floats)
+					if (f.bottom > originY + y) { floatsReach = true; break; }
+				if (floatsReach || !nested.resolveInlineFormattingRow()) {
 					ScratchFrame nestedScratch;
 					if (nestedScratch.valid()) {
 						const int nestedCount = nested.collectFormattingChildren(nestedScratch.children(), kMaxChildren);
@@ -6338,10 +6351,13 @@ int LayoutEngine::alignedAbsoluteOffset(const Node &parent, const Node &childNod
 	    (!isInlineLevelNode(parent) || isAtomicInline(parent.computedStyle()) || isOutOfFlowPosition(parent.computedStyle().position)) &&
 	    !parent.computedStyle().flex_direction_explicit) {
 		// An explicit justify-self aligns the margin box in the parent's content
-		// box, the static-position rectangle's inline extent. auto stays normal
-		// for an absolutely positioned box (CSS Align 3, 6.1).
-		const int justify = rstyle(childNode.computedStyle()).justify_self;
-		if (justify >= 0) {
+		// box, the static-position rectangle's inline extent; auto takes the
+		// parent's justify-items, as a block-level box would in flow (CSS Align
+		// 3, 6.1). align-items does not reach block-level boxes, so it does not
+		// reach the block axis here either.
+		const int self = (GEA_CSS_JUSTIFY_SELF ? rstyle(childNode.computedStyle()).justify_self : -1);
+		const int justify = self >= 0 ? self : parent.computedStyle().justify_items;
+		if (justify > 0) {
 			const int free = (horizontal ? parent.layout.width : parent.layout.height) - boxInsets(parent.computedStyle(), horizontal) -
 			    (horizontal ? childNode.layout.width : childNode.layout.height) -
 			    childNode.computedStyle().margin[horizontal ? 3 : 0] - childNode.computedStyle().margin[horizontal ? 1 : 2];
