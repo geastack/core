@@ -12,6 +12,7 @@
 #include <climits>
 #include <cstring>
 #include <algorithm>
+#include <bitset>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -292,6 +293,11 @@ bool verticalFlowRoot(int id)
 	return false;
 #endif
 }
+
+// Set by a block container just before it lays out an in-flow block child
+// whose width it assigns afterwards; LayoutEngine::layoutNode consumes it and
+// the child's float context then skips measuring its max-content width.
+bool gAssignedWidth = false;
 
 // Probe the existing formatting algorithms without rewriting authored style.
 // A stack of constraints keeps nested measurements finite and allocates no
@@ -3126,6 +3132,9 @@ public:
 	{
 	}
 
+	// The parent assigns this box's width after the pass (gAssignedWidth).
+	void markAssignedWidth() { assignedWidth_ = true; }
+
 	void run()
 	{
 		invalidateInlineChildMetadata();
@@ -3815,15 +3824,58 @@ private:
 	}
 
 	bool splitInlineChildren_ = false;
+	bool assignedWidth_ = false;
+#if GEA_CSS_FLOATS
+	// CSS 2.2 9.5: a float inside an inline box is placed by the enclosing
+	// block's float context, not by the inline box. Lists the floats below
+	// `box`, through nested inline boxes, as those before the box's first
+	// in-flow content and those after it.
+	void inlineFloats(int box, int *leading, int &leads, int *trailing, int &trails, int capacity, bool &content) const
+	{
+		for (int c = nodes_[box].first_child; c >= 0; c = nodes_[c].next_sibling) {
+			const Node &child = nodes_[c];
+			const auto &style = child.computedStyle();
+			if (isDisplayNone(style) || isOutOfFlowPosition(style.position)) continue;
+			if (style.float_side) {
+				int *list = content ? trailing : leading;
+				int &n = content ? trails : leads;
+				if (n < capacity) list[n++] = c;
+			} else if (child.type == NodeType::Text) content = content || child.text.find_first_not_of(" \t\r\n\f") != std::string::npos;
+			else if (inlineBoxView(child) && !isAtomicInline(style) && !isLineBreak(child)) inlineFloats(c, leading, leads, trailing, trails, capacity, content);
+			else content = true;
+		}
+	}
+#endif
+
+	// An inline box flows its other content; the enclosing block places its
+	// floats (inlineFloats).
+	bool hoistsFloats() const
+	{
+		return GEA_CSS_FLOATS && inlineBoxView(node_) && !isAtomicInline(node_.computedStyle());
+	}
+
 	int collectFormattingChildren(int *children, int capacity)
 	{
-		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit)
-			return engine_.collectChildren(id_, children, capacity, true);
+		if (node_.computedStyle().display != kDisplayBlock || node_.computedStyle().flex_direction_explicit) {
+			int count = engine_.collectChildren(id_, children, capacity, true);
+#if GEA_CSS_FLOATS
+			if (hoistsFloats()) {
+				int kept = 0;
+				for (int i = 0; i < count; ++i)
+					if (!nodes_[children[i]].computedStyle().float_side) children[kept++] = children[i];
+				count = kept;
+			}
+#endif
+			return count;
+		}
 		int count = 0;
 		auto collect = [&](auto &&self, int parent) -> void {
 			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
 				Node &child = nodes_[c];
 				if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position) || suppressAnonymousWhitespace(nodes_, parent, c)) continue;
+#if GEA_CSS_FLOATS
+				if (child.computedStyle().float_side && hoistsFloats()) continue;
+#endif
 				if (splitInlineWrapper(nodes_, c)) {
 					splitInlineChildren_ = true;
 					child.layout.x = child.layout.y = child.layout.width = child.layout.height = 0;
@@ -3832,7 +3884,23 @@ private:
 #endif
 					engine_.invalidateMemo(c);
 					self(self, c);
-				} else if (count < capacity) children[count++] = c;
+					continue;
+				}
+#if GEA_CSS_FLOATS
+				// A decorated inline box keeps its box (splitInlineWrapper); its
+				// floats join this list beside it, leading ones first.
+				constexpr int kHoisted = 8;
+				int leading[kHoisted], trailing[kHoisted];
+				int leads = 0, trails = 0;
+				bool content = false;
+				if (child.first_child >= 0 && inlineBoxView(child) && !isAtomicInline(child.computedStyle()) && !child.computedStyle().float_side)
+					inlineFloats(c, leading, leads, trailing, trails, kHoisted, content);
+				for (int k = 0; k < leads && count < capacity; ++k) children[count++] = leading[k];
+#endif
+				if (count < capacity) children[count++] = c;
+#if GEA_CSS_FLOATS
+				for (int k = 0; k < trails && count < capacity; ++k) children[count++] = trailing[k];
+#endif
 			}
 		};
 		collect(collect, id_);
@@ -3886,7 +3954,12 @@ private:
 		std::vector<FloatBox> boxes;
 		std::vector<int> cleared;
 		int lastTop = 0;
+		// A block formatting context tried before its own margin, with the
+		// floats of its wrapper's hypothetical top beside it (marginChainResolver),
+		// and the one those floats pushed down.
+		int pushCandidate = -1, pushedCandidate = -1;
 		bool hasClearance(int id) const { return std::find(cleared.begin(), cleared.end(), id) != cleared.end(); }
+		void uncleared(int id) { cleared.erase(std::find(cleared.begin(), cleared.end(), id)); }
 	};
 	FloatContext *floatContext_ = nullptr;
 
@@ -3907,6 +3980,45 @@ private:
 	{
 		return !isDisplayNone(nodes_[child].computedStyle()) && !isOutOfFlowPosition(nodes_[child].computedStyle().position) &&
 		    !nodes_[child].computedStyle().float_side && !suppressAnonymousWhitespace(nodes_, parent, child);
+	}
+
+	// Whether a float lies below `parent` within its formatting context.
+	bool subtreeHasFloat(int parent) const
+	{
+		for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
+			const Node &child = nodes_[c];
+			if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position)) continue;
+			if (child.computedStyle().float_side || (!establishesBlockContext(child) && subtreeHasFloat(c))) return true;
+		}
+		return false;
+	}
+
+	// The in-flow descendant that settles the hypothetical top of block `id`
+	// (CSS 2.2 8.3.1): the first one, reached through boxes whose top margins
+	// adjoin, that does not collapse through. -1 when inline content or a
+	// block with a separating top edge settles it instead. `floats` reports a
+	// float met before it, which was placed at that hypothetical top.
+	int marginChainResolver(int id, bool &floats) const
+	{
+		for (;;) {
+			int next = -1;
+			bool stop = false;
+			visitFormattingChildren(nodes_, id, [&](int c) {
+				if (next >= 0 || stop) return;
+				const auto &style = nodes_[c].computedStyle();
+				if (!flowChild(nodes_[c].parent, c)) {
+					if (style.float_side && !isDisplayNone(style) && !isOutOfFlowPosition(style.position)) floats = true;
+					return;
+				}
+				if (!blockBox(nodes_[c])) stop = true;
+				else if (collapsesThrough(c)) floats = floats || subtreeHasFloat(c);
+				else next = c;
+			});
+			if (next < 0) return -1;
+			if (establishesBlockContext(nodes_[next])) return next;
+			if (!collapsesWithChildren(next, false)) return -1;
+			id = next;
+		}
 	}
 
 	// A non-normal align-content makes a block container a BFC root (CSS Align 3
@@ -4103,9 +4215,19 @@ private:
 			// item, float, or absolute box can use this intrinsic width; its parent
 			// assigns the final width and calls repositionChildren afterwards.
 			const bool measureIntrinsic = autosize && (node_.parent >= 0 || node_.computedStyle().float_side || intrinsicWidthConstraint(node_)) && !hasExplicitWidth(node_);
+			// This horizontal formatting context fills the inline size of
+			// parallel children. An orthogonal child's width is its block size.
+			auto fillsWidth = [&](const Node &child) {
+				return !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 &&
+				    !(preferredRatio(child) > 0 && hasExplicitHeight(child)) && tableRole(child.computedStyle()) != kTableRoleTable;
+			};
 			int intrinsicWidth = 0;
+			// Decided once per child, before its first layout, for both loops.
+			std::bitset<kMaxChildren> fills;
 			for (int i = 0; i < count; ++i) {
 				const int id = children[i];
+				fills[i] = fillsWidth(nodes_[id]);
+				gAssignedWidth = !measureIntrinsic && fills[i];
 				engine_.layoutNode(id, contentWidth, contentHeight, measureIntrinsic);
 				const Node &child = nodes_[id];
 				intrinsicWidth = std::max(intrinsicWidth, child.layout.width + child.computedStyle().margin[1] + child.computedStyle().margin[3]);
@@ -4117,11 +4239,11 @@ private:
 			for (int i = 0; i < count; ++i) {
 				const int id = children[i];
 				Node &child = nodes_[id];
-				if (measureIntrinsic) engine_.layoutNode(id, contentWidth, contentHeight);
-				// This horizontal formatting context fills the inline size of
-				// parallel children. An orthogonal child's width is its block size.
-				if (!hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child)) &&
-				    tableRole(child.computedStyle()) != kTableRoleTable) {
+				if (measureIntrinsic) {
+					gAssignedWidth = fills[i];
+					engine_.layoutNode(id, contentWidth, contentHeight);
+				}
+				if (fills[i]) {
 					const int width = clampLayoutSize(child, std::max(0, contentWidth - child.computedStyle().margin[1] - child.computedStyle().margin[3]), true);
 					if (child.layout.width != width) {
 						child.layout.width = clampLayoutExtent(width);
@@ -4191,16 +4313,6 @@ private:
 	bool layoutFloatChildren(int *children, int count, int contentWidth, int contentHeight, bool autosize)
 	{
 		if (node_.computedStyle().display != kDisplayBlock) return false;
-#if GEA_CSS_FLOATS
-		auto containsFloat = [&](auto &&self, int parent) -> bool {
-			for (int c = nodes_[parent].first_child; c >= 0; c = nodes_[c].next_sibling) {
-				const Node &child = nodes_[c];
-				if (isDisplayNone(child.computedStyle()) || isOutOfFlowPosition(child.computedStyle().position)) continue;
-				if (child.computedStyle().float_side || (!establishesBlockContext(child) && self(self, c))) return true;
-			}
-			return false;
-		};
-#endif
 		bool blocks = false, inlines = false;
 		for (int i = 0; i < count; ++i) {
 			if (blockBox(nodes_[children[i]])) blocks = true;
@@ -4208,11 +4320,12 @@ private:
 		}
 		if (!splitInlineChildren_ && !(blocks && inlines)
 #if GEA_CSS_FLOATS
-		    && !containsFloat(containsFloat, id_)
+		    && (!subtreeHasFloat(id_) || hoistsFloats())
 #endif
 		) return false;
 		FloatContext context;
-		const bool measureWidth = autosize && !hasExplicitWidth(node_) &&
+		// A parent that assigns this box's width never reads the measured one.
+		const bool measureWidth = autosize && !assignedWidth_ && !hasExplicitWidth(node_) &&
 		    (node_.parent >= 0 || node_.computedStyle().float_side || intrinsicWidthConstraint(node_)) &&
 		    !(scrollsOverflowX(node_.computedStyle()) && node_.layout.width > 0 && !intrinsicWidthConstraint(node_));
 		layoutFloatChildrenInContext(children, count, contentWidth, contentHeight, autosize, context, 0, 0, measureWidth);
@@ -4294,7 +4407,22 @@ private:
 						NodeRareData *ownerRare = rareDataFor(id_);
 						const bool ownerLineWasValid = ownerRare && ownerRare->firstLineBackground.lineValid;
 #endif
-						auto extent = layoutRun(runWidth);
+					// The floats at the line's top narrow the run before its first
+					// layout; a taller first line that meets more of them, or a move
+					// down past them, lays the run out again at the final width.
+					auto exclusions = [&](int lineHeight, int &left, int &right, int &nextBottom) {
+						left = 0; right = runWidth; nextBottom = INT_MAX;
+						for (const auto &f : floats) {
+							if (originY + flowY >= f.bottom || originY + flowY + lineHeight <= f.top) continue;
+							if (f.side == 1) left = std::max(left, f.right - originX + runShift);
+							else right = std::min(right, f.left - originX + runShift);
+							nextBottom = std::min(nextBottom, f.bottom - originY);
+						}
+					};
+					int left = 0, right = runWidth, nextBottom = INT_MAX;
+					exclusions(1, left, right, nextBottom);
+					int laidOut = std::max(0, right - left);
+					auto extent = layoutRun(laidOut);
 					// If even the first unbreakable unit cannot fit beside a float,
 					// move this line down to the next float boundary and retry.
 					// Once the whole containing width is available, the word may overflow.
@@ -4309,20 +4437,12 @@ private:
 						minimum += item.computedStyle().margin[1] + item.computedStyle().margin[3];
 						if (item.type == NodeType::Text) minimum += boxInsets(item.computedStyle(), true);
 					}
-					int left = 0, right = runWidth;
 					for (;;) {
-						left = 0; right = runWidth;
-						int nextBottom = INT_MAX;
-						for (const auto &f : floats) {
-							if (originY + flowY >= f.bottom || originY + flowY + extent.firstLineHeight <= f.top) continue;
-							if (f.side == 1) left = std::max(left, f.right - originX + runShift);
-							else right = std::min(right, f.left - originX + runShift);
-							nextBottom = std::min(nextBottom, f.bottom - originY);
-						}
+						exclusions(extent.firstLineHeight, left, right, nextBottom);
 						if (minimum <= right-left || (left == 0 && right == runWidth) || nextBottom == INT_MAX) break;
 						flowY = nextBottom;
 					}
-					if (right - left != runWidth) extent = layoutRun(std::max(0, right - left));
+					if (std::max(0, right - left) != laidOut) extent = layoutRun(std::max(0, right - left));
 					// A float after a one-line run goes to the top of that line when it
 					// fits beside the run's content (CSS 2.2 9.5.1): place the float
 					// first, then flow the run again beside it.
@@ -4362,7 +4482,8 @@ private:
 						nodes_[children[j]].layout.y += flowY;
 					}
 					flowY += extent.height;
-					intrinsicWidth = std::max(intrinsicWidth, left + extent.width);
+					// Floats beside the run add their width to the max-content size.
+					intrinsicWidth = std::max(intrinsicWidth, left + extent.width + runWidth - right);
 					if (split) {
 						// A one-line run's collapsible trailing space hangs past the fragment.
 						const int lastItem = children[isLineBreak(nodes_[children[end - 1]]) && end - 1 > i ? end - 2 : end - 1];
@@ -4384,11 +4505,12 @@ private:
 			}
 			// A block splitting an inline fills the parent's content box.
 			const int area = splitBlock ? contentWidth + outer[1] + outer[3] : contentWidth;
-			engine_.layoutNode(children[i], area, contentHeight, measureWidth);
 			const bool block = !child.computedStyle().float_side && blockBox(child);
-			const int measuredOuterW = child.layout.width + child.computedStyle().margin[3] + child.computedStyle().margin[1];
 			const bool automaticWidth = block && !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) &&
 			    writingMode(child) == 0 && !(preferredRatio(child) > 0 && hasExplicitHeight(child)) && tableRole(child.computedStyle()) != kTableRoleTable;
+			gAssignedWidth = automaticWidth && !measureWidth;
+			engine_.layoutNode(children[i], area, contentHeight, measureWidth);
+			const int measuredOuterW = child.layout.width + child.computedStyle().margin[3] + child.computedStyle().margin[1];
 			// Ordinary blocks still fill their containing block beside floats;
 			// only their line boxes are shortened by float exclusions.
 			if (automaticWidth) {
@@ -4406,17 +4528,34 @@ private:
 				pending = {};
 				first = false;
 			}
+			// A wrapper whose hypothetical top a block formatting context settles,
+			// with floats placed at that top before it, first tries that context
+			// before its own margin, the floats beside it. When they push it down,
+			// its margin is dropped like clearance and the wrapper keeps the top
+			// without it; when it fits there, the margin adjoins after all.
+			const int outerCandidate = context.pushCandidate;
+			int candidate = -1;
+			if (block && !establishesBlockContext(child) && child.first_child >= 0 && collapsesWithChildren(children[i], false)) {
+				bool chainFloats = false;
+				const int resolver = marginChainResolver(children[i], chainFloats);
+				if (resolver >= 0 && chainFloats && !context.hasClearance(resolver)) {
+					candidate = resolver;
+					context.cleared.push_back(resolver);
+					context.pushCandidate = resolver;
+				}
+			}
+			const bool pushCandidate = block && children[i] == context.pushCandidate;
 			auto before = pending;
 			if (block) before.add(childEdgeMargin(id_, children[i], false, true));
 			// Normal blocks clear their border edge, after adjoining margins
 			// collapse. Floats instead clear their outer edge (CSS 2.2 9.5.2).
-			int y = block ? flowY + (mergeTop ? 0 : before.value()) :
+			int y = pushCandidate ? flowY : block ? flowY + (mergeTop ? 0 : before.value()) :
 			    child.computedStyle().float_side ? std::max(flowY + (mergeTop ? 0 : pending.value()), context.lastTop - originY) : flowY;
 			const int hypotheticalY = y;
 			int clearBottom = INT_MIN;
 			for (const auto &f : floats)
 				if (child.computedStyle().clear_side & f.side) clearBottom = std::max(clearBottom, f.bottom - originY);
-			const bool clearance = block && clearBottom != INT_MIN && (clearBottom > hypotheticalY || context.hasClearance(children[i]));
+			const bool clearance = block && !pushCandidate && clearBottom != INT_MIN && (clearBottom > hypotheticalY || context.hasClearance(children[i]));
 			// Once clearance separated the margins, rebasing the wrapper must
 			// not mistake the now non-collapsing margin for a new hypothetical
 			// position. CSS permits aligning exactly to the float bottom, even
@@ -4429,14 +4568,19 @@ private:
 				// An automatic-width BFC tries the widest opportunity at each y
 				// first and narrows only while its height meets more floats. Its
 				// width never grows back, so a height that depends on the width
-				// (aspect-ratio, wrapping) cannot make this search oscillate.
-				const bool searchWidth = independentBlock && automaticWidth;
+				// (aspect-ratio, wrapping) cannot make this search oscillate. An
+				// automatic-width table shrinks to fit the opportunity on its own.
+				const bool autoTable = independentBlock && !hasExplicitWidth(child) && tableRole(child.computedStyle()) == kTableRoleTable;
+				const bool searchWidth = independentBlock && (automaticWidth || autoTable);
 				int extent = searchWidth ? 1 : independentBlock ? int(child.layout.height) : outerH;
+				int tableConstraint = -1;
 				for (;;) {
 					left = 0; right = area;
 					int nextY = 32767;
 					bool hasLeft = false, hasRight = false;
 					for (const auto &global : floats) {
+						// A float without area excludes nothing from a formatting context.
+						if (independentBlock && (global.right <= global.left || global.bottom <= global.top)) continue;
 						const FloatBox f{global.left - originX, global.top - originY, global.right - originX, global.bottom - originY, global.side};
 						if (y >= f.bottom || y + std::max(1, extent) <= f.top) continue;
 						if (f.side == 1) { left = std::max(left, f.right); hasLeft = true; }
@@ -4446,18 +4590,25 @@ private:
 					bool fits = outerW <= right - left;
 					if (independentBlock) {
 						// A BFC's border box cannot overlap float margin boxes.
-						// Automatic width uses the remaining interval. Even a
-						// zero-width float prevents a negative margin crossing it.
-						const int start = hasLeft ? std::max<int>(child.computedStyle().margin[3], left) : child.computedStyle().margin[3];
-						const int end = hasRight ? std::min<int>(area - child.computedStyle().margin[1], right) : area - child.computedStyle().margin[1];
+						// Automatic width uses the remaining interval. Beside a
+						// float, a negative margin counts as zero on both sides.
+						const bool beside = hasLeft || hasRight;
+						const int marginStart = beside ? std::max<int>(0, child.computedStyle().margin[3]) : child.computedStyle().margin[3];
+						const int marginEnd = beside ? std::max<int>(0, child.computedStyle().margin[1]) : child.computedStyle().margin[1];
+						const int start = hasLeft ? std::max(marginStart, left) : marginStart;
+						const int end = hasRight ? std::min(area - marginEnd, right) : area - marginEnd;
 						contextX = start - child.computedStyle().margin[3];
 						if (searchWidth && end >= start) {
 							const int width = clampLayoutSize(child, end - start, true);
-							if (child.layout.width != width) {
+							if (autoTable ? tableConstraint != width : child.layout.width != width) {
+								gAssignedWidth = !autoTable;
 								engine_.layoutNode(children[i], width + child.computedStyle().margin[1] + child.computedStyle().margin[3], contentHeight);
-								child.layout.width = clampLayoutExtent(width);
-								engine_.repositionChildren(children[i]);
-								outerW = width + child.computedStyle().margin[1] + child.computedStyle().margin[3];
+								if (!autoTable) {
+									child.layout.width = clampLayoutExtent(width);
+									engine_.repositionChildren(children[i]);
+								}
+								tableConstraint = width;
+								outerW = child.layout.width + child.computedStyle().margin[1] + child.computedStyle().margin[3];
 								outerH = child.layout.height + child.computedStyle().margin[0] + child.computedStyle().margin[2];
 							}
 							if (child.layout.height > extent) { extent = child.layout.height; continue; }
@@ -4469,6 +4620,7 @@ private:
 					y = nextY;
 					if (searchWidth) extent = 1;
 				}
+				if (pushCandidate && y != hypotheticalY) context.pushedCandidate = children[i];
 			}
 			// A normal block ignores floats; auto margins center it, and in
 			// right-to-left flow one that does not fill the line hugs the right.
@@ -4496,6 +4648,11 @@ private:
 							    context, originX + x + child.computedStyle().margin[3] + boxInset(child.computedStyle(), 3), originY + y + boxInset(child.computedStyle(), 0));
 						};
 						placeDescendants();
+						if (candidate >= 0 && context.pushedCandidate != candidate) {
+							context.uncleared(candidate);
+							context.pushCandidate = outerCandidate;
+							candidate = -1;
+						}
 						// Actual descendant clearance can separate a margin that was
 						// adjoining this wrapper's top during hypothetical placement.
 						// Rebase the subtree with that separation recorded; discard
@@ -4521,6 +4678,8 @@ private:
 					}
 				}
 			}
+			if (candidate >= 0 && context.pushedCandidate != candidate) context.uncleared(candidate);
+			context.pushCandidate = outerCandidate;
 			if (child.computedStyle().float_side) {
 				floats.push_back({originX + x, originY + y, originX + x + outerW, originY + y + outerH, child.computedStyle().float_side});
 				context.lastTop = originY + y;
@@ -4543,6 +4702,16 @@ private:
 		}
 		if (partTop >= 0) closePart();
 		if (split) ensureRareData(id_).inlineParts = std::move(parts);
+		// A float hoisted out of an inline box (collectFormattingChildren) was
+		// placed in this box's coordinates; store it relative to its parent.
+		for (int i = 0; i < count; ++i) {
+			Node &child = nodes_[children[i]];
+			if (!child.computedStyle().float_side || child.parent == id_) continue;
+			for (int p = child.parent; p >= 0 && p != id_; p = nodes_[p].parent) {
+				child.layout.x -= nodes_[p].layout.x;
+				child.layout.y -= nodes_[p].layout.y;
+			}
+		}
 		if (clearedThrough || (!collapsesWithChildren(id_, true) && !(first && collapsesWithChildren(id_, false))))
 			flowY += pending.value();
 		if (measureWidth)
@@ -6550,6 +6719,7 @@ std::size_t LayoutEngine::memoPeakHeapBytes()
 
 void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBoxEdges)
 {
+	const bool assignedWidth = std::exchange(gAssignedWidth, false);
 	Node &node = Tree::instance().nodes()[id];
 	auto &persistent = layoutState(id);
 	const Node *parent = node.parent >= 0 ? &Tree::instance().nodes()[node.parent] : nullptr;
@@ -6644,7 +6814,9 @@ void LayoutEngine::layoutNode(int id, int avail_w, int avail_h, bool intrinsicBo
 		}
 	}
 	GEA_REFRESH_PERF(refreshPerfStatsMutable().treeLayoutNodeCalls++);
-	LayoutNodePass(*this, id, avail_w, avail_h).run();
+	LayoutNodePass pass(*this, id, avail_w, avail_h);
+	if (assignedWidth) pass.markAssignedWidth();
+	pass.run();
 	const int beforeRatioWidth = node.layout.width, beforeRatioHeight = node.layout.height;
 	applyPreferredRatio(node, avail_w, avail_h);
 	if (node.first_child >= 0 && (node.layout.width != beforeRatioWidth || node.layout.height != beforeRatioHeight))
