@@ -5903,6 +5903,9 @@ int gLastScrollUiFrame = -1000;
 				const auto &s = node.computedStyle();
 				const auto &rs = rstyle(s);
 				const bool transformable = ViewRenderer::isTransformableBox(node);
+				// A hidden back face in a 3D rendering context is a stacking context
+				// (and a containing block, establishesTransformContainingBlock).
+				if (s.backface_hidden && transformable && node.parent >= 0 && preserves3D(Tree::instance().nodes()[node.parent].computedStyle())) return true;
 				return s.opacity < 255 || s.mask_right_fade_width > 0 || rs.filter_present || rs.filter_blur_radius ||
 				    (transformable && (rs.translate_present || rs.transform_present || rs.rotate_present || rs.scale_present ||
 				     rs.transform_preserve_3d || rs.perspective || rs.transform_rotate || rs.transform_rotate_x || rs.transform_rotate_y ||

@@ -5692,6 +5692,9 @@ private:
 bool establishesTransformContainingBlock(const Node &node)
 {
 	if (!ViewRenderer::isTransformableBox(node)) return false;
+	// A hidden back face in a 3D rendering context makes the box a containing
+	// block (and a stacking context, ChildZSorter::effectGroup), as browsers do.
+	if (node.computedStyle().backface_hidden && node.parent >= 0 && preserves3D(Tree::instance().nodes()[node.parent].computedStyle())) return true;
 	const auto &r = rstyle(node.computedStyle());
 	return r.translate_present || r.transform_present || r.rotate_present || r.scale_present || r.filter_present || r.transform_preserve_3d ||
 	    r.transform_rotate || r.transform_rotate_x || r.transform_rotate_y ||
