@@ -26,6 +26,10 @@
       "types": "./components/CameraView.d.ts",
       "default": "./components/CameraView.tsx"
     },
+    "./components/ProgressBar": {
+      "types": "./components/ProgressBar.d.ts",
+      "default": "./components/ProgressBar.tsx"
+    },
     "./components/VirtualList": {
       "types": "./components/VirtualList.d.ts",
       "default": "./components/VirtualList.tsx"
@@ -39,7 +43,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "*.css"
+  ],
   "dependencies": {
     "@geastack/core": "^0.1.40"
   }
