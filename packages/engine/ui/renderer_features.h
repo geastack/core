@@ -22,3 +22,11 @@
 #ifndef GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION
 #define GEA_EMBEDDED_RENDERER_TRIANGLE_OCCLUSION 1
 #endif
+
+// A target switch, not analyzer output: antialiased rounded-rect edges from
+// one signed distance per pixel (an exact one-pixel box filter) instead of a
+// grid of point samples. Far cheaper on MCUs without a fast FPU; the edge
+// shading differs slightly, so targets opt in.
+#ifndef GEA_EMBEDDED_ANALYTIC_AA
+#define GEA_EMBEDDED_ANALYTIC_AA 0
+#endif

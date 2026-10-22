@@ -31,6 +31,7 @@
 #include "host/profiler.h"
 #include "host/storage.h"
 #include "host/battery.h"
+#include "host/board.h"
 #include "host/notify.h"
 #include "host/device_control.h"
 #include <input.h>
