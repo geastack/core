@@ -2132,6 +2132,10 @@ public:
 		}
 	}
 
+	// A child's first baseline below its border-box top, as its lines place it
+	// (grid baseline alignment reads it through a probe pass).
+	int firstBaseline(const Node &child) const { return childBaseline(child); }
+
 private:
 	int flexWrapLimit() const
 	{
@@ -4907,7 +4911,8 @@ private:
 		const bool vertical = writingMode(node_) != 0;
 		int columnCount = std::max(childCount ? 1 : 0, int(rstyle(node_.computedStyle()).grid_column_count));
 		int rowCount = std::max(childCount ? 1 : 0, int(rstyle(node_.computedStyle()).grid_row_count));
-		struct Placement { GridAxisPlacement column, row; };
+		// shim: how far below its row's shared baseline the item's own lies.
+		struct Placement { GridAxisPlacement column, row; int shim = 0; };
 		std::vector<Placement> placements(childCount);
 		int columnOrigin = 0, rowOrigin = 0;
 		for (int i = 0; i < childCount; ++i) {
@@ -4991,6 +4996,33 @@ private:
 		const int columnGap = resolvedGap(node_, false, padWidth, padHeight);
 		const int rowGap = resolvedGap(node_, true, padWidth, padHeight);
 		measureGridChildren(children, childCount, padWidth, padHeight);
+		// Items aligned by first baseline that start in the same row share that
+		// row's baseline (CSS Align 3, 9.1; CSS Grid 1, 10.3): each sits lower by
+		// its shim, which also joins its contribution to an auto row. A vertical
+		// grid keeps the start fallback of usedGridAlignment. A grid without a
+		// baseline item pays one alignment read per item.
+		if (!vertical) {
+			auto baselineAligned = [&](const Node &child) {
+				const int align = child.computedStyle().align_self >= 0 ? child.computedStyle().align_self : node_.computedStyle().align_items;
+				return (align & 15) == 5;
+			};
+			bool any = false;
+			for (int i = 0; i < childCount && !any; ++i) any = baselineAligned(nodes_[children[i]]);
+			if (any) {
+				int rowBaseline[kMaxGridLayoutTracks];
+				std::fill(rowBaseline, rowBaseline + rowCount, INT_MIN);
+				const FlexLayoutPass probe(engine_, node_, children, childCount, false, padHeight, padWidth, padHeight, nullptr);
+				for (int i = 0; i < childCount; ++i) {
+					const Node &child = nodes_[children[i]];
+					if (!baselineAligned(child)) continue;
+					placements[i].shim = child.computedStyle().margin[0] + probe.firstBaseline(child);
+					int &row = rowBaseline[placements[i].row.start];
+					row = std::max(row, placements[i].shim);
+				}
+				for (int i = 0; i < childCount; ++i)
+					if (baselineAligned(nodes_[children[i]])) placements[i].shim = rowBaseline[placements[i].row.start] - placements[i].shim;
+			}
+		}
 
 		int8_t columnTypes[kMaxGridLayoutTracks] = {0};
 		int8_t rowTypes[kMaxGridLayoutTracks] = {0};
@@ -5029,7 +5061,7 @@ private:
 					const Node &child = nodes_[children[i]];
 					const bool horizontal = columns != vertical;
 					const int size = horizontal ? child.layout.width + child.computedStyle().margin[1] + child.computedStyle().margin[3]
-					                            : child.layout.height + child.computedStyle().margin[0] + child.computedStyle().margin[2];
+					                            : child.layout.height + child.computedStyle().margin[0] + child.computedStyle().margin[2] + placements[i].shim;
 					int occupied = (span - 1) * gap, autos = 0;
 					for (int t = p.start; t < p.end; ++t) {
 						occupied += types[t] == 1 ? values[t] : sizes[t];
@@ -5126,7 +5158,8 @@ private:
 			if (childNode.computedStyle().margin_auto & 5) {
 				if (freeY > 0 && (childNode.computedStyle().margin_auto & 1))
 					y += (childNode.computedStyle().margin_auto & 4) ? freeY / 2 : freeY;
-			} else if (usedY == 1) y += freeY / 2;
+			} else if (!vertical && (alignY & 15) == 5) y += p.shim;
+			else if (usedY == 1) y += freeY / 2;
 			else if (usedY == 2) y += freeY;
 			childNode.layout.x = x;
 			childNode.layout.y = y;
