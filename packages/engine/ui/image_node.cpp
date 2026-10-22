@@ -105,7 +105,7 @@ bool applyAxisAlignedTransform(const Node &node, ImageFitRect &rect)
 
 }  // namespace
 
-void ImageRenderer::layout(int id)
+void ImageRenderer::layout(int id, bool autoWidth, bool autoHeight)
 {
 	if (!GEA_UI_IMAGE_NODES) return;
 	Node *n = &Tree::instance().nodes()[id];
@@ -113,10 +113,8 @@ void ImageRenderer::layout(int id)
 	int iw = images.width(n->image_id);
 	int ih = images.height(n->image_id);
 
-	if (n->computedStyle().width == kUnset && n->computedStyle().width_percent == kUnset && n->computedStyle().width_expression < 0 && iw > 0)
-		n->layout.width = iw + boxInsets(n->computedStyle(), true);
-	if (n->computedStyle().height == kUnset && n->computedStyle().height_percent == kUnset && n->computedStyle().height_expression < 0 && ih > 0)
-		n->layout.height = ih + boxInsets(n->computedStyle(), false);
+	if (autoWidth && iw > 0) n->layout.width = iw + boxInsets(n->computedStyle(), true);
+	if (autoHeight && ih > 0) n->layout.height = ih + boxInsets(n->computedStyle(), false);
 	n->layout.width = clampBorderBoxSize(n->computedStyle(), n->layout.width, true);
 	n->layout.height = clampBorderBoxSize(n->computedStyle(), n->layout.height, false);
 }
@@ -128,6 +126,13 @@ double ImageRenderer::naturalRatio(const Node &node)
 	const int iw = images.width(node.image_id);
 	const int ih = images.height(node.image_id);
 	return iw > 0 && ih > 0 ? static_cast<double>(iw) / ih : 0;
+}
+
+int ImageRenderer::naturalSize(const Node &node, bool horizontal)
+{
+	if (!GEA_UI_IMAGE_NODES || node.image_id < 0) return 0;
+	auto &images = gea::framework::graphics::ImageStore::instance();
+	return std::max(0, horizontal ? images.width(node.image_id) : images.height(node.image_id));
 }
 
 void ImageRenderer::record(const Node &node)

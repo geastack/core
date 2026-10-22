@@ -748,10 +748,13 @@ void rootScrollImageHoldTick();
 	class ImageRenderer
 	{
 	public:
-		static void layout(int id);
+		// Sizes the box: an automatic axis takes the image's natural size, an
+		// explicit one keeps what the pass resolved.
+		static void layout(int id, bool autoWidth, bool autoHeight);
 		static void record(const Node &node);
 		// Natural width / height of a loaded image, 0 without one.
 		static double naturalRatio(const Node &node);
+		static int naturalSize(const Node &node, bool horizontal);
 	};
 
 	class CanvasRenderer

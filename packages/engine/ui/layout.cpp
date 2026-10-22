@@ -2446,10 +2446,14 @@ private:
 			if (end > extent) extent = end;
 		}
 		if (extent > 0) extent += isRow_ ? boxInset(childNode.computedStyle(), 1) : boxInset(childNode.computedStyle(), 2);
+		// A replaced box's content size suggestion is its min-content size: the
+		// natural size in the main axis, or the size a definite cross size
+		// transfers through its ratio (CSS Sizing 4, 5.2.1; Flexbox 4.5).
+		if (childNode.type == NodeType::Image) extent = ImageRenderer::naturalSize(childNode, isRow_) + boxInsets(childNode.computedStyle(), isRow_);
 		if (preferredRatio(childNode) > 0 &&
 		    ((isRow_ ? hasExplicitHeight(childNode) : hasExplicitWidth(childNode)) || definiteFlexCrossSize(node_, childNode, isRow_))) {
 			const int transferred = ratioTransferredSize(childNode, isRow_ ? childNode.layout.height : childNode.layout.width, isRow_);
-			extent = childNode.type == NodeType::Image ? std::min(extent, transferred) : std::max(extent, transferred);
+			extent = childNode.type == NodeType::Image ? transferred : std::max(extent, transferred);
 		}
 		// With a preferred aspect ratio the content size suggestion is clamped by
 		// the definite minimum and maximum cross sizes converted through it
@@ -3163,7 +3167,9 @@ public:
 		}
 
 		if (node_.type == NodeType::Image && node_.image_id >= 0) {
-			ImageRenderer::layout(id_);
+			// An axis the pass resolved (a length, a flex basis, the final size
+			// of an intrinsic keyword) stands; the others take the natural size.
+			ImageRenderer::layout(id_, !hasExplicitWidth(node_), !hasExplicitHeight(node_));
 			return;
 		}
 
@@ -3971,9 +3977,13 @@ private:
 		int value() const { return trimmed ? 0 : positive + negative; }
 	};
 
+	// A block-level box of this container: a block view, or a replaced box
+	// displayed as a block, which stacks among blocks and shares their margin
+	// rules (CSS 2.2 9.2.1, 8.3.1).
 	bool blockBox(const Node &n) const
 	{
-		return !isDisplayNone(n.computedStyle()) && blockLevelView(n);
+		if (isDisplayNone(n.computedStyle())) return false;
+		return blockLevelView(n) || (n.type == NodeType::Image && !LayoutEngine::isInlineLevelNode(n));
 	}
 
 	bool flowChild(int parent, int child) const
@@ -4204,7 +4214,7 @@ private:
 				const int id = children[i]; Node &child = nodes_[id];
 				if (measureInline) engine_.layoutNode(id, contentWidth, contentHeight);
 				if (!hasExplicitHeight(child) && !isIntrinsicSizeExpression(child.computedStyle().height_expression) && writingMode(child) != 0 &&
-				    !(preferredRatio(child) > 0 && hasExplicitWidth(child))) {
+				    child.type != NodeType::Image && !(preferredRatio(child) > 0 && hasExplicitWidth(child))) {
 					const int height = clampLayoutSize(child, std::max(0, contentHeight - child.computedStyle().margin[0] - child.computedStyle().margin[2]), false);
 					if (child.layout.height != height) {
 						child.layout.height = clampLayoutExtent(height); engine_.repositionChildren(id);
@@ -4222,9 +4232,12 @@ private:
 			// assigns the final width and calls repositionChildren afterwards.
 			const bool measureIntrinsic = autosize && (node_.parent >= 0 || node_.computedStyle().float_side || intrinsicWidthConstraint(node_)) && !hasExplicitWidth(node_);
 			// This horizontal formatting context fills the inline size of
-			// parallel children. An orthogonal child's width is its block size.
+			// parallel children. An orthogonal child's width is its block size;
+			// a replaced box keeps its own unless it asks to stretch (CSS 2.2
+			// 10.3.4).
 			auto fillsWidth = [&](const Node &child) {
 				return !hasExplicitWidth(child) && !isIntrinsicSizeExpression(child.computedStyle().width_expression) && writingMode(child) == 0 &&
+				    (child.type != NodeType::Image || child.computedStyle().width_expression == kSizeStretch) &&
 				    !(preferredRatio(child) > 0 && hasExplicitHeight(child)) && tableRole(child.computedStyle()) != kTableRoleTable;
 			};
 			int intrinsicWidth = 0;
