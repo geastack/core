@@ -247,7 +247,20 @@ int Tree::createNode(NodeType type)
 		break;
 	}
 	if (id < 0) {
-		if (state.nodeCount >= kMaxNodes) return -1;
+		if (state.nodeCount >= kMaxNodes) {
+			// Callers drop the -1, so the element and everything that would
+			// hang under it are never attached, laid out or drawn: without
+			// this line a view just disappears. Reported once per process.
+			static bool reported = false;
+			if (!reported) {
+				reported = true;
+				std::printf("[tree] node pool full (%d nodes, GEA_EMBEDDED_MAX_NODES): new elements are not created "
+				            "and the views they belong to are not drawn; raise GEA_EMBEDDED_MAX_NODES for this target\n",
+				            kMaxNodes);
+				std::fflush(stdout);
+			}
+			return -1;
+		}
 		id = state.nodeCount++;
 	}
 	gea::framework::identity::activate(id);
