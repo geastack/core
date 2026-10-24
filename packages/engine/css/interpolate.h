@@ -6,6 +6,7 @@
 // (inline). Part of the gea CSS animation engine. See docs/geaos-grand-vision.md (M1).
 
 #include <cmath>
+#include <cstdint>
 
 namespace gea::css {
 
@@ -33,6 +34,21 @@ inline int lerpColor565(int fromRgb565, int toRgb565, double t)
   const int g = detail::clampi(detail::roundi(lerp(ag, bg, t)), 0, 0x3F);
   const int b = detail::clampi(detail::roundi(lerp(ab, bb, t)), 0, 0x1F);
   return (r << 11) | (g << 5) | b;
+}
+
+// Interpolate two 32-bit colors one byte at a time. Each byte is one channel in
+// both RGBA8888 and ARGB8888, so the channel order does not matter here.
+inline int lerpColor8888(int from, int to, double t)
+{
+  const auto a = static_cast<std::uint32_t>(from);
+  const auto b = static_cast<std::uint32_t>(to);
+  std::uint32_t out = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    const int ca = static_cast<int>((a >> shift) & 0xFFu);
+    const int cb = static_cast<int>((b >> shift) & 0xFFu);
+    out |= static_cast<std::uint32_t>(detail::clampi(detail::roundi(lerp(ca, cb, t)), 0, 0xFF)) << shift;
+  }
+  return static_cast<int>(out);
 }
 
 }  // namespace gea::css
