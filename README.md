@@ -63,6 +63,8 @@ npm test
   responsibilities, and source-fusion boundaries.
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): test strategy, source layout, and
   change checklist.
+- [docs/COMPONENTS.md](docs/COMPONENTS.md): what a UI component contribution to
+  `@geastack/elements` must include.
 
 ## Maintenance Notes
 
