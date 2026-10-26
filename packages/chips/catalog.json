@@ -337,6 +337,21 @@
       "adapters": {},
       "configuration": []
     },
+    "ft5336": {
+      "label": "FT5336 capacitive touch controller",
+      "category": "touch",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [
+        "touch/ft5336/ft5336.cpp"
+      ],
+      "headers": [
+        "touch/ft5336/ft5336.h"
+      ],
+      "adapters": {},
+      "configuration": []
+    },
     "ft6336": {
       "label": "FT6336 capacitive touch controller",
       "category": "touch",

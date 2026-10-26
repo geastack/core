@@ -633,6 +633,54 @@ static inline std::uint32_t roundedRectSampleMask(int x,
 	return mask;
 }
 
+#if GEA_EMBEDDED_ANALYTIC_AA
+// Signed distance from (sx, sy) to a rounded rect with circular corners,
+// negative inside.
+static inline float roundedRectDistance(int x, int y, int w, int h, int tl, int tr, int br, int bl, float sx, float sy)
+{
+	const float halfW = 0.5f * static_cast<float>(w);
+	const float halfH = 0.5f * static_cast<float>(h);
+	const float dx = sx - (static_cast<float>(x) + halfW);
+	const float dy = sy - (static_cast<float>(y) + halfH);
+	const int corner = dy < 0.0f ? (dx < 0.0f ? tl : tr) : (dx < 0.0f ? bl : br);
+	const float radius = std::min({static_cast<float>(std::max(0, corner)), halfW, halfH});
+	const float qx = std::fabs(dx) - (halfW - radius);
+	const float qy = std::fabs(dy) - (halfH - radius);
+	if (qx <= 0.0f || qy <= 0.0f) return std::max(qx, qy) - radius;
+
+	return std::sqrt(qx * qx + qy * qy) - radius;
+}
+
+// The fraction of pixel (px, py) inside the rounded rect, from the signed
+// distance of its centre through the AA kernel.
+static inline float roundedRectCoveredFraction(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                               int px, int py, float kernelWidth)
+{
+	const float distance = roundedRectDistance(x, y, w, h, tl, tr, br, bl, static_cast<float>(px) + 0.5f,
+	                                           static_cast<float>(py) + 0.5f);
+	return std::clamp(0.5f - distance / kernelWidth, 0.0f, 1.0f);
+}
+
+static inline int roundedRectCoverage(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                      int px, int py, int samples, float kernelWidth)
+{
+	const float covered = roundedRectCoveredFraction(x, y, w, h, tl, tr, br, bl, px, py, kernelWidth);
+	return static_cast<int>(covered * static_cast<float>(samples * samples) + 0.5f);
+}
+
+static inline int roundedRectStrokeCoverage(int x, int y, int w, int h, int tl, int tr, int br, int bl,
+                                            int lineWidth, int px, int py, int samples, float kernelWidth)
+{
+	float covered = roundedRectCoveredFraction(x, y, w, h, tl, tr, br, bl, px, py, kernelWidth);
+	const int innerW = w - lineWidth * 2;
+	const int innerH = h - lineWidth * 2;
+	if (covered > 0.0f && innerW > 0 && innerH > 0)
+		covered -= roundedRectCoveredFraction(x + lineWidth, y + lineWidth, innerW, innerH, std::max(0, tl - lineWidth),
+		                                      std::max(0, tr - lineWidth), std::max(0, br - lineWidth),
+		                                      std::max(0, bl - lineWidth), px, py, kernelWidth);
+	return static_cast<int>(std::max(0.0f, covered) * static_cast<float>(samples * samples) + 0.5f);
+}
+#else
 static inline int roundedRectCoverage(int x, int y, int w, int h, int tl, int tr, int br, int bl,
                                       int px, int py, int samples, float kernelWidth)
 {
@@ -651,6 +699,7 @@ static inline int roundedRectStrokeCoverage(int x, int y, int w, int h, int tl, 
 		                               std::max(0, bl - lineWidth), px, py, samples, kernelWidth);
 	return __builtin_popcount(band);
 }
+#endif
 
 // Whether every sample in [x0, x1] x [y0, y1] passes
 // `roundedRectSampleContains` (1), none does (0), or it varies (-1). Outside

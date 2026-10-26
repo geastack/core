@@ -1661,6 +1661,48 @@ void appendSideBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 	}
 }
 
+// A transformed gradient quad has no corner radii, so a rounded box would
+// draw square. While the transform keeps the box upright and uniformly
+// scaled, or merely turns a circle, it is drawn as a plain rounded gradient
+// box instead: radii scaled, and a circle's turn added to the gradient angle.
+// False when the transform needs the general quad.
+bool recordRoundedGradientAsBox(const Node &node, int x, int y, int w, int h)
+{
+	if (!hasAnyRadius(node)) return false;
+
+	int16_t xs[4], ys[4], xs8[4], ys8[4];
+	ViewGeometry::transformRectCorners(node, false, x, y, w, h, xs, ys, xs8, ys8);
+	const float ux = static_cast<float>(xs8[1] - xs8[0]) * 0.125f;
+	const float uy = static_cast<float>(ys8[1] - ys8[0]) * 0.125f;
+	const float vx = static_cast<float>(xs8[3] - xs8[0]) * 0.125f;
+	const float vy = static_cast<float>(ys8[3] - ys8[0]) * 0.125f;
+	const float width = std::sqrt(ux * ux + uy * uy);
+	const float height = std::sqrt(vx * vx + vy * vy);
+	const float scale = width / static_cast<float>(w);
+	const bool uniform = width > 0.0f && std::fabs(height - scale * static_cast<float>(h)) < 0.5f &&
+	                     std::fabs(ux * vx + uy * vy) < 0.5f * width;
+	const bool upright = std::fabs(uy) < 0.5f && ux > 0.0f && vy > 0.0f;
+	if (!uniform || !(upright || (w == h && isFullyRoundedShape(node)))) return false;
+
+	const float centreX = static_cast<float>(xs8[0] + xs8[1] + xs8[2] + xs8[3]) * 0.03125f;
+	const float centreY = static_cast<float>(ys8[0] + ys8[1] + ys8[2] + ys8[3]) * 0.03125f;
+	const int boxW = std::max(1, static_cast<int>(std::lround(width)));
+	const int boxH = std::max(1, static_cast<int>(std::lround(height)));
+	const int boxX = static_cast<int>(std::lround(centreX - static_cast<float>(boxW) * 0.5f));
+	const int boxY = static_cast<int>(std::lround(centreY - static_cast<float>(boxH) * 0.5f));
+	DisplayCommand *cmd = appendLinearGradientRectRaw(node, boxX, boxY, boxW, boxH);
+	if (!cmd) return true;
+
+	const auto scaled = [scale](int radius) { return static_cast<int16_t>(std::lround(static_cast<float>(radius) * scale)); };
+	cmd->gradient.tl = scaled(cmd->gradient.tl);
+	cmd->gradient.tr = scaled(cmd->gradient.tr);
+	cmd->gradient.br = scaled(cmd->gradient.br);
+	cmd->gradient.bl = scaled(cmd->gradient.bl);
+	const int turn = upright ? 0 : static_cast<int>(std::lround(std::atan2(uy, ux) * 1800.0f / kPiF));
+	cmd->gradient.angle = static_cast<int16_t>(((cmd->gradient.angle + turn) % 3600 + 3600) % 3600);
+	return true;
+}
+
 void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 {
 	const int x = node.layout.x;
@@ -1673,6 +1715,8 @@ void recordLinearGradientBackground(const Node &node, uint8_t parentAlpha)
 		appendLinearGradientRectRaw(node, x, y, w, h);
 		return;
 	}
+
+	if (recordRoundedGradientAsBox(node, x, y, w, h)) return;
 
 	// Transformed (3D/perspective) face: emit ONE per-pixel-shaded gradient quad
 	// instead of ~72 solid-color strips. The drawer inverse-maps each screen pixel

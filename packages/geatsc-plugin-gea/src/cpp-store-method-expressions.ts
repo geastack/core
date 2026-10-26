@@ -949,6 +949,10 @@ function lowerHostFacadeCall(context: StoreMethodLowerContext, path: string | nu
     // BatteryController — charge percentage from the platform PMU.
     'Battery.level': { target: 'gea::host::Battery.level' },
     '__gea_Battery.level': { target: 'gea::host::Battery.level' },
+    'Board.temperature': { target: 'gea::host::Board.temperature' },
+    'Board.supplyVoltage': { target: 'gea::host::Board.supplyVoltage' },
+    '__gea_Board.temperature': { target: 'gea::host::Board.temperature' },
+    '__gea_Board.supplyVoltage': { target: 'gea::host::Board.supplyVoltage' },
 
     // ButtonsController — the board's named physical buttons.
     'Buttons.count': { target: 'gea::host::Buttons.count' },

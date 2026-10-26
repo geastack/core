@@ -2143,6 +2143,20 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "mark") == 0;
 }
 
+// isInlineLevelTag by interned tag id. Ids keep their tag for the program's
+// life, so each id's answer is computed once: layout asks it of every node
+// on every pass.
+static bool isInlineLevelTagId(int16_t tagId)
+{
+	static std::vector<std::int8_t> answers;
+	if (tagId < 0) return false;
+
+	const auto index = static_cast<std::size_t>(tagId);
+	if (index >= answers.size()) answers.resize(index + 1, -1);
+	if (answers[index] < 0) answers[index] = isInlineLevelTag(tagFromId(tagId)) ? 1 : 0;
+	return answers[index] == 1;
+}
+
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
 // ancestry still owns inheritance, events, relative translation, and painting.
 // Visible inline decorations require fragments; keep those on their own path.
@@ -2150,7 +2164,7 @@ bool splitInlineWrapper(const Node *nodes, int id)
 {
 	const Node &n = nodes[id];
 	if (n.type != NodeType::View || n.computedStyle().display_explicit || n.computedStyle().display != kDisplayBlock ||
-	    !isInlineLevelTag(tagFromId(n.tag_id)) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
+	    !isInlineLevelTagId(n.tag_id) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
 	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.computedStyle(), true) || boxInsets(n.computedStyle(), false) ||
 	    n.computedStyle().margin[1] || n.computedStyle().margin[3] || n.computedStyle().opacity != 255 || overflowEstablishesContext(n.computedStyle())) return false;
 	bool containsBlock = false;
@@ -2159,7 +2173,7 @@ bool splitInlineWrapper(const Node *nodes, int id)
 		if (isLayoutExcluded(child)) continue;
 		if (isOutOfFlowPosition(child.computedStyle().position)) return false;
 		if (child.computedStyle().float_side) continue;
-		if (child.type == NodeType::View && (child.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
+		if (child.type == NodeType::View && (child.computedStyle().display_explicit || !isInlineLevelTagId(child.tag_id))) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
 	return containsBlock;
@@ -2416,7 +2430,7 @@ private:
 	bool blockBox(const Node &n) const
 	{
 		return n.type == NodeType::View && !isLayoutExcluded(n) &&
-		    (n.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(n.tag_id)));
+		    (n.computedStyle().display_explicit || !isInlineLevelTagId(n.tag_id));
 	}
 
 	bool flowChild(int parent, int child) const
@@ -4112,7 +4126,7 @@ bool LayoutEngine::isInlineLevelNode(const Node &n)
 	// into one row.
 	if (n.computedStyle().margin[0] != 0 || n.computedStyle().margin[2] != 0) return false;
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return isInlineLevelTag(tagFromId(n.tag_id));
+	return isInlineLevelTagId(n.tag_id);
 }
 
 bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
@@ -4124,7 +4138,7 @@ bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
 		if (parent.computedStyle().display == kDisplayFlex || isDisplayGrid(parent.computedStyle())) return false;
 	}
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return n.type == NodeType::View && isInlineLevelTag(tagFromId(n.tag_id));
+	return n.type == NodeType::View && isInlineLevelTagId(n.tag_id);
 }
 
 int LayoutEngine::clampSize(int size, int minSize, int maxSize) const

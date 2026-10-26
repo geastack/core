@@ -2037,6 +2037,57 @@ int gLastScrollUiFrame = -1000;
 			return true;
 		}
 
+#if GEA_EMBEDDED_ANALYTIC_AA
+		// Signed distance, in local units, from (px, py) to a rounded rect with
+		// elliptical corners, negative inside. Arcs use the normalized radial
+		// approximation, which is exact for circles.
+		float roundedRectLocalDistance(const TransformedRoundedRectCommand &r, float px, float py)
+		{
+			const float halfW = 0.5f * static_cast<float>(r.lw);
+			const float halfH = 0.5f * static_cast<float>(r.lh);
+			const float dx = px - (static_cast<float>(r.lx) + halfW);
+			const float dy = py - (static_cast<float>(r.ly) + halfH);
+			const bool left = dx < 0.0f;
+			const bool top = dy < 0.0f;
+			const int rx8 = top ? (left ? r.tlRx8 : r.trRx8) : (left ? r.blRx8 : r.brRx8);
+			const int ry8 = top ? (left ? r.tlRy8 : r.trRy8) : (left ? r.blRy8 : r.brRy8);
+			const float rx = std::min(static_cast<float>(std::max(0, rx8)) * 0.125f, halfW);
+			const float ry = std::min(static_cast<float>(std::max(0, ry8)) * 0.125f, halfH);
+			const float qx = std::fabs(dx) - (halfW - rx);
+			const float qy = std::fabs(dy) - (halfH - ry);
+			if (qx <= 0.0f || qy <= 0.0f)
+				return std::max(qx - rx, qy - ry);
+			if (rx <= 0.0f || ry <= 0.0f)
+				return std::sqrt(qx * qx + qy * qy);
+
+			const float nx = qx / rx;
+			const float ny = qy / ry;
+			return (std::sqrt(nx * nx + ny * ny) - 1.0f) * std::min(rx, ry);
+		}
+
+		// Coverage (0..samples^2) of the pixel centred at local (localX, localY):
+		// the local distance, rescaled to screen pixels by the transform's area
+		// scale, through the shape's AA kernel.
+		int roundedRectCoverageFast(const TransformedRoundedRectCommand &r,
+																float localX,
+																float localY,
+																float stepXForScreenX,
+																float stepYForScreenX,
+																float stepXForScreenY,
+																float stepYForScreenY,
+																int samples)
+		{
+			const float kernelWidth = transformedRoundedRectAntialiasKernelWidth(samples, r);
+			const float localPerPixel =
+					std::sqrt(std::fabs(stepXForScreenX * stepYForScreenY - stepXForScreenY * stepYForScreenX));
+			if (localPerPixel <= 0.0f)
+				return 0;
+
+			const float distance = roundedRectLocalDistance(r, localX, localY) / localPerPixel;
+			const float covered = std::clamp(0.5f - distance / kernelWidth, 0.0f, 1.0f);
+			return static_cast<int>(covered * static_cast<float>(samples * samples) + 0.5f);
+		}
+#else
 		int roundedRectCoverageFast(const TransformedRoundedRectCommand &r,
 																float localX,
 																float localY,
@@ -2064,6 +2115,7 @@ int gLastScrollUiFrame = -1000;
 			}
 			return coverage;
 		}
+#endif
 
 		bool roundedRectSolidCoreContainsFast(const TransformedRoundedRectCommand &r,
 																					float localX,
