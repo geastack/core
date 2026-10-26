@@ -1,0 +1,49 @@
+.progress-bar__track {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  background-color: #e2ddd0;
+}
+
+.progress-bar__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background-color: #171713;
+}
+
+.progress-bar__fill--indeterminate {
+  animation: progress-bar-sweep 1200ms linear infinite;
+}
+
+.progress-bar__fill--static {
+  opacity: 0.4;
+}
+
+.progress-bar__label {
+  margin-top: 8px;
+  color: #171713;
+  font-size: 14px;
+}
+
+@keyframes progress-bar-sweep {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+@media (monochrome) {
+  .progress-bar__track {
+    background-color: #d9d9d9;
+  }
+  .progress-bar__fill {
+    background-color: #000000;
+  }
+  .progress-bar__label {
+    color: #000000;
+  }
+}
