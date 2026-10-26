@@ -170,6 +170,12 @@ async function testStaticAssetGraph() {
         ...process.env,
         GEA_THREE_AUDIO_MUTED: '1',
         TMPDIR: processTmpDir,
+        // The compiler finds the Core and host packages by resolving
+        // @geastack/core and @geastack/host from its own install. In this
+        // checkout neither is an installed dependency, so name the ones
+        // under test.
+        GEA_CORE_DIR: packageDir,
+        GEA_HOST_DIR: path.join(packageDir, '..', 'host'),
       },
     },
   )
