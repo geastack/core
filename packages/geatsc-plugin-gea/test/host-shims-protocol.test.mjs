@@ -230,3 +230,12 @@ test("insertBefore states the actual Node return, nullable reference and direct 
   assert.ok(rows.every(row=>row.returnType==="gea::embedded::ui::NodeHandle"));
   assert.ok(rows.every(row=>row.emit==="({receiver}).insertBefore({arg0}, {arg1})"));
 });
+
+// geatsc admits a weak-collection key only when its carrier states an identity,
+// so `new WeakMap<Document, T>()` (Zag's dom-query caret cache) needs this row.
+// engine/ui/document.h's `Document::identity()` is the token the row promises.
+test("the document carrier states its reference identity", () => {
+  const shims = createGeaHostShims();
+  assert.equal(shims.nativeTypes.Document, "gea::embedded::ui::Document");
+  assert.ok(shims.nativeReferenceIdentities.includes(shims.nativeTypes.Document));
+});

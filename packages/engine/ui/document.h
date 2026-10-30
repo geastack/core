@@ -23,6 +23,10 @@ namespace gea::embedded::ui {
 class Document {
 public:
 	static Document &instance();
+	// There is one document, and a Document carrier holds no state of its own,
+	// so every copy names the instance. Weak collections and strict equality
+	// compare this token (`nativeReferenceIdentities` in geatsc-plugin-gea).
+	const void *identity() const { return &instance(); }
 
 	ViewElement body() const;
 	// No guessed body fallback: null handle when no actual connected focus.

@@ -54,4 +54,17 @@ int main() {
  assert(third==first);
  assert(gea::embedded::ui::NodeHandle(third).identity()!=next.identity());
  assert(gea::weakCollectionIdentity(gea::embedded::ui::NodeHandle(third))!=gea::weakCollectionIdentity(next));
+ // A program holds the one document through Document carrier copies; each
+ // copy must name that document as a weak key, and no node may share it.
+ auto &document=gea::embedded::ui::Document::instance();
+ const gea::embedded::ui::Document documentCopy=document;
+ assert(gea::weakCollectionIdentity(document)==gea::weakCollectionIdentity(documentCopy));
+ assert(gea::weakCollectionIdentity(document)!=gea::weakCollectionIdentity(gea::embedded::ui::NodeHandle(third)));
+ gea::WeakMap<gea::embedded::ui::Document,int> perDocument;
+ perDocument.set(documentCopy,7);
+ assert(perDocument.has(document));
+ perDocument.set(document,8);
+ assert(*perDocument.get(documentCopy)==8);
+ tree.clear();
+ assert(perDocument.has(gea::embedded::ui::Document::instance())); // clearing the tree keeps the document
 }

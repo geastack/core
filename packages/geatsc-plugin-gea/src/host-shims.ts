@@ -306,6 +306,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           "gea::embedded::ui::ChildNodeList",
           "gea::framework::events::EventTarget",
           "gea::framework::events::PointerEvent",
+          // `Document::identity()` names the one document for every carrier copy.
+          "gea::embedded::ui::Document",
         ],
         nativeTypes: {
           // The ambient DOM global `document` (lib.dom.d.ts's `Document`) — a
