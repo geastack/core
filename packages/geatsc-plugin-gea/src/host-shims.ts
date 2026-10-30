@@ -334,6 +334,13 @@ export function createGeaHostShims(): HostShimDefinitions {
           HTMLElement: "gea::embedded::ui::NodeHandle",
           DOMTokenList: "gea::embedded::ui::ClassList",
           DocumentFragment: "gea::embedded::ui::NodeHandle",
+          // lib.dom's `ShadowRoot extends DocumentFragment`. The engine makes no
+          // shadow roots, so a value a program types ShadowRoot is a node it
+          // narrowed or cast (`if (isShadowRoot(el)) return getWindow(el.host)`
+          // in Zag's dom-query). Without this row geatsc bound ShadowRoot with no
+          // carrier and refused the program on `native-boundary:ShadowRoot@1`.
+          // Its own members (`host`, `mode`) stay unclaimed and refuse by name.
+          ShadowRoot: "gea::embedded::ui::NodeHandle",
           Text: "gea::embedded::ui::NodeHandle",
           Comment: "gea::embedded::ui::NodeHandle",
           // An event target IS a DOM node on this backend; without this mapping

@@ -239,3 +239,14 @@ test("the document carrier states its reference identity", () => {
   assert.equal(shims.nativeTypes.Document, "gea::embedded::ui::Document");
   assert.ok(shims.nativeReferenceIdentities.includes(shims.nativeTypes.Document));
 });
+
+// lib.dom declares `ShadowRoot extends DocumentFragment`, and the engine makes
+// no shadow roots, so a value a program types ShadowRoot is a node it narrowed
+// or cast (Zag's dom-query: `if (isShadowRoot(el)) return getWindow(el.host)`).
+// Without this row geatsc bound ShadowRoot with no carrier and refused the
+// program on `native-boundary:ShadowRoot@1`, which no target registers.
+test("a ShadowRoot is carried as the node handle a DocumentFragment is", () => {
+  const nativeTypes = createGeaHostShims().nativeTypes;
+  assert.equal(nativeTypes.ShadowRoot, "gea::embedded::ui::NodeHandle");
+  assert.equal(nativeTypes.ShadowRoot, nativeTypes.DocumentFragment);
+});
