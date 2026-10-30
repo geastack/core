@@ -1,7 +1,10 @@
 import { describeStaticAsset } from './gea-static-asset.mjs'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
+
+const require = createRequire(import.meta.url)
 
 const JS_LIKE_RE = /\.(?:mjs|cjs|js|jsx|ts|tsx)$/i
 const STATIC_ASSET_RE = /\.(?:apng|bmp|png|jpe?g|jfif|pjpeg|pjp|gif|svg|ico|webp|avif|cur|jxl|mp4|webm|ogg|mp3|wav|flac|aac|opus|mov|m4a|vtt|woff2?|eot|ttf|otf|webmanifest|pdf|txt|glb|gltf|hdr)$/i
@@ -100,6 +103,7 @@ export function geaModuleGraphPlugins(options = {}) {
   const state = {
     outDir: path.resolve(outDir),
     root: '',
+    nodeEnv: undefined,
     original: new Map(),
     transformed: new Map(),
     imports: new Map(),
@@ -172,6 +176,11 @@ export function geaModuleGraphPlugins(options = {}) {
       apply: 'build',
       configResolved(config) {
         state.root = config.root
+        // Vite's app build bakes process.env.NODE_ENV into every module; its lib
+        // mode, which the embedded driver uses, leaves it to a later bundler.
+        // geatsc is that last consumer, so the graph states what an app build
+        // would: the configured define, else Vite's rule (`define.ts`).
+        state.nodeEnv = config.define?.['process.env.NODE_ENV'] ?? JSON.stringify(process.env.NODE_ENV || config.mode)
       },
       transform(code, id) {
         captureSource(state.original, id, code)
@@ -244,7 +253,12 @@ function writeModuleGraph(pluginContext, state) {
     const asset = state.assets.get(id)
     const literal = asset?.url ?? state.rawModules.get(id)
     const syntheticSource = literal === undefined ? undefined : `export default ${JSON.stringify(literal)}\n`
-    const originalCode = prune(normalizeSnapshotSourceForGeatsc(state.original.get(id) ?? syntheticSource ?? readFileSource(id)))
+    const diskCode = readFileSource(id)
+    // geatsc compiles a module that exists on disk from disk, never from a
+    // snapshot, so the define reaches it only as a text the graph states.
+    const definedCode = withNodeEnvDefined(diskCode, id, state.nodeEnv)
+    const definedPath = definedCode === diskCode ? null : writeSnapshot(state, id, 'defined', definedCode)
+    const originalCode = prune(normalizeSnapshotSourceForGeatsc(state.original.get(id) ?? syntheticSource ?? diskCode))
     const transformedCode = prune(normalizeSnapshotSourceForGeatsc(state.transformed.get(id) ?? syntheticSource))
     const originalPath = writeSnapshot(state, id, 'original', originalCode)
     const transformedPath = writeSnapshot(state, id, 'transformed', transformedCode)
@@ -264,6 +278,7 @@ function writeModuleGraph(pluginContext, state) {
       transformedSource: transformedPath,
       originalBytes: originalCode === undefined ? 0 : Buffer.byteLength(originalCode),
       transformedBytes: transformedCode === undefined ? 0 : Buffer.byteLength(transformedCode),
+      ...(definedPath ? { definedSource: definedPath } : {}),
       ...(asset ? {
         assetSource: asset.source,
         assetBytes: asset.bytes,
@@ -556,6 +571,67 @@ function normalizeSnapshotSourceForGeatsc(code) {
     '($1 = $1 || $2(), $1).cloneNode(true)',
   )
   return next
+}
+
+const NODE_ENV_READS = new Set(['process.env.NODE_ENV', 'global.process.env.NODE_ENV', 'globalThis.process.env.NODE_ENV'])
+
+// The reads Vite's define replaces, typed `string` as @types/node types them: a
+// bare literal would make geatsc's checker reject a library's `=== 'development'`
+// as a comparison with no overlap. A read through a local binding, a write, a
+// non-string define and an unparsable module keep their text, and with it the
+// refusal geatsc gives a missing `process` today.
+function withNodeEnvDefined(code, id, literal) {
+  if (code === undefined || !code.includes('NODE_ENV') || !isStringLiteral(literal)) return code
+  const typescript = /\.tsx?$/i.test(id)
+  const plugins = ['decorators-legacy']
+  if (typescript) plugins.push('typescript')
+  if (!/\.ts$/i.test(id)) plugins.push('jsx')
+  let ast
+  try {
+    ast = require('@babel/parser').parse(code, { sourceType: 'unambiguous', plugins })
+  } catch {
+    return code
+  }
+  const reads = []
+  require('@babel/traverse').default(ast, {
+    'MemberExpression|OptionalMemberExpression'(p) {
+      if (!NODE_ENV_READS.has(dottedName(p.node)) || isWriteTarget(p)) return
+      let root = p.node
+      while (root.object) root = root.object
+      // An ambient declaration is erased: its name still denotes the global.
+      const binding = p.scope.getBinding(root.name)
+      if (binding && !binding.path.node.declare && !binding.path.parent?.declare) return
+      reads.push(p.node)
+      p.skip()
+    },
+  })
+  const replacement = typescript ? `(${literal} as string)` : `/** @type {string} */ (${literal})`
+  let next = code
+  for (const read of reads.sort((a, b) => b.start - a.start)) next = next.slice(0, read.start) + replacement + next.slice(read.end)
+  return next
+}
+
+function isStringLiteral(text) {
+  try {
+    return typeof JSON.parse(text) === 'string'
+  } catch {
+    return false
+  }
+}
+
+function dottedName(node) {
+  if (node.type === 'Identifier') return node.name
+  if ((node.type !== 'MemberExpression' && node.type !== 'OptionalMemberExpression') || node.computed) return null
+  const object = dottedName(node.object)
+  return object === null ? null : `${object}.${node.property.name}`
+}
+
+function isWriteTarget(p) {
+  const parent = p.parentPath
+  if (parent.isUpdateExpression() || parent.isUnaryExpression({ operator: 'delete' })) return true
+  if (parent.isAssignmentExpression() || parent.isForInStatement() || parent.isForOfStatement() || parent.isAssignmentPattern()) return p.key === 'left'
+  if (parent.isArrayPattern() || parent.isRestElement()) return true
+  return parent.isObjectProperty() && p.key === 'value' && parent.parentPath.isObjectPattern()
 }
 
 function readFileSource(id) {
