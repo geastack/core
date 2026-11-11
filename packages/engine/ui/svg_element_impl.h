@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -640,6 +641,95 @@ void paintWorkerWait()
 #define GEA_SVG_PARALLEL_PAINT 0
 #endif
 
+// Blends a shape's coverage straight into the canvas rows. The rasterizer
+// hands over many short runs per row (every anti-aliased edge is one), so each
+// run is blended here, inline, into a row pointer fetched once per row: on an
+// ESP32-S3 one canvas call costs ~250 cycles before it touches a pixel, more
+// than a typical edge run. Rows the canvas cannot expose directly (rotated,
+// packed, global alpha) go through its per-run entry points instead. Dirty
+// marking is one box for the whole shape.
+struct RowSink {
+	using Pixel = gea::framework::graphics::pixel::native_t;
+	gea::framework::graphics::Canvas *canvas;
+	Pixel color;
+	int ox, oy;
+	int rowY = INT_MIN;
+	Pixel *row = nullptr;
+	int cx0 = 0, cx1 = -1;
+	int dx0 = INT_MAX, dy0 = INT_MAX, dx1 = INT_MIN, dy1 = INT_MIN;
+	Pixel lastBg = 0, lastOut = 0;
+	int lastA = -1;
+
+	bool select(int y)
+	{
+		if (y != rowY) {
+			rowY = y;
+			row = canvas->directRow(y, &cx0, &cx1);
+		}
+		return row != nullptr;
+	}
+	void touched(int y, int a, int b)
+	{
+		if (a < dx0) dx0 = a;
+		if (b > dx1) dx1 = b;
+		if (y < dy0) dy0 = y;
+		if (y > dy1) dy1 = y;
+	}
+	Pixel blendOne(Pixel bg, int a)
+	{
+		if (bg != lastBg || a != lastA) {
+			lastBg = bg;
+			lastA = a;
+			lastOut = gea::framework::graphics::pixel::blendNative(color, bg, a);
+		}
+		return lastOut;
+	}
+	void span(int y, int x, int count, std::uint8_t cov)
+	{
+		y += oy;
+		x += ox;
+		if (!select(y)) {
+			canvas->blendCoverageSpan(y, x, count, cov, color, false);
+			touched(y, x, x + count - 1);
+			return;
+		}
+		const int a = std::max(x, cx0), b = std::min(x + count - 1, cx1);
+		if (a > b) return;
+		Pixel *p = row + a;
+		const int n = b - a + 1;
+		if (cov == 255) {
+			std::fill_n(p, n, color);
+		} else {
+			for (int i = 0; i < n; ++i) p[i] = blendOne(p[i], cov);
+		}
+		touched(y, a, b);
+	}
+	void coverage(int y, int x, const std::uint8_t *cov, int count)
+	{
+		y += oy;
+		x += ox;
+		if (!select(y)) {
+			canvas->blendCoverageRow(y, x, count, cov, color, false);
+			touched(y, x, x + count - 1);
+			return;
+		}
+		int a = x, b = x + count - 1;
+		if (a < cx0) a = cx0;
+		if (b > cx1) b = cx1;
+		if (a > b) return;
+		for (int px = a; px <= b; ++px) {
+			const int c = cov[px - x];
+			if (c == 0) continue;
+			row[px] = c == 255 ? color : blendOne(row[px], c);
+		}
+		touched(y, a, b);
+	}
+	void markDirty()
+	{
+		if (dx0 <= dx1 && dy0 <= dy1) canvas->markDirty(dx0, dy0, dx1, dy1);
+	}
+};
+
 void paintCoverage(gea::framework::graphics::Canvas *canvas, int bank, bool markDirty, const EdgeList &edges,
                    const Bounds &bounds, bool evenOdd, const ResolvedPaint &paint, int ox, int oy, int cx0, int cy0,
                    int cx1, int cy1)
@@ -656,10 +746,12 @@ void paintCoverage(gea::framework::graphics::Canvas *canvas, int bank, bool mark
 	static ScratchVector<std::uint8_t> rows[3];
 	Rasterizer &raster = rasters[bank];
 	ScratchVector<std::uint8_t> &row = rows[bank];
-	fillCoverage(raster, row, edges, x0, y0, x1, y1, evenOdd, std::min(1.0f, paint.alpha),
-	             [&](int y, int x, const std::uint8_t *cov, int count) {
-		             canvas->blendCoverageRow(y + oy, x + ox, count, cov, paint.color, markDirty);
-	             });
+	RowSink sink{canvas, paint.color, ox, oy};
+	fillCoverage(
+	    raster, row, edges, x0, y0, x1, y1, evenOdd, std::min(1.0f, paint.alpha),
+	    [&](int y, int x, const std::uint8_t *cov, int count) { sink.coverage(y, x, cov, count); },
+	    [&](int y, int x, int count, std::uint8_t cov) { sink.span(y, x, count, cov); });
+	if (markDirty) sink.markDirty();
 }
 
 }  // namespace

@@ -1052,16 +1052,11 @@ public:
 		w_ = std::max(0, width);
 		h_ = std::max(0, height);
 		stride_ = w_ + 2;
+		wpr_ = (stride_ + 31) >> 5;
 		const std::size_t cells = static_cast<std::size_t>(stride_) * static_cast<std::size_t>(h_);
 		if (acc_.size() < cells) acc_.resize(cells, 0);
-		if (rowMin_.size() < static_cast<std::size_t>(h_)) {
-			rowMin_.resize(static_cast<std::size_t>(h_));
-			rowMax_.resize(static_cast<std::size_t>(h_));
-		}
-		for (int y = 0; y < h_; ++y) {
-			rowMin_[static_cast<std::size_t>(y)] = stride_;
-			rowMax_[static_cast<std::size_t>(y)] = -1;
-		}
+		const std::size_t words = static_cast<std::size_t>(wpr_) * static_cast<std::size_t>(h_);
+		if (bits_.size() < words) bits_.resize(words, 0);
 	}
 	int x() const { return x0_; }
 	int y() const { return y0_; }
@@ -1087,6 +1082,30 @@ public:
 			if (e.bottom <= top) continue;
 			addEdge(e.a, e.b);
 		}
+	}
+
+	// Strip-by-strip walk of the stored edges: each strip adds only the edges
+	// still open (kept in an active list) plus the ones it newly reaches, so a
+	// tall shape cut into many short strips never re-scans its whole list.
+	void beginEdgeWalk()
+	{
+		nextEdge_ = 0;
+		active_.clear();
+	}
+	void addActiveEdges()
+	{
+		if (!edges_) return;
+		const float top = static_cast<float>(y0_), bottom = static_cast<float>(y0_ + h_);
+		const EdgeList &edges = *edges_;
+		std::size_t kept = 0;
+		for (std::size_t i = 0; i < active_.size(); ++i)
+			if (edges[active_[i]].bottom > top) active_[kept++] = active_[i];
+		active_.resize(kept);
+		while (nextEdge_ < edges.size() && edges[nextEdge_].top < bottom) {
+			if (edges[nextEdge_].bottom > top) active_.push_back(static_cast<std::uint32_t>(nextEdge_));
+			++nextEdge_;
+		}
+		for (std::uint32_t i : active_) addEdge(edges[i].a, edges[i].b);
 	}
 
 	void addContours(const std::vector<Contour> &contours, float dx = 0, float dy = 0)
@@ -1136,48 +1155,73 @@ public:
 	}
 
 	// Coverage of row `row` (0-based within the rectangle), scaled by `alpha`
-	// (0..1), written into `out` and handed to `emit(x, coverage, count)` one
-	// inked segment at a time. Between edges the accumulator is empty and the
-	// coverage holds, so those runs are copied, or -- when empty -- skipped
-	// outright: the hole of a ring or the gap between a wave's crossings costs
-	// nothing downstream. Clears the row's accumulator cells.
+	// (0..1). Between the cells an edge touched the accumulator is empty and the
+	// coverage holds, so the row is a sequence of constant runs, found from the
+	// row's touched-cell bitmap without reading the empty cells at all. A run of
+	// kSpanMin or more pixels goes to `span(x, count, coverage)` -- a fill's
+	// interior is one call -- and the short runs at anti-aliased edges are
+	// gathered into `out` and handed to `emit(x, coverage, count)`. Empty runs
+	// emit nothing, so the hole of a ring or the gap between a wave's crossings
+	// costs nothing downstream. Clears the row's accumulator cells and bitmap.
+	static constexpr int kSpanMin = 8;
+	template <typename Emit, typename Span>
+	void row(int row, std::uint8_t *out, bool evenOdd, float alpha, Emit &&emit, Span &&span)
+	{
+		const std::size_t r = static_cast<std::size_t>(row);
+		std::uint32_t *bits = &bits_[r * static_cast<std::size_t>(wpr_)];
+		int *a = &acc_[r * static_cast<std::size_t>(stride_)];
+		const int end = w_;  // one past the last pixel
+		const int alpha8 = static_cast<int>(alpha * 256.0f + 0.5f);  // 0..256
+		int sum = 0;
+		int runX = -1, runV = 0;
+		int seg = -1, segEnd = 0;  // pending short runs, contiguous in `out`
+		auto flush = [&](int from, int to, int v) {
+			if (to > end) to = end;
+			const int n = to - from;
+			if (n <= 0) return;
+			if (n >= kSpanMin) {
+				if (seg >= 0) emit(seg, out + seg, segEnd - seg), seg = -1;
+				if (v) span(from, n, static_cast<std::uint8_t>(v));
+			} else {
+				if (seg < 0) seg = from;
+				for (int i = 0; i < n; ++i) out[from + i] = static_cast<std::uint8_t>(v);
+				segEnd = to;
+			}
+		};
+		for (int w = 0; w < wpr_; ++w) {
+			std::uint32_t m = bits[w];
+			if (!m) continue;
+			bits[w] = 0;
+			do {
+				const int c = (w << 5) + __builtin_ctz(m);
+				m &= m - 1;
+				if (runX >= 0) flush(runX, c, runV);
+				sum += a[c];
+				a[c] = 0;
+				int cov = sum < 0 ? -sum : sum;  // 65536 = full
+				if (evenOdd) {
+					cov &= 0x1ffff;
+					if (cov > 0x10000) cov = 0x20000 - cov;
+				} else if (cov > 0x10000) {
+					cov = 0x10000;
+				}
+				// 65536 * 256 overflows nothing: cov <= 2^16, alpha8 <= 2^8.
+				runV = static_cast<int>((static_cast<unsigned>(cov) * static_cast<unsigned>(alpha8) * 255u + (1u << 23)) >> 24);
+				runX = c;
+			} while (m);
+		}
+		// The last touched cell's own pixel; past it the row is empty.
+		if (runX >= 0) flush(runX, runX + 1, runV);
+		if (seg >= 0) emit(seg, out + seg, segEnd - seg);
+	}
+
 	template <typename Emit>
 	void row(int row, std::uint8_t *out, bool evenOdd, float alpha, Emit &&emit)
 	{
-		const std::size_t r = static_cast<std::size_t>(row);
-		const int lo = rowMin_[r], hi = rowMax_[r];
-		if (hi < lo) return;
-		int *a = &acc_[r * static_cast<std::size_t>(stride_)];
-		const int last = std::min(hi, w_ - 1);
-		int sum = 0;
-		const int alpha8 = static_cast<int>(alpha * 256.0f + 0.5f);  // 0..256
-		int seg = lo;
-		for (int x = lo; x <= last;) {
-			sum += a[x];
-			int cov = sum < 0 ? -sum : sum;  // 65536 = full
-			if (evenOdd) {
-				cov &= 0x1ffff;
-				if (cov > 0x10000) cov = 0x20000 - cov;
-			} else if (cov > 0x10000) {
-				cov = 0x10000;
-			}
-			// 65536 * 256 overflows nothing: cov <= 2^16, alpha8 <= 2^8.
-			int v = static_cast<int>((static_cast<unsigned>(cov) * static_cast<unsigned>(alpha8) * 255u + (1u << 23)) >> 24);
-			out[x++] = static_cast<std::uint8_t>(v);
-			int run = x;
-			while (run <= last && a[run] == 0) ++run;
-			if (run > x) {
-				if (v == 0 && run - x >= 8) {
-					if (x > seg) emit(seg, out + seg, x - seg);
-					seg = run;
-				} else {
-					std::memset(out + x, v, static_cast<std::size_t>(run - x));
-				}
-				x = run;
-			}
-		}
-		if (last + 1 > seg) emit(seg, out + seg, last + 1 - seg);
-		std::fill(a + lo, a + hi + 1, 0);
+		this->row(row, out, evenOdd, alpha, emit, [&](int x, int n, std::uint8_t v) {
+			std::memset(out + x, v, static_cast<std::size_t>(n));
+			emit(x, out + x, n);
+		});
 	}
 
 private:
@@ -1199,26 +1243,30 @@ private:
 		const int yStart = y0s >> 8;
 		const int yEnd = std::min(h_, (y1s + kSub - 1) >> 8);
 		const int maxX = w_ * kSub;
+		// x in subpixels at subpixel row s: x0 + dxdy * (s - y0s). Each slice's
+		// bottom is the next slice's top, so one evaluation per row.
+		const float xBase = p0.x * kSub + 0.5f;
+		auto xAt = [&](int s) {
+			const int x = static_cast<int>(xBase + dxdy * static_cast<float>(s - y0s));
+			return x < 0 ? 0 : (x > maxX ? maxX : x);
+		};
+		int xNext = xAt(std::max(y0s, yStart * kSub));
 		for (int y = yStart; y < yEnd; ++y) {
 			int *rowAcc = &acc_[static_cast<std::size_t>(y) * static_cast<std::size_t>(stride_)];
 			const int top = std::max(y0s, y * kSub);
 			const int bottom = std::min(y1s, (y + 1) * kSub);
 			if (bottom <= top) continue;
 			// x at this slice's top and bottom, in subpixels.
-			int xa = static_cast<int>((p0.x + dxdy * (static_cast<float>(top - y0s) * (1.0f / kSub))) * kSub + 0.5f);
-			int xb = static_cast<int>((p0.x + dxdy * (static_cast<float>(bottom - y0s) * (1.0f / kSub))) * kSub + 0.5f);
-			xa = xa < 0 ? 0 : (xa > maxX ? maxX : xa);
-			xb = xb < 0 ? 0 : (xb > maxX ? maxX : xb);
+			const int xa = xNext;
+			const int xb = xAt(bottom);
+			xNext = xb;
 			const int d = (bottom - top) * sign;  // vertical extent, 1/256 px
 			const int total = d * kSub;           // this slice's whole contribution
 			const int x0 = xa < xb ? xa : xb, x1 = xa < xb ? xb : xa;
 			const int x0i = x0 >> 8;
 			const int x1i = (x1 + kSub - 1) >> 8;
-			int &rmin = rowMin_[static_cast<std::size_t>(y)];
-			int &rmax = rowMax_[static_cast<std::size_t>(y)];
-			if (x0i < rmin) rmin = x0i;
-			const int touched = x0i + 1 > x1i ? x0i + 1 : x1i;
-			if (touched > rmax) rmax = touched;
+			markCells(&bits_[static_cast<std::size_t>(y) * static_cast<std::size_t>(wpr_)], x0i,
+			          x0i + 1 > x1i ? x0i + 1 : x1i);
 			if (x1i <= x0i + 1) {
 				// Within one cell: split by the mean x inside it.
 				const int xmf = ((xa + xb) >> 1) - (x0i << 8);
@@ -1260,20 +1308,37 @@ private:
 		}
 	}
 
-	int x0_ = 0, y0_ = 0, w_ = 0, h_ = 0, stride_ = 2;
+	// Sets cells [lo, hi] in a row's touched-cell bitmap.
+	static void markCells(std::uint32_t *bits, int lo, int hi)
+	{
+		const int wl = lo >> 5, wh = hi >> 5;
+		const std::uint32_t first = ~0u << (lo & 31), last = ~0u >> (31 - (hi & 31));
+		if (wl == wh) {
+			bits[wl] |= first & last;
+			return;
+		}
+		bits[wl] |= first;
+		for (int w = wl + 1; w < wh; ++w) bits[w] = ~0u;
+		bits[wh] |= last;
+	}
+
+	int x0_ = 0, y0_ = 0, w_ = 0, h_ = 0, stride_ = 2, wpr_ = 1;
 	bool dirFlip_ = false;
 	ScratchVector<int> acc_;
-	ScratchVector<int> rowMin_, rowMax_;
+	ScratchVector<std::uint32_t> bits_;  // one bit per accumulator cell an edge touched
+	ScratchVector<std::uint32_t> active_;
+	std::size_t nextEdge_ = 0;
 	EdgeList ownEdges_;
 	const EdgeList *edges_ = nullptr;
 };
 
-// Rasterizes `contours` over the pixel rectangle [x0,x1) x [y0,y1) in strips
-// sized to a fixed float budget, calling `emit(y, x, coverage, count)` for
-// every row that has ink.
-template <typename Emit>
+// Rasterizes `edges` over the pixel rectangle [x0,x1) x [y0,y1) in strips
+// sized to a fixed accumulator budget, calling `span(y, x, count, coverage)`
+// for each long constant run and `emit(y, x, coverage, count)` for the short
+// anti-aliased runs between them.
+template <typename Emit, typename Span>
 inline void fillCoverage(Rasterizer &r, ScratchVector<std::uint8_t> &rowBuf, const EdgeList &edges,
-                         int x0, int y0, int x1, int y1, bool evenOdd, float alpha, Emit &&emit)
+                         int x0, int y0, int x1, int y1, bool evenOdd, float alpha, Emit &&emit, Span &&span)
 {
 	if (x1 <= x0 || y1 <= y0 || alpha <= 0 || edges.empty()) return;
 	const int width = x1 - x0;
@@ -1281,16 +1346,35 @@ inline void fillCoverage(Rasterizer &r, ScratchVector<std::uint8_t> &rowBuf, con
 	const int stripRows = std::max(1, kBudget / (width + 2));
 	rowBuf.resize(static_cast<std::size_t>(width));
 	r.useEdges(edges);
+	r.beginEdgeWalk();
 	for (int sy = y0; sy < y1; sy += stripRows) {
 		const int rows = std::min(stripRows, y1 - sy);
 		r.reset(x0, sy, width, rows);
-		r.addStoredEdges();
+		r.addActiveEdges();
 		for (int row = 0; row < rows; ++row) {
 			const int y = sy + row;
-			r.row(row, rowBuf.data(), evenOdd, alpha,
-			      [&](int x, const std::uint8_t *cov, int count) { emit(y, x0 + x, cov, count); });
+			r.row(
+			    row, rowBuf.data(), evenOdd, alpha,
+			    [&](int x, const std::uint8_t *cov, int count) { emit(y, x0 + x, cov, count); },
+			    [&](int x, int count, std::uint8_t cov) { span(y, x0 + x, count, cov); });
 		}
 	}
+}
+
+// Same, with every run delivered as coverage bytes.
+template <typename Emit>
+inline void fillCoverage(Rasterizer &r, ScratchVector<std::uint8_t> &rowBuf, const EdgeList &edges,
+                         int x0, int y0, int x1, int y1, bool evenOdd, float alpha, Emit &&emit)
+{
+	std::uint8_t *base = nullptr;
+	fillCoverage(
+	    r, rowBuf, edges, x0, y0, x1, y1, evenOdd, alpha,
+	    [&](int y, int x, const std::uint8_t *cov, int count) { emit(y, x, cov, count); },
+	    [&](int y, int x, int count, std::uint8_t cov) {
+		    base = rowBuf.data() + (x - x0);
+		    std::memset(base, cov, static_cast<std::size_t>(count));
+		    emit(y, x, base, count);
+	    });
 }
 
 template <typename Emit>

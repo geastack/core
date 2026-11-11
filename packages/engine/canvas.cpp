@@ -1372,35 +1372,60 @@ void Canvas::blendCoverageRow(int y, int x0, int count, const std::uint8_t *cove
 			fillSpanGlobalAlpha(phys, x, n, color);
 		} else if (c != 0) {
 			const int a = globalAlpha_ == 255 ? c : (c * globalAlpha_) / 255;
-			if (a > 0) {
-#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
-				if (landscapeRot_) {
-					for (int i = 0; i < n; ++i) rotBlend(x + i, y, color, a);
-				} else
-#endif
-				{
-#if GEA_PIXEL_STORAGE_PACKED
-					for (int i = 0; i < n; ++i) pixel::packed::blendPixel(packedRow(phys), x + i, color, a);
-#else
-					pixel::native_t *p = &pixels_[phys * stride_ + x];
-					pixel::native_t lastBg = p[0];
-					pixel::native_t lastOut = pixel::blendNative(color, lastBg, a);
-					p[0] = lastOut;
-					for (int i = 1; i < n; ++i) {
-						const pixel::native_t bg = p[i];
-						if (bg != lastBg) {
-							lastBg = bg;
-							lastOut = pixel::blendNative(color, bg, a);
-						}
-						p[i] = lastOut;
-					}
-#endif
-				}
-			}
+			if (a > 0) blendSpanAlpha(y, phys, x, n, color, a);
 		}
 		x = run;
 	}
 	if (markRowDirty) markDirty(begin, y, end, y);
+}
+
+void Canvas::blendCoverageSpan(int y, int x0, int count, std::uint8_t coverage, pixel::native_t color,
+                               bool markRowDirty)
+{
+	if (!pixels_ || count <= 0 || coverage == 0 || globalAlpha_ == 0) return;
+	const ClipRect &clip = clipStack_[clipDepth_];
+	if (y < 0 || y >= height_ || y < clip.y0 || y > clip.y1) return;
+	const int begin = std::max({x0, clip.x0, 0});
+	const int end = std::min({x0 + count - 1, clip.x1, width_ - 1});
+	if (begin > end) return;
+	const int phys = rowToPhysical(y);
+	if (coverage == 255) {
+		fillSpanGlobalAlpha(phys, begin, end - begin + 1, color);
+	} else {
+		const int a = globalAlpha_ == 255 ? coverage : (coverage * globalAlpha_) / 255;
+		if (a <= 0) return;
+		blendSpanAlpha(y, phys, begin, end - begin + 1, color, a);
+	}
+	if (markRowDirty) markDirty(begin, y, end, y);
+}
+
+// A run blends one colour at one alpha, so the result for a given destination
+// pixel repeats -- and under a chart the destination is mostly one colour.
+void Canvas::blendSpanAlpha(int y, int phys, int x, int n, pixel::native_t color, int a)
+{
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+	if (landscapeRot_) {
+		for (int i = 0; i < n; ++i) rotBlend(x + i, y, color, a);
+		return;
+	}
+#endif
+	(void)y;
+#if GEA_PIXEL_STORAGE_PACKED
+	for (int i = 0; i < n; ++i) pixel::packed::blendPixel(packedRow(phys), x + i, color, a);
+#else
+	pixel::native_t *p = &pixels_[phys * stride_ + x];
+	pixel::native_t lastBg = p[0];
+	pixel::native_t lastOut = pixel::blendNative(color, lastBg, a);
+	p[0] = lastOut;
+	for (int i = 1; i < n; ++i) {
+		const pixel::native_t bg = p[i];
+		if (bg != lastBg) {
+			lastBg = bg;
+			lastOut = pixel::blendNative(color, bg, a);
+		}
+		p[i] = lastOut;
+	}
+#endif
 }
 
 // Fill a horizontal span at physical row `phys` with a colour (converted once
