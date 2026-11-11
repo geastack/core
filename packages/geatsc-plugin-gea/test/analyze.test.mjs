@@ -630,6 +630,17 @@ for (const source of [`document.createElement(tag)`, `element.innerHTML = markup
   assert.deepEqual(videoNodes(app(t, { 'index.tsx': source })), ['node-video-analysis-v1', 'node-videos'])
 })
 
+const svgNodes = entry => analyzeAllFeatures(entry).features.filter(feature => ['node-svg-analysis-v1', 'node-svg'].includes(feature))
+test('an app without svg keeps the SVG element compiled out, even with path/rect/line identifiers', t => {
+  const entry = app(t, { 'index.tsx': `import { Component, mount } from '@geastack/core';
+    const path = 'a/b'; const rect = { x: 1 }; const line = 2;
+    export class App extends Component { template() { return <div><span>{path}{rect.x}{line}</span></div> } }` })
+  assert.deepEqual(svgNodes(entry), ['node-svg-analysis-v1'])
+})
+for (const source of [`<svg width={10} height={10}><circle cx={5} cy={5} r={4} /></svg>`, `document.createElement('svg')`, `const s: SVGSVGElement = document.querySelector('svg')`, `element.innerHTML = '<svg></svg>'`]) test(`svg element retained: ${source}`, t => {
+  assert.ok(svgNodes(app(t, { 'index.tsx': source })).includes('node-svg'))
+})
+
 test('device-service imports from core create no nodes', t => {
   const entry = app(t, { 'index.tsx': `import { touch, WiFi, BLE, Accelerometer, audioContext, Clock, Geolocation, writeCacheFile } from '@geastack/core';
     export function probe() { return [touch, WiFi, BLE, Accelerometer, audioContext, Clock, Geolocation, writeCacheFile] }` })

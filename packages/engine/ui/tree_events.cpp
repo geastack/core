@@ -6,6 +6,7 @@
 #include "internal.h"
 #include "tree_internal.h"
 #include "tree_state.h"
+#include "svg_element.h"
 #include <stdexcept>
 
 #include <algorithm>
@@ -913,6 +914,11 @@ void Tree::setAttribute(int node, const char *name, const char *value)
 		return;
 	}
 	ensureRareData(node).attributes.set(name, value);
+#if GEA_UI_SVG
+	// SVG geometry/paint attributes keep their full value (path data easily
+	// exceeds the generic store's bound) and repaint the owning <svg>.
+	if (svg::noteAttribute(node, name, value ? value : "")) return;
+#endif
 	if (state.nodes[node].type == NodeType::Image && sameName(name, "src")) {
 		const auto &style = state.nodes[node].computedStyle();
 		const bool fixedBox = (style.width != kUnset || style.width_percent != kUnset) &&
@@ -985,6 +991,9 @@ void Tree::removeAttribute(int node, const char *name)
 		setClassName(node, "");
 		return;
 	}
+#if GEA_UI_SVG
+	svg::noteAttribute(node, name, nullptr);
+#endif
 	NodeRareData *rd = rareDataFor(node);
 	if (!rd) return;  // no rare-data block → no attributes to remove
 	const bool hadAttribute = rd->attributes.remove(name);
@@ -1033,6 +1042,9 @@ const char *Tree::getAttribute(int node, const char *name) const
 		classBuf = className(node);
 		return classBuf.c_str();
 	}
+#if GEA_UI_SVG
+	if (const char *full = svg::attribute(node, name)) return full;
+#endif
 	const NodeRareData *rd = rareDataFor(node);
 	return rd ? rd->attributes.get(name) : "";
 }
@@ -1042,6 +1054,9 @@ bool Tree::hasAttribute(int node, const char *name) const
 	const auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return false;
 	if (sameName(name, "class")) return !className(node).empty();
+#if GEA_UI_SVG
+	if (svg::attribute(node, name)) return true;
+#endif
 	const NodeRareData *rd = rareDataFor(node);
 	return rd && rd->attributes.has(name);
 }

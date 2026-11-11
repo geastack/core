@@ -11,6 +11,7 @@
 #include "refresh_perf.h"
 #include "root_scroll_refresh.h"
 #include "tree_state.h"
+#include "svg_element.h"
 
 #include <cmath>
 #include <cstddef>
@@ -2078,6 +2079,9 @@ namespace gea::embedded::ui
 		auto &state = treeState();
 		if (root < 0 || root >= state.nodeCount)
 			return;
+#if GEA_UI_SVG
+		svg::validateScenes();
+#endif
 #if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 		debuggerOverlay.prepare();
 #endif
@@ -3640,3 +3644,6 @@ namespace gea::embedded::ui
 	}
 
 } // namespace gea::embedded::ui
+
+// Inline SVG lives in this translation unit (see svg_element_impl.h).
+#include "svg_element_impl.h"

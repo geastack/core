@@ -243,6 +243,13 @@ public:
 	                      int dx, int dy, int dst_w, int dst_h, int tl, int tr, int br, int bl);
 	void drawImageTiledX(const pixel::native_t *src, const std::uint8_t *alpha, int src_w, int src_h,
 	                     int dx, int dy, int width);
+	// Blend one logical row of anti-aliased coverage: pixel x0+i receives
+	// `color` at coverage[i] (0..255, scaled by global alpha). Honours the clip,
+	// marks the touched span dirty. The vector (SVG) rasterizer's only output.
+	// markDirty=false lets a second core blend disjoint rows concurrently; the
+	// caller then marks the region dirty once itself.
+	void blendCoverageRow(int y, int x0, int count, const std::uint8_t *coverage, pixel::native_t color,
+	                      bool markDirty = true);
 
 private:
 	void writePixel(int x, int y, pixel::native_t fg);

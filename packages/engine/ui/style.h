@@ -214,6 +214,15 @@ enum class Property : int {
 	BorderLeftRelief,
 	BorderRelief,
 	FontStretch,
+	// SVG paint (RareStyle, GEA_UI_SVG). Encodings in svg_element.h.
+	SvgFill,
+	SvgStroke,
+	SvgStrokeWidth,
+	SvgFillOpacity,
+	SvgStrokeOpacity,
+	SvgStrokeLinecap,
+	SvgStrokeLinejoin,
+	SvgFillRule,
 	Count
 };
 
@@ -349,7 +358,15 @@ enum class StyleDeclaration : std::uint8_t {
 	MarginTrim,
 	Transition,
 	AnimationPlayState,
-	FontStretch
+	FontStretch,
+	SvgFill,
+	SvgStroke,
+	SvgStrokeWidth,
+	SvgFillOpacity,
+	SvgStrokeOpacity,
+	SvgStrokeLinecap,
+	SvgStrokeLinejoin,
+	SvgFillRule
 };
 
 class Style {

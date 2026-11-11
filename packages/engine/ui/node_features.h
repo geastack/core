@@ -29,6 +29,12 @@ static_assert(GEA_UI_CLASS_INLINE_TOKENS >= 1 && GEA_UI_CLASS_INLINE_TOKENS <= 4
 
 // Closed whole-source auxiliary-state proof. Unknown/older programs keep all
 // owners; callers cannot prune these through application manifest switches.
+// Inline <svg>: the element, its scene cache and the SVG paint properties in
+// RareStyle. The plugin proves absence (node-svg); unknown programs keep it.
+#ifndef GEA_UI_SVG
+#define GEA_UI_SVG 1
+#endif
+
 #ifndef GEA_UI_NODE_LISTENERS
 #define GEA_UI_NODE_LISTENERS 1
 #endif

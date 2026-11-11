@@ -3,6 +3,7 @@
 
 #include "pixel.h"
 #include "tree_state.h"
+#include "svg_element.h"
 #include "control_commit.h"
 #include "input_retirement.h"
 
@@ -517,6 +518,14 @@ private:
 			if (result >= 0) return result;
 		}
 
+#if GEA_UI_SVG
+		// Inside an <svg>, the target is the topmost shape under the point, by
+		// its painted geometry; the svg itself when none is.
+		if (inside && !clipped && svg::isRoot(node)) {
+			const int shape = svg::hitTest(id, x, y);
+			if (shape >= 0) return shape;
+		}
+#endif
 		if (!inside || clipped || node.computedStyle().visibility != 0) return -1;
 		return id;
 	}

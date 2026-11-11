@@ -259,3 +259,54 @@ with the preceding 164-byte candidate, this saves 648 B in TreeState and
 11,664 B of firmware. The 49-node host allocation fixture is unchanged because
 of allocator rounding; these record reductions are not a host heap saving.
 This remains a development checkpoint, not a 50-byte node or a 60 fps guarantee.
+
+
+## Inline SVG
+
+`<svg>` and its shapes are ordinary nodes (`svg_element.h`): they take classes,
+inline style, listeners and `:active`, and `getAttribute` returns full path
+data. The `<svg>` box lays out like a view (its `width`/`height` attributes are
+its default size; CSS wins) and records one `DrawSvg` display command. That
+command rasterizes the svg's cached scene into the framebuffer with exact-area
+anti-aliasing, honouring clip and opacity. Shapes are out of flow and zero-size.
+The scene rebuilds once, on the next frame after anything in the subtree changes
+(attribute, class, style, structure), and only the svg's box repaints.
+
+Supported:
+
+- Elements: `svg`, `g`, `path`, `polyline`, `polygon`, `line`, `circle`,
+  `ellipse` and `rect` (with `rx`/`ry`). `defs`, `title`, `desc` and `text`
+  are accepted and not painted.
+- `viewBox` with `preserveAspectRatio` (all align values, `meet`/`slice`,
+  `none`).
+- Path data: `M L H V C S Q T A Z`, absolute and relative, with implicit
+  repeats and compact arc flags. Parsing stops at the first error and keeps
+  what came before it, as browsers do.
+- `transform` on shapes and groups: `matrix`, `translate`, `scale`,
+  `rotate(a [cx cy])`, `skewX` and `skewY`.
+- Paint: `fill`, `stroke`, `stroke-width`, `stroke-linecap` (butt, round,
+  square), `stroke-linejoin` (miter, round, bevel), `stroke-miterlimit`,
+  `fill-rule`, `opacity`, `fill-opacity`, `stroke-opacity`, `color` with
+  `currentColor`, `visibility`, `display` and `pointer-events`. Colours are
+  hex (3, 4, 6 or 8 digits), `rgb[a]()`, `hsl[a]()`, named colours and
+  `transparent`.
+- The same paint properties as CSS (`.slice { fill: #38bdf8; stroke-width: 3px }`,
+  `style={{ fill: color }}`). CSS beats presentation attributes, and the
+  inheritable ones inherit through `g`. Group `opacity` multiplies into each
+  shape; it is not composited as a layer.
+- Touch: the hit test descends into the svg by geometry, either the fill's
+  winding or the stroke within 3px of slop. The topmost shape receives the
+  event, which bubbles through `g` and `svg`. `pointer-events: none` shapes
+  are transparent to touch.
+
+Not supported: `<text>`, `<use>`, gradients and patterns, `clipPath`/`mask`,
+markers, dashes (`stroke-dasharray`), filters, and units other than px.
+`var()` in paint values is not supported either. A CSS `transform` on the
+`<svg>` element itself moves its box, but the scene is not reprojected into the
+transformed space.
+
+Cost: the svg paint fields live in the pooled `RareStyle`, allocated only for
+nodes that set a rare field. Ordinary nodes carry nothing new. The plugin
+reports `node-svg` when the source can create an svg element (JSX `<svg>`,
+`createElement('svg')`, `SVG*Element`, opaque markup). The CLI turns that into
+`GEA_UI_SVG`, which compiles the whole feature out of apps that have no svg.

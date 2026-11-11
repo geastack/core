@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
+#include "svg_element.h"
 #include "node.h"
 #include "input_retirement.h"
 #include <stdexcept>
@@ -127,6 +128,9 @@ void resetNodeSlot(TreeState &state, int id)
 #endif
 	state.classLists[id].clear();
 	state.canvases.remove(id);
+#if GEA_UI_SVG
+	svg::releaseNode(id);
+#endif
 	state.nodeCommandDirty[id] = 0;
 	state.nodeCommandDirtyBoundsValid[id] = 0;
 	state.nodeCommandDirtyCanOverpaint[id] = 0;
@@ -148,6 +152,10 @@ void trimInactiveTail(TreeState &state)
 bool localAbsoluteLeafTreeMutation(const TreeState &state, int child)
 {
 	if (child < 0 || child >= state.nodeCount) return false;
+#if GEA_UI_SVG
+	// SVG shapes paint through their svg's scene; validateScenes repaints it.
+	if (svg::isShape(child)) return true;
+#endif
 	const Node &node = state.nodes[child];
 	if (node.computedStyle().display == kDisplayNone) return false;
 	if (node.computedStyle().position != 1) return false;
@@ -177,6 +185,9 @@ void Tree::clear()
 	}
 	resetRareStylePool();  // drop all cold-style entries; node handles reset by the Node{} loop below
 	state.canvases.clear();
+#if GEA_UI_SVG
+	svg::clearAll();
+#endif
 	std::memset(state.nodeActive, 0, sizeof(state.nodeActive));
 	// Reset EVERY slot of state.nodes[], not just [0, nodeCount). If the
 	// next app's tree has fewer nodes than the previous app's tree, the
@@ -267,6 +278,9 @@ int Tree::createNode(NodeType type)
 	const auto allocatedOwner = gea::framework::identity::node(id);
 	state.nodeActive[id] = 1;
 	releaseRareData(id);  // free any block from a prior occupant before reinit
+#if GEA_UI_SVG
+	svg::releaseNode(id);
+#endif
 	if (!gea::framework::identity::current(id, allocatedOwner)) return -1;
 	NodeLifecycle::init(&state.nodes[id], type);
 	LayoutEngine::instance().resetNodeLayoutState(id);
@@ -867,7 +881,14 @@ void Tree::removeNode(int id)
 		    !gea::framework::identity::current(id, removingOwner)) return;
 	}
 	Node *n = &state.nodes[id];
-	markDisplayListDirty();
+#if GEA_UI_SVG
+	// A shape draws nothing of its own: its svg repaints (validateScenes sees
+	// the subtree change), so the viewport needs no structural repaint.
+	if (svg::isShape(id))
+		markDisplayListContentDirty();
+	else
+#endif
+		markDisplayListDirty();
 	n->render.dirty = 1;
 	n->render.layout_dirty = 1;
 #if GEA_CSS_SCROLLING

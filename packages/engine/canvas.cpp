@@ -1347,6 +1347,62 @@ void Canvas::writePixelAlpha(int x, int y, pixel::native_t fg, std::uint8_t alph
 	writePixelNativeAlpha(x, y, fg, alpha);
 }
 
+void Canvas::blendCoverageRow(int y, int x0, int count, const std::uint8_t *coverage, pixel::native_t color,
+                              bool markRowDirty)
+{
+	if (!pixels_ || !coverage || count <= 0 || globalAlpha_ == 0) return;
+	const ClipRect &clip = clipStack_[clipDepth_];
+	if (y < 0 || y >= height_ || y < clip.y0 || y > clip.y1) return;
+	int begin = std::max({x0, clip.x0, 0});
+	int end = std::min({x0 + count - 1, clip.x1, width_ - 1});
+	while (begin <= end && coverage[begin - x0] == 0) ++begin;
+	while (end >= begin && coverage[end - x0] == 0) --end;
+	if (begin > end) return;
+	const int phys = rowToPhysical(y);
+	for (int x = begin; x <= end;) {
+		// Runs of equal coverage: a shape's interior is one long run, its edges
+		// short ones. Full runs are span fills; partial runs blend one colour at
+		// one alpha, so the result for a given destination pixel repeats -- and
+		// under a chart the destination is mostly one background colour.
+		const std::uint8_t c = coverage[x - x0];
+		int run = x + 1;
+		while (run <= end && coverage[run - x0] == c) ++run;
+		const int n = run - x;
+		if (c == 255) {
+			fillSpanGlobalAlpha(phys, x, n, color);
+		} else if (c != 0) {
+			const int a = globalAlpha_ == 255 ? c : (c * globalAlpha_) / 255;
+			if (a > 0) {
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+				if (landscapeRot_) {
+					for (int i = 0; i < n; ++i) rotBlend(x + i, y, color, a);
+				} else
+#endif
+				{
+#if GEA_PIXEL_STORAGE_PACKED
+					for (int i = 0; i < n; ++i) pixel::packed::blendPixel(packedRow(phys), x + i, color, a);
+#else
+					pixel::native_t *p = &pixels_[phys * stride_ + x];
+					pixel::native_t lastBg = p[0];
+					pixel::native_t lastOut = pixel::blendNative(color, lastBg, a);
+					p[0] = lastOut;
+					for (int i = 1; i < n; ++i) {
+						const pixel::native_t bg = p[i];
+						if (bg != lastBg) {
+							lastBg = bg;
+							lastOut = pixel::blendNative(color, bg, a);
+						}
+						p[i] = lastOut;
+					}
+#endif
+				}
+			}
+		}
+		x = run;
+	}
+	if (markRowDirty) markDirty(begin, y, end, y);
+}
+
 // Fill a horizontal span at physical row `phys` with a colour (converted once
 // to the native pixel). Native fill — no per-pixel conversion, no branch.
 void Canvas::fillSpanColor(int phys, int x0, int count, pixel::native_t color)

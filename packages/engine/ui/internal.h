@@ -73,7 +73,9 @@ void rootScrollImageHoldTick();
 		BeginFilterBlur,
 		ApplyFilterBlur,
 		FillTransformedLinearGradient,
-		FillTransformedRoundedRect
+		FillTransformedRoundedRect,
+		// Inline <svg>: rasterizes the svg node's cached scene (svg_element.h).
+		DrawSvg
 	};
 
 	struct DisplayCommand
@@ -111,6 +113,7 @@ void rootScrollImageHoldTick();
 				gea::framework::graphics::pixel::native_t color;
 			} fill;
 			struct { int16_t nodeId, x, y, width, height; std::uint32_t identity; } canvasBatch;
+			struct { int16_t nodeId, x, y, w, h; } svg;
 			struct
 			{
 				int16_t cx, cy, r;

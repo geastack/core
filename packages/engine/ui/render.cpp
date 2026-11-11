@@ -10,6 +10,7 @@
 #include "state_init.h"
 #include "style_values.h"
 #include "tree_state.h"
+#include "svg_element.h"
 #include <pixel.h>
 
 #include <algorithm>
@@ -335,6 +336,8 @@ int gLastScrollUiFrame = -1000;
 					return "BlitImageProjected";
 				case DisplayCommandType::ReplayCanvasBatch:
 					return "ReplayCanvasBatch";
+				case DisplayCommandType::DrawSvg:
+					return "DrawSvg";
 				case DisplayCommandType::BeginFilterBlur:
 					return "BeginFilterBlur";
 				case DisplayCommandType::ApplyFilterBlur:
@@ -5538,6 +5541,10 @@ int gLastScrollUiFrame = -1000;
 					c->canvasBatch.x += dx;
 					c->canvasBatch.y += dy;
 					break;
+				case DisplayCommandType::DrawSvg:
+					c->svg.x += dx;
+					c->svg.y += dy;
+					break;
 				case DisplayCommandType::BlitImageProjected:
 					c->projectedBlit.x += dx;
 					c->projectedBlit.y += dy;
@@ -6946,6 +6953,11 @@ int gLastScrollUiFrame = -1000;
 					CanvasRenderingContext2D::replayRetainedCanvas(c.canvasBatch.nodeId, c.canvasBatch.identity,
 					    c.canvasBatch.x, c.canvasBatch.y, c.canvasBatch.width, c.canvasBatch.height);
 					break;
+				case DisplayCommandType::DrawSvg:
+#if GEA_UI_SVG
+					svg::paint(c);
+#endif
+					break;
 				case DisplayCommandType::BlitImageProjected:
 					drawProjectedImage(c);
 					break;
@@ -7041,6 +7053,7 @@ int gLastScrollUiFrame = -1000;
 					break;
 				case DisplayCommandType::BlitImage:
 				case DisplayCommandType::ReplayCanvasBatch:
+				case DisplayCommandType::DrawSvg:
 				case DisplayCommandType::BlitImageProjected:
 				case DisplayCommandType::BlitImageScaled:
 					GEA_REFRESH_PERF(__perf.treeReplayImageUs += __replayDt);
@@ -7334,6 +7347,12 @@ int gLastScrollUiFrame = -1000;
 				{
 					CanvasRenderer::record(*n);
 				}
+#if GEA_UI_SVG
+				else if (paintsOwnBox && svg::isRoot(*n))
+				{
+					svg::record(*n);
+				}
+#endif
 				else if (paintsOwnBox && n->type == NodeType::Camera)
 				{
 					CameraRenderer::record(*n);
@@ -9738,6 +9757,10 @@ int gLastScrollUiFrame = -1000;
 		// the enclosing real context. Ordinary block/inline wrappers contribute
 		// separate entries so block backgrounds remain below floats and text.
 		auto walk = [&](auto &&self, int parent, bool withinGroup) -> void {
+#if GEA_UI_SVG
+			// An svg's children are its scene, painted by its DrawSvg command.
+			if (svg::isRoot(nodes[parent])) return;
+#endif
 			std::vector<int> children;
 			for (int child = nodes[parent].first_child; child >= 0; child = nodes[child].next_sibling)
 				if (!isStructuralNodeType(nodes[child].type) && !isDisplayNone(nodes[child].computedStyle())) children.push_back(child);
@@ -11788,6 +11811,7 @@ int gLastScrollUiFrame = -1000;
 			case DisplayCommandType::DrawText:
 			case DisplayCommandType::BlitImage:
 			case DisplayCommandType::ReplayCanvasBatch:
+			case DisplayCommandType::DrawSvg:
 			case DisplayCommandType::BlitImageProjected:
 			case DisplayCommandType::BlitImageScaled:
 			case DisplayCommandType::FillTransformedLinearGradient:
@@ -13034,6 +13058,10 @@ int gLastScrollUiFrame = -1000;
 				CanvasRenderer::record(*n);
 			else if (n->type == NodeType::Camera)
 				CameraRenderer::record(*n);
+#if GEA_UI_SVG
+			else if (svg::isRoot(*n))
+				svg::record(*n);
+#endif
 		}
 
 		state.appendOverride = prev_override;
