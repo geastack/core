@@ -150,15 +150,17 @@ public:
 			while (*q >= '0' && *q <= '9') { ++q; digits = true; }
 		}
 		if (!digits) return false;
+		bool exponent = false;
 		if (*q == 'e' || *q == 'E') {
 			const char *r = q + 1;
 			if (*r == '+' || *r == '-') ++r;
 			if (*r >= '0' && *r <= '9') {
 				while (*r >= '0' && *r <= '9') ++r;
 				q = r;
+				exponent = true;
 			}
 		}
-		out = static_cast<float>(std::strtod(std::string(start, q).c_str(), nullptr));
+		out = exponent ? slowNumber(start, q) : fastNumber(start, q);
 		p_ = q;
 		return true;
 	}
@@ -178,6 +180,44 @@ public:
 	void advance(std::size_t n) { while (n-- && *p_) ++p_; }
 
 private:
+	// Path data is re-parsed on every attribute change, so a number must not
+	// cost a heap string and a software-double strtod (soft-float on ESP32).
+	// Digits accumulate into an integer: a whole number converts straight to
+	// float, and a decimal whose digits fit float's 24-bit mantissa is one
+	// IEEE float division by an exact power of ten (correctly rounded, like
+	// strtod-then-narrow). Anything wider takes the strtod path.
+	static float fastNumber(const char *s, const char *end)
+	{
+		static constexpr float pow10[] = {1e0f, 1e1f, 1e2f, 1e3f, 1e4f, 1e5f, 1e6f, 1e7f, 1e8f, 1e9f, 1e10f};
+		const char *q = s;
+		const bool negative = *q == '-';
+		if (*q == '+' || *q == '-') ++q;
+		std::uint32_t mantissa = 0;
+		int fraction = -1;
+		for (; q < end; ++q) {
+			if (*q == '.') {
+				fraction = 0;
+				continue;
+			}
+			if (mantissa > (1u << 24) / 10) return slowNumber(s, end);
+			mantissa = mantissa * 10 + static_cast<std::uint32_t>(*q - '0');
+			if (fraction >= 0 && ++fraction > 10) return slowNumber(s, end);
+		}
+		if (mantissa > (1u << 24)) return slowNumber(s, end);
+		float v = static_cast<float>(mantissa);
+		if (fraction > 0) v /= pow10[fraction];
+		return negative ? -v : v;
+	}
+	static float slowNumber(const char *s, const char *end)
+	{
+		char buf[64];
+		std::size_t n = static_cast<std::size_t>(end - s);
+		if (n >= sizeof buf) n = sizeof buf - 1;
+		std::memcpy(buf, s, n);
+		buf[n] = '\0';
+		return static_cast<float>(std::strtod(buf, nullptr));
+	}
+
 	const char *p_;
 };
 
