@@ -2120,7 +2120,6 @@ function parseStaticCssColorRef(rawValue) {
 function cssIgnoredProperty(property) {
   return new Set([
     'color-scheme',
-    'grid-column',
     'isolation',
     'letter-spacing',
     'outline',
