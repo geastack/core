@@ -174,6 +174,9 @@ struct Scene {
 	bool haveBox = false;
 	int boxX = 0, boxY = 0;
 	alignas(ComputedStyle) unsigned char boxStyle[sizeof(ComputedStyle)] = {};
+	// Where paint splits the box's rows between the two cores, as a fraction
+	// of its height, steered each paint toward equal time on both.
+	float split = 0.5f;
 };
 
 std::unordered_map<int, Attrs> g_attrs;
@@ -402,6 +405,16 @@ struct ItemCache {
 		}
 		return nullptr;
 	}
+	// The previous item of `node` whose geometry changed: its edge buffers are
+	// handed to the rebuilt item, so a shape that changes every frame reuses
+	// its allocations instead of regrowing them. Its bounds stay for finish().
+	Item *stale(int node)
+	{
+		if (!items) return nullptr;
+		for (Item &it : *items)
+			if (it.node == node) return &it;
+		return nullptr;
+	}
 	// Old items nobody reused (removed, hidden or rebuilt) leave damage behind.
 	void finish()
 	{
@@ -467,6 +480,12 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			return;
 		}
 		Item item;
+		if (Item *old = cache.stale(id)) {
+			item.fillEdges.swap(old->fillEdges);
+			item.strokeEdges.swap(old->strokeEdges);
+			item.fillEdges.clear();
+			item.strokeEdges.clear();
+		}
 		item.node = id;
 		item.geometryKey = key;
 		item.tx = ctx.matrix.e;
@@ -484,12 +503,9 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			style.join = ctx.join;
 			style.miterLimit = ctx.miterLimit;
 			// The stroke outline only feeds the rasterizer (hit testing measures
-			// distance to the path), so keep its edges and drop the polygons.
-			std::vector<Contour> outline;
-			strokePath(item.geometry, style, outline);
+			// distance to the path), so it goes straight to edges.
+			strokePathEdges(item.geometry, style, item.strokeEdges, item.strokeBounds);
 			item.halfStroke = width / 2;
-			item.strokeBounds.add(outline);
-			buildEdges(outline, item.strokeEdges);
 		}
 		if (item.fill.on) {
 			item.fillBounds.add(item.geometry.contours);
@@ -578,6 +594,13 @@ constexpr int kWorkerBank = 2;
 
 #if GEA_SVG_HAS_FREERTOS && !CONFIG_FREERTOS_UNICORE
 #define GEA_SVG_PARALLEL_PAINT 1
+#if __has_include("esp_cpu.h")
+#include "esp_cpu.h"
+inline unsigned svgPaintCycles() { return esp_cpu_get_cycle_count(); }
+#else
+// No cycle counter: the split stays at the middle.
+inline unsigned svgPaintCycles() { return 0; }
+#endif
 // One svg's rows split across both cores: the frame core paints the top half
 // while this worker, pinned to the other core, paints the bottom half. It owns
 // its own task (never the display's row worker, whose single job slot may be
@@ -730,7 +753,7 @@ struct RowSink {
 	}
 };
 
-void paintCoverage(gea::framework::graphics::Canvas *canvas, int bank, bool markDirty, const EdgeList &edges,
+GEA_SVG_HOT void paintCoverage(gea::framework::graphics::Canvas *canvas, int bank, bool markDirty, const EdgeList &edges,
                    const Bounds &bounds, bool evenOdd, const ResolvedPaint &paint, int ox, int oy, int cx0, int cy0,
                    int cx1, int cy1)
 {
@@ -1050,9 +1073,14 @@ void paint(const DisplayCommand &c)
 		int ox, oy, cx0, cx1;
 		int bank;
 		bool markDirty;
+		unsigned cycles;
 	};
 	auto paintRows = [](void *p, int y0, int y1) {
-		const Band &b = *static_cast<const Band *>(p);
+		Band &b = *static_cast<Band *>(p);
+#if GEA_SVG_PARALLEL_PAINT
+		const unsigned c0 = svgPaintCycles();
+		struct Time { Band &b; unsigned c0; ~Time() { b.cycles = svgPaintCycles() - c0; } } time{b, c0};
+#endif
 		for (const Item &item : *b.items) {
 			if (item.fill.on)
 				paintCoverage(b.canvas, b.bank, b.markDirty, item.fillEdges, item.fillBounds, item.evenOdd, item.fill, b.ox,
@@ -1062,14 +1090,20 @@ void paint(const DisplayCommand &c)
 				              b.oy, b.cx0, y0, b.cx1, y1);
 		}
 	};
-	Band band{&it->second.items, canvas, c.svg.x, c.svg.y, cx0, cx1, scratchBank(), true};
+	Band band{&it->second.items, canvas, c.svg.x, c.svg.y, cx0, cx1, scratchBank(), true, 0};
 #if GEA_SVG_PARALLEL_PAINT
 	// Split tall paints across both cores; rows are disjoint, so the two
 	// halves never touch the same pixels. Neither marks rows dirty (the dirty
 	// rect list is not concurrent); the clipped box is marked once below.
+	// Ink is rarely spread evenly over the rows (a chart's filled area sits
+	// low, a gauge's arc high), so a fixed half split leaves one core waiting
+	// on the other; each paint moves the split row to where the last paint's
+	// measured time would have divided equally.
 	constexpr int kMinSplitRows = 48;
 	if (cy1 - cy0 >= kMinSplitRows && (cx1 - cx0) * (cy1 - cy0) >= 8000) {
-		const int mid = (cy0 + cy1) / 2;
+		Scene &scene = it->second;
+		const int rows = cy1 - cy0;
+		const int mid = cy0 + std::clamp(static_cast<int>(rows * scene.split + 0.5f), 1, rows - 1);
 		Band low = band;
 		low.bank = kWorkerBank;
 		low.markDirty = false;
@@ -1078,6 +1112,15 @@ void paint(const DisplayCommand &c)
 			paintRows(&band, cy0, mid);
 			paintWorkerWait();
 			canvas->markDirty(cx0, cy0, cx1 - 1, cy1 - 1);
+			const float top = static_cast<float>(band.cycles), bottom = static_cast<float>(low.cycles);
+			const float half = (top + bottom) * 0.5f;
+			if (half > 0) {
+				const int topRows = mid - cy0, bottomRows = cy1 - mid;
+				// Rows each half's cost spreads over evenly, up to the time midpoint.
+				const float at = top >= half ? topRows * (half / top) : topRows + bottomRows * ((half - top) / bottom);
+				const float target = at / rows;
+				scene.split = std::clamp(0.5f * scene.split + 0.5f * target, 0.1f, 0.9f);
+			}
 			return;
 		}
 		band.markDirty = true;

@@ -27,9 +27,13 @@
 #include <vector>
 
 #if defined(ESP_PLATFORM)
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
+#define GEA_SVG_HOT IRAM_ATTR
+#else
+#define GEA_SVG_HOT
 #endif
-
 
 namespace gea::embedded::ui::svg {
 
@@ -67,6 +71,63 @@ struct InternalAllocator {
 };
 template <typename T>
 using ScratchVector = std::vector<T, InternalAllocator<T>>;
+
+// Data read in order, a few times per paint (a shape's edge list), goes to
+// PSRAM on ESP32: the cache serves sequential reads well, and internal RAM is
+// left to the accumulators, which are touched at random once per cell.
+template <typename T>
+struct ExternalAllocator {
+	using value_type = T;
+	ExternalAllocator() = default;
+	template <typename U>
+	ExternalAllocator(const ExternalAllocator<U> &) {}
+	T *allocate(std::size_t n)
+	{
+#if defined(ESP_PLATFORM)
+		if (void *p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) return static_cast<T *>(p);
+		if (void *p = heap_caps_malloc(n * sizeof(T), MALLOC_CAP_8BIT)) return static_cast<T *>(p);
+		throw std::bad_alloc();
+#else
+		return std::allocator<T>{}.allocate(n);
+#endif
+	}
+	void deallocate(T *p, std::size_t n)
+	{
+#if defined(ESP_PLATFORM)
+		(void)n;
+		heap_caps_free(p);
+#else
+		std::allocator<T>{}.deallocate(p, n);
+#endif
+	}
+	template <typename U>
+	bool operator==(const ExternalAllocator<U> &) const { return true; }
+	template <typename U>
+	bool operator!=(const ExternalAllocator<U> &) const { return false; }
+};
+
+// Grows a zero-filled scratch vector to `need` elements, keeping it in
+// internal RAM. The allocator falls back to PSRAM when internal RAM is short
+// at that moment (during boot, say), and a vector never moves on its own, so
+// one that landed outside retries now and then and moves back in once a block
+// is free. Capacity is reserved up front so the usual sizes never reallocate.
+template <typename V>
+inline void growInternalZeroed(V &v, std::size_t need, std::size_t reserve, int &retry)
+{
+#if defined(ESP_PLATFORM)
+	const bool inside = v.capacity() == 0 || esp_ptr_internal(v.data());
+	if (v.size() >= need && (inside || (++retry & 63) != 0)) return;
+	V fresh;
+	fresh.reserve(std::max(need, reserve));
+	if (v.size() >= need && !esp_ptr_internal(fresh.data())) return;  // no better block yet
+	fresh.resize(std::max(need, v.size()), 0);
+	v.swap(fresh);
+#else
+	(void)reserve;
+	(void)retry;
+	if (v.size() < need) v.resize(need, 0);
+#endif
+}
 
 struct Point {
 	float x = 0.0f;
@@ -805,138 +866,263 @@ struct StrokeStyle {
 };
 
 namespace detail {
-inline float signedArea(const Contour &c)
-{
-	float a = 0;
-	for (std::size_t i = 0, n = c.size(); i < n; ++i) {
-		const Point &p = c[i], &q = c[(i + 1) % n];
-		a += p.x * q.y - q.x * p.y;
-	}
-	return a * 0.5f;
-}
-
 // Every stroke piece winds the same way, so overlapping pieces add instead of
-// cancelling and the nonzero fill of the set is exactly their union.
-inline void pushPiece(std::vector<Contour> &out, Contour piece)
+// cancelling and the nonzero fill of the set is exactly their union. A piece
+// reaches the sink as points plus `reversed`: when set, the piece is to be
+// read backwards (its edges' directions flipped), which is how it would wind
+// had it been stored reversed. Pieces never touch the heap: a stroke is
+// hundreds of them, and an ESP32 allocation is a microsecond or two.
+template <typename Sink>
+inline void pushPiece(Sink &sink, const Point *piece, int n)
 {
-	if (piece.size() < 3) return;
-	const float area = signedArea(piece);
+	if (n < 3) return;
+	float area = 0;
+	for (int i = 0; i < n; ++i) {
+		const Point &p = piece[i], &q = piece[(i + 1) % n];
+		area += p.x * q.y - q.x * p.y;
+	}
+	area *= 0.5f;
 	if (std::fabs(area) < 1e-6f) return;
-	if (area < 0) std::reverse(piece.begin(), piece.end());
-	out.push_back(std::move(piece));
+	sink(piece, n, area < 0);
+}
+template <typename Sink>
+inline void pushPiece(Sink &sink, std::initializer_list<Point> piece)
+{
+	pushPiece(sink, piece.begin(), static_cast<int>(piece.size()));
 }
 
-inline void pushDisc(std::vector<Contour> &out, Point c, float r)
+template <typename Sink>
+inline void pushDisc(Sink &sink, Point c, float r)
 {
 	const int n = std::clamp(static_cast<int>(std::ceil(r * 1.6f)) + 6, 8, 64);
-	Contour disc;
-	disc.reserve(static_cast<std::size_t>(n));
+	Point disc[64];
 	for (int i = 0; i < n; ++i) {
 		const float t = 2 * 3.14159265358979f * i / n;
-		disc.push_back({c.x + r * std::cos(t), c.y + r * std::sin(t)});
+		disc[i] = {c.x + r * std::cos(t), c.y + r * std::sin(t)};
 	}
-	pushPiece(out, std::move(disc));
+	pushPiece(sink, disc, n);
 }
 // The round join's outer wedge: the pie slice from o0 to o1 around p, with
 // just enough arc points to keep each chord within 0.2 px of the circle. (A
 // whole disc per vertex costs ~20 points where a flattened curve's joins need
 // one or two.)
-inline void pushWedge(std::vector<Contour> &out, Point p, Point o0, float r, float turn)
+template <typename Sink>
+inline void pushWedge(Sink &sink, Point p, Point o0, float r, float turn)
 {
 	const float step = r > 0.2f ? 2 * std::acos(1 - 0.2f / r) : 1.5707963f;
 	const int n = std::clamp(static_cast<int>(std::ceil(std::fabs(turn) / step)), 1, 64);
-	Contour wedge;
-	wedge.reserve(static_cast<std::size_t>(n) + 2);
-	wedge.push_back(p);
+	Point wedge[66];
+	int count = 0;
+	wedge[count++] = p;
 	const float a0 = std::atan2(o0.y - p.y, o0.x - p.x);
 	// o1 is o0 rotated about p by the path's turning angle (both offsets are
 	// the segment normals scaled by the same side), so the arc sweeps `turn`.
 	const float sweep = turn;
 	for (int i = 0; i <= n; ++i) {
 		const float t = a0 + sweep * i / n;
-		wedge.push_back({p.x + r * std::cos(t), p.y + r * std::sin(t)});
+		wedge[count++] = {p.x + r * std::cos(t), p.y + r * std::sin(t)};
 	}
-	pushPiece(out, std::move(wedge));
+	pushPiece(sink, wedge, count);
 }
 }  // namespace detail
 
-// Outlines one device-space polyline as polygons to fill with nonzero.
-inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &style, std::vector<Contour> &out)
+// Outlines one device-space polyline as polygons to fill with nonzero, each
+// handed to `sink(points, count, reversed)`.
+//
+// The outline is one polygon per open subpath (and two, outer and inner, per
+// closed one): the left offset forward, the end cap, the right offset back,
+// the start cap -- the construction Skia's stroker fills with nonzero. At a
+// joint the outer side gets the join's own points (miter tip, round arc, or
+// nothing for a bevel) and the inner side pivots through the vertex itself,
+// which keeps the winding positive where the two offsets overlap. Compared
+// with a quad per segment plus a piece per joint and a disc per cap, this
+// hands the rasterizer about half the edges (no quad ends, no overlapping
+// pieces) and the builder a quarter, and its arcs step by a fixed rotation:
+// one cos/sin per stroke instead of two per arc point.
+namespace detail {
+struct ArcStep {
+	float step = 1.5707963f;
+	explicit ArcStep(float r)
+	{
+		// Each chord within 0.2 px of the circle, and never coarser than the
+		// disc pushDisc draws (small radii need the extra points for area).
+		step = r > 0.2f ? 2 * std::acos(1 - 0.2f / r) : 1.5707963f;
+		const int disc = std::clamp(static_cast<int>(std::ceil(r * 1.6f)) + 6, 8, 64);
+		step = std::min(step, 6.2831853f / static_cast<float>(disc));
+	}
+};
+// Points strictly between p+u and p+u rotated by `sweep` (radians, signed),
+// appended to `out`. |u| is the radius.
+template <typename Out>
+inline void arcPoints(Out &out, Point p, Point u, float sweep, float step)
+{
+	const int n = std::clamp(static_cast<int>(std::ceil(std::fabs(sweep) / step)), 1, 64);
+	if (n < 2) return;
+	const float d = sweep / n;
+	const float c = std::cos(d), s = std::sin(d);
+	float x = u.x, y = u.y;
+	for (int i = 1; i < n; ++i) {
+		const float nx = x * c - y * s;
+		y = x * s + y * c;
+		x = nx;
+		out.push_back({p.x + x, p.y + y});
+	}
+}
+inline float polygonArea2(const Point *p, std::size_t n)
+{
+	float area = 0;
+	for (std::size_t i = 0; i < n; ++i) {
+		const Point &a = p[i], &b = p[i + 1 < n ? i + 1 : 0];
+		area += a.x * b.y - b.x * a.y;
+	}
+	return area;
+}
+}  // namespace detail
+
+template <typename Sink>
+inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &style, Sink &&sink)
 {
 	const float hw = style.width * 0.5f;
 	if (hw <= 0 || in.empty()) return;
-	Contour pts;
+	ScratchVector<Point> pts;
 	pts.reserve(in.size());
-	for (const Point &p : in)
-		if (pts.empty() || std::hypot(p.x - pts.back().x, p.y - pts.back().y) > 1e-4f) pts.push_back(p);
-	if (closed && pts.size() > 2 && std::hypot(pts.front().x - pts.back().x, pts.front().y - pts.back().y) <= 1e-4f)
-		pts.pop_back();
+	for (const Point &p : in) {
+		if (!pts.empty()) {
+			const float dx = p.x - pts.back().x, dy = p.y - pts.back().y;
+			if (dx * dx + dy * dy <= 1e-8f) continue;
+		}
+		pts.push_back(p);
+	}
+	if (closed && pts.size() > 2) {
+		const float dx = pts.front().x - pts.back().x, dy = pts.front().y - pts.back().y;
+		if (dx * dx + dy * dy <= 1e-8f) pts.pop_back();
+	}
 	const std::size_t n = pts.size();
 	if (n == 1) {
 		// Zero-length subpath: round and square caps still paint a dot.
-		if (style.cap == LineCap::Round) detail::pushDisc(out, pts[0], hw);
+		if (style.cap == LineCap::Round) detail::pushDisc(sink, pts[0], hw);
 		else if (style.cap == LineCap::Square)
-			detail::pushPiece(out, {{pts[0].x - hw, pts[0].y - hw}, {pts[0].x + hw, pts[0].y - hw},
-			                        {pts[0].x + hw, pts[0].y + hw}, {pts[0].x - hw, pts[0].y + hw}});
+			detail::pushPiece(sink, {{pts[0].x - hw, pts[0].y - hw}, {pts[0].x + hw, pts[0].y - hw},
+			                         {pts[0].x + hw, pts[0].y + hw}, {pts[0].x - hw, pts[0].y + hw}});
 		return;
 	}
 	const std::size_t segments = closed ? n : n - 1;
-	auto normal = [&](std::size_t i) {
-		const Point &a = pts[i], &b = pts[(i + 1) % n];
-		const float len = std::hypot(b.x - a.x, b.y - a.y);
-		return Point{-(b.y - a.y) / len * hw, (b.x - a.x) / len * hw};
-	};
+	// Each segment's left normal, scaled to the half width: solved once, read
+	// by both sides and by the joins on both its ends.
+	ScratchVector<Point> normals(segments);
 	for (std::size_t i = 0; i < segments; ++i) {
-		Point a = pts[i], b = pts[(i + 1) % n];
-		const Point nn = normal(i);
-		if (!closed && style.cap == LineCap::Square) {
-			// Square caps extend the end segments by half the width.
-			const Point dir{nn.y, -nn.x};
-			if (i == 0) a = {a.x - dir.x, a.y - dir.y};
-			if (i == segments - 1) b = {b.x + dir.x, b.y + dir.y};
-		}
-		detail::pushPiece(out, {{a.x + nn.x, a.y + nn.y}, {b.x + nn.x, b.y + nn.y}, {b.x - nn.x, b.y - nn.y},
-		                        {a.x - nn.x, a.y - nn.y}});
+		const Point &a = pts[i], &b = pts[(i + 1) % n];
+		const float dx = b.x - a.x, dy = b.y - a.y;
+		const float k = hw / std::sqrt(dx * dx + dy * dy);
+		normals[i] = Point{-dy * k, dx * k};
 	}
-	// Joins at interior vertices (and every vertex of a closed contour).
-	for (std::size_t v = closed ? 0 : 1; v < (closed ? n : n - 1); ++v) {
-		const std::size_t prevSeg = (v + segments - 1) % segments;
-		const Point n0 = normal(prevSeg), n1 = normal(v % segments);
-		const Point p = pts[v];
-		const float cross = n0.x * n1.y - n0.y * n1.x;
-		const float dot = n0.x * n1.x + n0.y * n1.y;
-		const float turn = std::atan2(cross, dot);  // signed turning angle
-		if (std::fabs(turn) < 1e-4f) continue;
-		// Outer side: where the offset quads leave a wedge-shaped gap.
-		const float side = turn > 0 ? -1.0f : 1.0f;
-		const Point o0{p.x + side * n0.x, p.y + side * n0.y};
-		const Point o1{p.x + side * n1.x, p.y + side * n1.y};
-		LineJoin join = style.join;
-		// A flattened curve turns a little at every vertex; a bevel closes those
-		// sub-pixel wedges as well as a round join would, for 3 edges not 30.
-		if (join == LineJoin::Round && hw * std::fabs(turn) < 1.0f) join = LineJoin::Bevel;
-		if (join == LineJoin::Round) {
-			detail::pushWedge(out, p, o0, hw, turn);
-		} else if (join == LineJoin::Miter) {
-			const float cosHalf = std::cos(std::fabs(turn) / 2);
-			const float miterRatio = cosHalf > 1e-4f ? 1.0f / cosHalf : 1e9f;
-			if (miterRatio <= style.miterLimit) {
-				const Point mid{(n0.x + n1.x), (n0.y + n1.y)};
-				const float ml = std::hypot(mid.x, mid.y);
-				const float len = hw * miterRatio;
-				const Point tip{p.x + side * mid.x / ml * len, p.y + side * mid.y / ml * len};
-				detail::pushPiece(out, {p, o0, tip, o1});
-			} else {
-				detail::pushPiece(out, {p, o0, o1});
+	const bool roundArcs = style.cap == LineCap::Round || style.join == LineJoin::Round;
+	const float arcStep = roundArcs ? detail::ArcStep(hw).step : 1.5707963f;
+	ScratchVector<Point> out;
+	out.reserve(segments * 4 + 8);
+	// The joint at vertex p between offsets a (arriving) and b (leaving), on
+	// the side whose offsets these are.
+	auto joint = [&](Point p, Point a, Point b, float cross, float dot) {
+		if (dot > 0 && std::fabs(cross) < 1e-4f * dot) {  // straight on
+			out.push_back({p.x + b.x, p.y + b.y});
+			return;
+		}
+		// `cross` is the turn as seen from this side's offsets: negative when
+		// the path turns away from them, where they fan apart.
+		const bool outer = cross <= 0;
+		const float side = a.x * b.y - a.y * b.x;
+		out.push_back({p.x + a.x, p.y + a.y});
+		if (!outer) {
+			out.push_back(p);
+		} else if (style.join == LineJoin::Round) {
+			// `a` is the left normal of the arriving direction, so a full
+			// reversal (side 0) sweeps through that direction: -pi.
+			const float turn = std::fabs(cross) < 1e-4f * hw * hw ? -3.14159265f : std::atan2(side, a.x * b.x + a.y * b.y);
+			if (hw * std::fabs(turn) >= 1.0f) detail::arcPoints(out, p, a, turn, arcStep);
+		} else if (style.join == LineJoin::Miter) {
+			const float cosTurn = std::clamp(dot / (hw * hw), -1.0f, 1.0f);
+			const float cosHalf = std::sqrt((1 + cosTurn) * 0.5f);
+			if (cosHalf > 1e-4f && 1.0f / cosHalf <= style.miterLimit) {
+				const Point mid{a.x + b.x, a.y + b.y};
+				const float k = hw / (cosHalf * std::sqrt(mid.x * mid.x + mid.y * mid.y));
+				out.push_back({p.x + mid.x * k, p.y + mid.y * k});
 			}
-		} else {
-			detail::pushPiece(out, {p, o0, o1});
 		}
+		out.push_back({p.x + b.x, p.y + b.y});
+	};
+	auto cap = [&](Point p, Point u) {  // from p+u round to p-u, through the forward side
+		if (style.cap == LineCap::Round) {
+			out.push_back({p.x + u.x, p.y + u.y});
+			detail::arcPoints(out, p, u, -3.14159265f, arcStep);
+			out.push_back({p.x - u.x, p.y - u.y});
+		} else if (style.cap == LineCap::Square) {
+			const Point f{u.y, -u.x};  // forward, half width long
+			out.push_back({p.x + u.x + f.x, p.y + u.y + f.y});
+			out.push_back({p.x - u.x + f.x, p.y - u.y + f.y});
+		} else {
+			out.push_back({p.x + u.x, p.y + u.y});
+			out.push_back({p.x - u.x, p.y - u.y});
+		}
+	};
+	auto turnAt = [&](std::size_t prevSeg, std::size_t nextSeg, float &cross, float &dot) {
+		const Point n0 = normals[prevSeg], n1 = normals[nextSeg];
+		cross = n0.x * n1.y - n0.y * n1.x;
+		dot = n0.x * n1.x + n0.y * n1.y;
+	};
+	if (!closed) {
+		// Left side forward.
+		out.push_back({pts[0].x + normals[0].x, pts[0].y + normals[0].y});
+		for (std::size_t v = 1; v < n - 1; ++v) {
+			float cross, dot;
+			turnAt(v - 1, v, cross, dot);
+			joint(pts[v], normals[v - 1], normals[v], cross, dot);
+		}
+		// End cap, right side back, start cap.
+		cap(pts[n - 1], normals[segments - 1]);
+		for (std::size_t v = n - 2; v >= 1; --v) {
+			float cross, dot;
+			turnAt(v - 1, v, cross, dot);
+			const Point a{-normals[v].x, -normals[v].y}, b{-normals[v - 1].x, -normals[v - 1].y};
+			joint(pts[v], a, b, -cross, dot);
+		}
+		cap(pts[0], Point{-normals[0].x, -normals[0].y});
+		if (style.cap != LineCap::Square) out.pop_back();  // the start cap ends where the outline began
+		const float area = detail::polygonArea2(out.data(), out.size());
+		if (std::fabs(area) > 2e-6f) sink(out.data(), static_cast<int>(out.size()), area < 0);
+		return;
 	}
-	if (!closed && style.cap == LineCap::Round) {
-		detail::pushDisc(out, pts.front(), hw);
-		detail::pushDisc(out, pts.back(), hw);
+	// Closed: the left loop forward and the right loop backward, wound
+	// oppositely, so nonzero fills only the band between them.
+	for (std::size_t v = 0; v < n; ++v) {
+		float cross, dot;
+		const std::size_t prev = (v + segments - 1) % segments;
+		turnAt(prev, v, cross, dot);
+		joint(pts[v], normals[prev], normals[v], cross, dot);
 	}
+	const std::size_t leftCount = out.size();
+	for (std::size_t k = 0; k < n; ++k) {
+		const std::size_t v = n - 1 - k;
+		float cross, dot;
+		const std::size_t prev = (v + segments - 1) % segments;
+		turnAt(prev, v, cross, dot);
+		const Point a{-normals[v].x, -normals[v].y}, b{-normals[prev].x, -normals[prev].y};
+		joint(pts[v], a, b, -cross, dot);
+	}
+	const float area = detail::polygonArea2(out.data(), leftCount) +
+	                   detail::polygonArea2(out.data() + leftCount, out.size() - leftCount);
+	if (std::fabs(area) <= 2e-6f) return;
+	sink(out.data(), static_cast<int>(leftCount), area < 0);
+	sink(out.data() + leftCount, static_cast<int>(out.size() - leftCount), area < 0);
+}
+
+// The stroke outline as polygons (each wound the same way).
+inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &style, std::vector<Contour> &out)
+{
+	strokeContour(in, closed, style, [&out](const Point *p, int n, bool reversed) {
+		Contour piece(p, p + n);
+		if (reversed) std::reverse(piece.begin(), piece.end());
+		out.push_back(std::move(piece));
+	});
 }
 
 inline void strokePath(const Path &path, const StrokeStyle &style, std::vector<Contour> &out)
@@ -1019,25 +1205,86 @@ inline float distanceToPath(const Path &path, Point p)
 // of a larger shape with no seams between strips.
 // A shape's edges, flat and sorted by top y: built once per scene build, then
 // every paint and every strip walks one contiguous array.
+// `a` is the top end and `b` the bottom; `dir` is the winding the contour
+// gave it (+1 drawn downwards, -1 upwards). The slopes are solved once here:
+// a tall edge crosses many strips, and each strip re-clips it.
 struct Edge {
 	Point a, b;
 	float top, bottom;
+	float dxdy, dydx;  // dydx is 0 for a vertical edge (never used then)
+	float dir;
 };
-using EdgeList = ScratchVector<Edge>;
+using EdgeList = std::vector<Edge, ExternalAllocator<Edge>>;
+
+// Collects polygon edges and writes them out sorted by top. Edges are built
+// in internal scratch and ordered by sorting 8-byte keys (top, index), then
+// written out once, in order: sorting the 36-byte edges themselves in place,
+// in PSRAM, cost ~700 cycles per edge on an ESP32-S3.
+class EdgeBuilder {
+public:
+	void reserve(std::size_t n)
+	{
+		built_.reserve(n);
+		keys_.reserve(n);
+	}
+	// One closed polygon; `reversed` reads it backwards (flips every edge).
+	void add(const Point *p, int n, bool reversed = false)
+	{
+		for (int i = 0; i < n; ++i) {
+			Point a = p[i], b = p[i + 1 < n ? i + 1 : 0];
+			if (a.y == b.y) continue;
+			float dir = reversed ? -1.0f : 1.0f;
+			if (a.y > b.y) std::swap(a, b), dir = -dir;
+			const float dx = b.x - a.x, dy = b.y - a.y;
+			// The float's bits, flipped so unsigned order is numeric order.
+			std::uint32_t bits;
+			std::memcpy(&bits, &a.y, sizeof bits);
+			bits ^= (bits >> 31) ? 0xffffffffu : 0x80000000u;
+			keys_.push_back(static_cast<std::uint64_t>(bits) << 32 | built_.size());
+			built_.push_back({a, b, a.y, b.y, dx / dy, dx != 0.0f ? dy / dx : 0.0f, dir});
+		}
+	}
+	void finish(EdgeList &edges)
+	{
+		std::sort(keys_.begin(), keys_.end());
+		edges.resize(built_.size());
+		for (std::size_t i = 0; i < keys_.size(); ++i) edges[i] = built_[static_cast<std::uint32_t>(keys_[i])];
+	}
+
+private:
+	ScratchVector<Edge> built_;
+	ScratchVector<std::uint64_t> keys_;
+};
 
 inline void buildEdges(const std::vector<Contour> &contours, EdgeList &edges)
 {
 	edges.clear();
-	for (const auto &c : contours) {
-		const std::size_t n = c.size();
-		if (n < 2) continue;
-		for (std::size_t i = 0; i < n; ++i) {
-			const Point &a = c[i], &b = c[(i + 1) % n];
-			if (a.y == b.y) continue;
-			edges.push_back({a, b, a.y < b.y ? a.y : b.y, a.y < b.y ? b.y : a.y});
-		}
-	}
-	std::sort(edges.begin(), edges.end(), [](const Edge &l, const Edge &r) { return l.top < r.top; });
+	std::size_t total = 0;
+	for (const auto &c : contours)
+		if (c.size() >= 2) total += c.size();
+	if (!total) return;
+	EdgeBuilder builder;
+	builder.reserve(total);
+	for (const auto &c : contours)
+		if (c.size() >= 2) builder.add(c.data(), static_cast<int>(c.size()));
+	builder.finish(edges);
+}
+
+// A path's stroke outline straight to edges (what strokePath + buildEdges
+// make, without the per-piece polygons), and the outline's bounds.
+inline void strokePathEdges(const Path &path, const StrokeStyle &style, EdgeList &edges, Bounds &bounds)
+{
+	edges.clear();
+	EdgeBuilder builder;
+	std::size_t points = 0;
+	for (const auto &c : path.contours) points += c.size();
+	builder.reserve(points * 8 + 16);
+	auto sink = [&](const Point *p, int n, bool reversed) {
+		for (int i = 0; i < n; ++i) bounds.add(p[i]);
+		builder.add(p, n, reversed);
+	};
+	for (std::size_t i = 0; i < path.contours.size(); ++i) strokeContour(path.contours[i], path.closed[i] != 0, style, sink);
+	builder.finish(edges);
 }
 
 class Rasterizer {
@@ -1045,7 +1292,7 @@ public:
 	// The accumulator stays all-zero between uses: row() clears exactly the
 	// cells each row touched, so a strip never re-zeroes its whole area and
 	// work scales with the ink, not the bounding box.
-	void reset(int x0, int y0, int width, int height)
+	GEA_SVG_HOT void reset(int x0, int y0, int width, int height)
 	{
 		x0_ = x0;
 		y0_ = y0;
@@ -1054,9 +1301,9 @@ public:
 		stride_ = w_ + 2;
 		wpr_ = (stride_ + 31) >> 5;
 		const std::size_t cells = static_cast<std::size_t>(stride_) * static_cast<std::size_t>(h_);
-		if (acc_.size() < cells) acc_.resize(cells, 0);
+		growInternalZeroed(acc_, cells, kReserveCells, accRetry_);
 		const std::size_t words = static_cast<std::size_t>(wpr_) * static_cast<std::size_t>(h_);
-		if (bits_.size() < words) bits_.resize(words, 0);
+		growInternalZeroed(bits_, words, kReserveWords, bitsRetry_);
 	}
 	int x() const { return x0_; }
 	int y() const { return y0_; }
@@ -1080,7 +1327,7 @@ public:
 		for (const Edge &e : *edges_) {
 			if (e.top >= bottom) break;
 			if (e.bottom <= top) continue;
-			addEdge(e.a, e.b);
+			addStoredEdge(e);
 		}
 	}
 
@@ -1092,7 +1339,7 @@ public:
 		nextEdge_ = 0;
 		active_.clear();
 	}
-	void addActiveEdges()
+	GEA_SVG_HOT void addActiveEdges()
 	{
 		if (!edges_) return;
 		const float top = static_cast<float>(y0_), bottom = static_cast<float>(y0_ + h_);
@@ -1105,7 +1352,46 @@ public:
 			if (edges[nextEdge_].bottom > top) active_.push_back(static_cast<std::uint32_t>(nextEdge_));
 			++nextEdge_;
 		}
-		for (std::uint32_t i : active_) addEdge(edges[i].a, edges[i].b);
+		for (std::uint32_t i : active_) addStoredEdge(edges[i]);
+	}
+
+	// addEdge for a stored edge: the same clipping, from its solved slopes.
+	GEA_SVG_HOT void addStoredEdge(const Edge &e)
+	{
+		if (w_ <= 0 || h_ <= 0) return;
+		const float W = static_cast<float>(w_), H = static_cast<float>(h_);
+		Point a{e.a.x - x0_, e.a.y - y0_}, b{e.b.x - x0_, e.b.y - y0_};
+		if (b.y <= 0 || a.y >= H) return;
+		if (a.y < 0) { a.x -= e.dxdy * a.y; a.y = 0; }
+		if (b.y > H) { b.x = a.x + e.dxdy * (H - a.y); b.y = H; }
+		if (b.y <= a.y) return;
+		const float lo = std::min(a.x, b.x), hi = std::max(a.x, b.x);
+		if (lo >= 0 && hi <= W) {
+			line(a, b, e.dir, e.dxdy);
+			return;
+		}
+		Point pts[4];
+		int count = 0;
+		pts[count++] = a;
+		float ys[2];
+		int nt = 0;
+		if (lo < 0 && hi > 0) ys[nt++] = a.y + (0 - a.x) * e.dydx;
+		if (lo < W && hi > W) ys[nt++] = a.y + (W - a.x) * e.dydx;
+		if (nt == 2 && ys[0] > ys[1]) std::swap(ys[0], ys[1]);
+		for (int i = 0; i < nt; ++i) {
+			const float y = std::clamp(ys[i], a.y, b.y);
+			pts[count++] = {a.x + e.dxdy * (y - a.y), y};
+		}
+		pts[count++] = b;
+		for (int i = 0; i + 1 < count; ++i) {
+			Point p = pts[i], q = pts[i + 1];
+			// A piece beyond a side column is flattened onto it, vertical.
+			const float mid = (p.x + q.x) * 0.5f;
+			const bool outside = mid < 0 || mid > W;
+			p.x = std::clamp(p.x, 0.0f, W);
+			q.x = std::clamp(q.x, 0.0f, W);
+			line(p, q, e.dir, outside ? 0.0f : e.dxdy);
+		}
 	}
 
 	void addContours(const std::vector<Contour> &contours, float dx = 0, float dy = 0)
@@ -1165,7 +1451,7 @@ public:
 	// costs nothing downstream. Clears the row's accumulator cells and bitmap.
 	static constexpr int kSpanMin = 8;
 	template <typename Emit, typename Span>
-	void row(int row, std::uint8_t *out, bool evenOdd, float alpha, Emit &&emit, Span &&span)
+	GEA_SVG_HOT void row(int row, std::uint8_t *out, bool evenOdd, float alpha, Emit &&emit, Span &&span)
 	{
 		const std::size_t r = static_cast<std::size_t>(row);
 		std::uint32_t *bits = &bits_[r * static_cast<std::size_t>(wpr_)];
@@ -1233,13 +1519,14 @@ private:
 	// shape's winding always returns to zero (no streaks from rounding).
 	static constexpr int kSub = 256;
 
-	void line(Point p0, Point p1, float dir)
+	void line(Point p0, Point p1, float dir) { line(p0, p1, dir, (p1.x - p0.x) / (p1.y - p0.y)); }
+	// `dxdy` is the piece's slope, passed in when the caller already has it.
+	GEA_SVG_HOT void line(Point p0, Point p1, float dir, float dxdy)
 	{
 		const int y0s = static_cast<int>(p0.y * kSub + 0.5f);
 		const int y1s = static_cast<int>(p1.y * kSub + 0.5f);
 		if (y1s <= y0s) return;
 		const int sign = dir < 0 ? -1 : 1;
-		const float dxdy = (p1.x - p0.x) / (p1.y - p0.y);
 		const int yStart = y0s >> 8;
 		const int yEnd = std::min(h_, (y1s + kSub - 1) >> 8);
 		const int maxX = w_ * kSub;
@@ -1277,10 +1564,29 @@ private:
 				const int wsub = x1 - x0;
 				const int x0f = x0 - (x0i << 8);
 				const int x1f = x1 - ((x1i - 1) << 8);  // (0, 256]
+				// Divisions by wsub go through its reciprocal (2^24 / wsub): an
+				// integer divide is a multi-cycle instruction on these cores and
+				// a row needed up to four. A straight edge's full rows share one
+				// or two widths (rounding), so the last two are kept. A quotient
+				// may come out one low; the remainder below absorbs it, so every
+				// row still sums to exactly `total`.
+				if (wsub != recipW_[0]) {
+					if (wsub == recipW_[1]) {
+						std::swap(recipW_[0], recipW_[1]);
+						std::swap(recip_[0], recip_[1]);
+					} else {
+						recipW_[1] = recipW_[0];
+						recip_[1] = recip_[0];
+						recipW_[0] = wsub;
+						recip_[0] = (1u << 24) / static_cast<unsigned>(wsub);
+					}
+				}
+				const std::uint64_t rcp = recip_[0];
+				auto div = [rcp](unsigned num, int shift) { return static_cast<int>((num * rcp) >> shift); };
 				// Fractions of `total` per cell, in 1/256 (see the float form:
 				// a0 = s(1-x0f)^2/2, middle cells s, am = s x1f^2/2).
-				const int a0 = ((kSub - x0f) * (kSub - x0f)) / (2 * wsub);
-				const int am = (x1f * x1f) / (2 * wsub);
+				const int a0 = div(static_cast<unsigned>((kSub - x0f) * (kSub - x0f)), 25);
+				const int am = div(static_cast<unsigned>(x1f * x1f), 25);
 				int assigned = d * a0;
 				rowAcc[x0i] += assigned;
 				if (x1i == x0i + 2) {
@@ -1288,8 +1594,8 @@ private:
 					rowAcc[x0i + 1] += mid;
 					assigned += mid;
 				} else {
-					const int s = (kSub * kSub) / wsub;
-					const int a1 = (kSub * (kSub + kSub / 2 - x0f)) / wsub;
+					const int s = div(static_cast<unsigned>(kSub * kSub), 24);
+					const int a1 = div(static_cast<unsigned>(kSub * (kSub + kSub / 2 - x0f)), 24);
 					const int first = d * (a1 - a0);
 					rowAcc[x0i + 1] += first;
 					assigned += first;
@@ -1323,7 +1629,14 @@ private:
 	}
 
 	int x0_ = 0, y0_ = 0, w_ = 0, h_ = 0, stride_ = 2, wpr_ = 1;
+	int recipW_[2] = {0, 0};
+	unsigned recip_[2] = {0, 0};
 	bool dirFlip_ = false;
+	// fillCoverage's strip budget (2048 cells) plus the two guard columns of
+	// its tallest strips; the bitmap's worst case is a narrow, tall strip.
+	static constexpr std::size_t kReserveCells = 2048 + 64;
+	static constexpr std::size_t kReserveWords = 256;
+	int accRetry_ = 0, bitsRetry_ = 0;
 	ScratchVector<int> acc_;
 	ScratchVector<std::uint32_t> bits_;  // one bit per accumulator cell an edge touched
 	ScratchVector<std::uint32_t> active_;
@@ -1337,7 +1650,7 @@ private:
 // for each long constant run and `emit(y, x, coverage, count)` for the short
 // anti-aliased runs between them.
 template <typename Emit, typename Span>
-inline void fillCoverage(Rasterizer &r, ScratchVector<std::uint8_t> &rowBuf, const EdgeList &edges,
+GEA_SVG_HOT inline void fillCoverage(Rasterizer &r, ScratchVector<std::uint8_t> &rowBuf, const EdgeList &edges,
                          int x0, int y0, int x1, int y1, bool evenOdd, float alpha, Emit &&emit, Span &&span)
 {
 	if (x1 <= x0 || y1 <= y0 || alpha <= 0 || edges.empty()) return;
