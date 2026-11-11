@@ -217,6 +217,24 @@ void geometryTests()
 		style.cap = svg::LineCap::Round;
 		svg::strokePath(line, style, outline);
 		check(near(static_cast<float>(coverageArea(outline, 0, 0, 64, 64)), 160 + 3.14159f * 4, 1.0f), "round caps add a disc");
+		// Joins at a right angle: two 20x4 strokes overlap in a 2x2 square (union
+		// 156); the outer corner adds a quarter disc (round), a triangle (bevel)
+		// or the full 2x2 square (miter).
+		{
+			auto corner = parse("M10 30 L30 30 L30 10");
+			svg::StrokeStyle js;
+			js.width = 4;
+			const std::pair<svg::LineJoin, float> joins[] = {
+					{svg::LineJoin::Round, 156 + 3.14159f}, {svg::LineJoin::Bevel, 158}, {svg::LineJoin::Miter, 160}};
+			for (const auto &[join, area] : joins) {
+				std::vector<svg::Contour> o;
+				js.join = join;
+				svg::strokePath(corner, js, o);
+				const float got = static_cast<float>(coverageArea(o, 0, 0, 64, 64));
+				if (!near(got, area, 0.5f)) std::fprintf(stderr, "[svg] join %d area %.2f want %.2f\n", (int)join, got, area);
+				check(near(got, area, 0.5f), "right-angle join adds its outer corner piece");
+			}
+		}
 		// Overlapping pieces (a sharp polyline with joins) never exceed full coverage.
 		auto zig = parse("M5 5 L40 30 L5 55 L40 60");
 		outline.clear();
@@ -305,6 +323,44 @@ void treeTests()
 		doc.refresh(root, 200, 120);
 		if (flushPixelCount() != before) std::fprintf(stderr, "[svg] idle refresh flushed %d px\n", flushPixelCount() - before);
 		check(flushPixelCount() == before, "an idle refresh presents nothing");
+	}
+	{
+		// Moving one shape repaints that shape's old and new bounds, not the
+		// whole 200x100 svg; pixels it overlapped (the bottom line) survive.
+		const int before = flushPixelCount();
+		ghost.setAttribute("cx", "80");
+		doc.refresh(root, 200, 120);
+		const int flushed = flushPixelCount() - before;
+		if (flushed <= 0 || flushed > 2400) std::fprintf(stderr, "[svg] moving one circle flushed %d px\n", flushed);
+		check(flushed > 0 && flushed <= 2400, "moving one shape repaints only its old and new bounds");
+		pixelIs(186, 80, kWhite, "the circle's old position is cleared");
+		pixelIs(156, 80, kRed, "the circle is drawn at its new position");
+		pixelIs(186, 90, kBlue, "the line under the old position is repainted");
+		const int beforeColor = flushPixelCount();
+		ghost.setAttribute("fill", "#0000ff");
+		doc.refresh(root, 200, 120);
+		const int recolored = flushPixelCount() - beforeColor;
+		check(recolored > 0 && recolored <= 1200, "a paint-only change repaints only that shape");
+		pixelIs(156, 80, kBlue, "the recolored circle");
+		ghost.setAttribute("fill", "#ff0000");
+		ghost.setAttribute("cx", "90");
+		doc.refresh(root, 200, 120);
+		pixelIs(186, 80, kRed, "the circle is back");
+	}
+	{
+		// A translate-only change shifts the cached rect: user (60..80) px
+		// (120..160) moves 10 user units left to px (100..140).
+		const int before = flushPixelCount();
+		group.setAttribute("transform", "translate(40 0)");
+		doc.refresh(root, 200, 120);
+		const int moved = flushPixelCount() - before;
+		check(moved > 0 && moved <= 4000, "a translated group repaints its old and new bounds only");
+		pixelIs(105, 40, kBlue, "translated rect, new left part");
+		pixelIs(150, 40, kWhite, "translated rect, old right part cleared");
+		check(tree.hitTestNode(105, 40) == box.id(), "the translated rect hit-tests at its new place");
+		group.setAttribute("transform", "translate(50 0)");
+		doc.refresh(root, 200, 120);
+		pixelIs(150, 40, kBlue, "translated back");
 	}
 	check(tree.node(chart.id()).layout.width == 200 && tree.node(chart.id()).layout.height == 100,
 	      "width/height attributes size the svg box");

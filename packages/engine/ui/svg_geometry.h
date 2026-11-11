@@ -797,6 +797,27 @@ inline void pushDisc(std::vector<Contour> &out, Point c, float r)
 	}
 	pushPiece(out, std::move(disc));
 }
+// The round join's outer wedge: the pie slice from o0 to o1 around p, with
+// just enough arc points to keep each chord within 0.2 px of the circle. (A
+// whole disc per vertex costs ~20 points where a flattened curve's joins need
+// one or two.)
+inline void pushWedge(std::vector<Contour> &out, Point p, Point o0, float r, float turn)
+{
+	const float step = r > 0.2f ? 2 * std::acos(1 - 0.2f / r) : 1.5707963f;
+	const int n = std::clamp(static_cast<int>(std::ceil(std::fabs(turn) / step)), 1, 64);
+	Contour wedge;
+	wedge.reserve(static_cast<std::size_t>(n) + 2);
+	wedge.push_back(p);
+	const float a0 = std::atan2(o0.y - p.y, o0.x - p.x);
+	// o1 is o0 rotated about p by the path's turning angle (both offsets are
+	// the segment normals scaled by the same side), so the arc sweeps `turn`.
+	const float sweep = turn;
+	for (int i = 0; i <= n; ++i) {
+		const float t = a0 + sweep * i / n;
+		wedge.push_back({p.x + r * std::cos(t), p.y + r * std::sin(t)});
+	}
+	pushPiece(out, std::move(wedge));
+}
 }  // namespace detail
 
 // Outlines one device-space polyline as polygons to fill with nonzero.
@@ -855,7 +876,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 		// sub-pixel wedges as well as a round join would, for 3 edges not 30.
 		if (join == LineJoin::Round && hw * std::fabs(turn) < 1.0f) join = LineJoin::Bevel;
 		if (join == LineJoin::Round) {
-			detail::pushDisc(out, p, hw);
+			detail::pushWedge(out, p, o0, hw, turn);
 		} else if (join == LineJoin::Miter) {
 			const float cosHalf = std::cos(std::fabs(turn) / 2);
 			const float miterRatio = cosHalf > 1e-4f ? 1.0f / cosHalf : 1e9f;

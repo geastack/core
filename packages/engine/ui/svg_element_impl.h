@@ -116,7 +116,42 @@ struct Item {
 	// stroke style): an unchanged item keeps them across scene rebuilds, so a
 	// frame that moves one shape re-flattens only that shape.
 	std::uint64_t geometryKey = 0;
+	// The transform's translation when the geometry was built. The key leaves
+	// translation out, so a shape that only moved (a scrolling chart) shifts
+	// its edges instead of re-flattening and re-stroking.
+	float tx = 0.0f, ty = 0.0f;
 };
+
+void translateBounds(Bounds &b, float dx, float dy)
+{
+	if (b.empty()) return;
+	b.x0 += dx;
+	b.x1 += dx;
+	b.y0 += dy;
+	b.y1 += dy;
+}
+
+void translateItem(Item &item, float dx, float dy)
+{
+	for (EdgeList *edges : {&item.fillEdges, &item.strokeEdges})
+		for (Edge &e : *edges) {
+			e.a.x += dx;
+			e.a.y += dy;
+			e.b.x += dx;
+			e.b.y += dy;
+			e.top += dy;
+			e.bottom += dy;
+		}
+	for (Contour &c : item.geometry.contours)
+		for (Point &p : c) {
+			p.x += dx;
+			p.y += dy;
+		}
+	translateBounds(item.fillBounds, dx, dy);
+	translateBounds(item.strokeBounds, dx, dy);
+	item.tx += dx;
+	item.ty += dy;
+}
 
 struct Scene {
 	bool dirty = true;
@@ -124,6 +159,20 @@ struct Scene {
 	int width = -1, height = -1;
 	std::uint64_t signature = 0;
 	std::vector<Item> items;
+	// Damage of the last rebuild, in svg-local pixels: the old and new bounds
+	// of every item whose geometry or paint changed, and of every item that
+	// went away. damageFull asks for the whole box (first build, resize,
+	// z-order change, or a change to the svg box itself). Consumed once by
+	// refresh's dirty collection through damage().
+	bool damageValid = false;
+	bool damageFull = true;
+	Bounds damage;
+	// The svg box as last recorded, to tell a scene-only change apart from a
+	// change to the box's own paint (background, border, position).
+	bool boxChanged = true;
+	bool haveBox = false;
+	int boxX = 0, boxY = 0;
+	alignas(ComputedStyle) unsigned char boxStyle[sizeof(ComputedStyle)] = {};
 };
 
 std::unordered_map<int, Attrs> g_attrs;
@@ -309,21 +358,55 @@ std::uint64_t floatBits(float f)
 }
 
 // The previous scene's items, consumed as the new scene reuses them.
+bool samePaint(const ResolvedPaint &a, const ResolvedPaint &b)
+{
+	return a.on == b.on && (!a.on || (a.color == b.color && a.alpha == b.alpha));
+}
+
+// Everything an item can touch on screen, in svg-local pixels.
+void addItemDamage(Bounds &damage, const Item &item)
+{
+	constexpr float kAntialias = 2.0f;
+	for (const Bounds *b : {&item.fillBounds, &item.strokeBounds}) {
+		if (b->empty()) continue;
+		damage.add(Point{b->x0 - kAntialias, b->y0 - kAntialias});
+		damage.add(Point{b->x1 + kAntialias, b->y1 + kAntialias});
+	}
+}
+
+// The previous scene's items, consumed as the new scene reuses them; also
+// accumulates the rebuild's damage.
 struct ItemCache {
 	std::vector<Item> *items = nullptr;
 	std::size_t hint = 0;
+	long lastTaken = -1;
+	bool full = false;
+	Bounds damage;
 	Item *take(int node, std::uint64_t key)
 	{
 		if (!items) return nullptr;
 		const std::size_t n = items->size();
 		for (std::size_t k = 0; k < n; ++k) {
-			Item &it = (*items)[(hint + k) % n];
+			const std::size_t index = (hint + k) % n;
+			Item &it = (*items)[index];
 			if (it.node == node) {
-				hint = (hint + k + 1) % n;
-				return it.geometryKey == key && it.node >= 0 ? &it : nullptr;
+				hint = (index + 1) % n;
+				if (it.geometryKey != key) return nullptr;
+				// A reused item that moved below one drawn after it changes the
+				// stacking of unchanged pixels: repaint everything.
+				if (static_cast<long>(index) < lastTaken) full = true;
+				lastTaken = static_cast<long>(index);
+				return &it;
 			}
 		}
 		return nullptr;
+	}
+	// Old items nobody reused (removed, hidden or rebuilt) leave damage behind.
+	void finish()
+	{
+		if (!items) return;
+		for (const Item &it : *items)
+			if (it.node >= 0) addItemDamage(damage, it);
 	}
 };
 
@@ -356,7 +439,7 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 		std::uint64_t key = mixKey(0x51ed27ull, (static_cast<std::uint64_t>(id) << 32) |
 		                                            (it == g_attrs.end() ? 0u : it->second.generation));
 		key = mixKey(key, static_cast<std::uint16_t>(node.tag_id));
-		for (float f : {ctx.matrix.a, ctx.matrix.b, ctx.matrix.c, ctx.matrix.d, ctx.matrix.e, ctx.matrix.f})
+		for (float f : {ctx.matrix.a, ctx.matrix.b, ctx.matrix.c, ctx.matrix.d})
 			key = mixKey(key, floatBits(f));
 		key = mixKey(key, static_cast<std::uint64_t>(fill.on) | static_cast<std::uint64_t>(stroked) << 1 |
 		                      static_cast<std::uint64_t>(ctx.evenOdd) << 2);
@@ -367,6 +450,14 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 		if (Item *cached = cache.take(id, key)) {
 			Item item = std::move(*cached);
 			cached->node = -1;
+			const float dx = ctx.matrix.e - item.tx, dy = ctx.matrix.f - item.ty;
+			if (dx != 0.0f || dy != 0.0f) {
+				addItemDamage(cache.damage, item);  // where it was
+				translateItem(item, dx, dy);
+				addItemDamage(cache.damage, item);  // where it is
+			} else if (!samePaint(item.fill, fill) || !samePaint(item.stroke, stroke)) {
+				addItemDamage(cache.damage, item);
+			}
 			item.fill = fill;
 			item.stroke = stroke;
 			item.hittable = ctx.hittable;
@@ -377,6 +468,8 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 		Item item;
 		item.node = id;
 		item.geometryKey = key;
+		item.tx = ctx.matrix.e;
+		item.ty = ctx.matrix.f;
 		buildGeometry(id, kind, ctx.matrix, item.geometry);
 		if (item.geometry.empty()) return;
 		item.fill = fill;
@@ -402,6 +495,7 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			buildEdges(item.geometry.contours, item.fillEdges);
 		}
 		if (item.strokeEdges.empty() && !item.fill.on && !item.hittable) return;
+		addItemDamage(cache.damage, item);
 		items.push_back(std::move(item));
 		return;
 	}
@@ -422,7 +516,11 @@ void buildScene(int root, Scene &scene, int width, int height)
 	if (const char *v = attr(root, "viewBox"); v && parseNumberList(v, vb, 4))
 		ctx.matrix = viewBoxTransform(vb, static_cast<float>(width), static_cast<float>(height), attr(root, "preserveAspectRatio"));
 	walk(root, ctx, scene.items, cache);
+	cache.finish();
 	scene.dirty = false;
+	scene.damageValid = true;
+	scene.damageFull = !cache.items || cache.full;
+	scene.damage = cache.damage;
 }
 
 std::uint64_t mix(std::uint64_t h, std::uint64_t v)
@@ -636,6 +734,27 @@ bool cssDeclarationValue(StyleDeclaration declaration, const char *value, Proper
 
 bool isRoot(const Node &node) { return node.tag_id == g_svgTag; }
 
+bool damage(int root, int &x0, int &y0, int &x1, int &y1)
+{
+	auto it = g_scenes.find(root);
+	if (it == g_scenes.end()) return false;
+	Scene &scene = it->second;
+	const bool valid = scene.damageValid && !scene.damageFull && !scene.boxChanged;
+	scene.damageValid = false;
+	if (!valid) return false;
+	if (scene.damage.empty()) {
+		x0 = y0 = 0;
+		x1 = y1 = -1;
+		return true;
+	}
+	x0 = std::max(0, static_cast<int>(std::floor(scene.damage.x0)));
+	y0 = std::max(0, static_cast<int>(std::floor(scene.damage.y0)));
+	x1 = std::min(scene.width - 1, static_cast<int>(std::ceil(scene.damage.x1)));
+	y1 = std::min(scene.height - 1, static_cast<int>(std::ceil(scene.damage.y1)));
+	if (x0 > x1 || y0 > y1) x0 = y0 = 0, x1 = y1 = -1;
+	return true;
+}
+
 bool isShape(int node)
 {
 	if (g_svgTag == -2) return false;
@@ -747,6 +866,45 @@ void validateScenes()
 		}
 		++it;
 	}
+#if GEA_SVG_PARALLEL_PAINT
+	// Rebuild the changed scenes across both cores now, before the display
+	// list records them (record() then finds them built). Building reads the
+	// tree, attributes and styles, which nothing mutates during a refresh, and
+	// writes only its own scene. Each scene goes to the less loaded core,
+	// weighed by its previous edge count; the heaviest go first.
+	struct Job {
+		int root;
+		Scene *scene;
+		std::size_t weight;
+	};
+	Job jobs[16];
+	int count = 0;
+	for (auto &[root, scene] : g_scenes) {
+		if (!scene.dirty || scene.width <= 0 || count == 16) continue;
+		const Node &n = state.nodes[root];
+		if (n.layout.width != scene.width || n.layout.height != scene.height) continue;
+		std::size_t weight = 1;
+		for (const Item &item : scene.items) weight += item.fillEdges.size() + item.strokeEdges.size();
+		jobs[count++] = {root, &scene, weight};
+	}
+	if (count < 2) return;
+	std::sort(jobs, jobs + count, [](const Job &a, const Job &b) { return a.weight > b.weight; });
+	Job mine[16], theirs[16];
+	int nMine = 0, nTheirs = 0;
+	std::size_t loadMine = 0, loadTheirs = 0;
+	for (int i = 0; i < count; ++i) {
+		if (loadMine <= loadTheirs) mine[nMine++] = jobs[i], loadMine += jobs[i].weight;
+		else theirs[nTheirs++] = jobs[i], loadTheirs += jobs[i].weight;
+	}
+	auto build = [](void *p, int, int count) {
+		const Job *list = static_cast<const Job *>(p);
+		for (int i = 0; i < count; ++i) buildScene(list[i].root, *list[i].scene, list[i].scene->width, list[i].scene->height);
+	};
+	const bool split = nTheirs > 0 && paintWorkerSubmit(build, theirs, 0, nTheirs);
+	build(mine, 0, nMine);
+	if (split) paintWorkerWait();
+	else build(theirs, 0, nTheirs);
+#endif
 }
 
 void record(const Node &node)
@@ -756,6 +914,14 @@ void record(const Node &node)
 	if (it == g_scenes.end()) it = g_scenes.emplace(id, Scene{}).first;
 	Scene &scene = it->second;
 	if (node.layout.width <= 0 || node.layout.height <= 0) return;
+	// Padding bytes can only make this report a change that did not happen,
+	// which costs a full-box repaint, never a missed one.
+	scene.boxChanged = !scene.haveBox || scene.boxX != node.layout.x || scene.boxY != node.layout.y ||
+	                   std::memcmp(scene.boxStyle, &node.computedStyle(), sizeof(ComputedStyle)) != 0;
+	scene.haveBox = true;
+	scene.boxX = node.layout.x;
+	scene.boxY = node.layout.y;
+	std::memcpy(scene.boxStyle, &node.computedStyle(), sizeof(ComputedStyle));
 	if (scene.dirty || scene.width != node.layout.width || scene.height != node.layout.height) {
 		buildScene(id, scene, node.layout.width, node.layout.height);
 		scene.signature = subtreeSignature(id);

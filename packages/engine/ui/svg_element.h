@@ -59,6 +59,13 @@ bool isRoot(const Node &node);
 // inserting, removing or restyling one only repaints its svg's scene.
 bool isShape(int node);
 
+// The pixels (relative to the svg's box) that its last scene rebuild changed,
+// consumed once per rebuild. False means "repaint the whole box": no rebuild
+// since the last call, a first build or resize, a z-order change, or a change
+// to the svg box's own style or position. An empty rect (x1 < x0) means the
+// rebuild changed nothing on screen.
+bool damage(int root, int &x0, int &y0, int &x1, int &y1);
+
 // Tree hooks.
 void noteTagChanged(int node);
 // Records an attribute on an SVG element (value == nullptr removes it).
