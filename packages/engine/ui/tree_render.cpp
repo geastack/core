@@ -3189,6 +3189,19 @@ namespace gea::embedded::ui
 		}
 #endif
 		const bool hasFlushOnlyRecolorRegions = preserveFlushOnlyRecolorRegions && flush_rect_count > 0;
+		// Direct replay draws node command ranges, and a scroll container's
+		// scrollbar thumb lies outside them: repaint a thumb's pixels only through
+		// the full-list path. Frames that don't touch one (an animation inside a
+		// scrolling page) keep direct replay and the fused flush.
+		if (direct_replay)
+		{
+			for (int i = 0; i < rect_count && direct_replay; ++i)
+				if (DisplayList::instance().scrollbarOverlapsRegion(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1))
+					direct_replay = 0;
+			for (int i = 0; i < flush_rect_count && direct_replay; ++i)
+				if (DisplayList::instance().scrollbarOverlapsRegion(flush_rects[i].x0, flush_rects[i].y0, flush_rects[i].x1, flush_rects[i].y1))
+					direct_replay = 0;
+		}
 		DisplayReplayRegion simpleTransferRegions[DirtyRegions::kMaxRects];
 		for (int i = 0; i < flush_rect_count; ++i)
 		{

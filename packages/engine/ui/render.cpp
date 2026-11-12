@@ -544,6 +544,14 @@ int gLastScrollUiFrame = -1000;
 			int commandCount = 0;
 			bool imageReferences[gea::framework::graphics::kImageMax]{};
 			bool textClippedBackgrounds = false;
+			// Scrollbar thumbs in the command stream (recorded after their
+			// container's children, so outside every node's command range). Direct
+			// dirty-region replay walks node ranges and never draws them; a frame
+			// whose dirty rects touch one must take the full-list path instead.
+			static constexpr int kMaxScrollbarBoxes = 16;
+			std::int16_t scrollbarBoxes[kMaxScrollbarBoxes][4]{};
+			int scrollbarBoxCount = 0;
+			bool scrollbarBoxOverflow = false;
 			// Sticky: an append() was dropped because the command buffer is full.
 			// Reset by clear(); lets a caller detect a truncated record.
 			bool commandOverflow = false;
@@ -804,6 +812,8 @@ int gLastScrollUiFrame = -1000;
 				commandsExternal = false;
 				commandCount = 0;
 				textClippedBackgrounds = false;
+				scrollbarBoxCount = 0;
+				scrollbarBoxOverflow = false;
 				appendOverride = nullptr;
 				appendOverrideCount = nullptr;
 				appendOverrideCapacity = 0;
@@ -9941,6 +9951,8 @@ int gLastScrollUiFrame = -1000;
 		state.commandCount = 0;
 		pruneImageReferences();
 		state.textClippedBackgrounds = false;
+		state.scrollbarBoxCount = 0;
+		state.scrollbarBoxOverflow = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
 		if (!state.ensureNodeScratchCapacity(tree.nodeCount()))
@@ -10568,9 +10580,11 @@ int gLastScrollUiFrame = -1000;
 		{
 			if ((GEA_CSS_FILTERS ? rstyle(nodes[i].computedStyle()).filter_blur_radius : 0) > 0)
 				return false;
-			if (nodes[i].computedStyle().overflow == 2)
-				return false;
 		}
+		// Scroll containers replay like overflow:hidden ones (their clips come
+		// from overflowClipBounds); only their scrollbar thumbs sit outside the
+		// node ranges, and tree_render keeps frames that touch a thumb on the
+		// full-list path (scrollbarOverlapsRegion).
 		(void)width;
 		(void)height;
 
@@ -10581,6 +10595,33 @@ int gLastScrollUiFrame = -1000;
 	bool DisplayList::hasTextClippedBackgrounds() const
 	{
 		return state.textClippedBackgrounds;
+	}
+
+	void DisplayList::noteScrollbarBox(int x, int y, int w, int h)
+	{
+		if (state.scrollbarBoxCount >= DisplayListState::kMaxScrollbarBoxes)
+		{
+			state.scrollbarBoxOverflow = true;
+			return;
+		}
+		std::int16_t *box = state.scrollbarBoxes[state.scrollbarBoxCount++];
+		box[0] = static_cast<std::int16_t>(x);
+		box[1] = static_cast<std::int16_t>(y);
+		box[2] = static_cast<std::int16_t>(x + w - 1);
+		box[3] = static_cast<std::int16_t>(y + h - 1);
+	}
+
+	bool DisplayList::scrollbarOverlapsRegion(int x0, int y0, int x1, int y1) const
+	{
+		if (state.scrollbarBoxOverflow)
+			return true;
+		for (int i = 0; i < state.scrollbarBoxCount; ++i)
+		{
+			const std::int16_t *box = state.scrollbarBoxes[i];
+			if (box[0] <= x1 && box[2] >= x0 && box[1] <= y1 && box[3] >= y0)
+				return true;
+		}
+		return false;
 	}
 
 	void DisplayList::clearRetainedBackgroundRecolors()

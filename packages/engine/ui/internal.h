@@ -427,6 +427,10 @@ void rootScrollImageHoldTick();
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
 		bool hasTextClippedBackgrounds() const;
+		// Scrollbar thumbs are recorded outside every node's command range;
+		// see DisplayListState::scrollbarBoxes.
+		void noteScrollbarBox(int x, int y, int w, int h);
+		bool scrollbarOverlapsRegion(int x0, int y0, int x1, int y1) const;
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;

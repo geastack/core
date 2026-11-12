@@ -1330,8 +1330,16 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		// reflows or reorders → full rebuild.
 		const bool absLeafSize = (prop == Property::Width || prop == Property::Height) &&
 		                         style.position == 1 && n->first_child < 0 && n->type != NodeType::Text;
+		// An absolute box WITH children resizing (a progress fill cropping its
+		// artwork) is just as out of flow: re-record the list, but as a content
+		// rebuild that repaints the dirty nodes' old and new boxes instead of the
+		// whole viewport.
+		const bool absBoxSize = (prop == Property::Width || prop == Property::Height) &&
+		                        style.position == 1 && n->first_child >= 0;
 		if (absLeafSize)
 			tree.markNodeDisplayCommandsDirty(node);
+		else if (absBoxSize)
+			tree.markDisplayListContentDirty();
 		else
 			tree.markDisplayListDirty();
 	}

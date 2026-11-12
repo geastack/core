@@ -2659,6 +2659,7 @@ void ViewRenderer::recordScrollbar(const Node &node)
 	// constant would not fit. 0x8C8E94 is the exact RGB888 expansion of the RGB565
 	// 0x8C72 this used to spell, so 16-bit panels emit the identical pixel.
 	cmd->fillRoundedRect.color = gea::framework::graphics::pixel::nativeFromRrggbbaa(0x8C8E94FFu);
+	DisplayList::instance().noteScrollbarBox(cmd->bx, cmd->by, cmd->bw, cmd->bh);
 #else
 	(void)node;
 #endif
