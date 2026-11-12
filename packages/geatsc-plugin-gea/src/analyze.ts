@@ -8,7 +8,7 @@ import ts from 'typescript'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import type { HostBindingAnalysisPatch } from './types.js'
-import { nodeAnalysisVersion, videoNodeAnalysisVersion, addNodeFeatures, addUnknownNodeFeatures } from './analyze-nodes.js'
+import { nodeAnalysisVersion, videoNodeAnalysisVersion, svgNodeAnalysisVersion, addNodeFeatures, addUnknownNodeFeatures } from './analyze-nodes.js'
 import { cssRangeObserver } from './analyze-css-ranges.js'
 import { cssAnalysisVersion, cssUsageObserver, addUnknownCssFeatures } from './analyze-css.js'
 import { addRendererFeatures, addUnknownRendererFeatures, rendererAnalysisVersion, rendererOcclusionAnalysisVersion, rendererVariableAnalysis } from './analyze-renderer.js'
@@ -33,7 +33,7 @@ export function capabilitiesToAnalyzePatch(capabilities: string[]): HostBindingA
 // connection with "No server verification option set".
 export function analyzeSourceHostBindings(entry: string): HostBindingAnalysisPatch {
   const bindings = new Set<string>()
-  const features = new Set<string>([rendererAnalysisVersion, rendererOcclusionAnalysisVersion, cssAnalysisVersion, nodeAnalysisVersion, videoNodeAnalysisVersion, nodeAuxVersion])
+  const features = new Set<string>([rendererAnalysisVersion, rendererOcclusionAnalysisVersion, cssAnalysisVersion, nodeAnalysisVersion, videoNodeAnalysisVersion, svgNodeAnalysisVersion, nodeAuxVersion])
   const discovery = discoverSourceFiles(entry)
   const classSources = new Map<string, string>()
   let classUnknown = discovery.unknown

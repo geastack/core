@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1347,6 +1348,87 @@ void Canvas::writePixelAlpha(int x, int y, pixel::native_t fg, std::uint8_t alph
 	writePixelNativeAlpha(x, y, fg, alpha);
 }
 
+void Canvas::blendCoverageRow(int y, int x0, int count, const std::uint8_t *coverage, pixel::native_t color,
+                              bool markRowDirty)
+{
+	if (!pixels_ || !coverage || count <= 0 || globalAlpha_ == 0) return;
+	const ClipRect &clip = clipStack_[clipDepth_];
+	if (y < 0 || y >= height_ || y < clip.y0 || y > clip.y1) return;
+	int begin = std::max({x0, clip.x0, 0});
+	int end = std::min({x0 + count - 1, clip.x1, width_ - 1});
+	while (begin <= end && coverage[begin - x0] == 0) ++begin;
+	while (end >= begin && coverage[end - x0] == 0) --end;
+	if (begin > end) return;
+	const int phys = rowToPhysical(y);
+	for (int x = begin; x <= end;) {
+		// Runs of equal coverage: a shape's interior is one long run, its edges
+		// short ones. Full runs are span fills; partial runs blend one colour at
+		// one alpha, so the result for a given destination pixel repeats -- and
+		// under a chart the destination is mostly one background colour.
+		const std::uint8_t c = coverage[x - x0];
+		int run = x + 1;
+		while (run <= end && coverage[run - x0] == c) ++run;
+		const int n = run - x;
+		if (c == 255) {
+			fillSpanGlobalAlpha(phys, x, n, color);
+		} else if (c != 0) {
+			const int a = globalAlpha_ == 255 ? c : (c * globalAlpha_) / 255;
+			if (a > 0) blendSpanAlpha(y, phys, x, n, color, a);
+		}
+		x = run;
+	}
+	if (markRowDirty) markDirty(begin, y, end, y);
+}
+
+void Canvas::blendCoverageSpan(int y, int x0, int count, std::uint8_t coverage, pixel::native_t color,
+                               bool markRowDirty)
+{
+	if (!pixels_ || count <= 0 || coverage == 0 || globalAlpha_ == 0) return;
+	const ClipRect &clip = clipStack_[clipDepth_];
+	if (y < 0 || y >= height_ || y < clip.y0 || y > clip.y1) return;
+	const int begin = std::max({x0, clip.x0, 0});
+	const int end = std::min({x0 + count - 1, clip.x1, width_ - 1});
+	if (begin > end) return;
+	const int phys = rowToPhysical(y);
+	if (coverage == 255) {
+		fillSpanGlobalAlpha(phys, begin, end - begin + 1, color);
+	} else {
+		const int a = globalAlpha_ == 255 ? coverage : (coverage * globalAlpha_) / 255;
+		if (a <= 0) return;
+		blendSpanAlpha(y, phys, begin, end - begin + 1, color, a);
+	}
+	if (markRowDirty) markDirty(begin, y, end, y);
+}
+
+// A run blends one colour at one alpha, so the result for a given destination
+// pixel repeats -- and under a chart the destination is mostly one colour.
+void Canvas::blendSpanAlpha(int y, int phys, int x, int n, pixel::native_t color, int a)
+{
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+	if (landscapeRot_) {
+		for (int i = 0; i < n; ++i) rotBlend(x + i, y, color, a);
+		return;
+	}
+#endif
+	(void)y;
+#if GEA_PIXEL_STORAGE_PACKED
+	for (int i = 0; i < n; ++i) pixel::packed::blendPixel(packedRow(phys), x + i, color, a);
+#else
+	pixel::native_t *p = &pixels_[phys * stride_ + x];
+	pixel::native_t lastBg = p[0];
+	pixel::native_t lastOut = pixel::blendNative(color, lastBg, a);
+	p[0] = lastOut;
+	for (int i = 1; i < n; ++i) {
+		const pixel::native_t bg = p[i];
+		if (bg != lastBg) {
+			lastBg = bg;
+			lastOut = pixel::blendNative(color, bg, a);
+		}
+		p[i] = lastOut;
+	}
+#endif
+}
+
 // Fill a horizontal span at physical row `phys` with a colour (converted once
 // to the native pixel). Native fill — no per-pixel conversion, no branch.
 void Canvas::fillSpanColor(int phys, int x0, int count, pixel::native_t color)
@@ -1860,19 +1942,23 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 				runStart = -1;  // keep the shared tail below a no-op
 			}
 #else
-			pixel::native_t *dst = &pixels_[rowToPhysical(row) * stride_ + x0];
-			int runStart = -1;
-			for (int i = 0; i < count; i++) {
-				if (dst[i] == c) {
-					if (runStart >= 0) {
-						markDirty(x0 + runStart, row, x0 + i - 1, row);
-						runStart = -1;
-					}
-					continue;
-				}
-				if (runStart < 0) runStart = i;
-				dst[i] = c;
-			}
+			// Trim the already-correct pixels off both ends and fill what is
+			// left as one span. Pixels inside the span that already match are
+			// rewritten with the same value, so the pixels are exactly those of
+			// a per-run fill; the dirty rect is the row's differing extent, a
+			// superset of the per-run rects. Per-run marking cost a dirty-list
+			// walk per run: a fill over freshly reused staging memory (the
+			// fused flush's strip buffer) differs in scattered runs, and it
+			// measured 15.8 cycles/px on an ESP32-S3.
+			const pixel::native_t *dst = &pixels_[rowToPhysical(row) * stride_ + x0];
+			const int runStart = -1;
+			int a = 0;
+			while (a < count && dst[a] == c) ++a;
+			if (a == count) continue;
+			int b = count - 1;
+			while (dst[b] == c) --b;
+			fillSpanColor(rowToPhysical(row), x0 + a, b - a + 1, c);
+			markDirty(x0 + a, row, x0 + b, row);
 #endif
 			if (runStart >= 0) markDirty(x0 + runStart, row, x1, row);
 		}
@@ -3983,8 +4069,14 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 	for (int sy = row0; sy <= row1; sy++) {
 		int sx0 = width_;
 		int sx1 = -1;
+		// The row's span before clipping: the antialiased edge band is measured
+		// from the shape's own edges, not from where a clip happens to cut it.
+		int ux0 = INT_MAX;
+		int ux1 = INT_MIN;
 		auto addSpan = [&](int left, int right) {
 			if (left > right) return;
+			if (left < ux0) ux0 = left;
+			if (right > ux1) ux1 = right;
 			if (left < clip->x0) left = clip->x0;
 			if (right > clip->x1) right = clip->x1;
 			if (left < 0) left = 0;
@@ -4036,10 +4128,12 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 			anyX0 = width_;
 			anyX1 = -1;
 			roundedRectAnyCoverageSpan(x, y, w, h, tl, tr, br, bl, sy, aaSamples, kernelWidth, &anyX0, &anyX1);
-			if (anyX0 < clip->x0) anyX0 = clip->x0;
-			if (anyX1 > clip->x1) anyX1 = clip->x1;
 			if (anyX0 < x) anyX0 = x;
 			if (anyX1 > x + w - 1) anyX1 = x + w - 1;
+			if (ux0 < anyX0) ux0 = anyX0;
+			if (ux1 > anyX1) ux1 = anyX1;
+			if (anyX0 < clip->x0) anyX0 = clip->x0;
+			if (anyX1 > clip->x1) anyX1 = clip->x1;
 			if (anyX0 < 0) anyX0 = 0;
 			if (anyX1 >= width_) anyX1 = width_ - 1;
 			if (sx0 < anyX0) sx0 = anyX0;
@@ -4116,18 +4210,23 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 			for (int px = inX1 + 1; px <= anyX1; ++px) paintCoverageEdge(px);
 			continue;
 		} else if (useAntialias) {
-			if (sx0 <= sx1) {
-				const int leftEdgeEnd = std::min(anyX1, sx0 + edgePad);
-				const int rightEdgeStart = std::max(anyX0, sx1 - edgePad);
-				if (leftEdgeEnd >= rightEdgeStart) {
-					for (int px = anyX0; px <= anyX1; ++px) paintCoverageEdge(px);
-				} else {
-					for (int px = anyX0; px <= leftEdgeEnd; ++px) paintCoverageEdge(px);
-					for (int px = rightEdgeStart; px <= anyX1; ++px) paintCoverageEdge(px);
-				}
-			} else {
+			// Coverage-test only the pixels within edgePad of the shape's edges;
+			// the solid interior below takes the rest. Measuring the band from
+			// the clipped span instead sampled coverage at both clip borders of
+			// every row, though the shape covers those pixels fully: a card
+			// background repainted under a dirty region inside it spent most
+			// of its time there.
+			const int solidX0 = ux0 + edgePad + 1;
+			const int solidX1 = ux1 - edgePad - 1;
+			if (sx0 > sx1 || solidX0 > solidX1) {
 				for (int px = anyX0; px <= anyX1; ++px) paintCoverageEdge(px);
+			} else {
+				const int leftEdgeEnd = std::min(anyX1, solidX0 - 1);
+				const int rightEdgeStart = std::max(anyX0, solidX1 + 1);
+				for (int px = anyX0; px <= leftEdgeEnd; ++px) paintCoverageEdge(px);
+				for (int px = rightEdgeStart; px <= anyX1; ++px) paintCoverageEdge(px);
 			}
+			if (sx0 > sx1) continue;  // no solid span (and ux0/ux1 may be unset)
 		} else if (sx0 > sx1) {
 			continue;
 		}
@@ -4136,8 +4235,8 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 		// full opaque shape — fill it directly, with no per-pixel edge coverage
 		// (roundedRectSampleContains). AA on carves the antialiased edge band (edgePad)
 		// out of the solid fill and leaves those edges to the coverage passes above.
-		int fillX0 = useAntialias ? sx0 + edgePad + 1 : sx0;
-		int fillX1 = useAntialias ? sx1 - edgePad - 1 : sx1;
+		int fillX0 = useAntialias ? ux0 + edgePad + 1 : sx0;
+		int fillX1 = useAntialias ? ux1 - edgePad - 1 : sx1;
 		if (fillX0 < clip->x0) fillX0 = clip->x0;
 		if (fillX1 > clip->x1) fillX1 = clip->x1;
 		if (fillX0 < 0) fillX0 = 0;

@@ -13,6 +13,7 @@
 #include <image.h>
 #include "css/engine.h"
 #include "refresh_perf.h"
+#include "svg_element.h"
 
 #include <algorithm>
 #include <array>
@@ -770,6 +771,13 @@ void markClassRecomputeStyleDiff(int node, const ComputedStyle &beforeStyle, int
 	Node &target = state.nodes[node];
 	if (beforeImageId == target.image_id && styleExactlyEqual(beforeStyle, target.computedStyle()) && !firstLineChanged) return;
 	if (!nodeParticipatesInMountedTree(state, node)) return;
+#if GEA_UI_SVG
+	// A shape's style only feeds its svg's scene: repaint that svg alone.
+	if (svg::isShape(node)) {
+		svg::noteNodeChanged(node);
+		return;
+	}
+#endif
 	const bool hadRecolor = target.render.bg_recolor_pending;
 	const bool canRecolor = !target.render.dirty || hadRecolor;
 	target.render.text_partial_dirty = 0;
@@ -1245,6 +1253,16 @@ CssDeclarationId classifyDeclaration(const char *property)
 	if (std::strcmp(property, "font-family") == 0) return CssDeclarationId::FontFamily;
 	if (std::strcmp(property, "font-size") == 0) return CssDeclarationId::FontSize;
 	if (std::strcmp(property, "font-stretch") == 0) return CssDeclarationId::FontStretch;
+#if GEA_UI_SVG
+	if (std::strcmp(property, "fill") == 0) return CssDeclarationId::SvgFill;
+	if (std::strcmp(property, "stroke") == 0) return CssDeclarationId::SvgStroke;
+	if (std::strcmp(property, "stroke-width") == 0) return CssDeclarationId::SvgStrokeWidth;
+	if (std::strcmp(property, "fill-opacity") == 0) return CssDeclarationId::SvgFillOpacity;
+	if (std::strcmp(property, "stroke-opacity") == 0) return CssDeclarationId::SvgStrokeOpacity;
+	if (std::strcmp(property, "stroke-linecap") == 0) return CssDeclarationId::SvgStrokeLinecap;
+	if (std::strcmp(property, "stroke-linejoin") == 0) return CssDeclarationId::SvgStrokeLinejoin;
+	if (std::strcmp(property, "fill-rule") == 0) return CssDeclarationId::SvgFillRule;
+#endif
 	if (std::strcmp(property, "font-weight") == 0) return CssDeclarationId::FontWeight;
 	if (std::strcmp(property, "line-height") == 0) return CssDeclarationId::LineHeight;
 	if (std::strcmp(property, "text-align") == 0) return CssDeclarationId::TextAlign;
@@ -10075,6 +10093,21 @@ bool applyKnownResolvedPropertyWithSource(NodeHandle node, CssDeclarationId decl
 	case CssDeclarationId::Opacity:
 		setStyleValue(node, Property::Opacity, parseOpacity(value), source);
 		return true;
+	case CssDeclarationId::SvgFill:
+	case CssDeclarationId::SvgStroke:
+	case CssDeclarationId::SvgStrokeWidth:
+	case CssDeclarationId::SvgFillOpacity:
+	case CssDeclarationId::SvgStrokeOpacity:
+	case CssDeclarationId::SvgStrokeLinecap:
+	case CssDeclarationId::SvgStrokeLinejoin:
+	case CssDeclarationId::SvgFillRule: {
+#if GEA_UI_SVG
+		Property property = Property::Count;
+		int encoded = 0;
+		if (svg::cssDeclarationValue(declaration, value.c_str(), property, encoded)) setStyleValue(node, property, encoded, source);
+#endif
+		return true;
+	}
 	case CssDeclarationId::BorderColor:
 		applyBorderColorValue(node, value, source);
 		return true;
@@ -18792,6 +18825,9 @@ void Tree::setTagName(int node, const char *tagName)
 	const int16_t id = internTag(tagName ? tagName : "");
 	if (state.nodes[node].tag_id == id) return;
 	state.nodes[node].tag_id = id;
+#if GEA_UI_SVG
+	svg::noteTagChanged(node);
+#endif
 	recomputeSubtreeClassStyles(node);
 }
 

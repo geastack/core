@@ -161,6 +161,22 @@ inline bool isNativeButtonNodeType(NodeType type)
 // BEFORE ComputedStyle so it can be a by-value member).
 struct RareStyle {
 	bool operator==(const RareStyle &) const = default;
+#if GEA_UI_SVG
+	// SVG paint. Unset (0 / -1) means "inherit from the SVG parent"; the scene
+	// resolver walks the svg subtree, so no inheritance machinery runs for them.
+	int32_t svg_fill = 0;            // svg::encodePaint
+	int32_t svg_stroke = 0;          // svg::encodePaint
+	int32_t svg_stroke_width = -1;   // px * 100
+	int16_t svg_fill_opacity = -1;   // 0..1000
+	int16_t svg_stroke_opacity = -1; // 0..1000
+	int8_t svg_stroke_linecap = -1;  // svg::LineCap
+	int8_t svg_stroke_linejoin = -1; // svg::LineJoin
+	int8_t svg_fill_rule = -1;       // 0 nonzero, 1 evenodd
+#else
+	static constexpr int32_t svg_fill = 0, svg_stroke = 0, svg_stroke_width = -1;
+	static constexpr int16_t svg_fill_opacity = -1, svg_stroke_opacity = -1;
+	static constexpr int8_t svg_stroke_linecap = -1, svg_stroke_linejoin = -1, svg_fill_rule = -1;
+#endif
 	// Logical edges: block-start/end, inline-start/end.
 #if GEA_CSS_MARGIN_TRIM
 	uint8_t margin_trim = 0;
@@ -494,7 +510,7 @@ inline int composedTranslateZ(const RareStyle &s) { return int(s.transform_trans
 inline int composedTranslateXPercent(const RareStyle &s) { return int(s.transform_translate_x_percent) + s.translate_x_percent; }
 inline int composedTranslateYPercent(const RareStyle &s) { return int(s.transform_translate_y_percent) + s.translate_y_percent; }
 
-#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS)
+#define GEA_CSS_RARE_STYLE (GEA_CSS_ASPECT_RATIO || GEA_CSS_BACKGROUND_LAYERS || GEA_CSS_BORDER_RELIEF || GEA_CSS_BOX_EXPRESSIONS || GEA_CSS_BOX_SHADOW || GEA_CSS_CONTAINMENT || GEA_CSS_FILTERS || GEA_CSS_FLEX_BASIS_EXPRESSIONS || GEA_CSS_FLEX_LINE_COUNT || GEA_CSS_GRID || GEA_CSS_JUSTIFY_SELF || GEA_CSS_LINE_HEIGHT_EXPRESSIONS || GEA_CSS_MARGIN_TRIM || GEA_CSS_SIDE_BORDERS || GEA_CSS_TRANSFORMS || GEA_EMBEDDED_RENDERER_LINEAR_GRADIENTS || GEA_EMBEDDED_RENDERER_RADIAL_GRADIENTS || GEA_UI_SVG)
 static_assert(GEA_CSS_RARE_STYLE || std::is_empty<RareStyle>::value, "An unguarded rare field requires a reachability family");
 
 struct ComputedStyle {

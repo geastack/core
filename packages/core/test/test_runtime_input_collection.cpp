@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #if __has_include(<sanitizer/lsan_interface.h>)
 #include <sanitizer/lsan_interface.h>
@@ -149,6 +150,8 @@ struct Event {
 struct PointerEvent {
   PointerEventType type;
   int keyCode = 0;
+  std::string key;
+  std::string code;
   int targetId = -1;
   int currentTargetId = -1;
   bool bubbles = false;
@@ -169,7 +172,10 @@ namespace input {
 struct HardwareKeyEvent {
   bool pressed;
   int keyCode;
+  int button = -1;
 };
+const char *buttonCode(int) { return ""; }
+const char *buttonKey(int) { return ""; }
 int consumeRotaryDelta() {
   const int value = rotary;
   rotary = 0;

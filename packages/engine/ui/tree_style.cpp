@@ -5,6 +5,7 @@
 #include "node_lifecycle.h"
 #include "refresh_perf.h"
 #include "style_values.h"
+#include "svg_element.h"
 #include "tree_state.h"
 
 // Skip the inline-style record for Left/Top (see setStyleValue). Default off: keep the
@@ -1151,6 +1152,21 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		break;
 	}
 #endif
+#if GEA_UI_SVG
+#define GEA_SVG_STYLE_FIELD(PROP, FIELD, TYPE) \
+	case Property::PROP: \
+		if (rstyle(style).FIELD != static_cast<TYPE>(value)) { rstyleMut(style).FIELD = static_cast<TYPE>(value); changed = 1; } \
+		break;
+	GEA_SVG_STYLE_FIELD(SvgFill, svg_fill, int32_t)
+	GEA_SVG_STYLE_FIELD(SvgStroke, svg_stroke, int32_t)
+	GEA_SVG_STYLE_FIELD(SvgStrokeWidth, svg_stroke_width, int32_t)
+	GEA_SVG_STYLE_FIELD(SvgFillOpacity, svg_fill_opacity, int16_t)
+	GEA_SVG_STYLE_FIELD(SvgStrokeOpacity, svg_stroke_opacity, int16_t)
+	GEA_SVG_STYLE_FIELD(SvgStrokeLinecap, svg_stroke_linecap, int8_t)
+	GEA_SVG_STYLE_FIELD(SvgStrokeLinejoin, svg_stroke_linejoin, int8_t)
+	GEA_SVG_STYLE_FIELD(SvgFillRule, svg_fill_rule, int8_t)
+#undef GEA_SVG_STYLE_FIELD
+#endif
 	default:
 		GEA_REFRESH_PERF(perf.treeSetStyleNoop++);
 		return;
@@ -1168,6 +1184,14 @@ void setStyleValue(Tree &tree, int node, Property prop, int value, bool recordIn
 		GEA_REFRESH_PERF(perf.treeSetStylePaintChanged++);
 	if (state.styleInvalidationSuppressionDepth > 0) return;
 	if (!nodeParticipatesInMountedTree(state, node)) return;
+#if GEA_UI_SVG
+	// SVG paint lives in the owning <svg>'s scene, not in this node's commands:
+	// repaint that one svg and nothing else (no layout, no list rebuild).
+	if (svg::isPaintProperty(prop)) {
+		svg::noteNodeChanged(node);
+		return;
+	}
+#endif
 	n->render.canvas_pixels_only_dirty = 0;
 	const bool hadRecolor = n->render.bg_recolor_pending;
 	const bool canRecolor = !n->render.dirty || hadRecolor;

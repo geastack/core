@@ -101,6 +101,20 @@ export interface GeaIntrinsicElements {
   stepper: NativeStepperProps
   progress: NativeProgressProps
   'virtual-list': NativeVirtualListProps
+  // Inline SVG (engine/ui/svg_element.h): every element is a real node, styled
+  // by class and inline style and hit-tested by its geometry.
+  svg: SvgRootProps
+  g: SvgGroupProps
+  path: SvgPathProps
+  polyline: SvgPolyProps
+  polygon: SvgPolyProps
+  line: SvgLineProps
+  circle: SvgCircleProps
+  ellipse: SvgEllipseProps
+  rect: SvgRectProps
+  defs: SvgGroupProps
+  title: SvgGroupProps
+  desc: SvgGroupProps
 }
 
 export interface WindowEventListenerOptions {
@@ -325,6 +339,16 @@ export interface Style {
   objectPosition?: string
   color?: string
   opacity?: number
+  /** SVG paint: a colour, `none` or `currentColor`. Applies to SVG shapes only. */
+  fill?: string
+  stroke?: string
+  strokeWidth?: number | `${number}px`
+  fillOpacity?: number
+  strokeOpacity?: number
+  strokeLinecap?: 'butt' | 'round' | 'square'
+  strokeLinejoin?: 'miter' | 'round' | 'bevel'
+  fillRule?: 'nonzero' | 'evenodd'
+  pointerEvents?: 'auto' | 'none' | 'visiblePainted' | 'painted' | 'fill' | 'stroke' | 'all'
   blinkInterval?: number
   borderWidth?: StyleLength
   borderColor?: string
@@ -700,6 +724,48 @@ export interface NativeViewProps extends DataAttributes, NativeEventAttributes {
  * checker error while working perfectly at runtime.
  */
 export interface TextProps extends NativeViewProps {}
+
+type SvgNumber = number | string
+/** Presentation attributes every SVG element accepts; CSS overrides them. */
+export interface SvgPresentationProps extends DataAttributes, NativeEventAttributes {
+  key?: string | number
+  id?: string
+  class?: ClassValue
+  style?: Style
+  ref?: GeaElement | null
+  children?: any
+  transform?: string
+  fill?: string
+  stroke?: string
+  'stroke-width'?: SvgNumber
+  'stroke-linecap'?: 'butt' | 'round' | 'square'
+  'stroke-linejoin'?: 'miter' | 'round' | 'bevel'
+  'stroke-miterlimit'?: SvgNumber
+  'fill-rule'?: 'nonzero' | 'evenodd'
+  opacity?: SvgNumber
+  'fill-opacity'?: SvgNumber
+  'stroke-opacity'?: SvgNumber
+  color?: string
+  visibility?: 'visible' | 'hidden' | 'collapse'
+  display?: string
+  'pointer-events'?: 'auto' | 'none' | 'visiblePainted' | 'painted' | 'fill' | 'stroke' | 'all'
+}
+export interface SvgRootProps extends SvgPresentationProps {
+  width?: SvgNumber
+  height?: SvgNumber
+  viewBox?: string
+  preserveAspectRatio?: string
+  xmlns?: string
+}
+export interface SvgGroupProps extends SvgPresentationProps {}
+export interface SvgPathProps extends SvgPresentationProps { d?: string }
+export interface SvgPolyProps extends SvgPresentationProps { points?: string }
+export interface SvgLineProps extends SvgPresentationProps { x1?: SvgNumber; y1?: SvgNumber; x2?: SvgNumber; y2?: SvgNumber }
+export interface SvgCircleProps extends SvgPresentationProps { cx?: SvgNumber; cy?: SvgNumber; r?: SvgNumber }
+export interface SvgEllipseProps extends SvgPresentationProps { cx?: SvgNumber; cy?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber }
+export interface SvgRectProps extends SvgPresentationProps {
+  x?: SvgNumber; y?: SvgNumber; width?: SvgNumber; height?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber
+}
 
 export interface GeaNode extends Node {}
 export interface GeaElement extends Element {}

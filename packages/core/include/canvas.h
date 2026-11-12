@@ -243,6 +243,41 @@ public:
 	                      int dx, int dy, int dst_w, int dst_h, int tl, int tr, int br, int bl);
 	void drawImageTiledX(const pixel::native_t *src, const std::uint8_t *alpha, int src_w, int src_h,
 	                     int dx, int dy, int width);
+	// Blend one logical row of anti-aliased coverage: pixel x0+i receives
+	// `color` at coverage[i] (0..255, scaled by global alpha). Honours the clip,
+	// marks the touched span dirty. The vector (SVG) rasterizer's only output.
+	// markDirty=false lets a second core blend disjoint rows concurrently; the
+	// caller then marks the region dirty once itself.
+	void blendCoverageRow(int y, int x0, int count, const std::uint8_t *coverage, pixel::native_t color,
+	                      bool markDirty = true);
+	// Direct row access for a renderer that blends whole rows itself (the
+	// vector rasterizer, whose many short runs would otherwise each pay a call):
+	// logical row y's pixels and the clip's x range [*x0, *x1], or nullptr when
+	// the row is clipped out or this canvas needs per-pixel handling (landscape
+	// rotation, packed storage, a global alpha). The caller marks dirty itself.
+	pixel::native_t *directRow(int y, int *x0, int *x1)
+	{
+#if GEA_PIXEL_STORAGE_PACKED
+		(void)y, (void)x0, (void)x1;
+		return nullptr;
+#else
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+		if (landscapeRot_) return nullptr;
+#endif
+		if (!pixels_ || globalAlpha_ != 255) return nullptr;
+		const ClipRect &clip = clipStack_[clipDepth_];
+		if (y < 0 || y >= height_ || y < clip.y0 || y > clip.y1) return nullptr;
+		*x0 = clip.x0 > 0 ? clip.x0 : 0;
+		*x1 = clip.x1 < width_ - 1 ? clip.x1 : width_ - 1;
+		if (*x0 > *x1) return nullptr;
+		return &pixels_[rowToPhysical(y) * stride_];
+#endif
+	}
+	// One run of `count` pixels at a single coverage: a span fill when fully
+	// covered, else one blend per distinct destination colour. Same clip, alpha
+	// and dirty rules as blendCoverageRow.
+	void blendCoverageSpan(int y, int x0, int count, std::uint8_t coverage, pixel::native_t color,
+	                       bool markDirty = true);
 
 private:
 	void writePixel(int x, int y, pixel::native_t fg);
@@ -257,6 +292,8 @@ private:
 	// (converted once to native). fillSpanGlobalAlpha honours globalAlpha_.
 	void fillSpanColor(int phys, int x0, int count, pixel::native_t color);
 	void fillSpanGlobalAlpha(int phys, int x0, int count, pixel::native_t color);
+	// Blends `count` pixels of logical row `y` (physical row `phys`) at one alpha.
+	void blendSpanAlpha(int y, int phys, int x0, int count, pixel::native_t color, int alpha);
 	void markDirtyClipped(int x0, int y0, int x1, int y1);
 	void addDirtyRect(int x0, int y0, int x1, int y1);
 	bool fillCircleNoDirty(int cx, int cy, int r, pixel::native_t color);

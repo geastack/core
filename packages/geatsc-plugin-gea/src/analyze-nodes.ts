@@ -5,6 +5,9 @@ export const nodeFeatures = ['node-images', 'node-inputs'] as const
 // Separate marker: an analyzer without it never reports node-videos, and its
 // absence must not let a newer CLI drop the video host from the firmware.
 export const videoNodeAnalysisVersion = 'node-video-analysis-v1'
+// Same contract for inline SVG: only an analyzer carrying this marker may
+// prove that no <svg> exists and let the CLI compile the SVG element out.
+export const svgNodeAnalysisVersion = 'node-svg-analysis-v1'
 const nodeFreeCoreExports = new RegExp('^(?:' + [
   'Component', 'ReactiveComponent', 'Store', 'mount', 'Display', 'rgb', 'rgba',
   'touch', 'Input', 'Accelerometer', 'Magnetometer', 'Geolocation', 'geolocation', 'Clock', 'Battery', 'Memory', 'Profiler',
@@ -17,6 +20,7 @@ const nodeFreeCoreExports = new RegExp('^(?:' + [
 export function addUnknownNodeFeatures(features: Set<string>): void {
   for (const feature of nodeFeatures) features.add(feature)
   features.add('node-videos')
+  features.add('node-svg')
 }
 
 // Native node payloads are selected from the whole discovered source graph.
@@ -30,6 +34,9 @@ export function addNodeFeatures(file: string, text: string, features: Set<string
     if (/^(?:img|image)$/i.test(value) || /^(?:ImageElement|HTMLImageElement|createImage|loadImage)$/.test(value)) features.add('node-images')
     if (/^(?:input|textarea|select|contenteditable)$/i.test(value) || /^(?:TextInput|InputElement|TextInputElement|HTMLInputElement|HTMLTextAreaElement|HTMLSelectElement|VirtualKeyboard|createInput|createTextInput)$/.test(value)) features.add('node-inputs')
     if (/^video$/i.test(value) || /^(?:VideoElement|HTMLVideoElement|createVideo)$/.test(value)) features.add('node-videos')
+    // Shapes draw only inside an <svg> root, so the root tag is the proof.
+    // (`path`, `rect`, `line` are everyday identifiers and would prove nothing.)
+    if (/^svg$/i.test(value) || /^SVG[A-Z]\w*Element$/.test(value)) features.add('node-svg')
   }
   const visit = (node: ts.Node): void => {
     if (ts.isIdentifier(node)) {

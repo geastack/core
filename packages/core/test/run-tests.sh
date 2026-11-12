@@ -36,6 +36,8 @@ NATIVE_TESTS=(
   run-native-jpeg.sh
   run-image-lifetime.sh
   run-gea-retained-absolute-subtree.sh
+  run-node-pool-exhausted.sh
+  run-svg.sh
 )
 
 PIPELINES=(

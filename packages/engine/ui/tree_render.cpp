@@ -11,6 +11,7 @@
 #include "refresh_perf.h"
 #include "root_scroll_refresh.h"
 #include "tree_state.h"
+#include "svg_element.h"
 
 #include <cmath>
 #include <cstddef>
@@ -2078,6 +2079,9 @@ namespace gea::embedded::ui
 		auto &state = treeState();
 		if (root < 0 || root >= state.nodeCount)
 			return;
+#if GEA_UI_SVG
+		svg::validateScenes();
+#endif
 #if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 		debuggerOverlay.prepare();
 #endif
@@ -2749,6 +2753,27 @@ namespace gea::embedded::ui
 					canvas_y1 = retained_y1;
 				}
 			}
+#if GEA_UI_SVG
+			// An svg whose box is unchanged repaints only the pixels its scene
+			// rebuild touched, through the same exact-damage path as a canvas.
+			if (!canvas_dirty && svg::isRoot(*n))
+			{
+				int sx0, sy0, sx1, sy1;
+				const bool svgDamage = svg::damage(i, sx0, sy0, sx1, sy1);  // always consume
+				if (svgDamage && !n->render.layout_dirty && !n->render.transform_dirty &&
+						n->layout.x == n->layout.previous_x && n->layout.y == n->layout.previous_y &&
+						n->layout.width == n->layout.previous_width && n->layout.height == n->layout.previous_height &&
+						!ViewRenderer::anyTransformActive())
+				{
+					canvas_dirty = true;
+					exactCanvasPixelDamage = true;
+					canvas_x0 = sx0;
+					canvas_y0 = sy0;
+					canvas_x1 = sx1;
+					canvas_y1 = sy1;
+				}
+			}
+#endif
 			if (canvas_dirty && !exactCanvasPixelDamage)
 			{
 				// A style/geometry invalidation is not a content-only repaint. Both
@@ -3640,3 +3665,6 @@ namespace gea::embedded::ui
 	}
 
 } // namespace gea::embedded::ui
+
+// Inline SVG lives in this translation unit (see svg_element_impl.h).
+#include "svg_element_impl.h"

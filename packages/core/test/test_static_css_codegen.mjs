@@ -64,6 +64,8 @@ fs.writeFileSync(path.join(appDir, 'styles.css'), `
   mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 15px), transparent 100%);
 }
 
+.placed { grid-column: 1 / 3; grid-row: 2 / 3; }
+
 .auto-box {
   width: auto;
   height: auto;
@@ -166,6 +168,10 @@ assert.doesNotMatch(generated, /registerStaticRule\("scene",\s*"grid-template-co
 assert.doesNotMatch(generated, /registerStaticRule\("scene",\s*"mask-image"/)
 assert.doesNotMatch(generated, /registerStaticRule\("auto-box",\s*"width"/)
 assert.doesNotMatch(generated, /registerStaticRule\("auto-box",\s*"height"/)
+// Grid placement reaches the device on both axes: an item whose column is
+// dropped is auto-placed into the first track instead.
+assert.match(generated, /registerStaticRule\("placed",\s*"grid-column",\s*"1 \/ 3"/)
+assert.match(generated, /registerStaticRule\("placed",\s*"grid-row",\s*"2 \/ 3"/)
 assert.match(generated, /registerStaticRule\("motion-control",\s*"transition",\s*"width 650ms ease, border-radius 650ms linear"/)
 assert.match(generated, /registerStaticRule\("motion-control",\s*"animation-play-state",\s*"paused"/)
 assert.doesNotMatch(generated, /registerStaticKeyframeRule\("turn",\s*0,\s*"rotate"/)
@@ -202,3 +208,4 @@ assert.doesNotMatch(tapeGenerated, /registerStaticRule\("zoom",\s*"gap"/)
 assert.match(tapeGenerated, /"transition"/)
 assert.match(tapeGenerated, /"width 650ms ease, border-radius 650ms linear"/)
 assert.match(tapeGenerated, /"animation-play-state"/)
+assert.match(tapeGenerated, /"grid-column"/)
