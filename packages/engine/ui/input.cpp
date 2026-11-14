@@ -203,8 +203,8 @@ public:
 			// already at its end in the drag's direction (LVGL's scroll chain).
 			const int tx = x - downX_;
 			const int ty = y - downY_;
-			if (std::abs(tx) < kAxisSlopPx && std::abs(ty) < kAxisSlopPx) return 0;
-			const ScrollAxis want = std::abs(tx) >= std::abs(ty) ? ScrollAxis::X : ScrollAxis::Y;
+			if (std::abs(tx) <= kAxisSlopPx && std::abs(ty) <= kAxisSlopPx) return 0;
+			const ScrollAxis want = std::abs(tx) > std::abs(ty) ? ScrollAxis::X : ScrollAxis::Y;
 			const int sign = want == ScrollAxis::X ? (tx > 0 ? 1 : -1) : (ty > 0 ? 1 : -1);
 			int chosen = -1;
 			ScrollAxis chosenAxis = ScrollAxis::None;
@@ -1114,7 +1114,12 @@ private:
 	int gestureStartScroll_ = 0;
 
 	// Page-snap animation state (snap-page scrollers).
-	static constexpr int kAxisSlopPx = 6;
+	// LVGL v8's LV_INDEV_DEF_SCROLL_LIMIT: the axis is decided only once the
+	// finger is more than this far from where it landed, and a tie goes
+	// vertical (lv_indev_scroll.c). At 6 px a finger's landing jitter often
+	// read as horizontal and handed a vertical scroll to the tab pager, which
+	// then slid the whole screen sideways and snapped back.
+	static constexpr int kAxisSlopPx = 10;
 	static constexpr int kSnapSpeedPxPerS = 400;
 	static constexpr int kSnapMinMs = 200;
 	static constexpr int kSnapMaxMs = 400;
