@@ -1357,7 +1357,12 @@ inline bool scrollsOverflowY(const ComputedStyle &style)
 inline bool hasSideBorder(const ComputedStyle &style)
 {
 #if GEA_CSS_SIDE_BORDERS
-	if (style.rare_style < 0) return false;  // no RareStyle => no per-side borders
+#if !GEA_EMBEDDED_RARE_STYLE_INLINE
+	// Pooled mode: no entry => no per-side borders. Inline mode never assigns a
+	// handle (the fields live in the style itself), so the guard would drop every
+	// side border there.
+	if (style.rare_style < 0) return false;
+#endif
 	const RareStyle &r = rstyle(style);
 	return r.border_side_width[0] > 0 ||
 	       r.border_side_width[1] > 0 ||

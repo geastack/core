@@ -2143,6 +2143,19 @@ static bool isInlineLevelTag(const char *tag)
 	       std::strcmp(tag, "mark") == 0;
 }
 
+// Tag ids are interned once and never reused, so the answer per id is fixed:
+// layout asks for every node on every pass, where the string test is up to 14
+// strcmps. Layout runs on one core, so the cache needs no lock.
+static bool isInlineLevelTagId(int16_t id)
+{
+	static std::vector<std::int8_t> cache;
+	if (id < 0) return isInlineLevelTag(tagFromId(id));
+	const auto index = static_cast<std::size_t>(id);
+	if (index >= cache.size()) cache.resize(index + 16, -1);
+	if (cache[index] < 0) cache[index] = isInlineLevelTag(tagFromId(id)) ? 1 : 0;
+	return cache[index] != 0;
+}
+
 // Box-tree projection for inline ancestors split by in-flow blocks. The DOM
 // ancestry still owns inheritance, events, relative translation, and painting.
 // Visible inline decorations require fragments; keep those on their own path.
@@ -2150,7 +2163,7 @@ bool splitInlineWrapper(const Node *nodes, int id)
 {
 	const Node &n = nodes[id];
 	if (n.type != NodeType::View || n.computedStyle().display_explicit || n.computedStyle().display != kDisplayBlock ||
-	    !isInlineLevelTag(tagFromId(n.tag_id)) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
+	    !isInlineLevelTagId(n.tag_id) || n.computedStyle().float_side || isOutOfFlowPosition(n.computedStyle().position) ||
 	    !FlexLayoutPass::paintsNoBox(n) || boxInsets(n.computedStyle(), true) || boxInsets(n.computedStyle(), false) ||
 	    n.computedStyle().margin[1] || n.computedStyle().margin[3] || n.computedStyle().opacity != 255 || overflowEstablishesContext(n.computedStyle())) return false;
 	bool containsBlock = false;
@@ -2159,7 +2172,7 @@ bool splitInlineWrapper(const Node *nodes, int id)
 		if (isLayoutExcluded(child)) continue;
 		if (isOutOfFlowPosition(child.computedStyle().position)) return false;
 		if (child.computedStyle().float_side) continue;
-		if (child.type == NodeType::View && (child.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(child.tag_id)))) containsBlock = true;
+		if (child.type == NodeType::View && (child.computedStyle().display_explicit || !isInlineLevelTagId(child.tag_id))) containsBlock = true;
 		if (splitInlineWrapper(nodes, c)) containsBlock = true;
 	}
 	return containsBlock;
@@ -2416,7 +2429,7 @@ private:
 	bool blockBox(const Node &n) const
 	{
 		return n.type == NodeType::View && !isLayoutExcluded(n) &&
-		    (n.computedStyle().display_explicit || !isInlineLevelTag(tagFromId(n.tag_id)));
+		    (n.computedStyle().display_explicit || !isInlineLevelTagId(n.tag_id));
 	}
 
 	bool flowChild(int parent, int child) const
@@ -4112,7 +4125,7 @@ bool LayoutEngine::isInlineLevelNode(const Node &n)
 	// into one row.
 	if (n.computedStyle().margin[0] != 0 || n.computedStyle().margin[2] != 0) return false;
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return isInlineLevelTag(tagFromId(n.tag_id));
+	return isInlineLevelTagId(n.tag_id);
 }
 
 bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
@@ -4124,7 +4137,7 @@ bool LayoutEngine::isCssInlineLevelBox(const Node &n, bool hypothetical)
 		if (parent.computedStyle().display == kDisplayFlex || isDisplayGrid(parent.computedStyle())) return false;
 	}
 	if (n.type == NodeType::Text || n.type == NodeType::Image) return true;
-	return n.type == NodeType::View && isInlineLevelTag(tagFromId(n.tag_id));
+	return n.type == NodeType::View && isInlineLevelTagId(n.tag_id);
 }
 
 int LayoutEngine::clampSize(int size, int minSize, int maxSize) const
@@ -4457,6 +4470,44 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 		}
 		return false;
 	};
+	// The scope's proper descendants in node-index order -- the order the
+	// whole-tree scans below used to visit them in, at the cost of the subtree
+	// rather than of every node in the tree (a ticking legend row re-lays
+	// three nodes; scanning all of them, twice, cost more than its layout).
+	constexpr int kMaxScopeDescendants = 64;
+	int descendants[kMaxScopeDescendants];
+	int descendantCount = 0;
+	bool descendantsOverflow = false;
+	{
+		int stack[kMaxScopeDescendants];
+		int depth = 0;
+		for (int child = a.first_child; child >= 0 && child < nodeCount; child = nodes[child].next_sibling) {
+			if (depth == kMaxScopeDescendants) { descendantsOverflow = true; break; }
+			stack[depth++] = child;
+		}
+		while (depth > 0 && !descendantsOverflow) {
+			const int id = stack[--depth];
+			if (descendantCount == kMaxScopeDescendants) { descendantsOverflow = true; break; }
+			descendants[descendantCount++] = id;
+			for (int child = nodes[id].first_child; child >= 0 && child < nodeCount; child = nodes[child].next_sibling) {
+				if (depth == kMaxScopeDescendants) { descendantsOverflow = true; break; }
+				stack[depth++] = child;
+			}
+		}
+		if (!descendantsOverflow) std::sort(descendants, descendants + descendantCount);
+	}
+	// Visits every proper descendant of the scope, in index order.
+	auto forEachDescendant = [&](auto &&visit) {
+		if (!descendantsOverflow) {
+			for (int k = 0; k < descendantCount; ++k)
+				if (!visit(descendants[k])) return;
+			return;
+		}
+		for (int i = 0; i < nodeCount; ++i) {
+			if (i == scope || !inScope(i)) continue;
+			if (!visit(i)) return;
+		}
+	};
 
 	// Absolute descendants positioned against a containing block OUTSIDE the
 	// scope mix coordinate spaces (the global containing-block pass runs in
@@ -4465,17 +4516,19 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 	// recomputed, and a size change is rejected by the dims check. Testing it
 	// here refused every absolutely placed scope (Ember's temperature readout,
 	// then its screen), so each tick of a number fell back to a full relayout.
-	for (int i = 0; i < nodeCount; ++i) {
+	bool escapes = false;
+	forEachDescendant([&](int i) {
 		const Node &n = nodes[i];
-		if (i == scope) continue;
-		if (n.parent < 0 || !isOutOfFlowPosition(n.computedStyle().position) || isLayoutExcluded(n)) continue;
-		if (!inScope(i)) continue;
+		if (n.parent < 0 || !isOutOfFlowPosition(n.computedStyle().position) || isLayoutExcluded(n)) return true;
 		const int containing = containingBlockForAbsoluteNode(i, treeRoot, nodes);
 		if (containing >= 0 && !inScope(containing)) {
 			GEA_REFRESH_PERF(refreshPerfStatsMutable().treeScopedRejectNode = i);
+			escapes = true;
 			return false;
 		}
-	}
+		return true;
+	});
+	if (escapes) return false;
 
 	const int prevX = a.layout.x;
 	const int prevY = a.layout.y;
@@ -4531,13 +4584,12 @@ bool LayoutEngine::layoutNodeScoped(int scope, int treeRoot)
 
 	// Scoped equivalent of the root containing-block pass (both the node and
 	// its containing block are inside the scope, in the same relative space).
-	for (int i = 0; i < nodeCount; ++i) {
-		if (isLayoutExcluded(nodes[i]) || !isOutOfFlowPosition(nodes[i].computedStyle().position) || nodes[i].parent < 0) continue;
-		if (!inScope(i) || i == scope) continue;
+	forEachDescendant([&](int i) {
+		if (isLayoutExcluded(nodes[i]) || !isOutOfFlowPosition(nodes[i].computedStyle().position) || nodes[i].parent < 0) return true;
 		const int containing = containingBlockForAbsoluteNode(i, scope, nodes);
-		if (containing < 0) continue;
-		positionAbsoluteNodeInContainingBlock(i, containing, nodes);
-	}
+		if (containing >= 0) positionAbsoluteNodeInContainingBlock(i, containing, nodes);
+		return true;
+	});
 
 	int childParentX = a.layout.x;
 	int childParentY = a.layout.y;

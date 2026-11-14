@@ -16,6 +16,9 @@ inline bool inputOwnerLeaving(const NodeHandle &owner,const InputRetirementRoots
 }
 void retirePointerInputForSubtrees(const InputRetirementRoots &,const InputRetirementRoots &);
 void cancelPrimaryPointerInput();
+// A programmatic scroll of a `snap-page` scroller animates to its target
+// (engine/ui/input.cpp); false when the node does not snap to pages.
+bool animateSnapPageScroll(int node, bool horizontal, int target);
 void retireTouchInputForSubtrees(const InputRetirementRoots &,const InputRetirementRoots &);
 // Weak Core default; actual native platform providers must override this.
 void retirePlatformInputForSubtrees(const InputRetirementRoots &,const InputRetirementRoots &);

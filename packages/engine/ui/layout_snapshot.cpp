@@ -30,12 +30,15 @@ void LayoutSnapshot::capture()
 		// deque index (separate cache line from the node). Per-field lookups here cost
 		// ~1ms/frame on the spinning css-3d-cube (the "snap" phase); spine read these as
 		// direct ComputedStyle fields. (Same regression class as the reproject path.)
-#if GEA_CSS_TRANSFORMS || GEA_CSS_FILTERS
-		const RareStyle &rs = rstyle(state.nodes[i].computedStyle());
-#endif
 #if GEA_CSS_TRANSFORMS
-		state.nodes[i].render.previous_transformable_box = ViewRenderer::isTransformableBox(state.nodes[i]);
+		// previous_transformable_box is captured with the transforms it qualifies.
+		// Every reader ANDs it with a previous transform or perspective, and with
+		// no transform active those hold the identity this capture last wrote, so
+		// the stale box can't change an answer -- and the per-node box test (a
+		// style read) was most of this loop on a transform-free tree.
 		if (captureTransforms) {
+			const RareStyle &rs = rstyle(state.nodes[i].computedStyle());
+			state.nodes[i].render.previous_transformable_box = ViewRenderer::isTransformableBox(state.nodes[i]);
 			state.nodes[i].render.previous_rotate_angle = rs.rotate_angle;
 			state.nodes[i].render.previous_rotate_axis_x = rs.rotate_axis_x;
 			state.nodes[i].render.previous_rotate_axis_y = rs.rotate_axis_y;
@@ -69,7 +72,7 @@ void LayoutSnapshot::capture()
 		}
 #endif
 #if GEA_CSS_FILTERS
-		state.nodes[i].render.previous_filter_blur_radius = rs.filter_blur_radius;
+		state.nodes[i].render.previous_filter_blur_radius = rstyle(state.nodes[i].computedStyle()).filter_blur_radius;
 #endif
 		state.nodes[i].render.dirty = 0;
 		state.nodes[i].render.canvas_pixels_only_dirty = 0;

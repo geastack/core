@@ -113,6 +113,8 @@ export interface GeaIntrinsicElements {
   ellipse: SvgEllipseProps
   rect: SvgRectProps
   defs: SvgGroupProps
+  linearGradient: SvgLinearGradientProps
+  stop: SvgStopProps
   title: SvgGroupProps
   desc: SvgGroupProps
 }
@@ -709,6 +711,14 @@ export interface NativeViewProps extends DataAttributes, NativeEventAttributes {
   pressId?: number
   pressValue?: number
   momentum?: boolean | string
+  /**
+   * A scroller whose pages are its own width (or height): a released drag
+   * settles on the nearest page, or the next one in a fling's direction, and a
+   * programmatic `scrollLeft`/`scrollTop` animates there -- LVGL's tabview
+   * content. A `scroll` event fires when it settles.
+   */
+  'snap-page'?: boolean
+  onScroll?: (event: Event) => void
   children?: any
 }
 
@@ -765,6 +775,17 @@ export interface SvgCircleProps extends SvgPresentationProps { cx?: SvgNumber; c
 export interface SvgEllipseProps extends SvgPresentationProps { cx?: SvgNumber; cy?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber }
 export interface SvgRectProps extends SvgPresentationProps {
   x?: SvgNumber; y?: SvgNumber; width?: SvgNumber; height?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber
+}
+// A paint server for fill/stroke="url(#id)": x1..y2 are fractions of the
+// painted shape's box (objectBoundingBox, the default) or user-space units.
+export interface SvgLinearGradientProps extends SvgPresentationProps {
+  x1?: SvgNumber; y1?: SvgNumber; x2?: SvgNumber; y2?: SvgNumber
+  gradientUnits?: 'objectBoundingBox' | 'userSpaceOnUse'
+}
+export interface SvgStopProps extends SvgPresentationProps {
+  offset?: SvgNumber
+  'stop-color'?: string
+  'stop-opacity'?: SvgNumber
 }
 
 export interface GeaNode extends Node {}

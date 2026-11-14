@@ -314,11 +314,12 @@ struct Color {
 	std::uint8_t r = 0, g = 0, b = 0, a = 255;
 };
 
-enum class PaintKind : std::uint8_t { Unset, None, CurrentColor, Color };
+enum class PaintKind : std::uint8_t { Unset, None, CurrentColor, Color, Url };
 
 struct Paint {
 	PaintKind kind = PaintKind::Unset;
 	Color color;
+	char ref[32] = {};  // Url: the referenced element's id
 };
 
 namespace detail {
@@ -483,6 +484,20 @@ inline Paint parsePaint(const char *s)
 		paint.kind = PaintKind::CurrentColor;
 		return paint;
 	}
+	// url(#id): a paint server (linearGradient) in the same svg.
+	if (detail::iequalsPrefix(s, "url(")) {
+		s += 4;
+		while (*s == ' ' || *s == '\'' || *s == '"') ++s;
+		if (*s == '#') ++s;
+		std::size_t n = 0;
+		while (s[n] && s[n] != ')' && s[n] != '\'' && s[n] != '"' && s[n] != ' ' && n + 1 < sizeof(paint.ref)) {
+			paint.ref[n] = s[n];
+			++n;
+		}
+		paint.ref[n] = '\0';
+		if (n > 0) paint.kind = PaintKind::Url;
+		return paint;
+	}
 	if (parseColor(s, paint.color)) paint.kind = paint.color.a == 0 ? PaintKind::None : PaintKind::Color;
 	return paint;
 }
@@ -495,6 +510,7 @@ inline int encodePaint(const Paint &paint)
 	case PaintKind::Unset: return 0;
 	case PaintKind::None: return 1;
 	case PaintKind::CurrentColor: return 2;
+	case PaintKind::Url: return 0;  // attributes only; CSS refuses it (cssDeclarationValue)
 	case PaintKind::Color: break;
 	}
 	const int alpha7 = (paint.color.a * 126 + 127) / 255 + 1;
@@ -653,9 +669,15 @@ public:
 			rx *= s;
 			ry *= s;
 		}
-		const float num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
-		const float den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
-		float coef = den > 0 ? std::sqrt(std::max(0.0f, num / den)) : 0.0f;
+		// In double: near a half circle `num` is the difference of two nearly
+		// equal terms, and in float the centre then jitters by hundredths of a
+		// pixel as the end moves, so every grid point of an arc that only grew
+		// would move and its whole box would be damaged.
+		const double rx2 = static_cast<double>(rx) * rx, ry2 = static_cast<double>(ry) * ry;
+		const double x1p2 = static_cast<double>(x1p) * x1p, y1p2 = static_cast<double>(y1p) * y1p;
+		const double num = rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2;
+		const double den = rx2 * y1p2 + ry2 * x1p2;
+		float coef = den > 0 ? static_cast<float>(std::sqrt(std::max(0.0, num / den))) : 0.0f;
 		if (largeArc == sweep) coef = -coef;
 		const float cxp = coef * rx * y1p / ry;
 		const float cyp = -coef * ry * x1p / rx;
@@ -670,12 +692,33 @@ public:
 		if (!sweep && dtheta > 0) dtheta -= twoPi;
 		else if (sweep && dtheta < 0) dtheta += twoPi;
 		const float radius = std::max(rx, ry) * m_.scale();
+		// The arc's points sit on a fixed grid of angles, not an even split of
+		// its own sweep: two arcs that share a start and differ only in where
+		// they end (a gauge growing by a degree) flatten to the same points up
+		// to the old end, so the scene rebuild damages only the changed tip.
+		// The grid step is 0.8 of the tolerance step because the ends skip a
+		// grid angle closer than a quarter step, stretching that chord.
 		const float step = radius > tol_ ? 2 * std::acos(std::max(-1.0f, 1 - tol_ / radius)) : 3.14159265358979f / 2;
-		const int n = std::clamp(static_cast<int>(std::ceil(std::fabs(dtheta) / std::max(step, 0.01f))), 1, 512);
-		for (int i = 1; i < n; ++i) {
-			const float t = theta1 + dtheta * i / n;
+		const int perTurn = std::clamp(static_cast<int>(std::ceil(twoPi / std::max(0.8f * step, 0.01f))), 4, 2048);
+		const float grid = twoPi / static_cast<float>(perTurn);
+		const float theta2 = theta1 + dtheta;
+		const float margin = 0.25f * grid;
+		auto point = [&](float t) {
 			const float ex = rx * std::cos(t), ey = ry * std::sin(t);
 			emit({cs * ex - sn * ey + cx, sn * ex + cs * ey + cy});
+		};
+		if (dtheta > 0) {
+			for (int k = static_cast<int>(std::floor(theta1 / grid)) + 1, guard = 0; guard <= perTurn + 1; ++k, ++guard) {
+				const float t = static_cast<float>(k) * grid;
+				if (t >= theta2 - margin) break;
+				if (t > theta1 + margin) point(t);
+			}
+		} else {
+			for (int k = static_cast<int>(std::ceil(theta1 / grid)) - 1, guard = 0; guard <= perTurn + 1; --k, ++guard) {
+				const float t = static_cast<float>(k) * grid;
+				if (t <= theta2 + margin) break;
+				if (t < theta1 - margin) point(t);
+			}
 		}
 		emit(p);
 		cur_ = p;
@@ -1010,11 +1053,14 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 	// Each segment's left normal, scaled to the half width: solved once, read
 	// by both sides and by the joins on both its ends.
 	ScratchVector<Point> normals(segments);
+	ScratchVector<float> lengths(segments);
 	for (std::size_t i = 0; i < segments; ++i) {
 		const Point &a = pts[i], &b = pts[(i + 1) % n];
 		const float dx = b.x - a.x, dy = b.y - a.y;
-		const float k = hw / std::sqrt(dx * dx + dy * dy);
+		const float len = std::sqrt(dx * dx + dy * dy);
+		const float k = hw / len;
 		normals[i] = Point{-dy * k, dx * k};
+		lengths[i] = len;
 	}
 	const bool roundArcs = style.cap == LineCap::Round || style.join == LineJoin::Round;
 	const float arcStep = roundArcs ? detail::ArcStep(hw).step : 1.5707963f;
@@ -1022,7 +1068,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 	out.reserve(segments * 4 + 8);
 	// The joint at vertex p between offsets a (arriving) and b (leaving), on
 	// the side whose offsets these are.
-	auto joint = [&](Point p, Point a, Point b, float cross, float dot) {
+	auto joint = [&](Point p, Point a, Point b, float cross, float dot, float lenA, float lenB) {
 		if (dot > 0 && std::fabs(cross) < 1e-4f * dot) {  // straight on
 			out.push_back({p.x + b.x, p.y + b.y});
 			return;
@@ -1031,6 +1077,25 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 		// the path turns away from them, where they fan apart.
 		const bool outer = cross <= 0;
 		const float side = a.x * b.y - a.y * b.x;
+		// Where the two offset lines cross, when that point alone is the exact
+		// outline: on the outer side a miter within the limit (the offset
+		// points p+a and p+b lie on the lines into and out of the tip, so they
+		// add only collinear edges), and on the inner side a crossing within
+		// half of both segments (each segment may be cut from both ends). A
+		// flattened curve then costs two outline points per vertex, not six.
+		if (dot > 0 && (outer ? style.join == LineJoin::Miter : true)) {
+			const float cosTurn = std::clamp(dot / (hw * hw), -1.0f, 1.0f);
+			const float cosHalf = std::sqrt((1 + cosTurn) * 0.5f);
+			const float sinHalf = std::sqrt(std::max(0.0f, (1 - cosTurn) * 0.5f));
+			const bool fits = outer ? 1.0f / cosHalf <= style.miterLimit
+			                        : hw * sinHalf <= cosHalf * 0.5f * std::min(lenA, lenB);
+			if (cosHalf > 1e-4f && fits) {
+				const Point mid{a.x + b.x, a.y + b.y};
+				const float k = hw / (cosHalf * std::sqrt(mid.x * mid.x + mid.y * mid.y));
+				out.push_back({p.x + mid.x * k, p.y + mid.y * k});
+				return;
+			}
+		}
 		out.push_back({p.x + a.x, p.y + a.y});
 		if (!outer) {
 			out.push_back(p);
@@ -1075,7 +1140,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 		for (std::size_t v = 1; v < n - 1; ++v) {
 			float cross, dot;
 			turnAt(v - 1, v, cross, dot);
-			joint(pts[v], normals[v - 1], normals[v], cross, dot);
+			joint(pts[v], normals[v - 1], normals[v], cross, dot, lengths[v - 1], lengths[v]);
 		}
 		// End cap, right side back, start cap.
 		cap(pts[n - 1], normals[segments - 1]);
@@ -1083,7 +1148,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 			float cross, dot;
 			turnAt(v - 1, v, cross, dot);
 			const Point a{-normals[v].x, -normals[v].y}, b{-normals[v - 1].x, -normals[v - 1].y};
-			joint(pts[v], a, b, -cross, dot);
+			joint(pts[v], a, b, -cross, dot, lengths[v], lengths[v - 1]);
 		}
 		cap(pts[0], Point{-normals[0].x, -normals[0].y});
 		if (style.cap != LineCap::Square) out.pop_back();  // the start cap ends where the outline began
@@ -1097,7 +1162,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 		float cross, dot;
 		const std::size_t prev = (v + segments - 1) % segments;
 		turnAt(prev, v, cross, dot);
-		joint(pts[v], normals[prev], normals[v], cross, dot);
+		joint(pts[v], normals[prev], normals[v], cross, dot, lengths[prev], lengths[v]);
 	}
 	const std::size_t leftCount = out.size();
 	for (std::size_t k = 0; k < n; ++k) {
@@ -1106,7 +1171,7 @@ inline void strokeContour(const Contour &in, bool closed, const StrokeStyle &sty
 		const std::size_t prev = (v + segments - 1) % segments;
 		turnAt(prev, v, cross, dot);
 		const Point a{-normals[v].x, -normals[v].y}, b{-normals[prev].x, -normals[prev].y};
-		joint(pts[v], a, b, -cross, dot);
+		joint(pts[v], a, b, -cross, dot, lengths[v], lengths[prev]);
 	}
 	const float area = detail::polygonArea2(out.data(), leftCount) +
 	                   detail::polygonArea2(out.data() + leftCount, out.size() - leftCount);

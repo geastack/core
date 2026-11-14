@@ -2640,9 +2640,12 @@ void ViewRenderer::recordScrollbar(const Node &node)
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
 	cmd->type = DisplayCommandType::FillRoundedRect;
-	cmd->bx = n->layout.x + n->layout.width - 7;
+	// LVGL's default-theme scrollbar (lv_theme_default.c): a grey (palette
+	// main, #9E9E9E) pill 5 dpx wide, 7 dpx in from the edge, at 40% opacity --
+	// 4 px and 6 px at the 130 dpi this geometry already follows (track pad 6).
+	cmd->bx = n->layout.x + n->layout.width - 6 - 4;
 	cmd->by = thumb_y;
-	cmd->bw = 3;
+	cmd->bw = 4;
 	cmd->bh = thumb_h;
 	cmd->fillRoundedRect.x = cmd->bx;
 	cmd->fillRoundedRect.y = cmd->by;
@@ -2652,14 +2655,28 @@ void ViewRenderer::recordScrollbar(const Node &node)
 	cmd->fillRoundedRect.tr = 2;
 	cmd->fillRoundedRect.br = 2;
 	cmd->fillRoundedRect.bl = 2;
-	// Command colours are panel-order natives, so this has to go through the one
-	// authoring conversion (nativeFromRrggbbaa): it applies the panel byte-swap a
-	// bare fromRgb565 would leave off on 16-bit panels AND narrows to the board's
-	// native_t on the grayscale panels, where native_t is a byte and the RGB565
-	// constant would not fit. 0x8C8E94 is the exact RGB888 expansion of the RGB565
-	// 0x8C72 this used to spell, so 16-bit panels emit the identical pixel.
-	cmd->fillRoundedRect.color = gea::framework::graphics::pixel::nativeFromRrggbbaa(0x8C8E94FFu);
-	DisplayList::instance().noteScrollbarBox(cmd->bx, cmd->by, cmd->bw, cmd->bh);
+	// The thumb is replayed on its own (replayScrollbarThumbsInRegion), outside
+	// any alpha scope, so the 40% is blended here against the background the
+	// thumb stands on: the nearest opaque background up the ancestor chain.
+	// Command colours are panel-order natives: build them through the one
+	// authoring conversion (nativeFromRrggbbaa), which applies the panel
+	// byte-swap and narrows to the board's native_t on grayscale panels.
+	using gea::framework::graphics::pixel::nativeFromRrggbbaa;
+	auto under = nativeFromRrggbbaa(0xFFFFFFFFu);
+	{
+		const auto &state = treeState();
+		for (int a = static_cast<int>(n - state.nodes); a >= 0; a = state.nodes[a].parent) {
+			const auto &style = state.nodes[a].computedStyle();
+			if (style.has_bg && style.bg_alpha == 255) { under = style.bg_color; break; }
+			if (state.nodes[a].parent < 0) {
+				const int source = canvasBackgroundSource();
+				if (source >= 0 && state.nodes[source].computedStyle().has_bg && state.nodes[source].computedStyle().bg_alpha == 255)
+					under = state.nodes[source].computedStyle().bg_color;
+			}
+		}
+	}
+	cmd->fillRoundedRect.color = gea::framework::graphics::pixel::blendNative(nativeFromRrggbbaa(0x9E9E9EFFu), under, 102);
+	DisplayList::instance().noteScrollbarBox(static_cast<int>(n - treeState().nodes), cmd->bx, cmd->by, cmd->bw, cmd->bh);
 #else
 	(void)node;
 #endif

@@ -32,6 +32,17 @@
 #include "esp_jpeg_dec.h"
 #endif
 
+// PNGs can stream through the S3 ROM's inflater straight into native pixels,
+// so a decode needs the result plus ~45 KB rather than stb's whole inflated
+// image and an RGBA copy (3.4 MB for an 800x480 picture).
+#if !defined(GEA_EMBEDDED_ROM_PNG_STREAM) && defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3) && \
+    __has_include("miniz.h")
+#define GEA_EMBEDDED_ROM_PNG_STREAM 1
+#endif
+#if defined(GEA_EMBEDDED_ROM_PNG_STREAM) && GEA_EMBEDDED_ROM_PNG_STREAM
+#include "miniz.h"
+#endif
+
 // Route stb_image's allocations through the framework allocator (PSRAM-first
 // on embedded targets). Plain malloc would land on the tiny SRAM newlib heap
 // on the rp2350 — where pico_malloc PANICS on failure — so decoding a large
@@ -535,6 +546,265 @@ int ImageStore::decodeJpegTjpgd(ImageSlot &image, const std::uint8_t *data, int 
 }
 #endif
 
+#if defined(GEA_EMBEDDED_ROM_PNG_STREAM) && GEA_EMBEDDED_ROM_PNG_STREAM
+namespace {
+
+// Streaming PNG decode: the IDAT stream inflates through a 32 KB wrapping
+// window, each scanline is unfiltered against the previous one as it
+// completes and converted straight to native pixels. Peak memory is the
+// result (plus an alpha plane when the image has transparency), two
+// scanlines, the window and the inflater -- not the whole inflated image
+// and an RGBA copy, which is what stb holds. Handles what assets are made
+// of: 8-bit, non-interlaced gray, RGB, palette, gray+alpha and RGBA.
+// Anything else returns kPngUnsupported and stays on stb.
+constexpr int kPngUnsupported = -2;
+
+std::uint32_t pngU32(const std::uint8_t *p)
+{
+	return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) | (std::uint32_t(p[2]) << 8) | p[3];
+}
+
+struct PngStream {
+	int width = 0;
+	int height = 0;
+	int colorType = 0;
+	int channels = 0;
+	std::size_t stride = 0;  // bytes per scanline, filter byte excluded
+	std::uint8_t palette[256][4] = {};
+	bool opaqueHint = false;
+	pixel::native_t *pixels = nullptr;
+	std::uint8_t *alpha = nullptr;
+	bool hasZero = false;
+	std::uint8_t *prev = nullptr;
+	std::uint8_t *cur = nullptr;  // filter byte + stride
+	std::size_t filled = 0;
+	int row = 0;
+	bool failed = false;
+
+	void emitPixel(int index, std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a)
+	{
+		pixels[index] = rgbaToNative(r, g, b, a);
+		// Same alpha plane convertRgbaToNative builds: opaque-hinted images
+		// keep only fully transparent pixels, others every non-255 value.
+		const bool keep = opaqueHint ? a == 0 : a != 255;
+		if (!keep) {
+			if (alpha) alpha[index] = 255;
+			return;
+		}
+		if (a == 0) hasZero = true;
+		if (!alpha) {
+			const std::size_t count = static_cast<std::size_t>(width) * height;
+			alpha = ImageMemory::allocate<std::uint8_t>(count);
+			if (!alpha) {
+				failed = true;
+				return;
+			}
+			std::memset(alpha, 255, count);
+		}
+		alpha[index] = opaqueHint ? 0 : a;
+	}
+
+	void finishRow()
+	{
+		const int bpp = channels;
+		const std::uint8_t filter = cur[0];
+		std::uint8_t *line = cur + 1;
+		const std::uint8_t *up = prev + 1;
+		for (std::size_t i = 0; i < stride; i++) {
+			const int left = i >= static_cast<std::size_t>(bpp) ? line[i - bpp] : 0;
+			const int above = up[i];
+			const int corner = i >= static_cast<std::size_t>(bpp) ? up[i - bpp] : 0;
+			int predictor = 0;
+			switch (filter) {
+			case 0: predictor = 0; break;
+			case 1: predictor = left; break;
+			case 2: predictor = above; break;
+			case 3: predictor = (left + above) >> 1; break;
+			case 4: {
+				const int p = left + above - corner;
+				const int pa = p > left ? p - left : left - p;
+				const int pb = p > above ? p - above : above - p;
+				const int pc = p > corner ? p - corner : corner - p;
+				predictor = (pa <= pb && pa <= pc) ? left : (pb <= pc ? above : corner);
+				break;
+			}
+			default: failed = true; return;
+			}
+			line[i] = static_cast<std::uint8_t>(line[i] + predictor);
+		}
+		const int base = row * width;
+		for (int x = 0; x < width && !failed; x++) {
+			const std::uint8_t *px = line + static_cast<std::size_t>(x) * channels;
+			switch (colorType) {
+			case 0: emitPixel(base + x, px[0], px[0], px[0], 255); break;
+			case 2: emitPixel(base + x, px[0], px[1], px[2], 255); break;
+			case 3: {
+				const std::uint8_t *e = palette[px[0]];
+				emitPixel(base + x, e[0], e[1], e[2], e[3]);
+				break;
+			}
+			case 4: emitPixel(base + x, px[0], px[0], px[0], px[1]); break;
+			default: emitPixel(base + x, px[0], px[1], px[2], px[3]); break;
+			}
+		}
+		std::uint8_t *swap = prev;
+		prev = cur;
+		cur = swap;
+		filled = 0;
+		row++;
+	}
+
+	void consume(const std::uint8_t *bytes, std::size_t count)
+	{
+		while (count > 0 && row < height && !failed) {
+			const std::size_t need = stride + 1 - filled;
+			const std::size_t take = count < need ? count : need;
+			std::memcpy(cur + filled, bytes, take);
+			filled += take;
+			bytes += take;
+			count -= take;
+			if (filled == stride + 1) finishRow();
+		}
+	}
+};
+
+// Offset of the next IDAT chunk at or after `pos`, or -1.
+long nextIdat(const std::uint8_t *data, int length, long pos)
+{
+	while (pos + 12 <= length) {
+		const std::uint32_t size = pngU32(data + pos);
+		if (size > static_cast<std::uint32_t>(length) || pos + 12 + static_cast<long>(size) > length) return -1;
+		if (std::memcmp(data + pos + 4, "IDAT", 4) == 0) return pos;
+		if (std::memcmp(data + pos + 4, "IEND", 4) == 0) return -1;
+		pos += 12 + static_cast<long>(size);
+	}
+	return -1;
+}
+
+int decodePngStreaming(ImageSlot &image, const std::uint8_t *data, int length, bool opaqueHint)
+{
+	static const std::uint8_t kSignature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+	if (length < 33 || std::memcmp(data, kSignature, 8) != 0 || std::memcmp(data + 12, "IHDR", 4) != 0) return kPngUnsupported;
+	const std::uint32_t width = pngU32(data + 16);
+	const std::uint32_t height = pngU32(data + 20);
+	const int depth = data[24];
+	const int colorType = data[25];
+	const int interlace = data[28];
+	int channels = 0;
+	switch (colorType) {
+	case 0: channels = 1; break;
+	case 2: channels = 3; break;
+	case 3: channels = 1; break;
+	case 4: channels = 2; break;
+	case 6: channels = 4; break;
+	default: return kPngUnsupported;
+	}
+	if (depth != 8 || interlace != 0 || width == 0 || height == 0 || width > 16384 || height > 16384) return kPngUnsupported;
+
+	PngStream png;
+	png.width = static_cast<int>(width);
+	png.height = static_cast<int>(height);
+	png.colorType = colorType;
+	png.channels = channels;
+	png.stride = static_cast<std::size_t>(width) * channels;
+	png.opaqueHint = opaqueHint;
+
+	// Palette and tRNS precede the image data.
+	bool havePalette = false;
+	for (long pos = 33; pos + 12 <= length;) {
+		const std::uint32_t size = pngU32(data + pos);
+		if (pos + 12 + static_cast<long>(size) > length) return kPngUnsupported;
+		const std::uint8_t *body = data + pos + 8;
+		if (std::memcmp(data + pos + 4, "IDAT", 4) == 0 || std::memcmp(data + pos + 4, "IEND", 4) == 0) break;
+		if (std::memcmp(data + pos + 4, "PLTE", 4) == 0) {
+			for (std::uint32_t i = 0; i < size / 3 && i < 256; i++) {
+				png.palette[i][0] = body[i * 3];
+				png.palette[i][1] = body[i * 3 + 1];
+				png.palette[i][2] = body[i * 3 + 2];
+				png.palette[i][3] = 255;
+			}
+			havePalette = true;
+		} else if (std::memcmp(data + pos + 4, "tRNS", 4) == 0) {
+			// Colour-key transparency on gray/RGB is rare in assets; leave it to stb.
+			if (colorType != 3) return kPngUnsupported;
+			for (std::uint32_t i = 0; i < size && i < 256; i++) png.palette[i][3] = body[i];
+		}
+		pos += 12 + static_cast<long>(size);
+	}
+	if (colorType == 3 && !havePalette) return kPngUnsupported;
+	long idat = nextIdat(data, length, 33);
+	if (idat < 0) return kPngUnsupported;
+
+	const std::size_t pixelCount = static_cast<std::size_t>(width) * height;
+	png.pixels = ImageMemory::allocate<pixel::native_t>(pixelCount);
+	png.prev = ImageMemory::allocate<std::uint8_t>(png.stride + 1);
+	png.cur = ImageMemory::allocate<std::uint8_t>(png.stride + 1);
+	auto *inflator = ImageMemory::allocate<tinfl_decompressor>();
+	auto *window = ImageMemory::allocate<std::uint8_t>(TINFL_LZ_DICT_SIZE);
+	auto cleanup = [&](bool keepResult) {
+		ImageMemory::release(png.prev);
+		ImageMemory::release(png.cur);
+		ImageMemory::release(inflator);
+		ImageMemory::release(window);
+		if (!keepResult) {
+			ImageMemory::release(png.pixels);
+			ImageMemory::release(png.alpha);
+		}
+	};
+	if (!png.pixels || !png.prev || !png.cur || !inflator || !window) {
+		cleanup(false);
+		return -1;
+	}
+	std::memset(png.prev, 0, png.stride + 1);
+	tinfl_init(inflator);
+
+	std::size_t windowOffset = 0;
+	const std::uint8_t *in = data + idat + 8;
+	std::size_t inLeft = pngU32(data + idat);
+	long following = nextIdat(data, length, idat + 12 + static_cast<long>(inLeft));
+	tinfl_status status = TINFL_STATUS_NEEDS_MORE_INPUT;
+	while (!png.failed) {
+		std::size_t inSize = inLeft;
+		std::size_t outSize = TINFL_LZ_DICT_SIZE - windowOffset;
+		const mz_uint32 flags = TINFL_FLAG_PARSE_ZLIB_HEADER | (following >= 0 ? TINFL_FLAG_HAS_MORE_INPUT : 0);
+		status = tinfl_decompress(inflator, in, &inSize, window, window + windowOffset, &outSize, flags);
+		in += inSize;
+		inLeft -= inSize;
+		png.consume(window + windowOffset, outSize);
+		windowOffset = (windowOffset + outSize) & (TINFL_LZ_DICT_SIZE - 1);
+		if (status == TINFL_STATUS_DONE || png.row >= png.height) break;
+		if (status < 0) break;
+		if (status == TINFL_STATUS_NEEDS_MORE_INPUT && inLeft == 0) {
+			if (following < 0) break;
+			idat = following;
+			in = data + idat + 8;
+			inLeft = pngU32(data + idat);
+			following = nextIdat(data, length, idat + 12 + static_cast<long>(inLeft));
+		}
+	}
+	if (png.failed || png.row < png.height) {
+		cleanup(false);
+		return -1;
+	}
+	if (opaqueHint && png.alpha && !png.hasZero) {
+		ImageMemory::release(png.alpha);
+		png.alpha = nullptr;
+	}
+	cleanup(true);
+	image.width = png.width;
+	image.height = png.height;
+	image.frameCount = 1;
+	image.pixels = png.pixels;
+	image.ownsPixels = true;
+	image.alpha = png.alpha;
+	image.loopCount = 0;
+	image.playing = false;
+	return 0;
+}
+
+}  // namespace
+#endif
+
 int ImageStore::decodeStatic(ImageSlot &image, const std::uint8_t *data, int length, bool opaqueHint)
 {
 	int width = 0;
@@ -635,6 +905,13 @@ int ImageStore::decodeStatic(ImageSlot &image, const std::uint8_t *data, int len
 			image.playing = false;
 			return 0;
 		}
+	}
+#endif
+
+#if defined(GEA_EMBEDDED_ROM_PNG_STREAM) && GEA_EMBEDDED_ROM_PNG_STREAM
+	if (detectFormat(data, length) == ImageFormat::Png) {
+		const int rc = decodePngStreaming(image, data, length, opaqueHint);
+		if (rc != kPngUnsupported) return rc;
 	}
 #endif
 
@@ -761,7 +1038,37 @@ void ImageStore::materializeDeferred(int id) const
 	image->deferredData = nullptr;
 	image->deferredLength = 0;
 	image->deferredOpaque = false;
+	image->sourceData = data;
+	image->sourceLength = length;
+	image->sourceOpaque = opaque;
 	self->decodeStatic(*image, data, length, opaque);
+}
+
+#ifndef GEA_IMAGE_IDLE_DECODE_RELEASE_BYTES
+#define GEA_IMAGE_IDLE_DECODE_RELEASE_BYTES (256 * 1024)
+#endif
+
+void ImageStore::releaseIdleDecodes()
+{
+	ImageStoreLock lock(slotMutex_);
+	for (int id = 0; id < kImageMax; ++id) {
+		ImageSlot &image = images_[id];
+		if (!used_[id] || references_[id] != 0 || retired_[id]) continue;
+		if (!image.sourceData || !image.ownsPixels || !image.pixels || image.mutablePixels) continue;
+		const std::size_t bytes = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height) *
+		                          sizeof(pixel::native_t);
+		if (bytes < GEA_IMAGE_IDLE_DECODE_RELEASE_BYTES) continue;
+		ImageMemory::release(image.pixels);
+		ImageMemory::release(image.alpha);
+		image.pixels = nullptr;
+		image.alpha = nullptr;
+		image.ownsPixels = false;
+		image.deferredData = image.sourceData;
+		image.deferredLength = image.sourceLength;
+		image.deferredOpaque = image.sourceOpaque;
+		image.sourceData = nullptr;
+		image.sourceLength = 0;
+	}
 }
 
 int ImageStore::decode(const std::uint8_t *data, int length, int preferredSlot)

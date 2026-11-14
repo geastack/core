@@ -28,14 +28,20 @@
 #include "pixel.h"
 #include "tree_internal.h"
 
+#include <cstdlib>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 namespace gea::embedded::ui {
 
 namespace {
 
+// lv_theme_default's textarea cursor: a 2 px left border, pad_left -1, so it
+// sits one pixel left of the letter and spans the font's line height plus the
+// border above and below.
 constexpr int kInputCaretWidth = 2;
-constexpr int kInputCaretInsetY = 6;
+constexpr int kInputCaretOutset = 2;
 // Match text.cpp's local kBitmapFontHeight — used as the implicit font size
 // when an input doesn't have an explicit font_size set, so the vertical
 // centering formula here matches the height the framework's bitmap text path
@@ -47,12 +53,47 @@ inline gea::framework::graphics::pixel::native_t kPlaceholderColor()
 	return gea::framework::graphics::pixel::nativeColor(71, 85, 105);
 }
 
+bool isPasswordInput(int id)
+{
+	const char *type = Tree::instance().getAttribute(id, "type");
+	return type && std::strcmp(type, "password") == 0;
+}
+
+// lv_textarea's password bullet (LV_TEXTAREA_PWD_BULLET_UNICODE).
+constexpr const char *kPasswordBullet = "\xE2\x80\xA2";
+
+// What a password input shows for value[0, end): a bullet per character,
+// except the ones typed in the last burst, still shown in clear.
+std::string passwordDisplay(int id, const char *value, int end)
+{
+	int from = 0, to = 0;
+	const bool reveal = Tree::instance().inputPasswordReveal(id, &from, &to);
+	std::string out;
+	for (int i = 0; i < end && value[i]; ++i) {
+		if (reveal && i >= from && i < to) out.push_back(value[i]);
+		else out += kPasswordBullet;
+	}
+	return out;
+}
+
+// The display string of each password input, kept alive for its DrawText.
+std::unordered_map<int, std::string> &passwordTexts()
+{
+	static std::unordered_map<int, std::string> texts;
+	return texts;
+}
+
 const char *inputContentText(int id, gea::framework::graphics::pixel::native_t *outColor, gea::framework::graphics::pixel::native_t textColor)
 {
 	auto &tree = Tree::instance();
 	const char *value = tree.getAttribute(id, "value");
 	if (value && value[0]) {
 		if (outColor) *outColor = textColor;
+		if (isPasswordInput(id)) {
+			std::string &text = passwordTexts()[id];
+			text = passwordDisplay(id, value, static_cast<int>(std::strlen(value)));
+			return text.c_str();
+		}
 		return value;
 	}
 	const char *placeholder = tree.getAttribute(id, "placeholder");
@@ -178,26 +219,30 @@ void InputRenderer::record(int id)
 	// unfocused would be misleading on targets where the framework handles
 	// the input's visual editing state.
 	if (tree.activeInputId() == id && tree.activeInputCaretVisible()) {
-		// Caret sits at the END of the user-typed value (consistent with
-		// the insertion point of a real text field). When `value` is
-		// empty and we're falling back to the placeholder, the caret
-		// goes at the START of the content box — typing the first
-		// character would land there, and the placeholder gets visually
-		// pushed aside by the appearing glyph. Measuring the placeholder
-		// here would be wrong: it'd put the caret at the end of a
-		// string the user isn't actually editing.
+		// At the caret: the width of what is shown before it (bullets on a
+		// password), from the content's left edge; at the start when the
+		// placeholder shows.
 		const char *valueAttr = tree.getAttribute(id, "value");
 		const bool hasValue = valueAttr && valueAttr[0];
-		int caretX = contentX;
+		int caretX = contentX - 1;
 		if (hasValue) {
-			const int textWidth = TextRenderer::measureWidth(valueAttr, n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform);
-			caretX += textWidth < contentW ? textWidth : contentW - kInputCaretWidth;
-			if (caretX < contentX) caretX = contentX;
+			const int caret = tree.activeInputCaret();
+			const std::string prefix = isPasswordInput(id) ? passwordDisplay(id, valueAttr, caret) : std::string(valueAttr, caret);
+			const int prefixWidth = TextRenderer::measureWidth(prefix.c_str(), n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform);
+			caretX += prefixWidth < contentW ? prefixWidth : contentW - kInputCaretWidth;
 		}
-		const int caretY = contentY + kInputCaretInsetY;
-		int caretH = contentH - kInputCaretInsetY * 2;
-		if (caretH < 4) caretH = contentH > 4 ? contentH - 2 : contentH;
-		const gea::framework::graphics::pixel::native_t caretColor = n.computedStyle().text_color ? n.computedStyle().text_color : gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+		const int fontSize = n.computedStyle().font_size > 0 ? n.computedStyle().font_size : 16;
+		const int lineHeight = TextRenderer::measureHeight("M", n.computedStyle().font_id, n.computedStyle().font_size, n.computedStyle().text_transform, n.computedStyle().line_height);
+		int textY = contentY + (contentH - fontSize) / 2;
+		if (textY < contentY) textY = contentY;
+		const int caretY = textY - kInputCaretOutset;
+		const int caretH = lineHeight + kInputCaretOutset * 2;
+		// caret-color, else the text colour (a placeholder's grey is not it).
+		gea::framework::graphics::pixel::native_t caretColor = n.computedStyle().text_color ? n.computedStyle().text_color : gea::framework::graphics::pixel::nativeColor(255, 255, 255);
+		if (const char *cc = tree.getAttribute(id, "caret-color"); cc && cc[0] == '#' && std::strlen(cc) >= 7) {
+			const unsigned long rgb = std::strtoul(cc + 1, nullptr, 16);
+			caretColor = gea::framework::graphics::pixel::nativeColor((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+		}
 
 		DisplayCommand *cmd = DisplayList::instance().append();
 		if (cmd) {

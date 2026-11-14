@@ -140,6 +140,10 @@ public:
 	int scrollTop(int node) const;
 	void setScrollTop(int node, int scrollTop);
 	void scrollIntoView(int node);
+	// scrollIntoView, but the target ends up inside the scroller's padding
+	// box rather than flush with its edge -- how LVGL scrolls a focused
+	// widget into view.
+	void scrollIntoViewKeepingPadding(int node);
 	void applyPendingScrollIntoView();
 
 	// Active focus for `<input>` elements. Pixel-only targets can paint the
@@ -154,6 +158,14 @@ public:
 	void commitActiveInput();
 	bool activeInputCaretVisible() const;
 	void tickInputCaret(int timestampMs);
+	// Caret byte index in the active input's value, clamped to it.
+	int activeInputCaret() const;
+	// Moves the caret and restarts its blink (shown), as lv_textarea does.
+	void setActiveInputCaret(int pos);
+	// Characters [from, to) were just typed into the active (password) input.
+	void noteActiveInputTyped(int from, int to);
+	// The span of a password input's value still shown in clear, if any.
+	bool inputPasswordReveal(int id, int *from, int *to) const;
 
 	void markDisplayListDirty();
 	void markDisplayListContentDirty();

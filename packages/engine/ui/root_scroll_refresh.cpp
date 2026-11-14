@@ -27,6 +27,15 @@
 #define GEA_EMBEDDED_ROOT_SCROLL_TRANSLATE 1
 #endif
 
+// A display may decide at run time that its scrollRect publishes itself (the
+// ESP32-S3 RGB panel's ring scroll); the weak default defers to the macro.
+extern "C" __attribute__((weak)) bool gea_display_scroll_rect_self_flushing() { return false; }
+// A display that can run a sideways scroll's shifted copy on another core while
+// this one repaints the exposed strip starts it here (false: it cannot, and the
+// caller blits with Display::scrollRect) and joins it in the end call.
+extern "C" __attribute__((weak)) bool gea_display_scroll_rect_begin(int, int, int, int, int, int) { return false; }
+extern "C" __attribute__((weak)) void gea_display_scroll_rect_end() {}
+
 namespace gea::embedded::ui {
 
 #if GEA_CSS_SCROLLING
@@ -61,7 +70,10 @@ bool hasTransformState(const Node &node)
 	       node.render.previous_perspective > 0;
 }
 
-constexpr int kMaxExtraDirtyNodes = 8;
+// Animated content inside a scroller (the CrowPanel Analytics meters: arcs,
+// needles, legends and readouts) dirties a dozen or more nodes per frame; at 8
+// every such scroll frame fell to the full relayout + repaint (~220 ms there).
+constexpr int kMaxExtraDirtyNodes = 32;
 // One full recycled-slot pool: a fast fling can rewindow every slot of a
 // <virtual-list> in a single tick.
 constexpr int kMaxSlotRepositionNodes = 24;
@@ -294,7 +306,37 @@ bool dirtyBounds(const Node &n, int width, int height, RootScrollOnlyRefresh::Di
 	return true;
 }
 
+// An overlay's painted box: its layout box widened by its box shadow.
+bool overlayBounds(const Node &n, int width, int height, RootScrollOnlyRefresh::DirtyNode *out)
+{
+	if (!dirtyBounds(n, width, height, out)) return false;
+	const auto &style = rstyle(n.computedStyle());
+	const int reach = std::abs(static_cast<int>(style.box_shadow_blur_radius)) +
+	                  std::abs(static_cast<int>(style.box_shadow_spread)) +
+	                  std::max(std::abs(static_cast<int>(style.box_shadow_offset_x)),
+	                           std::abs(static_cast<int>(style.box_shadow_offset_y)));
+	out->x0 = std::max(0, out->x0 - reach);
+	out->y0 = std::max(0, out->y0 - reach);
+	out->x1 = std::min(width - 1, out->x1 + reach);
+	out->y1 = std::min(height - 1, out->y1 + reach);
+	return true;
+}
+
 }  // namespace
+
+// A border or a rounded corner on the scroller itself: pixels a scroll blit
+// must not move (see blitScroll in refresh()).
+static bool scrollerHasBoxFrame(const Node &n)
+{
+	if (hasAnyBorder(n.computedStyle())) return true;
+	for (int r = 0; r < 4; r++) {
+		if (n.computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0) return true;
+#if GEA_CSS_PERCENT_RADIUS
+		if (n.computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset) return true;
+#endif
+	}
+	return false;
+}
 
 int RootScrollOnlyRefresh::refreshNode(int root,
                                        DirtyNode *extraDirtyNodes,
@@ -333,20 +375,20 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 			if (!vertical && !horizontal) return -1;
 			if (!layoutUnchanged(*n)) return -1;
 			if (hasTransformState(*n)) return -1;
-			if (n->computedStyle().opacity != 255 || hasAnyBorder(n->computedStyle())) return -1;
-			for (int r = 0; r < 4; r++) {
-				if (n->computedStyle().border_radius[GEA_CSS_RADIUS_INDEX(r)] != 0) return -1;
-#if GEA_CSS_PERCENT_RADIUS
-				if (n->computedStyle().border_radius_percent[GEA_CSS_RADIUS_INDEX(r)] != kUnset) return -1;
-#endif
-			}
+			// A bordered or rounded scroller (a card that scrolls its list) is
+			// accepted too: refresh() repaints its box from the translated list
+			// instead of blitting it, which would drag the border and the
+			// corners along with the content. Rejecting it sent every scroll
+			// frame of the Shop tab's product card through a full relayout and
+			// a whole-screen replay (~180 ms a frame).
+			if (n->computedStyle().opacity != 255) return -1;
 			foundNode = i;
 			continue;
 		}
 
 		if (n->render.scroll_dirty) return -1;
 	}
-	if (foundNode < 0) return -1;
+	if (foundNode < 0) return -1; // no scroll
 
 	// Overlay guard: scrollRect shifts EVERY framebuffer pixel in the scroll
 	// viewport, so it is only valid when those pixels belong to the scroll
@@ -386,7 +428,31 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 			if (o.layout.x > svx1 || o.layout.x + o.layout.width - 1 < svx0 ||
 			    o.layout.y > svy1 || o.layout.y + o.layout.height - 1 < svy0)
 				continue;
-			return -1;
+			// An overlay: repaint it after the blit instead of giving up the
+			// blit. Its descendants widen the entry of the top-most listed
+			// ancestor rather than taking entries of their own.
+			RootScrollOnlyRefresh::DirtyNode box{};
+			if (!overlayBounds(o, width, height, &box)) continue;
+			RootScrollOnlyRefresh::DirtyNode *owner = nullptr;
+			for (int a = o.parent; a >= 0 && !owner; a = state.nodes[a].parent) {
+				for (int e = 0; e < *extraDirtyCount; e++) {
+					if (extraDirtyNodes[e].overlay && extraDirtyNodes[e].id == a) {
+						owner = &extraDirtyNodes[e];
+						break;
+					}
+				}
+			}
+			if (owner) {
+				owner->x0 = std::min(owner->x0, box.x0);
+				owner->y0 = std::min(owner->y0, box.y0);
+				owner->x1 = std::max(owner->x1, box.x1);
+				owner->y1 = std::max(owner->y1, box.y1);
+				continue;
+			}
+			if (*extraDirtyCount >= kMaxExtraDirtyNodes) return -1;
+			box.id = i;
+			box.overlay = true;
+			extraDirtyNodes[(*extraDirtyCount)++] = box;
 		}
 	}
 
@@ -578,20 +644,35 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		return 1;
 	}
 
+	// A sideways blit's shifted copy runs on the display's second core
+	// (gea_display_scroll_rect_begin) while this one repaints the strip it
+	// exposes. Start it now, before the display list is brought up to date
+	// below: that touches no pixels, so the copy overlaps it too.
+	bool earlyAsyncCopy = false;
+	if (horizontal && abs_move > 0 && abs_move < vw && !hasRightFadeMask(state, scroll_node) && !scrollerHasBoxFrame(*n)) {
+		bool rotated = false;
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+		if (auto *canvas = gea::platform::display::Display::canvas(); canvas && canvas->isLandscapeRotated()) rotated = true;
+#endif
+		if (!rotated) {
+			gea::platform::display::Display::resetClip();
+			earlyAsyncCopy = gea_display_scroll_rect_begin(vx, vy, vw, vh, move, 0);
+		}
+	}
+
 	// The scroll replay needs a display list whose commands match the
 	// post-shift layout, and recordNode drops commands for nodes outside the
 	// record clip — so off-viewport content has no commands until it scrolls
 	// in. Historically that forced a full clear()+recordNode() every scroll
 	// frame (~2ms). The translate-only path below skips it, mirroring the
 	// horizontal-pan fast path: record ONCE with the record clip expanded
-	// vertically by kScrollRecordPadding around the viewport (coverage), then
-	// per scroll frame just translate the scroll subtree's recorded commands
-	// in place (they follow shiftDescendantLayoutY), un-translate the scroll
-	// node's own viewport-fixed box, and patch the scrollbar thumb. Coverage
-	// is re-recorded when the accumulated scroll leaves the padded window or
-	// any other record replaced the list (recordSerial). Frames that change
-	// content (extra dirty nodes, virtual-list slot rebinds, horizontal
-	// scrolls) keep the plain full rebuild — a translate can't express them.
+	// along the scrolled axis around the viewport (coverage), then per scroll
+	// frame just translate the scroll subtree's recorded commands in place
+	// (they follow shiftDescendantLayoutX/Y), un-translate the scroll node's
+	// own viewport-fixed box, and patch the scrollbar thumb. Coverage is
+	// re-recorded when the accumulated scroll leaves the padded window or any
+	// other record replaced the list (recordSerial). Virtual-list slot rebinds
+	// keep the plain full rebuild — a translate can't express them.
 	// (An earlier hybrid that recorded/cleared subtrees incrementally failed
 	// because DisplayList::replay() walks state.commands[] linearly and
 	// orphaned ranges kept replaying; wholesale translate avoids that
@@ -600,74 +681,117 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		static std::uint32_t coverageSerial = 0;
 		static int coverageRoot = -1;
 		static int coverageNode = -1;
-		static int coverageScrollY = 0;
-		static int coveragePadTop = 0;
-		static int coveragePadBottom = 0;
-		// Window fallback for content too tall to pre-record in one pass
+		static bool coverageHorizontal = false;
+		static int coverageScroll = 0;
+		static int coveragePadBefore = 0;
+		static int coveragePadAfter = 0;
+		// Window fallback for content too long to pre-record in one pass
 		// (command coords are int16, and the command buffer is finite).
 		constexpr int kScrollRecordFallbackPadding = 512;
-		constexpr int kMaxFullContentHeight = 16000;
+		constexpr int kMaxFullContentExtent = 16000;
 
 		auto &list = DisplayList::instance();
-		const int scrollYNow = n->layout.scroll_y;
+		// The coverage window runs along the scrolled axis: rows for a vertical
+		// scroller, columns for a horizontal one (a tab pager), so a pager's
+		// pages are recorded once and every frame of a swipe only translates
+		// them -- a whole-list rebuild cost ~32 ms a frame on the CrowPanel.
+		const int scrollNow = horizontal ? n->layout.scroll_x : n->layout.scroll_y;
+		const int viewExtent = horizontal ? n->layout.width : n->layout.height;
+		const int contentExtent = horizontal ? n->layout.scroll_content_width : n->layout.scroll_content_height;
+		// Overlays only need repainting; their commands do not change.
+		int changedExtras = 0;
+		for (int e = 0; e < extraDirtyCount; e++)
+			if (!extraDirtyNodes[e].overlay) changedExtras++;
 		const bool translateEligible = GEA_EMBEDDED_ROOT_SCROLL_TRANSLATE != 0 &&
-		                               !horizontal &&
 		                               n->type != NodeType::VirtualList &&
-		                               slotCount == 0 &&
-		                               extraDirtyCount == 0;
-		const int coverageDelta = scrollYNow - coverageScrollY;
+		                               slotCount == 0;
+		const int coverageDelta = scrollNow - coverageScroll;
 		const bool coverageValid = translateEligible &&
 		                           coverageRoot == root &&
 		                           coverageNode == scroll_node &&
+		                           coverageHorizontal == horizontal &&
 		                           coverageSerial == list.recordSerial() &&
-		                           coverageDelta >= -coveragePadTop &&
-		                           coverageDelta <= coveragePadBottom;
+		                           coverageDelta >= -coveragePadBefore &&
+		                           coverageDelta <= coveragePadAfter;
+		// The coverage window as it lies on screen now, moved by the scroll since
+		// it was recorded.
+		auto coverageWindow = [&](int padBefore, int padAfter, int delta, int *x0, int *y0, int *x1, int *y1) {
+			*x0 = vx;
+			*y0 = vy;
+			*x1 = vx + vw - 1;
+			*y1 = vy + vh - 1;
+			if (horizontal) {
+				*x0 = vx - padBefore - delta;
+				*x1 = vx + vw - 1 + padAfter - delta;
+			} else {
+				*y0 = vy - padBefore - delta;
+				*y1 = vy + vh - 1 + padAfter - delta;
+			}
+		};
 
 		const std::int64_t rebuildStartUs = refreshPerfNowUs();
 		bool listReady = false;
 		if (coverageValid) {
-			list.translateSubtreeCommands(scroll_node, 0, move);
+			const int mx = horizontal ? move : 0;
+			const int my = horizontal ? 0 : move;
+			list.translateSubtreeCommands(scroll_node, mx, my);
 			// translateSubtreeCommands includes the scroll node's own box
 			// commands (background/border), which are viewport-fixed — undo.
-			list.translateNodeCommands(scroll_node, 0, -move);
+			list.translateNodeCommands(scroll_node, -mx, -my);
 			listReady = list.patchScrollbarThumb(scroll_node);
+			// Changed content re-records in place at its shifted layout, under the
+			// coverage window the list was recorded with (now moved by the scroll
+			// since), so nodes off screen keep their commands for when they scroll
+			// in. Rebuilding the whole list for them cost 100+ ms per frame on a
+			// tab of animated meters.
+			int wx0, wy0, wx1, wy1;
+			coverageWindow(coveragePadBefore, coveragePadAfter, coverageDelta, &wx0, &wy0, &wx1, &wy1);
+			for (int e = 0; e < extraDirtyCount && listReady; e++) {
+				if (extraDirtyNodes[e].overlay) continue;
+				listReady = list.rerecordNodeCommandsWithExpandedClip(extraDirtyNodes[e].id, scroll_node, wx0, wy0, wx1, wy1);
+			}
 		}
 		if (!listReady && translateEligible) {
 			// Pre-record the WHOLE scroll content when it fits: one record,
 			// replayed (translated) forever — scrolling never re-records. For
-			// very tall content, fall back to a padded window around the
+			// very long content, fall back to a padded window around the
 			// viewport; a truncated record (command-buffer overflow) also
 			// falls back so coverage is never silently incomplete.
-			int padTop = scrollYNow;
-			int padBottom = n->layout.scroll_content_height - scrollYNow - n->layout.height;
-			if (padBottom < 0) padBottom = 0;
-			if (n->layout.scroll_content_height > kMaxFullContentHeight) {
-				padTop = padTop < kScrollRecordFallbackPadding ? padTop : kScrollRecordFallbackPadding;
-				padBottom = padBottom < kScrollRecordFallbackPadding ? padBottom : kScrollRecordFallbackPadding;
+			int padBefore = scrollNow;
+			int padAfter = contentExtent - scrollNow - viewExtent;
+			if (padAfter < 0) padAfter = 0;
+			// A pager swipe ends one page over, so a horizontal record stops a page
+			// either side of the viewport: recording all three of the CrowPanel
+			// demo's pages cost ~71 ms on a swipe's first frame. A drag that goes
+			// further leaves the window and re-records, like any other scroll.
+			if (horizontal) {
+				padBefore = padBefore < viewExtent ? padBefore : viewExtent;
+				padAfter = padAfter < viewExtent ? padAfter : viewExtent;
+			}
+			if (contentExtent > kMaxFullContentExtent) {
+				padBefore = padBefore < kScrollRecordFallbackPadding ? padBefore : kScrollRecordFallbackPadding;
+				padAfter = padAfter < kScrollRecordFallbackPadding ? padAfter : kScrollRecordFallbackPadding;
 			}
 			for (int attempt = 0; attempt < 2 && !listReady; attempt++) {
+				int wx0, wy0, wx1, wy1;
+				coverageWindow(padBefore, padAfter, 0, &wx0, &wy0, &wx1, &wy1);
 				list.clear();
-				list.recordNodeWithExpandedClip(root,
-				                                255,
-				                                scroll_node,
-				                                vx,
-				                                vy - padTop,
-				                                vx + vw - 1,
-				                                vy + vh - 1 + padBottom);
+				list.recordNodeWithExpandedClip(root, 255, scroll_node, wx0, wy0, wx1, wy1);
 				list.weldTransformedFaces();
 				if (!list.commandOverflow()) {
 					listReady = true;
 					coverageSerial = list.recordSerial();
 					coverageRoot = root;
 					coverageNode = scroll_node;
-					coverageScrollY = scrollYNow;
-					coveragePadTop = padTop;
-					coveragePadBottom = padBottom;
+					coverageHorizontal = horizontal;
+					coverageScroll = scrollNow;
+					coveragePadBefore = padBefore;
+					coveragePadAfter = padAfter;
 					break;
 				}
 				// Overflowed: retry once with the small window.
-				padTop = padTop < kScrollRecordFallbackPadding ? padTop : kScrollRecordFallbackPadding;
-				padBottom = padBottom < kScrollRecordFallbackPadding ? padBottom : kScrollRecordFallbackPadding;
+				padBefore = padBefore < kScrollRecordFallbackPadding ? padBefore : kScrollRecordFallbackPadding;
+				padAfter = padAfter < kScrollRecordFallbackPadding ? padAfter : kScrollRecordFallbackPadding;
 			}
 			if (listReady) state.displayListDirty = false;
 		}
@@ -686,7 +810,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 
 	gea::platform::display::Display::resetClip();
 	gea::platform::display::Display::setAlpha(255);
-	constexpr bool kSelfFlushingScroll = GEA_EMBEDDED_DISPLAY_SCROLLRECT_SELF_FLUSHING != 0;
+	const bool kSelfFlushingScroll = GEA_EMBEDDED_DISPLAY_SCROLLRECT_SELF_FLUSHING != 0 || gea_display_scroll_rect_self_flushing();
 	constexpr int kMaxDamageRects = 24;
 	gea::platform::display::DisplayFlushRect damageRects[kMaxDamageRects];
 	int damageCount = 0;
@@ -707,7 +831,9 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	auto replayScrollNodeRegion = [&](int rx, int ry, int rw, int rh) {
 		noteDamage(rx, ry, rw, rh);
 		gScrollStripReplayActive = holdImages;
-		ViewportRegion::replayDisplayRegion(rx, ry, rw, rh);
+		// The revealed band lands right beside rows the panel is scanning: always
+		// stage it (a drag's band is one to three strips).
+		ViewportRegion::replayDisplayRegionStaged(rx, ry, rw, rh);
 		gScrollStripReplayActive = false;
 	};
 
@@ -726,7 +852,11 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	// row remap nor the pixel blit shifts it correctly, and the stale pixels
 	// left behind showed as content drawn over itself. Re-rasterize the whole
 	// viewport from the rebuilt display list instead.
-	bool blitScroll = !contentHasRightFadeMask;
+	// A bordered or rounded scroller (a card that scrolls its list) repaints its
+	// whole box from the translated list: a blit would drag the frame along,
+	// and a partial-width blit on a ring-scrolled RGB panel relayouts and
+	// moves the scanout buffers, which garbled the card on the CrowPanel.
+	bool blitScroll = !contentHasRightFadeMask && !scrollerHasBoxFrame(*n);
 #if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
 	if (auto *canvas = gea::platform::display::Display::canvas(); canvas && canvas->isLandscapeRotated()) blitScroll = false;
 #endif
@@ -734,7 +864,11 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	const int viewportExtent = horizontal ? vw : vh;
 	if (blitScroll && abs_move > 0 && abs_move < viewportExtent) {
 		const std::int64_t scrollRectStartUs = refreshPerfNowUs();
-		gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
+		// A sideways copy started above overlaps the strip repaint: the strip is
+		// exactly the columns the copy leaves alone.
+		const bool asyncCopy = earlyAsyncCopy;
+		if (!asyncCopy)
+			gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
 		GEA_REFRESH_PERF(perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs);
 
 		const std::int64_t stripReplayStartUs = refreshPerfNowUs();
@@ -747,6 +881,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		} else {
 			replayScrollNodeRegion(vx, vy, vw, abs_move);
 		}
+		if (asyncCopy) gea_display_scroll_rect_end();
 		GEA_REFRESH_PERF(perf.rootScrollStripReplayUs += refreshPerfNowUs() - stripReplayStartUs);
 
 		// Scrollbar damage is vertical-only: the horizontal forecast/rail rows use
@@ -818,8 +953,37 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	GEA_REFRESH_PERF(perf.rootScrollStripReplayUs += refreshPerfNowUs() - slotReplayStartUs);
 
 	const std::int64_t extraReplayStartUs = refreshPerfNowUs();
+	// Every extra box is collected, overlapping ones merged (an animated meter's
+	// arc, needle and readout share one box), and each merged box is staged
+	// through SRAM strips. Painted directly, a scroll frame's dozen meter boxes
+	// left hundreds of KB of dirty framebuffer lines in the cache, which the
+	// bounce refill's reads then evicted -- written back inside its window, so
+	// it overran and the panel showed a half-refilled band (thin flickering
+	// lines while scrolling the CrowPanel Analytics tab).
+	struct ExtraBox { int x0, y0, x1, y1; };
+	ExtraBox boxes[kMaxExtraDirtyNodes * 2];
+	int boxCount = 0;
+	auto addBox = [&](int x0, int y0, int x1, int y1) {
+		x0 = std::max(x0, 0);
+		y0 = std::max(y0, 0);
+		x1 = std::min(x1, width - 1);
+		y1 = std::min(y1, height - 1);
+		if (x0 > x1 || y0 > y1) return;
+		boxes[boxCount++] = {x0, y0, x1, y1};
+	};
 	for (int i = 0; i < extraDirtyCount; i++) {
 		DirtyNode dirty = extraDirtyNodes[i];
+		if (dirty.overlay) {
+			// The blit dragged the overlay's pixels by `move` inside the viewport:
+			// repaint that shifted box (clipped to the viewport) as well as the box.
+			int sx0 = dirty.x0 + (horizontal ? move : 0), sy0 = dirty.y0 + (horizontal ? 0 : move);
+			int sx1 = dirty.x1 + (horizontal ? move : 0), sy1 = dirty.y1 + (horizontal ? 0 : move);
+			sx0 = std::max(sx0, vx);
+			sy0 = std::max(sy0, vy);
+			sx1 = std::min(sx1, vx + vw - 1);
+			sy1 = std::min(sy1, vy + vh - 1);
+			if (sx0 <= sx1 && sy0 <= sy1) addBox(sx0, sy0, sx1, sy1);
+		}
 		// Bounds were computed before the scroll shift; content inside the
 		// scrolled container has since moved by `move` along the scrolled axis.
 		// Cover both the stale and shifted positions.
@@ -830,12 +994,29 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 				if (move < 0) dirty.y0 += move; else dirty.y1 += move;
 			}
 		}
+		addBox(dirty.x0, dirty.y0, dirty.x1, dirty.y1);
+	}
+	for (bool merged = true; merged;) {
+		merged = false;
+		for (int a = 0; a < boxCount; a++) {
+			for (int b = a + 1; b < boxCount; b++) {
+				if (boxes[a].x0 > boxes[b].x1 || boxes[b].x0 > boxes[a].x1 ||
+				    boxes[a].y0 > boxes[b].y1 || boxes[b].y0 > boxes[a].y1)
+					continue;
+				boxes[a] = {std::min(boxes[a].x0, boxes[b].x0), std::min(boxes[a].y0, boxes[b].y0),
+				            std::max(boxes[a].x1, boxes[b].x1), std::max(boxes[a].y1, boxes[b].y1)};
+				boxes[b] = boxes[--boxCount];
+				merged = true;
+				--b;
+			}
+		}
+	}
+	for (int i = 0; i < boxCount; i++) {
+		const ExtraBox &b = boxes[i];
 		gea::platform::display::Display::resetClip();
 		gea::platform::display::Display::setAlpha(255);
-		gea::platform::display::Display::pushClip(dirty.x0, dirty.y0, dirty.x1 - dirty.x0 + 1, dirty.y1 - dirty.y0 + 1);
-		noteDamage(dirty.x0, dirty.y0, dirty.x1 - dirty.x0 + 1, dirty.y1 - dirty.y0 + 1);
-		DisplayList::instance().replay();
-		gea::platform::display::Display::popClip();
+		noteDamage(b.x0, b.y0, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
+		ViewportRegion::replayDisplayRegionStaged(b.x0, b.y0, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
 	}
 	GEA_REFRESH_PERF(perf.rootScrollExtraReplayUs += refreshPerfNowUs() - extraReplayStartUs);
 

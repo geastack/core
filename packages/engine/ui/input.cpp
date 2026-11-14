@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -111,6 +112,8 @@ public:
 		activeScrollNode_ = tree.nodeCount() == 0 ? -1 : findScrollNodeId(0, x, y);
 		activeScrollOwner_=NodeHandle(activeScrollNode_);
 		snapAccumDy_ = 0;
+		downX_ = x;
+		downY_ = y;
 		activeScrollAxis_ = ScrollAxis::None;
 		scrollLastX_ = x;
 		scrollLastY_ = y;
@@ -180,7 +183,7 @@ public:
 			return 0;
 		}
 
-		Node &node = tree.nodes()[activeScrollNode_];
+		const Node &innerNode = tree.nodes()[activeScrollNode_];
 		const int dx = x - scrollLastX_;
 		const int dy = y - scrollLastY_;
 		scrollLastX_ = x;
@@ -191,17 +194,57 @@ public:
 		pushVelocitySample(x, y);
 		if (dx == 0 && dy == 0) return 0;
 
+		if (activeScrollAxis_ == ScrollAxis::None) {
+			// Decide the axis from the whole movement since the finger landed,
+			// once it has moved far enough to tell (LVGL's scroll limit), and
+			// hand the gesture to the scroller that can actually take it: the
+			// innermost one, or the nearest ancestor when the inner one cannot
+			// scroll that way (a vertical page inside a horizontal pager), or is
+			// already at its end in the drag's direction (LVGL's scroll chain).
+			const int tx = x - downX_;
+			const int ty = y - downY_;
+			if (std::abs(tx) < kAxisSlopPx && std::abs(ty) < kAxisSlopPx) return 0;
+			const ScrollAxis want = std::abs(tx) >= std::abs(ty) ? ScrollAxis::X : ScrollAxis::Y;
+			const int sign = want == ScrollAxis::X ? (tx > 0 ? 1 : -1) : (ty > 0 ? 1 : -1);
+			int chosen = -1;
+			ScrollAxis chosenAxis = ScrollAxis::None;
+			int fallback = -1;
+			for (int current = activeScrollNode_; current >= 0 && current < tree.nodeCount();
+			     current = tree.node(current).parent) {
+				const Node &candidate = tree.node(current);
+				if (!nodeCanScrollAxis(current, candidate, want)) continue;
+				if (fallback < 0) fallback = current;
+				if (canScrollToward(current, candidate, want, sign)) {
+					chosen = current;
+					chosenAxis = want;
+					break;
+				}
+			}
+			if (chosen < 0 && fallback >= 0) {
+				chosen = fallback;
+				chosenAxis = want;
+			}
+			if (chosen < 0) {
+				// Nothing scrolls along the drag: the inner scroller takes the
+				// other axis if it has one, as before.
+				const ScrollAxis other = want == ScrollAxis::X ? ScrollAxis::Y : ScrollAxis::X;
+				if (nodeCanScrollAxis(activeScrollNode_, innerNode, other)) {
+					chosen = activeScrollNode_;
+					chosenAxis = other;
+				}
+			}
+			if (chosen < 0) return 0;
+			if (chosen != activeScrollNode_) {
+				activeScrollNode_ = chosen;
+				activeScrollOwner_ = NodeHandle(chosen);
+			}
+			activeScrollAxis_ = chosenAxis;
+			if (snapNode_ == chosen) cancelSnap();
+			gestureStartScroll_ = chosenAxis == ScrollAxis::X ? scrollLeft(chosen) : scrollTop(chosen);
+		}
+		Node &node = tree.nodes()[activeScrollNode_];
 		const bool canScrollX = nodeCanScrollX(activeScrollNode_, node);
 		const bool canScrollY = nodeCanScrollY(activeScrollNode_, node);
-		if (activeScrollAxis_ == ScrollAxis::None) {
-			const int absDx = std::abs(dx);
-			const int absDy = std::abs(dy);
-			if (canScrollX && (!canScrollY || absDx >= absDy)) {
-				activeScrollAxis_ = ScrollAxis::X;
-			} else if (canScrollY) {
-				activeScrollAxis_ = ScrollAxis::Y;
-			}
-		}
 
 		bool changed = false;
 		if (dx != 0 && canScrollX && activeScrollAxis_ == ScrollAxis::X) {
@@ -281,6 +324,13 @@ public:
 			return -1;
 		}
 		snapAccumDy_ = 0;
+		if (scrollNode >= 0 && scrollAxis != ScrollAxis::None && nodeSnapsToPages(scrollNode)) {
+			pushVelocitySample(scrollLastX_, scrollLastY_);
+			settleOnPage(scrollNode, scrollAxis);
+			resetVelocitySamples();
+			if (activeTouchNode_ >= 0) clearActiveTouch();
+			return -1;
+		}
 		if (scrollNode >= 0 && nodeHasMomentumOptIn(scrollNode)) {
 			pushVelocitySample(scrollLastX_, scrollLastY_);
 			startMomentum(scrollNode, scrollAxis);
@@ -340,6 +390,7 @@ public:
 		scrollLastX_ = 0;
 		scrollLastY_ = 0;
 		resetVelocitySamples();
+		cancelSnap();
 		cancelMomentum();
 		carryOverVelocity_ = 0.0f;
 		carryOverAxis_ = ScrollAxis::None;
@@ -356,6 +407,7 @@ public:
 		auto leaving=[&](const NodeHandle &owner){return inputOwnerLeaving(owner,removed,retained);};
 		if(leaving(activeTouchOwner_) || leaving(activeScrollOwner_)) cancelActiveGesture();
 		if(leaving(momentumOwner_)) cancelMomentum();
+		if(leaving(snapOwner_)) cancelSnap();
 		if(leaving(hoveredOwner_)){treeState().hoveredNodeId=-1;hoveredOwner_={};StyleSheet::instance().hoverChanged();}
 	}
 
@@ -364,6 +416,7 @@ public:
 
 	void tick(int timestampMs)
 	{
+		if (snapNode_ >= 0) tickSnap(timestampMs);
 		if (momentumNode_ < 0) return;
 		Tree &tree = Tree::instance();
 		if (!momentumOwner_.valid() || momentumOwner_.id()!=momentumNode_) {
@@ -437,6 +490,158 @@ public:
 				std::fprintf(stderr, "[sc.stop] t=%d\n", timestampMs);
 			cancelMomentum();
 		}
+	}
+
+	// Page snapping (the `snap-page` attribute): a scroller whose pages are its
+	// own width (horizontal) or height (vertical) -- LVGL's tabview content,
+	// which scrolls one page per swipe and settles on a page edge.
+	bool nodeSnapsToPages(int nodeId) const
+	{
+		Tree &tree = Tree::instance();
+		if (nodeId < 0 || nodeId >= tree.nodeCount()) return false;
+		return tree.hasAttribute(nodeId, "snap-page");
+	}
+
+	// Animate a scroller to `target` along `axis` with LVGL's scroll animation:
+	// an ease-out over 200-400 ms, at 400 px/s between those bounds.
+	void startSnap(int nodeId, ScrollAxis axis, int target)
+	{
+		Tree &tree = Tree::instance();
+		if (nodeId < 0 || nodeId >= tree.nodeCount() || axis == ScrollAxis::None) return;
+		const int from = axis == ScrollAxis::X ? scrollLeft(nodeId) : scrollTop(nodeId);
+		cancelSnap();
+		if (from == target) {
+			dispatchScrollSettled(nodeId);
+			return;
+		}
+		int duration = std::abs(target - from) * 1000 / kSnapSpeedPxPerS;
+		if (duration < kSnapMinMs) duration = kSnapMinMs;
+		if (duration > kSnapMaxMs) duration = kSnapMaxMs;
+		snapNode_ = nodeId;
+		snapOwner_ = NodeHandle(nodeId);
+		snapAxis_ = axis;
+		snapFrom_ = from;
+		snapTo_ = target;
+		snapStartMs_ = gea::framework::services::FrameScheduler::nowMs();
+		snapDurationMs_ = duration;
+		treeState().inputTickRequired = true;
+	}
+
+	void cancelSnap()
+	{
+		snapNode_ = -1;
+		snapOwner_ = {};
+		snapAxis_ = ScrollAxis::None;
+		treeState().inputTickRequired = momentumNode_ >= 0;
+	}
+
+	void tickSnap(int timestampMs)
+	{
+		if (!snapOwner_.valid() || snapOwner_.id() != snapNode_) {
+			cancelSnap();
+			return;
+		}
+		const int node = snapNode_;
+		int elapsed = timestampMs - snapStartMs_;
+		if (elapsed < 0) elapsed = 0;
+		const bool done = elapsed >= snapDurationMs_;
+		const float t = done ? 1.0f : static_cast<float>(elapsed) / static_cast<float>(snapDurationMs_);
+		const float eased = 1.0f - (1.0f - t) * (1.0f - t);
+		const int next = snapFrom_ + static_cast<int>(std::lround(static_cast<float>(snapTo_ - snapFrom_) * eased));
+		if (snapAxis_ == ScrollAxis::X) setScrollLeft(node, next);
+		else setScrollTop(node, next);
+		if (done) {
+			cancelSnap();
+			dispatchScrollSettled(node);
+		}
+	}
+
+	// The page a released drag settles on: the nearest page edge, or the next
+	// page in the fling's direction, never more than one page from where the
+	// drag started.
+	void settleOnPage(int nodeId, ScrollAxis axis)
+	{
+		Tree &tree = Tree::instance();
+		const Node &node = tree.node(nodeId);
+		const int page = axis == ScrollAxis::X ? node.layout.width : node.layout.height;
+		if (page <= 0) return;
+		const int cur = axis == ScrollAxis::X ? scrollLeft(nodeId) : scrollTop(nodeId);
+		const int maxScroll = axis == ScrollAxis::X ? scrollMaxX(nodeId, node) : scrollMaxY(nodeId, node);
+		const int lastPage = (maxScroll + page / 2) / page;
+		const int startPage = (gestureStartScroll_ + page / 2) / page;
+		int target = (cur + page / 2) / page;
+		// A sixth of a page of drag turns the page, whichever way it went: half
+		// a page (400 px on an 800 px pager) asked for a swipe nearly across
+		// the screen.
+		const int turn = page / kPageTurnDivisor;
+		if (cur - gestureStartScroll_ >= turn) target = startPage + 1;
+		else if (gestureStartScroll_ - cur >= turn) target = startPage - 1;
+		const float v = releaseVelocity(axis);
+		if (v < -kPageFlingVelocity) target = startPage + 1;
+		else if (v > kPageFlingVelocity) target = startPage - 1;
+		if (target > startPage + 1) target = startPage + 1;
+		if (target < startPage - 1) target = startPage - 1;
+		if (target < 0) target = 0;
+		if (target > lastPage) target = lastPage;
+		int targetScroll = target * page;
+		if (targetScroll > maxScroll) targetScroll = maxScroll;
+		startSnap(nodeId, axis, targetScroll);
+	}
+
+	// The finger's speed along `axis` over the last 100 ms, px/ms.
+	float releaseVelocity(ScrollAxis axis) const
+	{
+		if (velocitySampleCount_ < 2) return 0.0f;
+		auto sampleAt = [this](int back) -> const VelocitySample & {
+			return velocitySamples_[(velocitySampleNext_ + kVelocitySampleCount - 1 - back) % kVelocitySampleCount];
+		};
+		const VelocitySample &newest = sampleAt(0);
+		const VelocitySample *oldest = &newest;
+		for (int back = 1; back < velocitySampleCount_; back++) {
+			const VelocitySample &s = sampleAt(back);
+			if (newest.timestampMs - s.timestampMs > 100) break;
+			oldest = &s;
+		}
+		const int dt = newest.timestampMs - oldest->timestampMs;
+		if (dt <= 0) return 0.0f;
+		const int d = axis == ScrollAxis::X ? newest.x - oldest->x : newest.y - oldest->y;
+		return static_cast<float>(d) / static_cast<float>(dt);
+	}
+
+	static void dispatchScrollSettled(int nodeId)
+	{
+		Tree &tree = Tree::instance();
+		if (!tree.hasListenersForType("scroll")) return;
+		gea::framework::events::PointerEvent event{};
+		event.type = gea::framework::events::PointerEventType::Scroll;
+		event.targetId = nodeId;
+		event.bubbles = false;
+		event.cancelable = false;
+		tree.dispatchEvent(event);
+	}
+
+	// Whether the scroller has room to move content the way a finger moving in
+	// direction `sign` (+1 right/down, -1 left/up) drags it.
+	static bool canScrollToward(int nodeId, const Node &node, ScrollAxis axis, int sign)
+	{
+		const int cur = axis == ScrollAxis::X ? scrollLeft(nodeId) : scrollTop(nodeId);
+		const int maxScroll = axis == ScrollAxis::X ? scrollMaxX(nodeId, node) : scrollMaxY(nodeId, node);
+		return sign > 0 ? cur > 0 : cur < maxScroll;
+	}
+
+public:
+	// Programmatic scroll of a `snap-page` scroller: animate rather than jump,
+	// the way LVGL's tabview animates to a tab picked from its buttons.
+	bool animateProgrammaticScroll(int nodeId, bool horizontal, int target)
+	{
+		if (!nodeSnapsToPages(nodeId)) return false;
+		Tree &tree = Tree::instance();
+		const Node &node = tree.node(nodeId);
+		const int maxScroll = horizontal ? scrollMaxX(nodeId, node) : scrollMaxY(nodeId, node);
+		if (target < 0) target = 0;
+		if (target > maxScroll) target = maxScroll;
+		startSnap(nodeId, horizontal ? ScrollAxis::X : ScrollAxis::Y, target);
+		return true;
 	}
 
 private:
@@ -875,7 +1080,7 @@ private:
 		momentumAxis_ = ScrollAxis::None;
 		momentumVelocity_ = 0.0f;
 		momentumScrollAccum_ = 0.0f;
-		treeState().inputTickRequired = false;
+		treeState().inputTickRequired = snapNode_ >= 0;
 	}
 
 	struct VelocitySample {
@@ -904,6 +1109,24 @@ private:
 	ScrollAxis activeScrollAxis_ = ScrollAxis::None;
 	int scrollLastX_ = 0;
 	int scrollLastY_ = 0;
+	int downX_ = 0;
+	int downY_ = 0;
+	int gestureStartScroll_ = 0;
+
+	// Page-snap animation state (snap-page scrollers).
+	static constexpr int kAxisSlopPx = 6;
+	static constexpr int kSnapSpeedPxPerS = 400;
+	static constexpr int kSnapMinMs = 200;
+	static constexpr int kSnapMaxMs = 400;
+	static constexpr float kPageFlingVelocity = 0.3f;  // px/ms
+	static constexpr int kPageTurnDivisor = 6;  // drag of page / 6 turns a page
+	NodeHandle snapOwner_;
+	int snapNode_ = -1;
+	ScrollAxis snapAxis_ = ScrollAxis::None;
+	int snapFrom_ = 0;
+	int snapTo_ = 0;
+	int snapStartMs_ = 0;
+	int snapDurationMs_ = 0;
 
 	// Momentum-scroll state.
 	VelocitySample velocitySamples_[kVelocitySampleCount] = {};
@@ -978,6 +1201,11 @@ bool Tree::scrollByKeyStep(int dy)
 	return InputController::instance().scrollFirstContainerY(dy);
 }
 
+bool animateSnapPageScroll(int node, bool horizontal, int target)
+{
+	return InputController::instance().animateProgrammaticScroll(node, horizontal, target);
+}
+
 void Tree::tickInput(int timestampMs)
 {
 	InputController::instance().tick(timestampMs);
@@ -1022,6 +1250,9 @@ void Tree::setActiveInput(int nodeId)
 	state.activeInputId = nodeId;
 	state.caretVisible = true;
 	state.caretLastFlipMs = state.lastFrameMs;
+	state.caretPos = -1;
+	state.pwdRevealUntilMs = 0;
+	state.pwdRevealFrom = state.pwdRevealTo = 0;
 	// Both the old input (caret needs to disappear) and the new input
 	// (caret needs to appear) must be re-recorded AND their screen rects
 	// flushed. Without render.dirty + nodeCommandDirty the rebuilt
@@ -1062,6 +1293,84 @@ bool Tree::activeInputCaretVisible() const
 	return treeState().caretVisible;
 }
 
+#if GEA_UI_INPUT_NODES
+namespace {
+void markActiveInputRepaint(TreeState &state)
+{
+	const int id = state.activeInputId;
+	if (id < 0 || id >= state.nodeCount) return;
+	state.nodeCommandDirty[id] = 1;
+	state.displayListDirty = true;
+	Node &n = state.nodes[id];
+	n.render.dirty = 1;
+	n.render.layout_dirty = 1;
+#if GEA_CSS_SCROLLING
+	n.render.non_scroll_dirty = 1;
+#endif
+}
+}  // namespace
+#endif
+
+int Tree::activeInputCaret() const
+{
+#if GEA_UI_INPUT_NODES
+	const auto &state = treeState();
+	if (state.activeInputId < 0) return 0;
+	const char *value = const_cast<Tree *>(this)->getAttribute(state.activeInputId, "value");
+	const int len = value ? static_cast<int>(std::strlen(value)) : 0;
+	if (state.caretPos < 0 || state.caretPos > len) return len;
+	return state.caretPos;
+#else
+	return 0;
+#endif
+}
+
+void Tree::setActiveInputCaret(int pos)
+{
+#if GEA_UI_INPUT_NODES
+	auto &state = treeState();
+	if (state.activeInputId < 0) return;
+	state.caretPos = pos < 0 ? 0 : pos;
+	state.caretVisible = true;
+	state.caretLastFlipMs = state.lastFrameMs;
+	markActiveInputRepaint(state);
+#else
+	(void)pos;
+#endif
+}
+
+void Tree::noteActiveInputTyped(int from, int to)
+{
+#if GEA_UI_INPUT_NODES
+	auto &state = treeState();
+	constexpr int kPasswordShowMs = 1500;
+	if (state.pwdRevealUntilMs != 0 && from == state.pwdRevealTo) {
+		state.pwdRevealTo = to;  // the same burst: keep showing it
+	} else {
+		state.pwdRevealFrom = from;
+		state.pwdRevealTo = to;
+	}
+	state.pwdRevealUntilMs = (state.lastFrameMs ? state.lastFrameMs : 1) + kPasswordShowMs;
+#else
+	(void)from;
+	(void)to;
+#endif
+}
+
+bool Tree::inputPasswordReveal(int id, int *from, int *to) const
+{
+#if GEA_UI_INPUT_NODES
+	const auto &state = treeState();
+	if (id != state.activeInputId || state.pwdRevealUntilMs == 0 || state.pwdRevealTo <= state.pwdRevealFrom) return false;
+	*from = state.pwdRevealFrom;
+	*to = state.pwdRevealTo;
+	return true;
+#else
+	(void)id; (void)from; (void)to;
+	return false;
+#endif
+}
+
 void Tree::tickInputCaret(int timestampMs)
 {
 #if GEA_UI_INPUT_NODES
@@ -1070,7 +1379,14 @@ void Tree::tickInputCaret(int timestampMs)
 		state.caretVisible = false;
 		return;
 	}
-	constexpr int kCaretBlinkMs = 500;
+	// The password characters typed last turn to bullets once their time is up.
+	if (state.pwdRevealUntilMs != 0 && timestampMs >= state.pwdRevealUntilMs) {
+		state.pwdRevealUntilMs = 0;
+		state.pwdRevealFrom = state.pwdRevealTo = 0;
+		markActiveInputRepaint(state);
+	}
+	// lv_theme_default's cursor: anim_time 400 ms per phase.
+	constexpr int kCaretBlinkMs = 400;
 	if (state.caretLastFlipMs == 0) state.caretLastFlipMs = timestampMs;
 	if (timestampMs - state.caretLastFlipMs >= kCaretBlinkMs) {
 		state.caretVisible = !state.caretVisible;

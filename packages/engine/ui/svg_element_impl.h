@@ -45,7 +45,11 @@ namespace {
 enum class Kind : std::uint8_t { None, Svg, Group, Path, Polyline, Polygon, Line, Circle, Ellipse, Rect, Skip };
 
 struct TagIds {
-	std::int16_t svg, g, path, polyline, polygon, line, circle, ellipse, rect, defs, title, desc, text;
+	std::int16_t svg, g, path, polyline, polygon, line, circle, ellipse, rect, defs, title, desc, text, linearGradient, stop;
+	// The element factory lowercases tag names the HTML way, so a JSX
+	// <linearGradient> arrives as "lineargradient"; accept both spellings.
+	std::int16_t linearGradientLower;
+	bool isLinearGradient(std::int16_t tag) const { return tag == linearGradient || tag == linearGradientLower; }
 };
 
 const TagIds &tagIds()
@@ -53,7 +57,8 @@ const TagIds &tagIds()
 	static const TagIds ids = {internTag("svg"),      internTag("g"),      internTag("path"),   internTag("polyline"),
 	                           internTag("polygon"),  internTag("line"),   internTag("circle"), internTag("ellipse"),
 	                           internTag("rect"),     internTag("defs"),   internTag("title"),  internTag("desc"),
-	                           internTag("text")};
+	                           internTag("text"),     internTag("linearGradient"), internTag("stop"),
+	                           internTag("lineargradient")};
 	return ids;
 }
 
@@ -74,14 +79,14 @@ Kind kindOf(std::int16_t tag)
 	if (tag == t.circle) return Kind::Circle;
 	if (tag == t.ellipse) return Kind::Ellipse;
 	if (tag == t.rect) return Kind::Rect;
-	if (tag == t.defs || tag == t.title || tag == t.desc || tag == t.text) return Kind::Skip;
+	if (tag == t.defs || tag == t.title || tag == t.desc || tag == t.text || t.isLinearGradient(tag) || tag == t.stop) return Kind::Skip;
 	return Kind::None;
 }
 
 bool isSvgTagName(const char *tag)
 {
 	static const char *const names[] = {"svg", "g", "path", "polyline", "polygon", "line", "circle",
-	                                    "ellipse", "rect", "defs", "title", "desc", "text"};
+	                                    "ellipse", "rect", "defs", "title", "desc", "text", "linearGradient", "lineargradient", "stop"};
 	for (const char *n : names)
 		if (std::strcmp(tag, n) == 0) return true;
 	return false;
@@ -98,10 +103,78 @@ struct Attrs {
 	}
 };
 
+// A linearGradient paint: its vector (svg-local pixels, or fractions of the
+// shape's box with bboxUnits) and up to kMaxStops stops, opacity folded in.
+struct GradientPaint {
+	static constexpr int kMaxStops = 8;
+	bool bboxUnits = true;
+	float x1 = 0, y1 = 0, x2 = 1, y2 = 0;
+	int stops = 0;
+	float offset[kMaxStops] = {};
+	Color color[kMaxStops];
+	float alpha[kMaxStops] = {};
+};
+
 struct ResolvedPaint {
 	bool on = false;
 	gea::framework::graphics::pixel::native_t color = 0;
 	float alpha = 1.0f;
+	bool gradient = false;
+	GradientPaint grad;
+};
+
+// A rebuild's damage as a few boxes rather than one: an svg whose shapes
+// change in separate places (two ends of an arc, three gauges' tips) repaints
+// each place, not the box spanning them. Boxes that touch, or whose union
+// costs little more than both, merge; past kMax the cheapest union is taken.
+struct DamageSet {
+	static constexpr int kMax = 4;
+	Bounds box[kMax];
+	int count = 0;
+	bool empty() const { return count == 0; }
+	static float area(const Bounds &b) { return (b.x1 - b.x0) * (b.y1 - b.y0); }
+	static Bounds unite(const Bounds &a, const Bounds &b)
+	{
+		Bounds u = a;
+		u.add(Point{b.x0, b.y0});
+		u.add(Point{b.x1, b.y1});
+		return u;
+	}
+	void add(const Bounds &b)
+	{
+		if (b.empty()) return;
+		for (int i = 0; i < count; ++i) {
+			const Bounds u = unite(box[i], b);
+			const bool touch = box[i].x0 <= b.x1 && b.x0 <= box[i].x1 && box[i].y0 <= b.y1 && b.y0 <= box[i].y1;
+			if (touch || area(u) <= area(box[i]) + area(b) + 256.0f) {
+				box[i] = u;
+				// The grown box may now reach another: fold until stable.
+				for (int j = 0; j < count; ++j) {
+					if (j == i) continue;
+					const Bounds v = unite(box[i], box[j]);
+					if (area(v) <= area(box[i]) + area(box[j]) + 256.0f) {
+						box[i] = v;
+						box[j] = box[--count];
+						if (i == count) i = j;
+						j = -1;
+					}
+				}
+				return;
+			}
+		}
+		if (count < kMax) {
+			box[count++] = b;
+			return;
+		}
+		int best = 0;
+		float bestCost = 1e30f;
+		for (int i = 0; i < count; ++i) {
+			const float cost = area(unite(box[i], b)) - area(box[i]);
+			if (cost < bestCost) bestCost = cost, best = i;
+		}
+		box[best] = unite(box[best], b);
+	}
+	void clear() { count = 0; }
 };
 
 struct Item {
@@ -117,6 +190,9 @@ struct Item {
 	// stroke style): an unchanged item keeps them across scene rebuilds, so a
 	// frame that moves one shape re-flattens only that shape.
 	std::uint64_t geometryKey = 0;
+	// The key without the node's attributes: two builds of one node with the
+	// same styleKey differ only in their path, so damage is the path's diff.
+	std::uint64_t styleKey = 0;
 	// The transform's translation when the geometry was built. The key leaves
 	// translation out, so a shape that only moved (a scrolling chart) shifts
 	// its edges instead of re-flattening and re-stroking.
@@ -157,6 +233,11 @@ void translateItem(Item &item, float dx, float dy)
 struct Scene {
 	bool dirty = true;
 	bool recorded = false;
+	// The display list's record serial when the scene was made: once a whole
+	// recording has run since and still left the svg out, its box lay outside
+	// the record clip (see invalidateRoot).
+	std::uint32_t createdSerial = DisplayList::instance().recordSerial();
+	bool built = false;  // built at least once
 	int width = -1, height = -1;
 	std::uint64_t signature = 0;
 	std::vector<Item> items;
@@ -167,7 +248,7 @@ struct Scene {
 	// refresh's dirty collection through damage().
 	bool damageValid = false;
 	bool damageFull = true;
-	Bounds damage;
+	DamageSet damage;
 	// The svg box as last recorded, to tell a scene-only change apart from a
 	// change to the box's own paint (background, border, position).
 	bool boxChanged = true;
@@ -208,7 +289,14 @@ void invalidateRoot(int root)
 	Node &n = state.nodes[root];
 	tree().markNodeDisplayCommandsDirty(root);
 	// A first DrawSvg needs a fresh recording; later ones are replaced in place.
-	if (!it->second.recorded) tree().markDisplayListContentDirty();
+	// Not when a recording since the scene was made already left it out: the
+	// svg is outside the record clip (below the fold, or on a pager page out of
+	// view), a new recording would leave it out again, and whatever brings it
+	// into view (a scroll, a relayout) records it then. Asking anyway rebuilt
+	// the whole list every frame for the CrowPanel demo's animated meters on
+	// the Analytics page, wherever the pager stood: ~31 ms a frame.
+	if (!it->second.recorded && DisplayList::instance().recordSerial() == it->second.createdSerial)
+		tree().markDisplayListContentDirty();
 	n.render.dirty = 1;
 #if GEA_CSS_SCROLLING
 	n.render.non_scroll_dirty = 1;
@@ -364,18 +452,152 @@ std::uint64_t floatBits(float f)
 // The previous scene's items, consumed as the new scene reuses them.
 bool samePaint(const ResolvedPaint &a, const ResolvedPaint &b)
 {
-	return a.on == b.on && (!a.on || (a.color == b.color && a.alpha == b.alpha));
+	if (a.on != b.on || a.gradient != b.gradient) return false;
+	if (!a.on) return true;
+	if (!a.gradient) return a.color == b.color && a.alpha == b.alpha;
+	const GradientPaint &g = a.grad, &h = b.grad;
+	if (g.bboxUnits != h.bboxUnits || g.x1 != h.x1 || g.y1 != h.y1 || g.x2 != h.x2 || g.y2 != h.y2 || g.stops != h.stops)
+		return false;
+	for (int i = 0; i < g.stops; ++i)
+		if (g.offset[i] != h.offset[i] || g.alpha[i] != h.alpha[i] || g.color[i].r != h.color[i].r ||
+		    g.color[i].g != h.color[i].g || g.color[i].b != h.color[i].b)
+			return false;
+	return true;
 }
 
 // Everything an item can touch on screen, in svg-local pixels.
-void addItemDamage(Bounds &damage, const Item &item)
+void addItemDamage(DamageSet &damage, const Item &item)
 {
 	constexpr float kAntialias = 2.0f;
 	for (const Bounds *b : {&item.fillBounds, &item.strokeBounds}) {
 		if (b->empty()) continue;
-		damage.add(Point{b->x0 - kAntialias, b->y0 - kAntialias});
-		damage.add(Point{b->x1 + kAntialias, b->y1 + kAntialias});
+		Bounds g;
+		g.add(Point{b->x0 - kAntialias, b->y0 - kAntialias});
+		g.add(Point{b->x1 + kAntialias, b->y1 + kAntialias});
+		damage.add(g);
 	}
+}
+
+// How far, in half widths, a miter join of `path` reaches from its vertex:
+// strokeContour puts a miter tip at hw / cos(turn / 2), and bevels instead
+// when that ratio is over the limit; every other outline point stays within
+// one half width of the centre line. A flattened curve turns a few degrees
+// per vertex, so its joins reach barely past hw -- where the miter limit (4 by
+// default, SVG's default join being miter) made a gauge's moving tip damage a
+// box ~30 px wider on every side than the stroke can paint.
+float miterReach(const Path &path, float miterLimit)
+{
+	float worst = 1.0f;
+	for (std::size_t i = 0; i < path.contours.size(); ++i) {
+		const auto &c = path.contours[i];
+		const bool closed = path.closed[i] != 0;
+		Point first{}, firstDir{}, prev{}, prevDir{};
+		bool haveFirst = false, haveDir = false;
+		auto turnTo = [&](Point d) {
+			if (haveDir) {
+				const float cosTurn = std::clamp(prevDir.x * d.x + prevDir.y * d.y, -1.0f, 1.0f);
+				const float cosHalf = std::sqrt((1 + cosTurn) * 0.5f);
+				if (cosHalf > 1e-4f && 1.0f / cosHalf <= miterLimit) worst = std::max(worst, 1.0f / cosHalf);
+			} else {
+				firstDir = d;
+			}
+			prevDir = d;
+			haveDir = true;
+		};
+		auto segmentTo = [&](Point p) {
+			const float dx = p.x - prev.x, dy = p.y - prev.y;
+			const float len2 = dx * dx + dy * dy;
+			if (len2 <= 1e-8f) return false;  // the stroker drops it too
+			const float inv = 1.0f / std::sqrt(len2);
+			turnTo(Point{dx * inv, dy * inv});
+			prev = p;
+			return true;
+		};
+		for (const Point &p : c) {
+			if (!haveFirst) {
+				first = prev = p;
+				haveFirst = true;
+				continue;
+			}
+			segmentTo(p);
+		}
+		if (closed && haveDir) {
+			segmentTo(first);  // the closing segment, then the join back into the first
+			turnTo(firstDir);
+		}
+		if (worst >= miterLimit) return miterLimit;
+	}
+	return worst;
+}
+
+// Damage between two flattenings of one stroked open path. Arcs flatten onto
+// a fixed angle grid, so the old and new points coincide over a shared run,
+// possibly at an index offset when the start moved too. Each contour aligns
+// on that run and damages the two ends outside it (a moved start, a moved
+// end), each including the run's boundary point: a stroke piece spans two
+// points and a join three, all within `reach` of the centre line. False when
+// the contours do not line up (a different count, a closed contour that
+// changed); the caller then damages both whole boxes.
+bool strokeDiffDamage(const Path &a, const Path &b, float reach, DamageSet &damage)
+{
+	if (a.contours.size() != b.contours.size()) return false;
+	constexpr float kSame = 1.0f / 256.0f;
+	auto near = [](Point p, Point q) { return std::fabs(p.x - q.x) <= kSame && std::fabs(p.y - q.y) <= kSame; };
+	for (std::size_t i = 0; i < a.contours.size(); ++i) {
+		const auto &ca = a.contours[i];
+		const auto &cb = b.contours[i];
+		const long na = static_cast<long>(ca.size()), nb = static_cast<long>(cb.size());
+		if (na == nb) {
+			long k = 0;
+			while (k < na && near(ca[k], cb[k])) ++k;
+			if (k == na) {
+				if (a.closed[i] != b.closed[i]) return false;
+				continue;
+			}
+		}
+		if (a.closed[i] || b.closed[i]) return false;
+		auto range = [&](Bounds &out, const auto &c, long from, long to) {
+			for (long k = std::max(0L, from); k <= to && k < static_cast<long>(c.size()); ++k) {
+				out.add(Point{c[k].x - reach, c[k].y - reach});
+				out.add(Point{c[k].x + reach, c[k].y + reach});
+			}
+		};
+		// Find the shared run: a point of `a` (tried at a few places) that
+		// `b` also has, and the offset between their indices.
+		long lo = -1, hi = -1, offset = 0;
+		for (long probe : {na / 2, na / 4, (3 * na) / 4, 1L, na - 2}) {
+			if (probe < 0 || probe >= na) continue;
+			for (long j = 0; j < nb; ++j) {
+				if (!near(ca[probe], cb[j])) continue;
+				offset = j - probe;
+				lo = hi = probe;
+				while (lo > 0 && lo - 1 + offset >= 0 && near(ca[lo - 1], cb[lo - 1 + offset])) --lo;
+				while (hi + 1 < na && hi + 1 + offset < nb && near(ca[hi + 1], cb[hi + 1 + offset])) ++hi;
+				break;
+			}
+			if (lo >= 0) break;
+		}
+		if (lo < 0) {
+			Bounds all;
+			range(all, ca, 0, na - 1);
+			range(all, cb, 0, nb - 1);
+			damage.add(all);
+			continue;
+		}
+		if (!(lo == 0 && offset == 0)) {
+			Bounds head;
+			range(head, ca, 0, lo);
+			range(head, cb, 0, lo + offset);
+			damage.add(head);
+		}
+		if (!(hi == na - 1 && hi + offset == nb - 1)) {
+			Bounds tail;
+			range(tail, ca, hi, na - 1);
+			range(tail, cb, hi + offset, nb - 1);
+			damage.add(tail);
+		}
+	}
+	return true;
 }
 
 // The previous scene's items, consumed as the new scene reuses them; also
@@ -385,7 +607,7 @@ struct ItemCache {
 	std::size_t hint = 0;
 	long lastTaken = -1;
 	bool full = false;
-	Bounds damage;
+	DamageSet damage;
 	Item *take(int node, std::uint64_t key)
 	{
 		if (!items) return nullptr;
@@ -424,6 +646,55 @@ struct ItemCache {
 	}
 };
 
+// fill/stroke="url(#id)": the svg's <linearGradient id> with its <stop>s.
+// Unknown or stopless references paint nothing, as in a browser.
+ResolvedPaint resolveGradient(const Paint &paint, int id, const Matrix &matrix, float opacity)
+{
+	ResolvedPaint out;
+	const auto &state = treeState();
+	const int root = rootOf(id);
+	const std::int16_t stopTag = tagIds().stop;
+	int grad = -1;
+	for (int n = 0; n < state.nodeCount && grad < 0; ++n) {
+		if (!state.nodeActive[n] || !tagIds().isLinearGradient(state.nodes[n].tag_id)) continue;
+		const char *gid = attr(n, "id");
+		if (gid && !std::strcmp(gid, paint.ref) && rootOf(n) == root) grad = n;
+	}
+	if (grad < 0) return out;
+	GradientPaint &g = out.grad;
+	const char *units = attr(grad, "gradientUnits");
+	g.bboxUnits = !(units && !std::strcmp(units, "userSpaceOnUse"));
+	g.x1 = attrNumber(grad, "x1", 0);
+	g.y1 = attrNumber(grad, "y1", 0);
+	g.x2 = attrNumber(grad, "x2", 1);
+	g.y2 = attrNumber(grad, "y2", 0);
+	if (!g.bboxUnits) {
+		const Point a = matrix.apply(Point{g.x1, g.y1}), b = matrix.apply(Point{g.x2, g.y2});
+		g.x1 = a.x; g.y1 = a.y; g.x2 = b.x; g.y2 = b.y;
+	}
+	float last = 0;
+	bool visible = false;
+	for (int s = state.nodes[grad].first_child; s >= 0 && s < state.nodeCount && g.stops < GradientPaint::kMaxStops;
+	     s = state.nodes[s].next_sibling) {
+		if (!state.nodeActive[s] || state.nodes[s].tag_id != stopTag) continue;
+		Color c{0, 0, 0, 255};
+		if (const char *sc = attr(s, "stop-color")) parseColor(sc, c);
+		const float a = opacity * std::clamp(attrNumber(s, "stop-opacity", 1), 0.0f, 1.0f) * c.a / 255.0f;
+		last = std::max(last, std::clamp(attrNumber(s, "offset", 0), 0.0f, 1.0f));
+		g.offset[g.stops] = last;
+		g.color[g.stops] = c;
+		g.alpha[g.stops] = a;
+		visible = visible || a > 0.002f;
+		++g.stops;
+	}
+	if (g.stops == 0 || !visible) return out;
+	out.on = true;
+	out.gradient = true;
+	out.alpha = 1.0f;
+	out.color = gea::framework::graphics::pixel::nativeColor(g.color[0].r, g.color[0].g, g.color[0].b);
+	return out;
+}
+
 void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &cache)
 {
 	const auto &state = treeState();
@@ -445,14 +716,16 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 	if (kind != Kind::Svg && kind != Kind::Group) {
 		if (!ctx.visible || ctx.opacity <= 0) return;
 		const ResolvedPaint fill =
-				kind == Kind::Line ? ResolvedPaint{} : resolvePaint(ctx.fill, node, ctx.opacity * ctx.fillOpacity);
-		const ResolvedPaint stroke = resolvePaint(ctx.stroke, node, ctx.opacity * ctx.strokeOpacity);
+				kind == Kind::Line ? ResolvedPaint{}
+				: ctx.fill.kind == PaintKind::Url ? resolveGradient(ctx.fill, id, ctx.matrix, ctx.opacity * ctx.fillOpacity)
+				                                  : resolvePaint(ctx.fill, node, ctx.opacity * ctx.fillOpacity);
+		const ResolvedPaint stroke = ctx.stroke.kind == PaintKind::Url
+		                                 ? resolveGradient(ctx.stroke, id, ctx.matrix, ctx.opacity * ctx.strokeOpacity)
+		                                 : resolvePaint(ctx.stroke, node, ctx.opacity * ctx.strokeOpacity);
 		const float width = ctx.strokeWidth * ctx.matrix.scale();
 		const bool stroked = stroke.on && width > 0;
 		auto it = g_attrs.find(id);
-		std::uint64_t key = mixKey(0x51ed27ull, (static_cast<std::uint64_t>(id) << 32) |
-		                                            (it == g_attrs.end() ? 0u : it->second.generation));
-		key = mixKey(key, static_cast<std::uint16_t>(node.tag_id));
+		std::uint64_t key = mixKey(0x51ed27ull, static_cast<std::uint16_t>(node.tag_id));
 		for (float f : {ctx.matrix.a, ctx.matrix.b, ctx.matrix.c, ctx.matrix.d})
 			key = mixKey(key, floatBits(f));
 		key = mixKey(key, static_cast<std::uint64_t>(fill.on) | static_cast<std::uint64_t>(stroked) << 1 |
@@ -461,6 +734,8 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			key = mixKey(key, floatBits(width) | static_cast<std::uint64_t>(ctx.cap) << 32 |
 			                      static_cast<std::uint64_t>(ctx.join) << 40);
 		if (stroked && ctx.join == LineJoin::Miter) key = mixKey(key, floatBits(ctx.miterLimit));
+		const std::uint64_t styleKey = key;
+		key = mixKey(key, (static_cast<std::uint64_t>(id) << 32) | (it == g_attrs.end() ? 0u : it->second.generation));
 		if (Item *cached = cache.take(id, key)) {
 			Item item = std::move(*cached);
 			cached->node = -1;
@@ -480,7 +755,8 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			return;
 		}
 		Item item;
-		if (Item *old = cache.stale(id)) {
+		Item *old = cache.stale(id);
+		if (old) {
 			item.fillEdges.swap(old->fillEdges);
 			item.strokeEdges.swap(old->strokeEdges);
 			item.fillEdges.clear();
@@ -488,6 +764,7 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 		}
 		item.node = id;
 		item.geometryKey = key;
+		item.styleKey = styleKey;
 		item.tx = ctx.matrix.e;
 		item.ty = ctx.matrix.f;
 		buildGeometry(id, kind, ctx.matrix, item.geometry);
@@ -512,6 +789,22 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			buildEdges(item.geometry.contours, item.fillEdges);
 		}
 		if (item.strokeEdges.empty() && !item.fill.on && !item.hittable) return;
+		// A stroke-only shape rebuilt with the same style and translation
+		// changes only around the points its path changed: damage that, and
+		// retire the old item so finish() does not add its whole box.
+		if (old && stroked && !item.fill.on && !old->fill.on && old->styleKey == styleKey && old->tx == item.tx &&
+				old->ty == item.ty && samePaint(old->stroke, item.stroke)) {
+			float reach = item.halfStroke;
+			if (ctx.join == LineJoin::Miter)
+				reach *= std::max(miterReach(old->geometry, ctx.miterLimit), miterReach(item.geometry, ctx.miterLimit));
+			if (ctx.cap == LineCap::Square) reach = std::max(reach, item.halfStroke * 1.4143f);
+			const bool diffOk = strokeDiffDamage(old->geometry, item.geometry, reach + 2.0f, cache.damage);
+			if (diffOk) {
+				old->node = -1;
+				items.push_back(std::move(item));
+				return;
+			}
+		}
 		addItemDamage(cache.damage, item);
 		items.push_back(std::move(item));
 		return;
@@ -535,6 +828,7 @@ void buildScene(int root, Scene &scene, int width, int height)
 	walk(root, ctx, scene.items, cache);
 	cache.finish();
 	scene.dirty = false;
+	scene.built = true;
 	scene.damageValid = true;
 	scene.damageFull = !cache.items || cache.full;
 	scene.damage = cache.damage;
@@ -545,6 +839,7 @@ std::uint64_t mix(std::uint64_t h, std::uint64_t v)
 	h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
 	return h;
 }
+
 
 std::uint64_t subtreeSignature(int root)
 {
@@ -607,6 +902,10 @@ inline unsigned svgPaintCycles() { return 0; }
 // in flight around us) and its own scratch bank; only the core that created
 // it submits, and only when idle, so a paint that is itself running in a
 // band on the second core simply paints inline.
+// Whether the display driver is running work of its own on the second core
+// right now (see paint); drivers without such work keep this default.
+extern "C" __attribute__((weak)) bool gea_display_second_core_busy() { return false; }
+
 struct PaintWorker {
 	TaskHandle_t task = nullptr;
 	int ownerCore = -1;
@@ -770,6 +1069,87 @@ GEA_SVG_HOT void paintCoverage(gea::framework::graphics::Canvas *canvas, int ban
 	Rasterizer &raster = rasters[bank];
 	ScratchVector<std::uint8_t> &row = rows[bank];
 	RowSink sink{canvas, paint.color, ox, oy};
+	if (paint.gradient) {
+		// A 256-step table along the gradient vector: colour and alpha per step.
+		const GradientPaint &g = paint.grad;
+		float gx1 = g.x1, gy1 = g.y1, gx2 = g.x2, gy2 = g.y2;
+		if (g.bboxUnits) {
+			const float bw = bounds.x1 - bounds.x0, bh = bounds.y1 - bounds.y0;
+			gx1 = bounds.x0 + g.x1 * bw; gx2 = bounds.x0 + g.x2 * bw;
+			gy1 = bounds.y0 + g.y1 * bh; gy2 = bounds.y0 + g.y2 * bh;
+		}
+		const float vx = gx2 - gx1, vy = gy2 - gy1;
+		const float len2 = vx * vx + vy * vy;
+		RowSink::Pixel lutColor[256];
+		std::uint8_t lutAlpha[256];
+		for (int i = 0; i < 256; ++i) {
+			const float t = i / 255.0f;
+			int k = 0;
+			while (k + 1 < g.stops && g.offset[k + 1] <= t) ++k;
+			float r, gg, b, a;
+			if (k + 1 >= g.stops || t <= g.offset[0]) {
+				const int s = t <= g.offset[0] ? 0 : k;
+				r = g.color[s].r; gg = g.color[s].g; b = g.color[s].b; a = g.alpha[s];
+			} else {
+				const float span = g.offset[k + 1] - g.offset[k];
+				const float f = span > 0 ? (t - g.offset[k]) / span : 1.0f;
+				r = g.color[k].r + (g.color[k + 1].r - g.color[k].r) * f;
+				gg = g.color[k].g + (g.color[k + 1].g - g.color[k].g) * f;
+				b = g.color[k].b + (g.color[k + 1].b - g.color[k].b) * f;
+				a = g.alpha[k] + (g.alpha[k + 1] - g.alpha[k]) * f;
+			}
+			lutColor[i] = gea::framework::graphics::pixel::nativeColor(static_cast<std::uint8_t>(r + 0.5f), static_cast<std::uint8_t>(gg + 0.5f),
+			                                                         static_cast<std::uint8_t>(b + 0.5f));
+			lutAlpha[i] = static_cast<std::uint8_t>(std::clamp(a, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+		auto stepAt = [&](float px, float py) {
+			if (len2 <= 1e-6f) return 255;
+			const float t = std::clamp(((px - gx1) * vx + (py - gy1) * vy) / len2, 0.0f, 1.0f);
+			return static_cast<int>(t * 255.0f + 0.5f);
+		};
+		// A vertical vector (LVGL's chart fade) is one step per row; any other
+		// direction is evaluated per pixel.
+		const bool perRow = std::fabs(vx) * 64.0f <= std::fabs(vy);
+		auto use = [&](int step) {
+			if (sink.color != lutColor[step]) { sink.color = lutColor[step]; sink.lastA = -1; }
+			return lutAlpha[step];
+		};
+		static ScratchVector<std::uint8_t> scaled[3];
+		ScratchVector<std::uint8_t> &tmp = scaled[bank];
+		fillCoverage(
+		    raster, row, edges, x0, y0, x1, y1, evenOdd, 1.0f,
+		    [&](int y, int x, const std::uint8_t *cov, int count) {
+			    if (perRow) {
+				    const int a = use(stepAt(gx1, y + 0.5f));
+				    if (a == 0) return;
+				    if (tmp.size() < static_cast<std::size_t>(count)) tmp.resize(count);
+				    for (int i = 0; i < count; ++i) tmp[i] = static_cast<std::uint8_t>((cov[i] * a + 127) / 255);
+				    sink.coverage(y, x, tmp.data(), count);
+				    return;
+			    }
+			    for (int i = 0; i < count; ++i) {
+				    if (!cov[i]) continue;
+				    const int a = use(stepAt(x + i + 0.5f, y + 0.5f));
+				    const int c = (cov[i] * a + 127) / 255;
+				    if (c) sink.span(y, x + i, 1, static_cast<std::uint8_t>(c));
+			    }
+		    },
+		    [&](int y, int x, int count, std::uint8_t cov) {
+			    if (perRow) {
+				    const int a = use(stepAt(gx1, y + 0.5f));
+				    const int c = (cov * a + 127) / 255;
+				    if (c) sink.span(y, x, count, static_cast<std::uint8_t>(c));
+				    return;
+			    }
+			    for (int i = 0; i < count; ++i) {
+				    const int a = use(stepAt(x + i + 0.5f, y + 0.5f));
+				    const int c = (cov * a + 127) / 255;
+				    if (c) sink.span(y, x + i, 1, static_cast<std::uint8_t>(c));
+			    }
+		    });
+		if (markDirty) sink.markDirty();
+		return;
+	}
 	fillCoverage(
 	    raster, row, edges, x0, y0, x1, y1, evenOdd, std::min(1.0f, paint.alpha),
 	    [&](int y, int x, const std::uint8_t *cov, int count) { sink.coverage(y, x, cov, count); },
@@ -796,7 +1176,7 @@ bool cssDeclarationValue(StyleDeclaration declaration, const char *value, Proper
 		property = declaration == StyleDeclaration::SvgFill ? Property::SvgFill : Property::SvgStroke;
 		if (wide) { encoded = 0; return true; }
 		const Paint paint = parsePaint(v.c_str());
-		if (paint.kind == PaintKind::Unset) return false;
+		if (paint.kind == PaintKind::Unset || paint.kind == PaintKind::Url) return false;
 		encoded = encodePaint(paint);
 		return true;
 	}
@@ -849,24 +1229,47 @@ bool cssDeclarationValue(StyleDeclaration declaration, const char *value, Proper
 
 bool isRoot(const Node &node) { return node.tag_id == g_svgTag; }
 
-bool damage(int root, int &x0, int &y0, int &x1, int &y1)
+bool damage(int root, int &x0, int &y0, int &x1, int &y1, int (*extra)[4], int *extraCount)
 {
+	if (extraCount) *extraCount = 0;
 	auto it = g_scenes.find(root);
 	if (it == g_scenes.end()) return false;
 	Scene &scene = it->second;
 	const bool valid = scene.damageValid && !scene.damageFull && !scene.boxChanged;
 	scene.damageValid = false;
 	if (!valid) return false;
-	if (scene.damage.empty()) {
-		x0 = y0 = 0;
-		x1 = y1 = -1;
+	auto toPixels = [&](const Bounds &b, int &bx0, int &by0, int &bx1, int &by1) {
+		bx0 = std::max(0, static_cast<int>(std::floor(b.x0)));
+		by0 = std::max(0, static_cast<int>(std::floor(b.y0)));
+		bx1 = std::min(scene.width - 1, static_cast<int>(std::ceil(b.x1)));
+		by1 = std::min(scene.height - 1, static_cast<int>(std::ceil(b.y1)));
+		return bx0 <= bx1 && by0 <= by1;
+	};
+	x0 = y0 = 0;
+	x1 = y1 = -1;
+	const DamageSet &d = scene.damage;
+	// Without room for the extra boxes, report their union.
+	Bounds all;
+	if (!extra || !extraCount)
+		for (int k = 0; k < d.count; ++k) all = DamageSet::unite(all.empty() ? d.box[k] : all, d.box[k]);
+	if (!extra || !extraCount) {
+		if (!all.empty() && !toPixels(all, x0, y0, x1, y1)) x0 = y0 = 0, x1 = y1 = -1;
 		return true;
 	}
-	x0 = std::max(0, static_cast<int>(std::floor(scene.damage.x0)));
-	y0 = std::max(0, static_cast<int>(std::floor(scene.damage.y0)));
-	x1 = std::min(scene.width - 1, static_cast<int>(std::ceil(scene.damage.x1)));
-	y1 = std::min(scene.height - 1, static_cast<int>(std::ceil(scene.damage.y1)));
-	if (x0 > x1 || y0 > y1) x0 = y0 = 0, x1 = y1 = -1;
+	bool first = true;
+	for (int k = 0; k < d.count; ++k) {
+		int bx0, by0, bx1, by1;
+		if (!toPixels(d.box[k], bx0, by0, bx1, by1)) continue;
+		if (first) {
+			x0 = bx0, y0 = by0, x1 = bx1, y1 = by1;
+			first = false;
+		} else if (*extraCount < kExtraDamage) {
+			int *r = extra[(*extraCount)++];
+			r[0] = bx0, r[1] = by0, r[2] = bx1, r[3] = by1;
+		} else {
+			x0 = std::min(x0, bx0), y0 = std::min(y0, by0), x1 = std::max(x1, bx1), y1 = std::max(y1, by1);
+		}
+	}
 	return true;
 }
 
@@ -965,8 +1368,26 @@ void clearAll()
 
 void validateScenes()
 {
-	if (g_scenes.empty()) return;
 	auto &state = treeState();
+#if GEA_SVG_PARALLEL_PAINT
+	// A scene is otherwise first built when its svg is first recorded, i.e. when
+	// it scrolls into view: on the CrowPanel's Analytics tab the first flick that
+	// revealed the meter row built a dozen gauge scenes inside one frame (147 and
+	// 226 ms frames), so the page jumped 150-250 px at once mid-scroll. Laid-out
+	// svgs off screen get their scene here instead, built below with the rest
+	// (on both cores) in the frame that mounted them.
+	if (g_svgTag >= 0) {
+		for (int id = 0; id < state.nodeCount; ++id) {
+			const Node &n = state.nodes[id];
+			if (n.tag_id != g_svgTag || !state.nodeActive[id] || n.layout.width <= 0 || n.layout.height <= 0) continue;
+			if (g_scenes.find(id) != g_scenes.end()) continue;
+			Scene &scene = g_scenes.emplace(id, Scene{}).first->second;
+			scene.width = n.layout.width;
+			scene.height = n.layout.height;
+		}
+	}
+#endif
+	if (g_scenes.empty()) return;
 	for (auto it = g_scenes.begin(); it != g_scenes.end();) {
 		const int root = it->first;
 		if (root >= state.nodeCount || !state.nodeActive[root] || state.nodes[root].tag_id != g_svgTag) {
@@ -996,6 +1417,9 @@ void validateScenes()
 	int count = 0;
 	for (auto &[root, scene] : g_scenes) {
 		if (!scene.dirty || scene.width <= 0 || count == 16) continue;
+		// Off screen and built once already (an animated needle that has not
+		// been shown yet): its first record rebuilds it, so don't every frame.
+		if (!scene.recorded && scene.built) continue;
 		const Node &n = state.nodes[root];
 		if (n.layout.width != scene.width || n.layout.height != scene.height) continue;
 		std::size_t weight = 1;
@@ -1053,6 +1477,7 @@ void record(const Node &node)
 	scene.recorded = true;
 }
 
+
 void paint(const DisplayCommand &c)
 {
 	auto it = g_scenes.find(c.svg.nodeId);
@@ -1081,13 +1506,23 @@ void paint(const DisplayCommand &c)
 		const unsigned c0 = svgPaintCycles();
 		struct Time { Band &b; unsigned c0; ~Time() { b.cycles = svgPaintCycles() - c0; } } time{b, c0};
 #endif
-		for (const Item &item : *b.items) {
-			if (item.fill.on)
-				paintCoverage(b.canvas, b.bank, b.markDirty, item.fillEdges, item.fillBounds, item.evenOdd, item.fill, b.ox,
-				              b.oy, b.cx0, y0, b.cx1, y1);
-			if (!item.strokeEdges.empty())
-				paintCoverage(b.canvas, b.bank, b.markDirty, item.strokeEdges, item.strokeBounds, false, item.stroke, b.ox,
-				              b.oy, b.cx0, y0, b.cx1, y1);
+		// In row bands, every item per band (so stacking holds): the band's
+		// pixels stay hot in the cache while each item blends into them, where
+		// item-by-item over the whole box re-reads every row once per item. On
+		// an RGB panel scanning out of PSRAM that traffic and the dirty lines
+		// it evicts landed inside bounce refills: banding took the Analytics
+		// meters from 5-9 refill overruns (tears) per 9k refills to about none.
+		constexpr int kBandRows = 24;
+		for (int by0 = y0; by0 < y1; by0 += kBandRows) {
+			const int by1 = std::min(y1, by0 + kBandRows);
+			for (const Item &item : *b.items) {
+				if (item.fill.on)
+					paintCoverage(b.canvas, b.bank, b.markDirty, item.fillEdges, item.fillBounds, item.evenOdd, item.fill, b.ox,
+					              b.oy, b.cx0, by0, b.cx1, by1);
+				if (!item.strokeEdges.empty())
+					paintCoverage(b.canvas, b.bank, b.markDirty, item.strokeEdges, item.strokeBounds, false, item.stroke, b.ox,
+					              b.oy, b.cx0, by0, b.cx1, by1);
+			}
 		}
 	};
 	Band band{&it->second.items, canvas, c.svg.x, c.svg.y, cx0, cx1, scratchBank(), true, 0};
@@ -1099,8 +1534,12 @@ void paint(const DisplayCommand &c)
 	// low, a gauge's arc high), so a fixed half split leaves one core waiting
 	// on the other; each paint moves the split row to where the last paint's
 	// measured time would have divided equally.
+	// Not while the display's own work holds the second core (a sideways
+	// scroll's shifted copy): the helper would only time-slice with it, and
+	// this core spins in paintWorkerWait meanwhile. On the CrowPanel 7.0 that
+	// made the Analytics charts cost 13-30 ms of every swipe frame's strip.
 	constexpr int kMinSplitRows = 48;
-	if (cy1 - cy0 >= kMinSplitRows && (cx1 - cx0) * (cy1 - cy0) >= 8000) {
+	if (cy1 - cy0 >= kMinSplitRows && (cx1 - cx0) * (cy1 - cy0) >= 8000 && !gea_display_second_core_busy()) {
 		Scene &scene = it->second;
 		const int rows = cy1 - cy0;
 		const int mid = cy0 + std::clamp(static_cast<int>(rows * scene.split + 0.5f), 1, rows - 1);

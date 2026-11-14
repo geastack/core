@@ -5,6 +5,7 @@
 #include "canvas_element.h"
 #include "display.h"
 #include "display_underlay.h"
+#include <image.h>
 #include "document.h"
 #include "internal.h"
 #include "layout_snapshot.h"
@@ -43,6 +44,40 @@
 #define GEA_EMBEDDED_DISPLAY_FUSE_INTERLEAVED_REPLAY_FLUSH 0
 #endif
 
+// Called just before direct replay repaints `rects` completely. A display that
+// keeps several scanout buffers can bring its back buffer up to date everywhere
+// else and skip those rects: on the CrowPanel 7 a scrolling page otherwise
+// copied the whole viewport between buffers (~1.4 MB of PSRAM traffic a frame)
+// only to redraw it, and that traffic starved the panel's scanout.
+extern "C" __attribute__((weak)) void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int) {}
+extern "C" int gea_bulk_replay_stage_rows_for_width(int width);
+extern "C" bool gea_replay_stage_begin(int x0, int y0, int x1, int y1);
+extern "C" void gea_replay_stage_end();
+extern "C" bool gea_replay_stage_active();
+extern "C" void gea_replay_stage_skip_seed(bool skip);
+// True when every flush presents a whole frame (an RGB panel swapping scanout
+// buffers): interleaving replay with one flush per dirty rect then costs one
+// buffer swap -- and one panel refresh of waiting -- per rect instead of per frame.
+extern "C" __attribute__((weak)) bool gea_display_flush_presents_frame() { return false; }
+// The draw canvas for reading state only (dirty box, scroll region) -- never
+// for pixels. A double-buffered panel readies its back buffer the first time
+// Display::canvas() is asked for, patching every stale pixel; asked this early
+// in the frame, that is before the replay can say which rects it repaints
+// whole, so the patch copies them too. Null: the target has no such split.
+extern "C" __attribute__((weak)) gea::framework::graphics::Canvas *gea_display_state_canvas() { return nullptr; }
+namespace
+{
+}
+namespace
+{
+	gea::framework::graphics::Canvas *displayStateCanvas()
+	{
+		if (auto *canvas = gea_display_state_canvas())
+			return canvas;
+		return gea::platform::display::Display::canvas();
+	}
+}
+
 #ifndef GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_CLEAR_RGB565
 #define GEA_EMBEDDED_DISPLAY_FUSE_REPLAY_CLEAR_RGB565 -1
 #endif
@@ -80,6 +115,11 @@
 #ifndef GEA_EMBEDDED_SUBTREE_REVEAL_CHECK
 #define GEA_EMBEDDED_SUBTREE_REVEAL_CHECK 1
 #endif
+
+// A display whose every framebuffer writer goes through the canvas's ring
+// mapping (the ESP32-S3 RGB panel) keeps the scroll region across non-scroll
+// frames; resetting it would re-lay the buffer and repaint the whole region.
+extern "C" __attribute__((weak)) bool gea_display_scroll_region_persists() { return false; }
 
 namespace gea::embedded::ui
 {
@@ -2051,6 +2091,54 @@ namespace gea::embedded::ui
 			}
 			return -1;
 		}
+
+		bool scopeIsAncestorOrSelf(TreeState &state, int node, int ancestor)
+		{
+			int steps = 0;
+			for (int c = node; c >= 0 && c < state.nodeCount; c = state.nodes[c].parent)
+			{
+				if (c == ancestor)
+					return true;
+				if (!walkParents(state, node, steps))
+					return false;
+			}
+			return false;
+		}
+
+		// One stable scope per geometry-dirty node instead of one around all of
+		// them: a legend ticking in each of three cards otherwise re-lays the
+		// whole card grid (their common ancestor), when each legend row keeps its
+		// size and re-lays alone. Scopes nested in another are dropped -- the outer
+		// pass lays them too. Returns the scope count, or -1 when some dirty node
+		// has no stable ancestor (or there are too many to track): full layout.
+		int stableRelayoutScopes(TreeState &state, int root, int *scopes, int capacity)
+		{
+			int count = 0;
+			for (int i = 0; i < state.nodeCount; i++)
+			{
+				const Node &n = state.nodes[i];
+				if (!n.render.dirty || !n.render.layout_dirty)
+					continue;
+				// A dirty node's own box may change: its scope is a strict ancestor.
+				const int scope = stableScopeAt(state, n.parent, root);
+				if (scope < 0)
+					return -1;
+				bool covered = false;
+				for (int k = 0; k < count && !covered; k++)
+					covered = scopeIsAncestorOrSelf(state, scope, scopes[k]);
+				if (covered)
+					continue;
+				int kept = 0;
+				for (int k = 0; k < count; k++)
+					if (!scopeIsAncestorOrSelf(state, scopes[k], scope))
+						scopes[kept++] = scopes[k];
+				count = kept;
+				if (count >= capacity)
+					return -1;
+				scopes[count++] = scope;
+			}
+			return count;
+		}
 		// A transformed parent re-records its whole subtree (its descendants'
 		// corners all move). When no descendant paints anything -- the empty slot
 		// of `{done ? <img/> : null}` inside a pulsing dot -- there is nothing to
@@ -2079,6 +2167,9 @@ namespace gea::embedded::ui
 		auto &state = treeState();
 		if (root < 0 || root >= state.nodeCount)
 			return;
+#if GEA_UI_IMAGE_NODES
+		gea::framework::graphics::ImageStore::instance().releaseIdleDecodes();
+#endif
 #if GEA_UI_SVG
 		svg::validateScenes();
 #endif
@@ -2134,9 +2225,7 @@ namespace gea::embedded::ui
 				state.nodes[root].render.dirty = true;
 			}
 		}
-		if (framebufferReadable && !textClipDependencies && state.pendingScrollIntoViewNode < 0 && RootScrollOnlyRefresh::refresh(root, width, height))
-			return;
-
+		if (framebufferReadable && !textClipDependencies && state.pendingScrollIntoViewNode < 0 && RootScrollOnlyRefresh::refresh(root, width, height)) return;
 		bool scrollFallbackRepaint = false;
 #if GEA_CSS_SCROLLING
 		// A rejected scroll blit still moves every descendant's geometry during
@@ -2168,9 +2257,9 @@ namespace gea::embedded::ui
 		// them in their unrotated placement.
 #if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 		if (!Document::directCanvasContextUsed()) {
-			if (auto *rotCanvas = gea::platform::display::Display::canvas()) {
+			if (auto *rotCanvas = displayStateCanvas()) {
 				const int regionH = rotCanvas->scrollRegionH();
-				if (regionH > 0) {
+				if (regionH > 0 && !gea_display_scroll_region_persists()) {
 					const int regionY = rotCanvas->scrollRegionY();
 					gea::platform::display::Display::resetScrollRegion();
 					rotCanvas->markDirty(0, regionY, width - 1, regionY + regionH - 1);
@@ -2186,7 +2275,7 @@ namespace gea::embedded::ui
 		int framebufferDirtyX1 = -1;
 		int framebufferDirtyY1 = -1;
 #if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
-		auto *displayCanvas = Document::directCanvasContextUsed() ? nullptr : gea::platform::display::Display::canvas();
+		auto *displayCanvas = Document::directCanvasContextUsed() ? nullptr : displayStateCanvas();
 		const bool framebuffer_was_dirty = displayCanvas &&
 																			 displayCanvas->dirty(&framebufferDirtyX0,
 																														&framebufferDirtyY0,
@@ -2243,23 +2332,39 @@ namespace gea::embedded::ui
 			{
 			if (!viewportChanged && state.pendingScrollIntoViewNode < 0)
 			{
-				int scope = scopedRelayoutRoot(state, root);
-				if (scope >= 0)
-					scope = stableScopeAt(state, scope, root);
-				if (scope < 0)
-					GEA_REFRESH_PERF(perf.treeScopedRejectReason = 1);
-				for (int attempt = 0; scope >= 0 && attempt < 2; attempt++)
+				constexpr int kMaxScopes = 16;
+				int scopes[kMaxScopes];
+				int scopeCount = stableRelayoutScopes(state, root, scopes, kMaxScopes);
+				if (scopeCount < 0)
 				{
-					scoped = LayoutEngine::instance().layoutNodeScoped(scope, root);
-					if (scoped)
+					// No per-node scope set: one scope around every dirty node.
+					int scope = scopedRelayoutRoot(state, root);
+					if (scope >= 0)
+						scope = stableScopeAt(state, scope, root);
+					scopeCount = scope >= 0 ? 1 : 0;
+					scopes[0] = scope;
+				}
+				if (scopeCount <= 0)
+					GEA_REFRESH_PERF(perf.treeScopedRejectReason = 1);
+				scoped = scopeCount > 0;
+				for (int k = 0; k < scopeCount && scoped; k++)
+				{
+					int scope = scopes[k];
+					bool laid = false;
+					for (int attempt = 0; scope >= 0 && attempt < 2; attempt++)
 					{
-						GEA_REFRESH_PERF(perf.treeScopedLayouts++);
-						break;
+						laid = LayoutEngine::instance().layoutNodeScoped(scope, root);
+						if (laid)
+						{
+							GEA_REFRESH_PERF(perf.treeScopedLayouts++);
+							break;
+						}
+						// Most rejects mean the scope autosized to the new content —
+						// retry from the next stable ancestor up (each failed attempt's
+						// partial layout is fully redone by the retry / full fallback).
+						scope = stableScopeAt(state, state.nodes[scope].parent, root);
 					}
-					// Most rejects mean the scope autosized to the new content —
-					// retry from the next stable ancestor up (each failed attempt's
-					// partial layout is fully redone by the retry / full fallback).
-					scope = stableScopeAt(state, state.nodes[scope].parent, root);
+					scoped = laid;
 				}
 			}
 			LayoutEngine::Pass layoutPass(!scoped);
@@ -2697,6 +2802,10 @@ namespace gea::embedded::ui
 			int dr_x0 = width, dr_y0 = height, dr_x1 = -1, dr_y1 = -1;
 
 			int canvas_x0 = 0, canvas_y0 = 0, canvas_x1 = -1, canvas_y1 = -1;
+#if GEA_UI_SVG
+			int svgExtra[svg::kExtraDamage][4];
+#endif
+			int svgExtraCount = 0;  // further exact-damage boxes of an svg scene
 			const auto *canvas_surface = n->type == NodeType::Canvas ? state.canvases.find(i) : nullptr;
 			const auto *canvas = canvas_surface ? canvas_surface->canvas() : nullptr;
 			const bool bitmap_canvas_dirty =
@@ -2759,7 +2868,8 @@ namespace gea::embedded::ui
 			if (!canvas_dirty && svg::isRoot(*n))
 			{
 				int sx0, sy0, sx1, sy1;
-				const bool svgDamage = svg::damage(i, sx0, sy0, sx1, sy1);  // always consume
+				const bool svgDamage = svg::damage(i, sx0, sy0, sx1, sy1, svgExtra, &svgExtraCount);  // always consume
+				if (!svgDamage) svgExtraCount = 0;
 				if (svgDamage && !n->render.layout_dirty && !n->render.transform_dirty &&
 						n->layout.x == n->layout.previous_x && n->layout.y == n->layout.previous_y &&
 						n->layout.width == n->layout.previous_width && n->layout.height == n->layout.previous_height &&
@@ -2772,6 +2882,8 @@ namespace gea::embedded::ui
 					canvas_x1 = sx1;
 					canvas_y1 = sy1;
 				}
+				else
+					svgExtraCount = 0;
 			}
 #endif
 			if (canvas_dirty && !exactCanvasPixelDamage)
@@ -2956,6 +3068,16 @@ namespace gea::embedded::ui
 				dr_y0 = n->layout.y + canvas_y0;
 				dr_x1 = n->layout.x + canvas_x1;
 				dr_y1 = n->layout.y + canvas_y1;
+#if GEA_UI_SVG
+				for (int k = 0; k < svgExtraCount; ++k)
+				{
+					const DirtyRegions::Rect extraRect{n->layout.x + svgExtra[k][0], n->layout.y + svgExtra[k][1],
+					                                   n->layout.x + svgExtra[k][2], n->layout.y + svgExtra[k][3], i};
+					addDirtyRegion(rects, &rect_count, extraRect, width, height);
+					if (!unifiedRectPath)
+						addDirtyRegion(flush_rects, &flush_rect_count, extraRect, width, height);
+				}
+#endif
 			}
 				else if (reprojected && n->render.transform_dirty && n->first_child >= 0 &&
 								 DisplayList::instance().reprojectDirtyRect(&dr_x0, &dr_y0, &dr_x1, &dr_y1))
@@ -3190,10 +3312,12 @@ namespace gea::embedded::ui
 #endif
 		const bool hasFlushOnlyRecolorRegions = preserveFlushOnlyRecolorRegions && flush_rect_count > 0;
 		// Direct replay draws node command ranges, and a scroll container's
-		// scrollbar thumb lies outside them: repaint a thumb's pixels only through
-		// the full-list path. Frames that don't touch one (an animation inside a
-		// scrolling page) keep direct replay and the fused flush.
-		if (direct_replay)
+		// scrollbar thumb lies outside them. The direct-replay entry points paint
+		// the thumbs after the nodes, which is right while no later command covers
+		// a thumb; otherwise repaint a thumb's pixels only through the full-list
+		// path. Scrolling moves the thumb every frame, so this keeps scroll frames
+		// on direct replay and the fused flush.
+		if (direct_replay && !DisplayList::instance().scrollbarThumbsPaintLast())
 		{
 			for (int i = 0; i < rect_count && direct_replay; ++i)
 				if (DisplayList::instance().scrollbarOverlapsRegion(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1))
@@ -3202,6 +3326,21 @@ namespace gea::embedded::ui
 				if (DisplayList::instance().scrollbarOverlapsRegion(flush_rects[i].x0, flush_rects[i].y0, flush_rects[i].x1, flush_rects[i].y1))
 					direct_replay = 0;
 		}
+		// From here to the flush the tree and display list hold still, so the
+		// simple-replay verdict's region-independent walk runs once, not once per
+		// region the replay below asks about.
+		struct SimpleReplayScope
+		{
+			bool open = true;
+			SimpleReplayScope() { DisplayList::instance().beginSimpleReplayScope(); }
+			void close()
+			{
+				if (open)
+					DisplayList::instance().endSimpleReplayScope();
+				open = false;
+			}
+			~SimpleReplayScope() { close(); }
+		} simpleReplayScope;
 		DisplayReplayRegion simpleTransferRegions[DirtyRegions::kMaxRects];
 		for (int i = 0; i < flush_rect_count; ++i)
 		{
@@ -3427,9 +3566,32 @@ namespace gea::embedded::ui
 			}
 			GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 #else
+			// A panel whose flush presents a whole frame takes one flush after the
+			// last rect: a flush per rect would be a buffer swap -- and a panel
+			// refresh of waiting -- per rect.
+			const bool flushOncePerFrame = gea_display_flush_presents_frame();
+			// One flush presents the frame, so the back buffer is readied once:
+			// hand it every rect this frame repaints, or it copies the stale
+			// pixels under rects 2..n from the front only for them to be painted
+			// over (on a busy screen that copy was the whole repaint area again).
+			gea::platform::display::DisplayFlushRect repaints[DirtyRegions::kMaxRects];
+			int repaintCount = 0;
+			if (flushOncePerFrame && rect_count > 0)
+			{
+				for (int i = 0; i < rect_count && repaintCount < DirtyRegions::kMaxRects; i++)
+				{
+					const DirtyRegions::Rect *r = &rects[i];
+					if (r->x0 <= r->x1 && r->y0 <= r->y1)
+						repaints[repaintCount++] = gea::platform::display::DisplayFlushRect{r->x0, r->y0, r->x1, r->y1};
+				}
+				gea_display_prepare_repaint(repaints, repaintCount);
+			}
 			for (int i = 0; i < rect_count; i++)
 			{
 				DirtyRegions::Rect *r = &rects[i];
+				const gea::platform::display::DisplayFlushRect repaint{r->x0, r->y0, r->x1, r->y1};
+				if (!flushOncePerFrame)
+					gea_display_prepare_repaint(&repaint, 1);
 				gea::platform::display::Display::resetClip();
 				gea::platform::display::Display::setAlpha(255);
 				gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
@@ -3438,8 +3600,22 @@ namespace gea::embedded::ui
 				DisplayList::instance().replayDirectDirtyRegions(&region, 1);
 				GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 				gea::platform::display::Display::popClip();
+				if (flushOncePerFrame) continue;
 				const std::int64_t flushStartUs = refreshPerfNowUs();
 				gea::platform::display::Display::flush();
+				GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
+			}
+			if (flushOncePerFrame)
+			{
+				const std::int64_t flushStartUs = refreshPerfNowUs();
+				// Publish the rects themselves, not the canvas's one dirty box: the
+				// panel copies what it publishes into the other buffer before the
+				// next frame draws there, and the box spans everything between
+				// separate rects (two meters a screen apart).
+				if (repaintCount > 0)
+					gea::platform::display::Display::flushRects(repaints, repaintCount);
+				else
+					gea::platform::display::Display::flush();
 				GEA_REFRESH_PERF(perf.treeFlushRectsUs += refreshPerfNowUs() - flushStartUs);
 			}
 #endif
@@ -3453,25 +3629,47 @@ namespace gea::embedded::ui
 				gea::platform::display::Display::resetClip();
 				gea::platform::display::Display::setAlpha(255);
 				DisplayReplayRegion regions[DirtyRegions::kMaxRects];
+				gea::platform::display::DisplayFlushRect repaints[DirtyRegions::kMaxRects];
 				for (int i = 0; i < rect_count; i++)
 				{
 					DirtyRegions::Rect *r = &rects[i];
 					regions[i] = DisplayReplayRegion{r->x0, r->y0, r->x1, r->y1, r->origin};
+					repaints[i] = gea::platform::display::DisplayFlushRect{r->x0, r->y0, r->x1, r->y1};
 				}
+				// The direct replay repaints every region completely.
+				gea_display_prepare_repaint(repaints, rect_count);
 				DisplayList::instance().replayDirectDirtyRegions(regions, rect_count);
 			}
 			else
 			{
 				// Conservative paint path for full display-list replay.
+				// Raster each rect in SRAM strips where the display stages, so the
+				// back-buffer writes cannot starve a PSRAM scanout refill.
 				for (int i = 0; i < rect_count; i++)
 				{
 					DirtyRegions::Rect *r = &rects[i];
+					const int stageRows = gea_bulk_replay_stage_rows_for_width(r->x1 - r->x0 + 1);
+					const int band = stageRows > 0 && !gea_replay_stage_active() ? stageRows : r->y1 - r->y0 + 1;
+					// One occlusion-cull scan for the whole rect, reused by every strip.
 					gea::platform::display::Display::resetClip();
-					gea::platform::display::Display::setAlpha(255);
 					gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
-					gea::framework::display::Underlay::paint(r->x0, r->y0, r->x1, r->y1);
-					DisplayList::instance().replay();
+					DisplayList::instance().setReplayCullStart(DisplayList::instance().replayCullStart());
+					gea_replay_stage_skip_seed(DisplayList::instance().replayCullCovered());
 					gea::platform::display::Display::popClip();
+					for (int sy0 = r->y0; sy0 <= r->y1; sy0 += band)
+					{
+						const int sy1 = std::min(r->y1, sy0 + band - 1);
+						gea::platform::display::Display::resetClip();
+						gea::platform::display::Display::setAlpha(255);
+						const bool staged = stageRows > 0 && band == stageRows && gea_replay_stage_begin(r->x0, sy0, r->x1, sy1);
+						gea::platform::display::Display::pushClip(r->x0, sy0, r->x1 - r->x0 + 1, sy1 - sy0 + 1);
+						gea::framework::display::Underlay::paint(r->x0, sy0, r->x1, sy1);
+						DisplayList::instance().replay();
+						gea::platform::display::Display::popClip();
+						if (staged) gea_replay_stage_end();
+					}
+					DisplayList::instance().setReplayCullStart(-1);
+					gea_replay_stage_skip_seed(false);
 				}
 			}
 			GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
@@ -3509,6 +3707,7 @@ namespace gea::embedded::ui
 #if defined(ESP_PLATFORM) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 		const auto diagnosticReplayEnd = esp_timer_get_time();
 #endif
+		simpleReplayScope.close();
 		if (!banded && !simpleUnifiedReplay && !interleavedUnifiedFlush)
 		{
 			for (int i = 0; i < flush_rect_count; i++)

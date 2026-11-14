@@ -494,6 +494,22 @@
           "default": true
         },
         {
+          "path": "scanFramebuffers",
+          "label": "Scanout framebuffers in PSRAM (3 = triple buffering, 2 frees one framebuffer for the app)",
+          "type": "integer",
+          "min": 1,
+          "max": 3,
+          "default": 3
+        },
+        {
+          "path": "bounceRows",
+          "label": "Rows per bounce buffer in internal RAM (0 = the driver default); deeper buffers ride out PSRAM contention that tears the picture",
+          "type": "integer",
+          "min": 0,
+          "max": 120,
+          "default": 0
+        },
+        {
           "path": "pins.de",
           "label": "Data-enable pin",
           "type": "pin"
@@ -739,6 +755,152 @@
           "default": 255
         }
       ]
+    },
+    "pca9557": {
+      "label": "PCA9557 I2C I/O expander",
+      "category": "expander",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [],
+      "headers": [
+        "expanders/tca9554/tca9554.h",
+        "expanders/pca9557/pca9557.h"
+      ],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/expanders/tca9554.cpp"
+          ]
+        }
+      },
+      "configuration": [
+        {
+          "path": "address",
+          "label": "7-bit I2C address",
+          "type": "integer",
+          "min": 24,
+          "max": 31,
+          "default": 24
+        },
+        {
+          "path": "initialDirections",
+          "label": "Input pin mask",
+          "type": "integer",
+          "min": 0,
+          "max": 255,
+          "default": 255
+        }
+      ]
+    },
+    "bm8563": {
+      "label": "BM8563 real-time clock (PCF8563-compatible)",
+      "category": "rtc",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [
+        "rtc/bm8563/bm8563.cpp"
+      ],
+      "headers": [
+        "rtc/bm8563/bm8563.h"
+      ],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/rtc/bm8563.cpp"
+          ]
+        }
+      },
+      "configuration": []
+    },
+    "ns4168": {
+      "label": "NS4168 I2S class-D amplifier (with optional I2S MEMS microphone)",
+      "category": "audio",
+      "interfaces": [
+        "i2s"
+      ],
+      "sources": [],
+      "headers": [
+        "audio/ns4168/ns4168.h"
+      ],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/audio/ns4168.cpp"
+          ],
+          "requires": [
+            "esp_driver_i2s"
+          ]
+        }
+      },
+      "configuration": [
+        {
+          "path": "pins.bclk",
+          "label": "I2S bit-clock pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.ws",
+          "label": "I2S word-select pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.dout",
+          "label": "I2S data-out pin",
+          "type": "pin"
+        },
+        {
+          "path": "pins.micBclk",
+          "label": "Microphone bit-clock pin",
+          "type": "pin",
+          "optional": true
+        },
+        {
+          "path": "pins.micWs",
+          "label": "Microphone word-select pin",
+          "type": "pin",
+          "optional": true
+        },
+        {
+          "path": "pins.micDin",
+          "label": "Microphone data-in pin",
+          "type": "pin",
+          "optional": true
+        }
+      ]
+    },
+    "elecrow_board_control": {
+      "label": "Elecrow CrowPanel Advance board control (STC8H1K28 MCU at 0x30 on V1.3+, PCA9557 at 0x18 on V1.0-V1.2, probed at boot)",
+      "category": "expander",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [],
+      "headers": [
+        "expanders/tca9554/tca9554.h",
+        "expanders/pca9557/pca9557.h"
+      ],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32s3"
+          ],
+          "bindingSources": [
+            "chip_bindings/expanders/elecrow_board_control.cpp"
+          ]
+        }
+      },
+      "configuration": []
     }
   }
 }

@@ -538,6 +538,97 @@ void bench()
 	std::printf("[svg-bench] %.3f ms/frame over %d frames\n", total / frames, frames);
 }
 
+// A gauge arc that grows and shrinks by a degree-scale step each frame, with
+// SVG's default stroke join (miter) and cap (butt), as a meter binds it. Each
+// frame's damage is the moving tip only -- a miter on a flattened arc reaches
+// barely past the half width, so the miter limit must not widen it -- and the
+// pixels the incremental frames leave match a fresh render of the last arc.
+std::string gaugeArc(double degrees)
+{
+	const double r = 82.5, a0 = 90 * M_PI / 180, a1 = degrees * M_PI / 180;
+	char buf[160];
+	std::snprintf(buf, sizeof buf, "M %.4f %.4f A %.1f %.1f 0 %d 1 %.4f %.4f", 100 + r * std::cos(a0), 100 + r * std::sin(a0), r, r,
+	              degrees - 90 > 180 ? 1 : 0, 100 + r * std::cos(a1), 100 + r * std::sin(a1));
+	return buf;
+}
+
+std::vector<pixel::native_t> renderGauge(const std::vector<double> &steps, int *worstStepPx, std::vector<int> *stepPx = nullptr)
+{
+	resetNativeHost();
+	setNativeDisplaySize(200, 200);
+	setViewportMetrics(200, 200, 1.0);
+	StyleSheet::instance().clear();
+	auto &doc = Document::instance();
+	auto root = doc.createView();
+	root.setTagName("div");
+	root.style().width(200);
+	root.style().height(200);
+	root.style().backgroundColor(0xffff);
+	auto gauge = element("svg", {{"width", "200"}, {"height", "200"}, {"viewBox", "0 0 200 200"}});
+	auto arc = element("path", {{"fill", "none"}, {"stroke", "#2196f3"}, {"stroke-width", "15"}});
+	arc.setAttribute("d", gaugeArc(steps.front()).c_str());
+	gauge.appendChild(arc);
+	root.appendChild(gauge);
+	doc.mount(root, 200, 200);
+	doc.refresh(root, 200, 200);
+	int worst = 0;
+	for (std::size_t i = 1; i < steps.size(); ++i) {
+		const int before = flushPixelCount();
+		arc.setAttribute("d", gaugeArc(steps[i]).c_str());
+		doc.refresh(root, 200, 200);
+		worst = std::max(worst, flushPixelCount() - before);
+		if (stepPx) stepPx->push_back(flushPixelCount() - before);
+	}
+	if (worstStepPx) *worstStepPx = worst;
+	std::vector<pixel::native_t> pixels;
+	pixels.reserve(200 * 200);
+	for (int y = 0; y < 200; ++y)
+		for (int x = 0; x < 200; ++x) pixels.push_back(displayPixelAt(x, y));
+	return pixels;
+}
+
+// Whether two pixels differ by more than one RGB565 step in some channel.
+// The rasterizer splits edges at the paint clip's strip and column bounds and
+// recomputes x there in float, so a damage-clipped repaint can land one step
+// off a full repaint of the same geometry; a stale or missed repaint differs
+// by far more.
+bool farApart(pixel::native_t p, pixel::native_t q)
+{
+	int pr, pg, pb, qr, qg, qb;
+	pixel::unpackRgb565(pixel::fromNative(p), &pr, &pg, &pb);
+	pixel::unpackRgb565(pixel::fromNative(q), &qr, &qg, &qb);
+	return std::abs(pr - qr) > 1 || std::abs(pg - qg) > 1 || std::abs(pb - qb) > 1;
+}
+
+void gaugeDamageTests()
+{
+	std::vector<double> steps;
+	for (double a = 100; a <= 350; a += 2.7) steps.push_back(a);
+	for (double a = 350; a >= 200; a -= 2.7) steps.push_back(a);
+	int worst = 0;
+	std::vector<int> stepPx;
+	const auto incremental = renderGauge(steps, &worst, &stepPx);
+	const auto fresh = renderGauge({steps.back()}, nullptr);
+	int differ = 0, firstX = -1, firstY = -1;
+	for (int k = 0; k < 200 * 200; ++k)
+		if (farApart(incremental[k], fresh[k]) && differ++ == 0) firstX = k % 200, firstY = k / 200;
+	if (differ) std::fprintf(stderr, "[svg] gauge: %d px differ from a fresh render, first at (%d,%d)\n", differ, firstX, firstY);
+	check(differ == 0, "a gauge arc stepped frame by frame matches a fresh render of its last value");
+	// Steps whose sweep crosses a half circle are left out: there the centre
+	// solves from a near-zero root, the endpoints' 4-decimal rounding moves it
+	// by hundredths of a pixel, no grid point is shared and the whole box is
+	// repainted -- correctly, just not cheaply.
+	int worstOffHalf = 0;
+	for (std::size_t i = 0; i < stepPx.size(); ++i) {
+		const double s0 = steps[i] - 90, s1 = steps[i + 1] - 90;
+		if (std::min(s0, s1) < 183 && std::max(s0, s1) > 177) continue;
+		if (stepPx[i] > 2000)
+			std::fprintf(stderr, "[svg] gauge: step %zu (%.1f -> %.1f deg) flushed %d px\n", i + 1, steps[i], steps[i + 1], stepPx[i]);
+		worstOffHalf = std::max(worstOffHalf, stepPx[i]);
+	}
+	check(worst > 0 && worstOffHalf <= 2000, "a gauge step with miter joins repaints only around the moving tip");
+}
+
 }  // namespace
 
 int main()
@@ -548,6 +639,7 @@ int main()
 	}
 	geometryTests();
 	treeTests();
+	gaugeDamageTests();
 	if (failures) {
 		std::fprintf(stderr, "[svg] %d failure(s)\n", failures);
 		return 1;
