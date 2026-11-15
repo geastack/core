@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
 #include "display.h"
+#include "memory.h"
 #include "graphics/font.h"
 #include "refresh_perf.h"
 #include "tree_state.h"
@@ -134,7 +135,7 @@ struct LineBreakCacheEntry {
 	std::uint16_t lineWidths[kMaxCachedLines];
 };
 
-LineBreakCacheEntry gLineBreakCache[kLineBreakCacheSlots];
+GEA_EXT_BSS LineBreakCacheEntry gLineBreakCache[kLineBreakCacheSlots];
 
 inline std::uint32_t hashTextPrefix(const char *text)
 {

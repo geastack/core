@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 // When the platform's Display::scrollRect needs no framebuffer flush of the
 // scrolled region itself (e.g. rp2350 driving the panel's hardware vertical
@@ -35,6 +36,7 @@ extern "C" __attribute__((weak)) bool gea_display_scroll_rect_self_flushing() { 
 // this one repaints the exposed strip starts it here (false: it cannot, and the
 // caller blits with Display::scrollRect) and joins it in the end call.
 extern "C" __attribute__((weak)) bool gea_display_scroll_rect_begin(int, int, int, int, int, int) { return false; }
+extern "C" __attribute__((weak)) void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int) {}
 extern "C" __attribute__((weak)) void gea_display_scroll_rect_end() {}
 
 namespace gea::embedded::ui {
@@ -355,6 +357,13 @@ static bool scrollerHasBoxFrame(const Node &n)
 	return false;
 }
 
+namespace {
+// The nodes a scroll fast-path frame found dirty, in id order: pass 2 of
+// refreshNode classifies only these, and the frame's snapshot captures only
+// these and the scroller's subtree, instead of reading every node from PSRAM.
+std::vector<int> gScrollFrameDirty;
+}  // namespace
+
 int RootScrollOnlyRefresh::refreshNode(int root,
                                        DirtyNode *extraDirtyNodes,
                                        int *extraDirtyCount,
@@ -372,9 +381,14 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 	if (LayoutEngine::containsViewportFixed(root)) return -1;
 
 	// Pass 1: exactly one pure-scroll node.
+	gScrollFrameDirty.clear();
 	for (int i = 0; i < state.nodeCount; i++) {
 		Node *n = &state.nodes[i];
-		if (!n->render.dirty) continue;
+		if (!n->render.dirty) {
+			if (n->render.bg_recolor_pending || n->render.canvas_pixels_only_dirty) gScrollFrameDirty.push_back(i);
+			continue;
+		}
+		gScrollFrameDirty.push_back(i);
 
 		if (n->render.scroll_dirty && !n->render.non_scroll_dirty) {
 			if (foundNode >= 0) return -1;
@@ -415,7 +429,41 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 	// that branch overlapping siblings are composited afresh, so rejecting them
 	// would unnecessarily force a full-tree refresh (the weather city rail has
 	// exactly this shape because its negative margin overlaps the hero).
-	if (!hasRightFadeMask(state, foundNode)) {
+	// The overlays found for this scroller stay valid while nothing outside it
+	// changes: no other node is dirty and the display list has not been
+	// re-recorded since (any layout or style change records it). Re-deriving
+	// them read every node's style and box from PSRAM, ~1.7 ms of each frame of
+	// a CrowPanel chart scroll.
+	static int overlayCacheNode = -1, overlayCacheRoot = -1;
+	static std::uint32_t overlayCacheSerial = 0;
+	static int overlayCacheCount = 0;
+	static DirtyNode overlayCache[kMaxExtraDirtyNodes];
+	// Other dirty nodes (the Analytics meters animate under a scrolling chart)
+	// leave it valid while they keep their boxes clear of the viewport: only a
+	// node over the viewport can be an overlay.
+	bool onlyScrollerDirty = true;
+	{
+		const Node &sn = state.nodes[foundNode];
+		for (const int i : gScrollFrameDirty) {
+			if (i == foundNode) continue;
+			const Node &o = state.nodes[i];
+			if (o.render.layout_dirty || !layoutUnchanged(o) ||
+			    !(o.layout.x > sn.layout.x + sn.layout.width - 1 || o.layout.x + o.layout.width - 1 < sn.layout.x ||
+			      o.layout.y > sn.layout.y + sn.layout.height - 1 || o.layout.y + o.layout.height - 1 < sn.layout.y)) {
+				onlyScrollerDirty = false;
+				break;
+			}
+		}
+	}
+	const bool overlaysCached = onlyScrollerDirty && overlayCacheNode == foundNode && overlayCacheRoot == root &&
+	                            overlayCacheSerial == DisplayList::instance().recordSerial();
+	if (overlaysCached) {
+		for (int e = 0; e < overlayCacheCount; e++) extraDirtyNodes[e] = overlayCache[e];
+		*extraDirtyCount = overlayCacheCount;
+	} else {
+		overlayCacheNode = -1;
+	}
+	if (!overlaysCached && !hasRightFadeMask(state, foundNode)) {
 		const Node &sn = state.nodes[foundNode];
 		const int svx0 = sn.layout.x, svy0 = sn.layout.y;
 		const int svx1 = sn.layout.x + sn.layout.width - 1;
@@ -425,6 +473,12 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 			const Node &o = state.nodes[i];
 			if (o.computedStyle().display == 1 || o.computedStyle().opacity == 0) continue;
 			if (o.layout.width <= 0 || o.layout.height <= 0) continue;
+			// Only a node over the viewport can be dragged by the blit. Test that
+			// first: the ancestor walks below, run for every node of the tree,
+			// cost ~4 ms of each CrowPanel chart scroll frame.
+			if (o.layout.x > svx1 || o.layout.x + o.layout.width - 1 < svx0 ||
+			    o.layout.y > svy1 || o.layout.y + o.layout.height - 1 < svy0)
+				continue;
 			// Skip the scroll node's own subtree and its ancestor chain — and any
 			// node inside a display:none subtree: a hidden ancestor removes the
 			// whole branch from painting even though the descendants' own display
@@ -442,9 +496,6 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 				if (a == i) { related = true; break; }
 			}
 			if (related) continue;
-			if (o.layout.x > svx1 || o.layout.x + o.layout.width - 1 < svx0 ||
-			    o.layout.y > svy1 || o.layout.y + o.layout.height - 1 < svy0)
-				continue;
 			if (paintsNothingOwn(i, o)) continue;
 			// An overlay: repaint it after the blit instead of giving up the
 			// blit. Its descendants widen the entry of the top-most listed
@@ -474,6 +525,14 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 		}
 	}
 
+	if (onlyScrollerDirty && !overlaysCached) {
+		// Taken before pass 2 adds this frame's own dirty nodes.
+		for (int e = 0; e < *extraDirtyCount; e++) overlayCache[e] = extraDirtyNodes[e];
+		overlayCacheCount = *extraDirtyCount;
+		overlayCacheNode = foundNode;
+		overlayCacheRoot = root;
+		overlayCacheSerial = DisplayList::instance().recordSerial();
+	}
 	// Pass 2: classify every other dirty node. Recycled slot children of a
 	// scrolling <virtual-list> get repositioned natively by refresh(); their
 	// dirty descendants (rebound label text, recolored row content) are covered
@@ -481,7 +540,7 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 	// are skipped here — including ones whose pre-measured text box changed,
 	// which would otherwise reject the whole frame back to the full-relayout
 	// path on every fling tick.
-	for (int i = 0; i < state.nodeCount; i++) {
+	for (const int i : gScrollFrameDirty) {
 		Node *n = &state.nodes[i];
 		if (!n->render.dirty || i == foundNode) continue;
 
@@ -662,21 +721,6 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		return 1;
 	}
 
-	// A sideways blit's shifted copy runs on the display's second core
-	// (gea_display_scroll_rect_begin) while this one repaints the strip it
-	// exposes. Start it now, before the display list is brought up to date
-	// below: that touches no pixels, so the copy overlaps it too.
-	bool earlyAsyncCopy = false;
-	if (horizontal && abs_move > 0 && abs_move < vw && !hasRightFadeMask(state, scroll_node) && !scrollerHasBoxFrame(*n)) {
-		bool rotated = false;
-#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
-		if (auto *canvas = gea::platform::display::Display::canvas(); canvas && canvas->isLandscapeRotated()) rotated = true;
-#endif
-		if (!rotated) {
-			gea::platform::display::Display::resetClip();
-			earlyAsyncCopy = gea_display_scroll_rect_begin(vx, vy, vw, vh, move, 0);
-		}
-	}
 
 	// The scroll replay needs a display list whose commands match the
 	// post-shift layout, and recordNode drops commands for nodes outside the
@@ -884,7 +928,43 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		const std::int64_t scrollRectStartUs = refreshPerfNowUs();
 		// A sideways copy started above overlaps the strip repaint: the strip is
 		// exactly the columns the copy leaves alone.
-		const bool asyncCopy = earlyAsyncCopy;
+		// The copy starts only now, after the display list is up to date: the
+		// rebuild touches no pixels, so it runs while the frame waits for the
+		// panel to release the back buffer, and the copy (bus-bound, ~21 ms for a
+		// CrowPanel chart) shares PSRAM with nothing but the strip repaint. Started
+		// before the rebuild, the two contended and a chart frame missed the panel
+		// period by ~3 ms.
+		// The exposed strip, the repositioned slots and the overlay boxes all
+		// replay from one display-list walk, filtered for the box holding them
+		// all (each region otherwise walked the whole list: ~1.2 ms apiece).
+		// Filtered before the copy starts, while the frame still waits for the
+		// back buffer.
+		if (horizontal) {
+			int ux0 = move < 0 ? vx + vw - abs_move : vx, uy0 = vy;
+			int ux1 = ux0 + abs_move - 1, uy1 = vy + vh - 1;
+			auto unite = [&](int x0, int y0, int x1, int y1) {
+				ux0 = std::min(ux0, x0); uy0 = std::min(uy0, y0);
+				ux1 = std::max(ux1, x1); uy1 = std::max(uy1, y1);
+			};
+			for (int s = 0; s < slotCount; s++) {
+				unite(slotDamage[s].oldX0, slotDamage[s].oldY0, slotDamage[s].oldX1, slotDamage[s].oldY1);
+				if (slotDamage[s].moved) unite(slotDamage[s].newX0, slotDamage[s].newY0, slotDamage[s].newX1, slotDamage[s].newY1);
+			}
+			for (int i = 0; i < extraDirtyCount; i++)
+				unite(extraDirtyNodes[i].x0 - abs_move, extraDirtyNodes[i].y0, extraDirtyNodes[i].x1 + abs_move, extraDirtyNodes[i].y1);
+			int uw = ux1 - ux0 + 1, uh = uy1 - uy0 + 1;
+			if (ViewportRegion::clipRect(width, height, &ux0, &uy0, &uw, &uh)) {
+				gea::platform::display::Display::resetClip();
+				gea::platform::display::Display::pushClip(ux0, uy0, uw, uh);
+				DisplayList::instance().beginRegionReplay();
+				gea::platform::display::Display::popClip();
+			}
+		}
+		bool asyncCopy = false;
+		if (horizontal) {
+			gea::platform::display::Display::resetClip();
+			asyncCopy = gea_display_scroll_rect_begin(vx, vy, vw, vh, move, 0);
+		}
 		if (!asyncCopy)
 			gea::platform::display::Display::scrollRect(vx, vy, vw, vh, horizontal ? move : 0, horizontal ? 0 : move);
 		GEA_REFRESH_PERF(perf.rootScrollScrollRectUs += refreshPerfNowUs() - scrollRectStartUs);
@@ -940,6 +1020,18 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		}
 	} else {
 		const std::int64_t fullReplayStartUs = refreshPerfNowUs();
+		// The viewport is about to be painted whole when an opaque fill covers it:
+		// ready a double-buffered panel's back buffer without first copying the
+		// previous frame's pixels into the viewport. That copy cost as much as the
+		// sideways blit it replaces (~20 ms for a CrowPanel chart).
+		gea::platform::display::Display::pushClip(vx, vy, vw, vh);
+		DisplayList::instance().replayCullStart();
+		const bool viewportCovered = DisplayList::instance().replayCullCovered();
+		gea::platform::display::Display::popClip();
+		if (viewportCovered) {
+			const gea::platform::display::DisplayFlushRect whole = {vx, vy, vx + vw - 1, vy + vh - 1};
+			gea_display_prepare_repaint(&whole, 1);
+		}
 		replayScrollNodeRegion(vx, vy, vw, vh);
 		GEA_REFRESH_PERF(perf.rootScrollFullReplayUs += refreshPerfNowUs() - fullReplayStartUs);
 	}
@@ -1037,6 +1129,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		ViewportRegion::replayDisplayRegionStaged(b.x0, b.y0, b.x1 - b.x0 + 1, b.y1 - b.y0 + 1);
 	}
 	GEA_REFRESH_PERF(perf.rootScrollExtraReplayUs += refreshPerfNowUs() - extraReplayStartUs);
+	DisplayList::instance().endRegionReplay();
 
 	const std::int64_t flushStartUs = refreshPerfNowUs();
 	if (kSelfFlushingScroll && !damageOverflow) {
@@ -1048,7 +1141,7 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 	GEA_REFRESH_PERF(perf.rootScrollFlushUs += refreshPerfNowUs() - flushStartUs);
 
 	const std::int64_t snapshotStartUs = refreshPerfNowUs();
-	LayoutSnapshot::capture();
+	LayoutSnapshot::captureNodes(gScrollFrameDirty.data(), static_cast<int>(gScrollFrameDirty.size()), scroll_node);
 	GEA_REFRESH_PERF(perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs);
 
 	return 1;

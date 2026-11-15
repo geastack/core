@@ -271,7 +271,7 @@ int convertRgbaToNative(const std::uint8_t *rgba, pixel::native_t *out, std::uin
 
 ImageStore &ImageStore::instance()
 {
-	static ImageStore store;
+	GEA_EXT_BSS static ImageStore store;
 	return store;
 }
 

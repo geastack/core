@@ -3,6 +3,19 @@
 #include <cstddef>
 #include <cstdint>
 
+// Places a large, cold static buffer in external RAM where the target allows a
+// PSRAM .bss (ESP32 with CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY); plain
+// .bss elsewhere. Internal SRAM is the scarce resource on PSRAM boards: on the
+// CrowPanel 7.0 the RGB bounce buffers leave too little of it for the display's
+// SRAM staging strips, and every repaint then rasters straight into PSRAM.
+// Use it for caches touched per record or per layout, not per pixel.
+#if defined(ESP_PLATFORM)
+#include "esp_attr.h"
+#define GEA_EXT_BSS EXT_RAM_BSS_ATTR
+#else
+#define GEA_EXT_BSS
+#endif
+
 namespace gea::framework::memory {
 
 class Allocator {

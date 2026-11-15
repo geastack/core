@@ -334,6 +334,18 @@ void rootScrollImageHoldTick();
 		void setReplayCullStart(int start);
 		// Whether the last replayCullStart() found an opaque fill covering the clip.
 		bool replayCullCovered();
+		// Filters the list once for the clip now in force: replay() then walks only
+		// the commands that can paint inside it until endRegionReplay(). Computes
+		// the cull too (replayCullCovered() reports it). False: not filtered, and
+		// replay() walks the whole list as before.
+		bool beginRegionReplay();
+		void endRegionReplay();
+		// A list filtered by beginRegionReplay() is in force (replay() uses it for
+		// any clip inside the rect it was filtered for).
+		bool regionReplayActive();
+		// Whether the list in force was filtered for a rect holding this one, and
+		// whether an opaque fill covered that rect.
+		bool regionReplayHolds(int x, int y, int w, int h, bool *covered);
 		bool canReplayDirectDirtyRegions(int width, int height) const;
 		void translateNodeCommands(int node, int dx, int dy);
 		void translateSubtreeCommands(int node, int dx, int dy);

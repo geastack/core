@@ -44,13 +44,24 @@ void ViewportRegion::replayDisplayRegionStaged(int x, int y, int w, int h)
 	// Raster the region in SRAM strips instead and copy each back once.
 	const int stageRows = gea_bulk_replay_stage_rows_for_width(w);
 	if (stageRows > 0 && !gea_replay_stage_active()) {
-		gea::platform::display::Display::pushClip(x, y, w, h);
-		const int cullStart = DisplayList::instance().replayCullStart();
-		gea::platform::display::Display::popClip();
-		DisplayList::instance().setReplayCullStart(cullStart);
+		// A list the caller filtered for a rect holding this one serves as is
+		// (one walk of the display list for a frame's several small regions).
+		bool covered = false;
+		const bool outer = DisplayList::instance().regionReplayHolds(x, y, w, h, &covered);
+		if (!outer) {
+			DisplayList::instance().endRegionReplay();
+			gea::platform::display::Display::pushClip(x, y, w, h);
+			// The strips walk only the commands that can reach this region; failing
+			// that, they share one cull start.
+			const bool filtered = DisplayList::instance().beginRegionReplay();
+			const int cullStart = filtered ? 0 : DisplayList::instance().replayCullStart();
+			covered = DisplayList::instance().replayCullCovered();
+			gea::platform::display::Display::popClip();
+			if (!filtered) DisplayList::instance().setReplayCullStart(cullStart);
+		}
 		// An opaque fill covers the region: each strip is painted whole, so it
 		// need not be seeded from the back buffer.
-		gea_replay_stage_skip_seed(DisplayList::instance().replayCullCovered());
+		gea_replay_stage_skip_seed(covered);
 		for (int sy = y; sy < y + h; sy += stageRows) {
 			const int sh = std::min(stageRows, y + h - sy);
 			const bool staged = gea_replay_stage_begin(x, sy, x + w - 1, sy + sh - 1);
@@ -59,6 +70,7 @@ void ViewportRegion::replayDisplayRegionStaged(int x, int y, int w, int h)
 			gea::platform::display::Display::popClip();
 			if (staged) gea_replay_stage_end();
 		}
+		if (!outer) DisplayList::instance().endRegionReplay();
 		DisplayList::instance().setReplayCullStart(-1);
 		gea_replay_stage_skip_seed(false);
 		return;

@@ -194,6 +194,9 @@ extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows() { return 0; }
 // windows tighter returns more than gea_bulk_replay_stage_rows().
 extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows_for_width(int) { return gea_bulk_replay_stage_rows(); }
 extern "C" __attribute__((weak)) void gea_replay_stage_skip_seed(bool) {}
+// A replay is about to draw straight into the framebuffer (no stage open), so
+// its rows sit dirty in the cache until the publish writes them back.
+extern "C" __attribute__((weak)) void gea_display_note_direct_draw() {}
 namespace {
 // A repaint this large (a quarter of an 800x480 panel) is a burst: a tab's
 // first scroll, a content swap. Raster it through the display's SRAM strips
@@ -5390,9 +5393,9 @@ int gLastScrollUiFrame = -1000;
 				// Memoize per node per refresh. The child z-sort runs at every tree level,
 				// so an ancestor's sort recurses a subtree that a descendant's sort then
 				// re-walks. Caching collapses those repeated O(subtree) walks to O(1).
-				static int memo[kMaxNodes];
-				static uint64_t memoSerial[kMaxNodes];
-				static int memoContextRoot[kMaxNodes];
+				GEA_EXT_BSS static int memo[kMaxNodes];
+				GEA_EXT_BSS static uint64_t memoSerial[kMaxNodes];
+				GEA_EXT_BSS static int memoContextRoot[kMaxNodes];
 				const uint64_t serial = tree.refreshSerial();
 				if (node < kMaxNodes && memoSerial[node] == serial && memoContextRoot[node] == contextRoot)
 					return memo[node];
@@ -7911,6 +7914,22 @@ int gLastScrollUiFrame = -1000;
 				}
 			};
 
+			// The commands one region's strips replay (DisplayCommandReplayer::
+			// buildRegionIndex). The list itself lives in PSRAM, and a strip-by-strip
+			// replay walked all of it per 24-row strip: ~800 commands, ~1.1 ms a strip,
+			// about a third of a CrowPanel chart scroll frame.
+			// Sized to the list on demand (a static of kMaxCommands took 32 KB of
+			// PSRAM, which the CrowPanel app could not spare).
+			static std::uint16_t *gRegionIndex = nullptr;
+			static int gRegionIndexCapacity = 0;
+			// Per thread: the render worker replays bands on the other core while the
+			// list is active, and must walk the whole list as before.
+			static thread_local int gRegionIndexCount = -1;
+			// The clip the list was filtered under: a replay under any clip inside it
+			// may use the list, any other walks the whole list.
+			static thread_local int gRegionX0, gRegionY0, gRegionX1, gRegionY1;
+			static thread_local bool gRegionCovered = false;
+
 			struct DisplayCommandReplayer
 		{
 			static bool transformedRoundedRectPaintsRegion(const DisplayCommand &command, int x0, int y0, int x1, int y1)
@@ -10151,6 +10170,115 @@ int gLastScrollUiFrame = -1000;
 				return startCi;
 			}
 
+			// One walk under the clip now in force keeps the clip/alpha commands and
+			// the draws that can land inside it, drops clip scopes that miss it whole,
+			// and finds the occlusion cull start as cullStartIndex() does (a cover
+			// drops the draws kept before it). False (nothing filtered) on a filter
+			// blur, whose backdrop capture depends on draws outside the clip.
+			static bool buildRegionIndex()
+			{
+				gRegionIndexCount = -1;
+				cullCovered = false;
+				int rx0 = 0, ry0 = 0, rx1 = -1, ry1 = -1;
+				gea::platform::display::Display::clip(&rx0, &ry0, &rx1, &ry1);
+				if (rx1 < rx0 || ry1 < ry0) return false;
+				gRegionX0 = rx0; gRegionY0 = ry0; gRegionX1 = rx1; gRegionY1 = ry1;
+				if (gRegionIndexCapacity < state.commandCount)
+				{
+					const int capacity = (state.commandCount + 511) & ~511;
+					void *grown = gea::framework::memory::Allocator::reallocatePreferSpiram(gRegionIndex, sizeof(std::uint16_t) * capacity);
+					if (!grown) return false;
+					gRegionIndex = static_cast<std::uint16_t *>(grown);
+					gRegionIndexCapacity = capacity;
+				}
+				constexpr int kDepth = 64;
+				int clipX0[kDepth], clipY0[kDepth], clipX1[kDepth], clipY1[kDepth], pushCmd[kDepth];
+				int depth = 0, skip = 0, alpha = 255, n = 0, startCi = 0;
+				int pendingAlpha = -1, emittedAlpha = -1;
+				int curX0 = rx0, curY0 = ry0, curX1 = rx1, curY1 = ry1;
+				for (int i = 0; i < state.commandCount; ++i)
+				{
+					const DisplayCommand &c = state.commands[i];
+					switch (c.type)
+					{
+					case DisplayCommandType::PushClip:
+					{
+						if (skip) { skip++; continue; }
+						const int nx0 = std::max(curX0, static_cast<int>(c.clip.x));
+						const int ny0 = std::max(curY0, static_cast<int>(c.clip.y));
+						const int nx1 = std::min(curX1, static_cast<int>(c.clip.x) + static_cast<int>(c.clip.w) - 1);
+						const int ny1 = std::min(curY1, static_cast<int>(c.clip.y) + static_cast<int>(c.clip.h) - 1);
+						if (nx0 > nx1 || ny0 > ny1) { skip = 1; continue; }  // nothing in the scope can show
+						if (depth >= kDepth) return false;
+						clipX0[depth] = curX0; clipY0[depth] = curY0; clipX1[depth] = curX1; clipY1[depth] = curY1;
+						pushCmd[depth] = i;
+						depth++;
+						curX0 = nx0; curY0 = ny0; curX1 = nx1; curY1 = ny1;
+						gRegionIndex[n++] = static_cast<std::uint16_t>(i);
+						continue;
+					}
+					case DisplayCommandType::PopClip:
+						if (skip) { skip--; continue; }
+						if (depth > 0)
+						{
+							depth--;
+							curX0 = clipX0[depth]; curY0 = clipY0[depth]; curX1 = clipX1[depth]; curY1 = clipY1[depth];
+							// A scope that kept no draw is dropped whole (most clip scopes
+							// overlap the region yet draw nothing inside it).
+							if (n > 0 && gRegionIndex[n - 1] == pushCmd[depth]) { n--; continue; }
+						}
+						gRegionIndex[n++] = static_cast<std::uint16_t>(i);  // at depth 0 it pops the caller's clip
+						continue;
+					case DisplayCommandType::SetAlpha:
+						// Alpha is one value, not a stack: only the last one before each
+						// kept draw matters (most scopes hold no draw in the region).
+						alpha = c.alpha.alpha;
+						pendingAlpha = i;
+						continue;
+					case DisplayCommandType::BeginFilterBlur:
+					case DisplayCommandType::ApplyFilterBlur:
+						cullCovered = false;
+						return false;
+					default:
+						break;
+					}
+					if (skip) continue;
+					if (c.bx > curX1 || c.by > curY1 || c.bx + c.bw - 1 < curX0 || c.by + c.bh - 1 < curY0) continue;
+					if (c.type == DisplayCommandType::FillRect && alpha == 255 &&
+					    curX0 <= rx0 && curY0 <= ry0 && curX1 >= rx1 && curY1 >= ry1 &&
+					    c.fill.x <= rx0 && c.fill.y <= ry0 &&
+					    c.fill.x + c.fill.w - 1 >= rx1 && c.fill.y + c.fill.h - 1 >= ry1 &&
+					    c.bx <= rx0 && c.by <= ry0 && c.bx + c.bw - 1 >= rx1 && c.by + c.bh - 1 >= ry1)
+					{
+						// Everything drawn so far is hidden under this fill: keep only the
+						// clip/alpha state kept before it.
+						int kept = 0;
+						for (int k = 0; k < n; ++k)
+						{
+							const DisplayCommandType t = state.commands[gRegionIndex[k]].type;
+							if (t == DisplayCommandType::PushClip || t == DisplayCommandType::PopClip || t == DisplayCommandType::SetAlpha)
+								gRegionIndex[kept++] = gRegionIndex[k];
+						}
+						n = kept;
+						startCi = i;
+						cullCovered = true;
+						emittedAlpha = -1;
+					}
+					if (pendingAlpha != emittedAlpha)
+					{
+						gRegionIndex[n++] = static_cast<std::uint16_t>(pendingAlpha);
+						emittedAlpha = pendingAlpha;
+					}
+					gRegionIndex[n++] = static_cast<std::uint16_t>(i);
+				}
+				// Leave alpha where the whole list leaves it: the next strip starts there.
+				if (pendingAlpha != emittedAlpha) gRegionIndex[n++] = static_cast<std::uint16_t>(pendingAlpha);
+				(void)startCi;
+				gRegionCovered = cullCovered;
+				gRegionIndexCount = n;
+				return true;
+			}
+
 			// A strip-by-strip replay of one region computes the cull once for the
 			// whole region (a cover of the region covers every strip of it) instead
 			// of re-scanning the list per strip.
@@ -10173,10 +10301,24 @@ int gLastScrollUiFrame = -1000;
 				// clipping ancestors (whose Pop would run unmatched), the skipped
 				// prefix is Push/Pop balanced, and no filter-blur pair could straddle
 				// the cut.
-				const int startCi = cullStartOverride >= 0 ? cullStartOverride : cullStartIndex();
+				// A filtered region list already dropped the culled draws; replay()
+				// below decides whether the clip lets it use the list.
+				int startCi = -1;
 
-				for (int i = 0; i < state.commandCount; i++)
+				int listed = gRegionIndexCount;
+				if (listed >= 0)
 				{
+					int qx0 = 0, qy0 = 0, qx1 = -1, qy1 = -1;
+					gea::platform::display::Display::clip(&qx0, &qy0, &qx1, &qy1);
+					if (qx1 >= qx0 && qy1 >= qy0 &&
+					    (qx0 < gRegionX0 || qy0 < gRegionY0 || qx1 > gRegionX1 || qy1 > gRegionY1))
+						listed = -1;
+				}
+				const int total = listed >= 0 ? listed : state.commandCount;
+				if (startCi < 0) startCi = listed >= 0 ? 0 : cullStartOverride >= 0 ? cullStartOverride : cullStartIndex();
+				for (int k = 0; k < total; k++)
+				{
+					const int i = listed >= 0 ? gRegionIndex[k] : k;
 					DisplayCommand *c = &state.commands[i];
 
 					// Occlusion cull: draws before the covering fill are invisible; only
@@ -10329,7 +10471,7 @@ int gLastScrollUiFrame = -1000;
 	{
 		// This is also the recorder's traversal, so retained draws cannot invent a
 		// second hierarchy or lose document-order ties after a depth crossing.
-		static int ranks[kMaxNodes];
+		GEA_EXT_BSS static int ranks[kMaxNodes];
 		static uint64_t serial = ~0ull;
 		static uint32_t recordSerial = 0;
 		auto &tree = Tree::instance();
@@ -10474,6 +10616,7 @@ int gLastScrollUiFrame = -1000;
 
 	void DisplayList::clear()
 	{
+		gRegionIndexCount = -1;  // its indices name the old list
 		Tree &tree = Tree::instance();
 		state.displayListSerial++;
 		if (state.displayListSerial == 0)
@@ -11400,24 +11543,46 @@ int gLastScrollUiFrame = -1000;
 			return;
 		Tree &tree = Tree::instance();
 		Node *nodes = tree.nodes();
-		auto belongsToSubtree = [&](int id) {
-			for (int cursor = id; cursor >= 0 && cursor < tree.nodeCount(); cursor = nodes[cursor].parent)
-				if (cursor == node)
-					return true;
-			return false;
-		};
-		for (int id = 0; id < tree.nodeCount(); id++)
+		const int count = tree.nodeCount();
+		// Mark the subtree in one walk down its child links. Testing every node's
+		// ancestor chain instead cost O(nodes x depth) on every scroll frame: 4-12
+		// ms of a CrowPanel chart scroll frame, on a tab of ~600 commands.
+		static std::vector<std::uint32_t> subtreeMark;
+		static std::uint32_t subtreeStamp = 0;
+		if (subtreeMark.size() < static_cast<std::size_t>(count))
+			subtreeMark.resize(static_cast<std::size_t>(count), 0);
+		if (++subtreeStamp == 0)
 		{
-			if (!belongsToSubtree(id) || !state.hasNodeScratchFor(id))
-				continue;
-			const int start = state.nodeDrawStart[id];
-			const int end = state.nodeDrawEnd[id];
-			if (start >= 0 && end > start && end <= state.commandCount)
-			{
-				for (int ci = start; ci < end; ci++)
-					DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
-			}
+			std::fill(subtreeMark.begin(), subtreeMark.end(), 0);
+			subtreeStamp = 1;
 		}
+		for (int id = node; id >= 0;)
+		{
+			subtreeMark[id] = subtreeStamp;
+			if (state.hasNodeScratchFor(id))
+			{
+				const int start = state.nodeDrawStart[id];
+				const int end = state.nodeDrawEnd[id];
+				if (start >= 0 && end > start && end <= state.commandCount)
+				{
+					for (int ci = start; ci < end; ci++)
+						DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+				}
+			}
+			if (nodes[id].first_child >= 0)
+			{
+				id = nodes[id].first_child;
+				continue;
+			}
+			while (id != node && nodes[id].next_sibling < 0)
+				id = nodes[id].parent;
+			if (id == node)
+				break;
+			id = nodes[id].next_sibling;
+		}
+		auto belongsToSubtree = [&](int id) {
+			return id >= 0 && id < count && subtreeMark[id] == subtreeStamp;
+		};
 		// A scroll container's thumb sits outside every node paint range too. The
 		// thumbs of containers inside the subtree move with it (the root's own
 		// thumb stays: it is viewport-fixed like the root's box, and its caller
@@ -13075,7 +13240,7 @@ int gLastScrollUiFrame = -1000;
 			const std::int64_t totalStartUs = refreshPerfNowUs();
 			FillBandDirty dMain{canvas->width(), canvas->height(), -1, -1};
 			FillBandDirty dWork{canvas->width(), canvas->height(), -1, -1};
-			static RecolorPixelCache protectedPixelCaches[2];
+			GEA_EXT_BSS static RecolorPixelCache protectedPixelCaches[2];
 			if (protectForegroundDuringFill)
 			{
 				protectedPixelCaches[0].clear();
@@ -14012,6 +14177,29 @@ int gLastScrollUiFrame = -1000;
 		return DisplayCommandReplayer::cullCovered;
 	}
 
+	bool DisplayList::beginRegionReplay()
+	{
+		return DisplayCommandReplayer::buildRegionIndex();
+	}
+
+	bool DisplayList::regionReplayActive()
+	{
+		return gRegionIndexCount >= 0;
+	}
+
+	bool DisplayList::regionReplayHolds(int x, int y, int w, int h, bool *covered)
+	{
+		if (gRegionIndexCount < 0 || x < gRegionX0 || y < gRegionY0 || x + w - 1 > gRegionX1 || y + h - 1 > gRegionY1)
+			return false;
+		if (covered) *covered = gRegionCovered;
+		return true;
+	}
+
+	void DisplayList::endRegionReplay()
+	{
+		gRegionIndexCount = -1;
+	}
+
 	void DisplayList::setReplayCullStart(int start)
 	{
 		DisplayCommandReplayer::cullStartOverride = start;
@@ -14019,6 +14207,7 @@ int gLastScrollUiFrame = -1000;
 
 	void DisplayList::replay()
 	{
+		if (!gea_replay_stage_active()) gea_display_note_direct_draw();
 		DisplayCommandReplayer::replay();
 	}
 
