@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 // When the platform's Display::scrollRect needs no framebuffer flush of the
 // scrolled region itself (e.g. rp2350 driving the panel's hardware vertical
@@ -322,6 +323,22 @@ bool overlayBounds(const Node &n, int width, int height, RootScrollOnlyRefresh::
 	return true;
 }
 
+// A plain <div> that paints nothing of its own: no background, border, or box
+// shadow, and no scrollbar. Its pixels are whatever lies under it, so a scroll
+// blit cannot drag anything of its own (a transparent hit target over a chart).
+bool paintsNothingOwn(int id, const Node &n)
+{
+	if (n.type != NodeType::View) return false;
+	const char *tag = Tree::instance().tagName(id);
+	if (!tag || std::strcmp(tag, "div") != 0) return false;
+	const auto &style = n.computedStyle();
+	if (style.has_bg || style.border_width != 0) return false;
+	if (scrollsOverflowX(style) || scrollsOverflowY(style)) return false;
+	const auto &rare = rstyle(style);
+	return rare.box_shadow_blur_radius == 0 && rare.box_shadow_spread == 0 && rare.box_shadow_offset_x == 0 &&
+	       rare.box_shadow_offset_y == 0;
+}
+
 }  // namespace
 
 // A border or a rounded corner on the scroller itself: pixels a scroll blit
@@ -428,6 +445,7 @@ int RootScrollOnlyRefresh::refreshNode(int root,
 			if (o.layout.x > svx1 || o.layout.x + o.layout.width - 1 < svx0 ||
 			    o.layout.y > svy1 || o.layout.y + o.layout.height - 1 < svy0)
 				continue;
+			if (paintsNothingOwn(i, o)) continue;
 			// An overlay: repaint it after the blit instead of giving up the
 			// blit. Its descendants widen the entry of the top-most listed
 			// ancestor rather than taking entries of their own.
