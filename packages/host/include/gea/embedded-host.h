@@ -21,6 +21,7 @@
 #include "host/image.h"
 #include "host/tile_loader.h"
 #include "host/memory.h"
+#include "host/simd.h"
 #include "host/input.h"
 #include "host/buttons.h"
 #include "host/gpio.h"

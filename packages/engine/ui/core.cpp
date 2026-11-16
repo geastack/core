@@ -130,13 +130,16 @@ bool Tree::refreshRequired() const
 	}
 #if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 	if (!reason && !Document::directCanvasContextUsed()) {
-		const int root = state.mountedRoot;
-		const bool displayBackedCanvasRoot =
-			root >= 0 &&
-			root < state.nodeCount &&
-			state.nodes[root].type == NodeType::Canvas &&
-			isDisplayBackedCanvas(root);
-		if (!displayBackedCanvasRoot) {
+		// A display-backed canvas owns every display pixel (it is only granted
+		// when it covers the panel and nothing else draws), so the display's dirty
+		// box says nothing a refresh could repaint. Reading it is not free either:
+		// a double-buffered panel's canvas() waits for the scanout to release the
+		// buffer just swapped in, which stalled every frame of a full-screen canvas
+		// app under a wrapper element by up to two panel periods.
+		bool displayBackedCanvas = false;
+		for (int i = 0; i < state.nodeCount && !displayBackedCanvas; i++)
+			displayBackedCanvas = state.nodes[i].type == NodeType::Canvas && isDisplayBackedCanvas(i);
+		if (!displayBackedCanvas) {
 			if (auto *canvas = gea::platform::display::Display::canvas()) {
 				if (canvas->dirty(nullptr, nullptr, nullptr, nullptr)) reason = 3;
 			}

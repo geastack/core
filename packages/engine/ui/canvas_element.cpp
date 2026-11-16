@@ -980,20 +980,18 @@ void CanvasRenderingContext2D::drawImage(int imageId, int dx, int dy, int dw, in
 	gCanvasPerfStats.drawImageUs += nowUs() - started;
 }
 void CanvasRenderingContext2D::drawImage(int imageId, double x, double y, double w, double h) { drawImage(imageId, rounded(x), rounded(y), rounded(w), rounded(h)); }
+// Measuring reads font metrics only. Asking for a drawing surface here would
+// replay the batch recorded so far and drop it off the display present path.
 double CanvasRenderingContext2D::measureTextInkCenter(const std::string &text)
 {
-	auto *surface = drawingCanvas();
-	if (!surface) surface = canvas();
-	if (!surface) return 0.0;
-	return static_cast<double>(surface->measureTextInkCenterFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
+	return static_cast<double>(
+		gea::framework::graphics::Canvas::measureTextInkCenterFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
 }
 
 double CanvasRenderingContext2D::measureText(const std::string &text)
 {
-	auto *surface = drawingCanvas();
-	if (!surface) surface = canvas();
-	if (!surface) return 0.0;
-	return static_cast<double>(surface->measureTextFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
+	return static_cast<double>(
+		gea::framework::graphics::Canvas::measureTextFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
 }
 
 void CanvasRenderingContext2D::drawImageCircle(int imageId, int dx, int dy, int dw, int dh)
@@ -2350,20 +2348,18 @@ void CanvasRenderingContext2D::drawImage(int imageId, double dx, double dy, doub
 	drawImage(imageId, rounded(dx), rounded(dy), rounded(dw), rounded(dh));
 }
 
+// Measuring reads font metrics only. Asking for a drawing surface here would
+// replay the batch recorded so far and drop it off the display present path.
 double CanvasRenderingContext2D::measureTextInkCenter(const std::string &text)
 {
-	auto *surface = drawingCanvas();
-	if (!surface) surface = canvas();
-	if (!surface) return 0.0;
-	return static_cast<double>(surface->measureTextInkCenterFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
+	return static_cast<double>(
+		gea::framework::graphics::Canvas::measureTextInkCenterFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
 }
 
 double CanvasRenderingContext2D::measureText(const std::string &text)
 {
-	auto *surface = drawingCanvas();
-	if (!surface) surface = canvas();
-	if (!surface) return 0.0;
-	return static_cast<double>(surface->measureTextFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
+	return static_cast<double>(
+		gea::framework::graphics::Canvas::measureTextFontFamily(text.c_str(), state_->fontFamilyId_, state_->fontSizePx_));
 }
 
 void CanvasRenderingContext2D::drawImageCircle(int imageId, int dx, int dy, int dw, int dh)
