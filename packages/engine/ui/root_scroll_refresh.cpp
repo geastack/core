@@ -4,6 +4,7 @@
 #include "display.h"
 #include "internal.h"
 #include "layout_snapshot.h"
+#include "memory.h"
 #include "refresh_perf.h"
 #include "tree_state.h"
 #include "viewport_region.h"
@@ -37,6 +38,10 @@ extern "C" __attribute__((weak)) bool gea_display_scroll_rect_self_flushing() { 
 // caller blits with Display::scrollRect) and joins it in the end call.
 extern "C" __attribute__((weak)) bool gea_display_scroll_rect_begin(int, int, int, int, int, int) { return false; }
 extern "C" __attribute__((weak)) void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int) {}
+// Per screen row from y0: what the coming sideways scroll copy leaves unchanged
+// (DisplayList::scrollRowSignatures), so the display may skip rows its back
+// buffer already holds. Taken by the next gea_display_scroll_rect_begin.
+extern "C" __attribute__((weak)) void gea_display_scroll_rect_rows(const std::uint32_t *, int, int) {}
 extern "C" __attribute__((weak)) void gea_display_scroll_rect_end() {}
 
 namespace gea::embedded::ui {
@@ -720,8 +725,6 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		GEA_REFRESH_PERF(perf.rootScrollSnapshotUs += refreshPerfNowUs() - snapshotStartUs);
 		return 1;
 	}
-
-
 	// The scroll replay needs a display list whose commands match the
 	// post-shift layout, and recordNode drops commands for nodes outside the
 	// record clip — so off-viewport content has no commands until it scrolls
@@ -963,6 +966,17 @@ int RootScrollOnlyRefresh::refresh(int root, int width, int height)
 		bool asyncCopy = false;
 		if (horizontal) {
 			gea::platform::display::Display::resetClip();
+			// Rows only full-width fills touch (a chart's empty band and rules) look
+			// the same after the shift; the display skips those its back buffer
+			// already holds, cutting the bus-bound copy.
+			constexpr int kMaxSigRows = 1024;
+			GEA_EXT_BSS static std::uint32_t rowSig[kMaxSigRows];
+			// No signatures (a filter blur, too tall) must be said too: the
+			// buffer may hold a half-written walk.
+			if (vh <= kMaxSigRows && DisplayList::instance().scrollRowSignatures(vx, vy, vw, vh, rowSig))
+				gea_display_scroll_rect_rows(rowSig, vy, vh);
+			else
+				gea_display_scroll_rect_rows(nullptr, 0, 0);
 			asyncCopy = gea_display_scroll_rect_begin(vx, vy, vw, vh, move, 0);
 		}
 		if (!asyncCopy)

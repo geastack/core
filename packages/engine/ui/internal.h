@@ -339,6 +339,9 @@ void rootScrollImageHoldTick();
 		// the cull too (replayCullCovered() reports it). False: not filtered, and
 		// replay() walks the whole list as before.
 		bool beginRegionReplay();
+		// Per viewport row: what a horizontal scroll leaves unchanged, or 0
+		// (DisplayCommandReplayer::scrollRowSignatures).
+		bool scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig);
 		void endRegionReplay();
 		// A list filtered by beginRegionReplay() is in force (replay() uses it for
 		// any clip inside the rect it was filtered for).

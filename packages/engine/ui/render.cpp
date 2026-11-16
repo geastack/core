@@ -10279,6 +10279,124 @@ int gLastScrollUiFrame = -1000;
 				return true;
 			}
 
+			// Per row of the viewport (vx, vy, vw, vh): a signature of what a
+			// horizontal scroll cannot change, or 0. A row that only full-width plain
+			// fills touch (a background, a horizontal rule, a rounded rect's straight
+			// middle) looks the same at every scroll offset, and its signature hashes
+			// those fills in paint order; any other draw reaching the row, or a fill
+			// cut short of either edge, makes it 0. False when it cannot tell (a
+			// filter blur, a clip stack too deep).
+			static bool scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig)
+			{
+				const int vx1 = vx + vw - 1, vy1 = vy + vh - 1;
+				for (int r = 0; r < vh; ++r) sig[r] = 2166136261u;
+				constexpr int kDepth = 64;
+				int clipX0[kDepth], clipY0[kDepth], clipX1[kDepth], clipY1[kDepth];
+				int depth = 0, alpha = 255;
+				int curX0 = vx, curY0 = vy, curX1 = vx1, curY1 = vy1;
+				auto vary = [&](int y0, int y1) {
+					y0 = std::max(y0, curY0); y1 = std::min(y1, curY1);
+					for (int y = y0; y <= y1; ++y) sig[y - vy] = 0;
+				};
+				auto band = [&](int y0, int y1, std::uint32_t color) {
+					y0 = std::max(y0, curY0); y1 = std::min(y1, curY1);
+					const std::uint32_t mix = (color << 8) ^ static_cast<std::uint32_t>(alpha);
+					for (int y = y0; y <= y1; ++y)
+						if (sig[y - vy]) sig[y - vy] = ((sig[y - vy] ^ mix) * 16777619u) | 1u;
+				};
+				for (int i = 0; i < state.commandCount; ++i)
+				{
+					const DisplayCommand &c = state.commands[i];
+					switch (c.type)
+					{
+					case DisplayCommandType::PushClip:
+						if (depth >= kDepth) return false;
+						clipX0[depth] = curX0; clipY0[depth] = curY0; clipX1[depth] = curX1; clipY1[depth] = curY1;
+						depth++;
+						curX0 = std::max(curX0, static_cast<int>(c.clip.x));
+						curY0 = std::max(curY0, static_cast<int>(c.clip.y));
+						curX1 = std::min(curX1, static_cast<int>(c.clip.x) + static_cast<int>(c.clip.w) - 1);
+						curY1 = std::min(curY1, static_cast<int>(c.clip.y) + static_cast<int>(c.clip.h) - 1);
+						continue;
+					case DisplayCommandType::PopClip:
+						if (depth > 0)
+						{
+							depth--;
+							curX0 = clipX0[depth]; curY0 = clipY0[depth]; curX1 = clipX1[depth]; curY1 = clipY1[depth];
+						}
+						continue;
+					case DisplayCommandType::SetAlpha:
+						alpha = c.alpha.alpha;
+						continue;
+					case DisplayCommandType::BeginFilterBlur:
+					case DisplayCommandType::ApplyFilterBlur:
+						return false;
+					default:
+						break;
+					}
+					if (curX0 > curX1 || curY0 > curY1) continue;
+					if (c.bx > curX1 || c.by > curY1 || c.bx + c.bw - 1 < curX0 || c.by + c.bh - 1 < curY0) continue;
+					// Only a fill spanning the whole viewport width, with the clip
+					// leaving it whole, is the same at every offset.
+					const bool spans = curX0 <= vx && curX1 >= vx1;
+					if (spans && c.type == DisplayCommandType::FillRect && c.textClipOwner < 0 &&
+					    c.fill.x <= vx && c.fill.x + c.fill.w - 1 >= vx1)
+					{
+						band(c.fill.y, c.fill.y + c.fill.h - 1, c.fill.color);
+						continue;
+					}
+					if (spans && c.type == DisplayCommandType::FillRoundedRect && c.textClipOwner < 0 &&
+					    c.fillRoundedRect.x <= vx && c.fillRoundedRect.x + c.fillRoundedRect.w - 1 >= vx1)
+					{
+						const auto &f = c.fillRoundedRect;
+						const int x1 = f.x + f.w - 1, y1 = f.y + f.h - 1;
+						// Corners clear of the viewport leave every row straight; else
+						// only the rows between the corners are.
+						const int top = std::max(f.tl, f.tr), bottom = std::max(f.bl, f.br);
+						const bool cornersOut = f.x + std::max(f.tl, f.bl) <= vx && x1 - std::max(f.tr, f.br) >= vx1;
+						if (cornersOut || f.y + top > y1 - bottom)
+						{
+							if (cornersOut) band(f.y, y1, f.color);
+							else vary(f.y, y1);
+						}
+						else
+						{
+							vary(f.y, f.y + top - 1);
+							band(f.y + top, y1 - bottom, f.color);
+							vary(y1 - bottom + 1, y1);
+						}
+						continue;
+					}
+										// A border whose side edges (corners included) lie outside the
+					// viewport paints only its top and bottom bands inside it: a card's
+					// outline around a scroller leaves the rows between untouched.
+					if (c.type == DisplayCommandType::StrokeRect || c.type == DisplayCommandType::StrokeRoundedRect)
+					{
+						int sx, sy, sw, sh, reach = 1;
+						if (c.type == DisplayCommandType::StrokeRect)
+						{
+							sx = c.stroke.x; sy = c.stroke.y; sw = c.stroke.w; sh = c.stroke.h;
+						}
+						else
+						{
+							const auto &st = c.strokeRoundedRect;
+							sx = st.x; sy = st.y; sw = st.w; sh = st.h;
+							reach = std::max<int>({st.tl, st.tr, st.br, st.bl, 0}) + std::max<int>(st.lineWidth, 1);
+							if (st.cssRadii)
+								for (int k = 0; k < 4; ++k) reach = std::max(reach, (std::max(st.rx8[k], st.ry8[k]) + 7) / 8 + std::max<int>(st.lineWidth, 1));
+						}
+						if (sx + reach < vx && sx + sw - 1 - reach > vx1 && sh > 2 * reach)
+						{
+							vary(std::min<int>(sy, c.by), sy + reach);
+							vary(sy + sh - 1 - reach, std::max<int>(sy + sh - 1, c.by + c.bh - 1));
+							continue;
+						}
+					}
+					vary(c.by, c.by + c.bh - 1);
+				}
+				return true;
+			}
+
 			// A strip-by-strip replay of one region computes the cull once for the
 			// whole region (a cover of the region covers every strip of it) instead
 			// of re-scanning the list per strip.
@@ -14175,6 +14293,11 @@ int gLastScrollUiFrame = -1000;
 	bool DisplayList::replayCullCovered()
 	{
 		return DisplayCommandReplayer::cullCovered;
+	}
+
+	bool DisplayList::scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig)
+	{
+		return DisplayCommandReplayer::scrollRowSignatures(vx, vy, vw, vh, sig);
 	}
 
 	bool DisplayList::beginRegionReplay()
