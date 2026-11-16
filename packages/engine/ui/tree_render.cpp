@@ -55,6 +55,8 @@ extern "C" bool gea_replay_stage_begin(int x0, int y0, int x1, int y1);
 extern "C" void gea_replay_stage_end();
 extern "C" bool gea_replay_stage_active();
 extern "C" void gea_replay_stage_skip_seed(bool skip);
+// Overlaps each strip's copy-back with the next strip's replay (rgb_panel).
+extern "C" void gea_replay_stage_pipeline(bool on);
 // True when every flush presents a whole frame (an RGB panel swapping scanout
 // buffers): interleaving replay with one flush per dirty rect then costs one
 // buffer swap -- and one panel refresh of waiting -- per rect instead of per frame.
@@ -3645,6 +3647,19 @@ namespace gea::embedded::ui
 				// Conservative paint path for full display-list replay.
 				// Raster each rect in SRAM strips where the display stages, so the
 				// back-buffer writes cannot starve a PSRAM scanout refill.
+				// An opaque underlay (a gea3d frame) paints every pixel of the rects
+				// it covers before the tree replays over it: those are repainted
+				// whole, so the display need not first restore their old pixels
+				// (on a double-buffered panel, a full-screen copy every frame).
+				{
+					gea::platform::display::DisplayFlushRect covered[DirtyRegions::kMaxRects];
+					int coveredCount = 0;
+					for (int i = 0; i < rect_count; i++)
+						if (gea::framework::display::Underlay::covers(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1))
+							covered[coveredCount++] = gea::platform::display::DisplayFlushRect{rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1};
+					if (coveredCount > 0) gea_display_prepare_repaint(covered, coveredCount);
+				}
+				gea_replay_stage_pipeline(true);
 				for (int i = 0; i < rect_count; i++)
 				{
 					DirtyRegions::Rect *r = &rects[i];
@@ -3654,7 +3669,10 @@ namespace gea::embedded::ui
 					gea::platform::display::Display::resetClip();
 					gea::platform::display::Display::pushClip(r->x0, r->y0, r->x1 - r->x0 + 1, r->y1 - r->y0 + 1);
 					DisplayList::instance().setReplayCullStart(DisplayList::instance().replayCullStart());
-					gea_replay_stage_skip_seed(DisplayList::instance().replayCullCovered());
+					// An opaque underlay paints every pixel of the strips it covers
+					// first, so their seed from the back buffer would be overwritten.
+					gea_replay_stage_skip_seed(DisplayList::instance().replayCullCovered() ||
+					                           gea::framework::display::Underlay::covers(r->x0, r->y0, r->x1, r->y1));
 					gea::platform::display::Display::popClip();
 					for (int sy0 = r->y0; sy0 <= r->y1; sy0 += band)
 					{
@@ -3671,6 +3689,7 @@ namespace gea::embedded::ui
 					DisplayList::instance().setReplayCullStart(-1);
 					gea_replay_stage_skip_seed(false);
 				}
+				gea_replay_stage_pipeline(false);
 			}
 			GEA_REFRESH_PERF(perf.treeReplayUs += refreshPerfNowUs() - replayStartUs);
 		}

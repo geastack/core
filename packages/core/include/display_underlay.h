@@ -25,6 +25,13 @@ namespace gea::framework::display
 		// Registers the painter for the screen area it covers; replaces any
 		// previous one. The caller marks the area dirty to have it repainted.
 		static void set(Paint paint, void *user, int x0, int y0, int x1, int y1);
+		// Declares that the painter writes every pixel of its area (a 3D frame
+		// with a background colour). `set` resets it to false.
+		static void setOpaque(bool opaque);
+		// True when an opaque underlay paints all of [x0, x1] x [y0, y1]: a
+		// refresh that paints it there repaints that rect completely, so the
+		// display need not restore the rect's old pixels first.
+		static bool covers(int x0, int y0, int x1, int y1);
 		static void clear();
 		static bool active();
 		// Paints the part of [x0, x1] x [y0, y1] the underlay covers.

@@ -194,6 +194,7 @@ extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows() { return 0; }
 // windows tighter returns more than gea_bulk_replay_stage_rows().
 extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows_for_width(int) { return gea_bulk_replay_stage_rows(); }
 extern "C" __attribute__((weak)) void gea_replay_stage_skip_seed(bool) {}
+extern "C" __attribute__((weak)) void gea_replay_stage_pipeline(bool) {}
 // A replay is about to draw straight into the framebuffer (no stage open), so
 // its rows sit dirty in the cache until the publish writes them back.
 extern "C" __attribute__((weak)) void gea_display_note_direct_draw() {}
