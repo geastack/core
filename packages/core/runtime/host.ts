@@ -337,6 +337,8 @@ declare const __gea_Memory: {
   allocationPsramBytes(): number
   allocationSramPeakBytes(): number
   allocationPsramPeakBytes(): number
+  beginInternal(bytes: number): void
+  endInternal(): void
 }
 declare const __gea_Input: {
   // Reads-and-clears the one-shot back-button-pressed flag. Set by the
@@ -415,6 +417,21 @@ declare const __gea_Battery: {
   charging(): boolean
   // Battery charge percentage (0-100) from the platform PMU.
   level(): number
+}
+declare const __gea_Simd: {
+  sumWindowsU8(
+    dst: Uint8Array,
+    dstStart: number,
+    dstStride: number,
+    src: Uint8Array,
+    offsets: Int32Array,
+    windows: number,
+    srcStride: number,
+    width: number,
+    rows: number,
+    multiplier: number,
+    shift: number,
+  ): void
 }
 declare const __gea_Notify: {
   // Transient host->app notification channel. text() is the latest message;
@@ -1009,6 +1026,12 @@ export const Memory = {
   allocationPsramPeakBytes(): number {
     return __gea_Memory.allocationPsramPeakBytes()
   },
+  beginInternal(bytes: number): void {
+    __gea_Memory.beginInternal(bytes)
+  },
+  endInternal(): void {
+    __gea_Memory.endInternal()
+  },
   stats(): EmbeddedMemoryStats {
     return {
       internalFree: __gea_Memory.internalFree(),
@@ -1185,6 +1208,23 @@ export const Battery = {
 
   level(): number {
     return __gea_Battery.level()
+  },
+}
+export const Simd = {
+  sumWindowsU8(
+    dst: Uint8Array,
+    dstStart: number,
+    dstStride: number,
+    src: Uint8Array,
+    offsets: Int32Array,
+    windows: number,
+    srcStride: number,
+    width: number,
+    rows: number,
+    multiplier: number,
+    shift: number,
+  ): void {
+    __gea_Simd.sumWindowsU8(dst, dstStart, dstStride, src, offsets, windows, srcStride, width, rows, multiplier, shift)
   },
 }
 export const Notify = {

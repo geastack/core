@@ -19,6 +19,9 @@
 
 // For the compile-gated GEA_EMBEDDED_TEXT_SPRITE_DIAG counters (see the diag
 // block above Canvas::drawRasterizedText). Includes must stay at file scope.
+#ifndef GEA_EMBEDDED_TTF_RUNTIME_FONTS
+#define GEA_EMBEDDED_TTF_RUNTIME_FONTS 0
+#endif
 #ifndef GEA_EMBEDDED_TEXT_SPRITE_DIAG
 #define GEA_EMBEDDED_TEXT_SPRITE_DIAG 0
 #endif
@@ -3324,6 +3327,27 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 			std::uint8_t *fbNib = packedRow(rowToPhysical(py));
 #else
 			pixel::native_t *fb_row = &pixels_[rowToPhysical(py) * stride_ + gx];
+#if !GEA_EMBEDDED_TTF_RUNTIME_FONTS
+			// Baked 8-bit atlas: read the glyph row directly. RasterizedFont::
+			// coverage lives in another translation unit, so going through it
+			// cost an out-of-line call plus its bounds checks per pixel — most
+			// of a small label's draw time. row/col are already clipped inside
+			// the glyph, which is all coverage() checks for.
+			if (font.data()->atlasBits == 8) {
+				const RasterizedFontData *fd = font.data();
+				const std::uint8_t *covRow = fd->atlas + static_cast<std::size_t>(glyph.sourceY + row) * fd->atlasWidth + glyph.sourceX;
+				const int ga = globalAlpha_;
+				for (int col = col_start; col <= col_end; col++) {
+					const int alpha = covRow[col];
+					if (alpha == 0) continue;
+					const std::uint8_t a = (ga == 255) ? alpha : (alpha * ga) / 255;
+					if (a == 0) continue;
+					pixel::native_t *pixel = &fb_row[col];
+					*pixel = (a == 255) ? c : pixel::blendNative(c, *pixel, a);
+				}
+				continue;
+			}
+#endif
 #endif
 			for (int col = col_start; col <= col_end; col++) {
 				int alpha = font.coverage(glyph, row, col);

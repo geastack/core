@@ -141,6 +141,8 @@ const MEMORY_NO_THROW_METHODS = [
   "displayFlushRows",
   "displayFlushDepth",
   "displayFlushBufferBytes",
+  "beginInternal",
+  "endInternal",
 ];
 
 const HOST_NATIVE_CALLABLE_SIDECARS: NonNullable<
@@ -611,6 +613,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Profiler: "gea::host::Profiler",
           __gea_Battery: "gea::host::Battery",
           __gea_Notify: "gea::host::Notify",
+          Simd: "gea::host::Simd",
+          __gea_Simd: "gea::host::Simd",
           __gea_DeviceControl: "gea::host::DeviceControl",
           // `console` is a PATH, not a value. An app that declares its own
           // `declare const console: { log(message: string): void }` (several in
@@ -1325,6 +1329,8 @@ export function createGeaHostShims(): HostShimDefinitions {
               "gea::host::Memory.allocationSramPeakBytes",
             allocationPsramPeakBytes:
               "gea::host::Memory.allocationPsramPeakBytes",
+            beginInternal: "gea::host::Memory.beginInternal",
+            endInternal: "gea::host::Memory.endInternal",
           },
           memory: {
             internalFree: "gea::host::Memory.internalFree",
@@ -1356,6 +1362,8 @@ export function createGeaHostShims(): HostShimDefinitions {
               "gea::host::Memory.allocationSramPeakBytes",
             allocationPsramPeakBytes:
               "gea::host::Memory.allocationPsramPeakBytes",
+            beginInternal: "gea::host::Memory.beginInternal",
+            endInternal: "gea::host::Memory.endInternal",
           },
           __gea_Memory: {
             internalFree: "gea::host::Memory.internalFree",
@@ -1387,6 +1395,8 @@ export function createGeaHostShims(): HostShimDefinitions {
               "gea::host::Memory.allocationSramPeakBytes",
             allocationPsramPeakBytes:
               "gea::host::Memory.allocationPsramPeakBytes",
+            beginInternal: "gea::host::Memory.beginInternal",
+            endInternal: "gea::host::Memory.endInternal",
           },
           Input: {
             consumeBackButton: "gea::host::Input.consumeBackButton",
@@ -1506,6 +1516,12 @@ export function createGeaHostShims(): HostShimDefinitions {
             text: "gea::host::Notify.text",
             seq: "gea::host::Notify.seq",
           },
+          Simd: {
+            sumWindowsU8: "gea::host::Simd.sumWindowsU8",
+          },
+          __gea_Simd: {
+            sumWindowsU8: "gea::host::Simd.sumWindowsU8",
+          },
           DeviceControl: {
             exec: "gea::host::DeviceControl.exec",
           },
@@ -1540,6 +1556,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Battery: ["level"],
           Notify: ["seq"],
           __gea_Notify: ["seq"],
+          Simd: ["sumWindowsU8"],
+          __gea_Simd: ["sumWindowsU8"],
         },
         hostNamespaceProperties: {
           window: {
@@ -2658,6 +2676,10 @@ export function createGeaHostShims(): HostShimDefinitions {
           drawImageTiledX: "gea_ir::canvasDrawImageTiledX($receiver, $args)",
           createImageData565:
             "gea_ir::canvasCreateImageData565($receiver, $args)",
+          panelBufferCount: "gea_ir::canvasPanelBufferCount($receiver /*$args*/)",
+          createPanelImageData565:
+            "gea_ir::canvasCreatePanelImageData565($receiver, $args)",
+          acquirePanelBuffer: "gea_ir::canvasAcquirePanelBuffer($receiver /*$args*/)",
           putImageData: "gea_ir::canvasPutImageData($receiver, $args)",
           flush: "gea_ir::canvasFlush($receiver /*$args*/)",
           beginBatch: "gea_ir::canvasBeginBatch($receiver /*$args*/)",

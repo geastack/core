@@ -82,6 +82,11 @@ struct ImageSlot {
 	// Preserve whether the source has no alpha channel so materialization can
 	// discard the synthetic all-255 alpha plane and use the opaque blit path.
 	bool deferredOpaque = false;
+	// Where a deferred decode came from, kept after it materializes so
+	// releaseIdleDecodes() can drop the pixels and decode again on next use.
+	const std::uint8_t *sourceData = nullptr;
+	int sourceLength = 0;
+	bool sourceOpaque = false;
 };
 
 class ImageStore {
@@ -100,6 +105,13 @@ public:
 	// during idle frames so a later first-draw (e.g. switching weather cities)
 	// doesn't bunch every decode into a single visible hitch.
 	bool materializeOneDeferred();
+	// Drop the decoded pixels of large deferred stills that nothing references
+	// (no node, no recorded display command); the encoded bytes stay in flash,
+	// so the next draw decodes them again. A full-screen backdrop shown once at
+	// boot otherwise holds its framebuffer-sized decode for the life of the app.
+	// Call once per frame, never between a release and the re-retain that
+	// follows it (a style recompute), so a still in use is not thrown away.
+	void releaseIdleDecodes();
 	// Register an externally-owned native-format pixel buffer. `takeOwnership`
 	// transfers ownership to the store (freed on dispose) — used by the iOS
 	// camera capture, which hands over a freshly-allocated RGBA8888 still.

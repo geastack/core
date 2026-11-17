@@ -11,6 +11,10 @@ public:
 		int y0;
 		int x1;
 		int y1;
+		// A node outside the scroll subtree that overlaps the viewport (a
+		// floating button): the blit drags its pixels by the scroll distance, so
+		// it is repainted at its own box and at the box shifted by the scroll.
+		bool overlay = false;
 	};
 
 	static int refresh(int root, int width, int height);

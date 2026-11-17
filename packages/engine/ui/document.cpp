@@ -320,6 +320,7 @@ namespace
 	gea::framework::display::Underlay::Paint underlayPaint = nullptr;
 	void *underlayUser = nullptr;
 	int underlayX0 = 0, underlayY0 = 0, underlayX1 = -1, underlayY1 = -1;
+	bool underlayOpaque = false;
 }  // namespace
 
 bool gea::framework::display::Underlay::composited()
@@ -335,12 +336,24 @@ void gea::framework::display::Underlay::set(Paint paint, void *user, int x0, int
 	underlayY0 = y0;
 	underlayX1 = x1;
 	underlayY1 = y1;
+	underlayOpaque = false;
+}
+
+void gea::framework::display::Underlay::setOpaque(bool opaque)
+{
+	underlayOpaque = opaque;
+}
+
+bool gea::framework::display::Underlay::covers(int x0, int y0, int x1, int y1)
+{
+	return underlayPaint && underlayOpaque && x0 >= underlayX0 && y0 >= underlayY0 && x1 <= underlayX1 && y1 <= underlayY1;
 }
 
 void gea::framework::display::Underlay::clear()
 {
 	underlayPaint = nullptr;
 	underlayUser = nullptr;
+	underlayOpaque = false;
 }
 
 bool gea::framework::display::Underlay::active()
@@ -357,4 +370,16 @@ void gea::framework::display::Underlay::paint(int x0, int y0, int x1, int y1)
 	y1 = std::min(y1, underlayY1);
 	if (x0 > x1 || y0 > y1) return;
 	underlayPaint(x0, y0, x1, y1, underlayUser);
+	// The painter writes pixels directly, so the canvas has no record of them.
+	// A display that stages the replay in a strip copies back only the canvas's
+	// dirty box, which left the frame black under everything but the HUD text.
+	if (auto *canvas = gea::platform::display::Display::canvas()) {
+		int cx0 = 0, cy0 = 0, cx1 = -1, cy1 = -1;
+		canvas->currentClip(&cx0, &cy0, &cx1, &cy1);
+		x0 = std::max(x0, cx0);
+		y0 = std::max(y0, cy0);
+		x1 = std::min(x1, cx1);
+		y1 = std::min(y1, cy1);
+		if (x0 <= x1 && y0 <= y1) canvas->markDirty(x0, y0, x1, y1);
+	}
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
+#include "input_retirement.h"
 
 #include "tree_state.h"
 
@@ -291,6 +292,7 @@ void Tree::setScrollLeft(int node, int scrollLeft)
 	if (node < 0 || node >= nodeCount()) return;
 	Node &n = treeState().nodes[node];
 	if (!isViewLikeNodeType(n.type) || !scrollsOverflowX(n.computedStyle()) || n.type == NodeType::VirtualList) return;
+	if (animateSnapPageScroll(node, true, scrollLeft)) return;
 	const int maxX = ViewRenderer::scrollMaxX(n);
 	if (scrollLeft < 0) scrollLeft = 0;
 	if (scrollLeft > maxX) scrollLeft = maxX;
@@ -317,6 +319,7 @@ void Tree::setScrollTop(int node, int scrollTop)
 		return;
 	}
 	if (!isViewLikeNodeType(n.type) || !scrollsOverflowY(n.computedStyle())) return;
+	if (animateSnapPageScroll(node, false, scrollTop)) return;
 	const int maxY = ViewRenderer::scrollMaxY(n);
 	if (scrollTop < 0) scrollTop = 0;
 	if (scrollTop > maxY) scrollTop = maxY;
@@ -343,39 +346,56 @@ void Tree::scrollIntoView(int node)
 #endif
 }
 
+void Tree::scrollIntoViewKeepingPadding(int node)
+{
+#if GEA_CSS_SCROLLING
+	scrollIntoView(node);
+	if (treeState().pendingScrollIntoViewNode == node) treeState().pendingScrollIntoViewKeepsPadding = true;
+#else
+	(void)node;
+#endif
+}
+
 void Tree::applyPendingScrollIntoView()
 {
 #if GEA_CSS_SCROLLING
 	auto &state = treeState();
 	const int node = state.pendingScrollIntoViewNode;
 	if (node < 0) return;
-	if (node >= state.nodeCount || !state.nodeActive[node]) {
+	const bool keepPadding = state.pendingScrollIntoViewKeepsPadding;
+	auto finish = [&state] {
 		state.pendingScrollIntoViewNode = -1;
+		state.pendingScrollIntoViewKeepsPadding = false;
+	};
+	if (node >= state.nodeCount || !state.nodeActive[node]) {
+		finish();
 		return;
 	}
 	const int scroller = nearestScrollableAncestorY(state, node);
 	if (scroller < 0) return;
 
 	const Node &container = state.nodes[scroller];
+	const int padTop = keepPadding ? container.computedStyle().padding[0] : 0;
+	const int padBottom = keepPadding ? container.computedStyle().padding[2] : 0;
 	const int viewportTop = container.layout.scroll_y;
 	const int viewportBottom = viewportTop + container.layout.height;
 	int targetTop = 0;
 	int targetBottom = 0;
 	if (!targetContentBoundsY(state, scroller, node, &targetTop, &targetBottom)) {
-		state.pendingScrollIntoViewNode = -1;
+		finish();
 		return;
 	}
 
 	int next = container.layout.scroll_y;
-	if (targetTop < viewportTop) {
-		next = targetTop;
-	} else if (targetBottom > viewportBottom) {
-		next = targetBottom - container.layout.height;
+	if (targetTop - padTop < viewportTop) {
+		next = targetTop - padTop;
+	} else if (targetBottom + padBottom > viewportBottom) {
+		next = targetBottom + padBottom - container.layout.height;
 	} else {
-		state.pendingScrollIntoViewNode = -1;
+		finish();
 		return;
 	}
-	state.pendingScrollIntoViewNode = -1;
+	finish();
 	setScrollTop(scroller, next);
 #else
 

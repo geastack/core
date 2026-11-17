@@ -221,8 +221,9 @@ public:
 	void drawTextFontFamilyRotated90(const char *text, int lx, int ly, pixel::native_t color, int family_id, int size_px);
 	void drawTextFontFamilyOnBackground(const char *text, int x, int y, pixel::native_t color,
 	                                    int family_id, int size_px, pixel::native_t background);
-	int measureTextFontFamily(const char *text, int family_id, int size_px);
-	int measureTextInkCenterFontFamily(const char *text, int family_id, int size_px);
+	// Font metrics only: no pixels or canvas state, so callers need no surface.
+	static int measureTextFontFamily(const char *text, int family_id, int size_px);
+	static int measureTextInkCenterFontFamily(const char *text, int family_id, int size_px);
 	static void measureTextFont(const char *text, int max_width, int font_id, int *out_w, int *out_h);
 	void fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br, int bl, pixel::native_t color);
 	void strokeRoundedRect(int x, int y, int w, int h, int tl, int tr, int br, int bl, int lw, pixel::native_t color);

@@ -26,6 +26,7 @@
 #include <cstring>
 #include <deque>
 #include <initializer_list>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -13687,42 +13688,49 @@ __attribute__((noinline)) ActiveRulePlanCacheEntry::ActiveRulePlanCacheEntry()
 }
 #endif
 
+// Entries past the inline array live in fixed-size chunks allocated with a
+// nothrow new. A cache must never abort the device: when a chunk cannot be
+// allocated, tryEmplaceBack returns null and the plan simply goes uncached.
+// Chunks also avoid the doubling reallocation of a vector, which needed one
+// contiguous block of up to ~38 KB at boot on boards with fragmented heaps.
 class ActiveRulePlanCacheStore {
 public:
-	std::size_t size() const { return inlineCount_ + spill_.size(); }
+	static constexpr std::size_t kCapacityLimit = 64;
+
+	std::size_t size() const { return inlineCount_ + spillCount_; }
 
 	ActiveRulePlanCacheEntry &operator[](std::size_t index)
 	{
-		return index < inlineCount_ ? inline_[index] : spill_[index - inlineCount_];
+		return index < inlineCount_ ? inline_[index] : spillAt(index - inlineCount_);
 	}
 
 	const ActiveRulePlanCacheEntry &operator[](std::size_t index) const
 	{
-		return index < inlineCount_ ? inline_[index] : spill_[index - inlineCount_];
+		return index < inlineCount_ ? inline_[index] : spillAt(index - inlineCount_);
 	}
 
-	ActiveRulePlanCacheEntry &emplace_back()
+	ActiveRulePlanCacheEntry *tryEmplaceBack()
 	{
 		if (inlineCount_ < kInlineCapacity) {
 			ActiveRulePlanCacheEntry &entry = inline_[inlineCount_++];
 			resetActiveRulePlanCacheEntry(entry);
-			return entry;
+			return &entry;
 		}
-		spill_.emplace_back();
-		ActiveRulePlanCacheEntry &entry = spill_.back();
+		const std::size_t chunk = spillCount_ / kChunkEntries;
+		if (chunk >= kMaxChunks) return nullptr;
+		if (!chunks_[chunk]) {
+			chunks_[chunk] = new (std::nothrow) ActiveRulePlanCacheEntry[kChunkEntries];
+			if (!chunks_[chunk]) return nullptr;
+		}
+		ActiveRulePlanCacheEntry &entry = spillAt(spillCount_++);
 		resetActiveRulePlanCacheEntry(entry);
-		return entry;
-	}
-
-	ActiveRulePlanCacheEntry &back()
-	{
-		return spill_.empty() ? inline_[inlineCount_ - 1] : spill_.back();
+		return &entry;
 	}
 
 	void pop_back()
 	{
-		if (!spill_.empty()) {
-			spill_.pop_back();
+		if (spillCount_) {
+			resetActiveRulePlanCacheEntry(spillAt(--spillCount_));
 			return;
 		}
 		if (inlineCount_ == 0) return;
@@ -13732,16 +13740,25 @@ public:
 	void clear()
 	{
 		for (std::size_t i = 0; i < inlineCount_; ++i) resetActiveRulePlanCacheEntry(inline_[i]);
+		for (std::size_t i = 0; i < spillCount_; ++i) resetActiveRulePlanCacheEntry(spillAt(i));
 		inlineCount_ = 0;
-		spill_.clear();
+		spillCount_ = 0;
 	}
 
 private:
 	static constexpr std::size_t kInlineCapacity =
 	    static_cast<std::size_t>(GEA_CSS_ACTIVE_RULE_PLAN_INLINE_CACHE_ENTRIES);
+	static constexpr std::size_t kChunkEntries = 8;
+	static constexpr std::size_t kMaxChunks =
+	    kCapacityLimit > kInlineCapacity ? (kCapacityLimit - kInlineCapacity + kChunkEntries - 1) / kChunkEntries : 0;
+
+	ActiveRulePlanCacheEntry &spillAt(std::size_t i) { return chunks_[i / kChunkEntries][i % kChunkEntries]; }
+	const ActiveRulePlanCacheEntry &spillAt(std::size_t i) const { return chunks_[i / kChunkEntries][i % kChunkEntries]; }
+
 	std::array<ActiveRulePlanCacheEntry, kInlineCapacity> inline_{};
-	std::vector<ActiveRulePlanCacheEntry> spill_;
+	std::array<ActiveRulePlanCacheEntry *, (kMaxChunks ? kMaxChunks : 1)> chunks_{};
 	std::size_t inlineCount_ = 0;
+	std::size_t spillCount_ = 0;
 };
 
 ActiveRulePlanCacheStore &activeRulePlanCache()
@@ -14639,12 +14656,12 @@ std::uint16_t cachedStyleApplyOpForCompiledValue(const CssCompiledValue *compile
 
 void storeActiveRulePlanForSignature(const RuleCandidateSignature &signature, const ActiveRulePlan &plan)
 {
-	static constexpr std::size_t kActiveRulePlanCacheLimit = 64;
 	if (!activeRulePlanFitsCache(plan)) return;
 	auto &cache = activeRulePlanCache();
-	if (cache.size() >= kActiveRulePlanCacheLimit) return;
-	cache.emplace_back();
-	ActiveRulePlanCacheEntry &entry = cache.back();
+	if (cache.size() >= ActiveRulePlanCacheStore::kCapacityLimit) return;
+	ActiveRulePlanCacheEntry *slot = cache.tryEmplaceBack();
+	if (!slot) return;
+	ActiveRulePlanCacheEntry &entry = *slot;
 	activeRulePlanCacheLastHit() = cache.size() - 1;
 	copyActiveRulePlanSignature(entry, signature);
 	const auto &ruleList = rules();

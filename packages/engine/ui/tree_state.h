@@ -308,6 +308,9 @@ struct TreeState {
 	uint64_t scrollDirtyNodes[kScrollDirtyWordCount]{};
 	bool scrollDirtyAny = false;
 	int pendingScrollIntoViewNode = -1;
+	// The pending scroll keeps the scroller's padding clear of the target
+	// (LVGL's scroll-to-view rule; the on-screen keyboard asks for it).
+	bool pendingScrollIntoViewKeepsPadding = false;
 #else
 	static constexpr bool scrollDirtyAny = false;
 	static constexpr int pendingScrollIntoViewNode = -1;
@@ -376,6 +379,12 @@ struct TreeState {
 	int activeInputId = -1;
 	int caretLastFlipMs = 0;
 	bool caretVisible = true;
+	// Caret byte index in the active input's value; -1 = at the end.
+	int caretPos = -1;
+	// A password input shows the characters typed in [pwdRevealFrom,
+	// pwdRevealTo) until pwdRevealUntilMs, then bullets (lv_textarea's
+	// LV_TEXTAREA_DEF_PWD_SHOW_TIME).
+	int pwdRevealFrom = 0, pwdRevealTo = 0, pwdRevealUntilMs = 0;
 #else
 	static constexpr int activeInputId = -1;
 	static constexpr int caretLastFlipMs = 0;

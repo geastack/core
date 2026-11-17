@@ -63,8 +63,11 @@ bool isShape(int node);
 // consumed once per rebuild. False means "repaint the whole box": no rebuild
 // since the last call, a first build or resize, a z-order change, or a change
 // to the svg box's own style or position. An empty rect (x1 < x0) means the
-// rebuild changed nothing on screen.
-bool damage(int root, int &x0, int &y0, int &x1, int &y1);
+// rebuild changed nothing on screen. `extra` (up to kExtraDamage rects) gets
+// the further boxes of a rebuild that changed several separate places, and
+// `extraCount` how many; the first box is the returned rect.
+constexpr int kExtraDamage = 3;
+bool damage(int root, int &x0, int &y0, int &x1, int &y1, int (*extra)[4] = nullptr, int *extraCount = nullptr);
 
 // Tree hooks.
 void noteTagChanged(int node);

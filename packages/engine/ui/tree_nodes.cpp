@@ -222,6 +222,7 @@ void Tree::clear()
 	std::memset(state.scrollDirtyNodes, 0, sizeof(state.scrollDirtyNodes));
 	state.scrollDirtyAny = false;
 	state.pendingScrollIntoViewNode = -1;
+	state.pendingScrollIntoViewKeepsPadding = false;
 #endif
 	// Drop display-list commands and growable render scratch from the previous app.
 	// Per-frame DisplayList::clear() keeps capacity for reuse; app/tree reset is the

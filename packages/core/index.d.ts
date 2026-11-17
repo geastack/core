@@ -113,6 +113,8 @@ export interface GeaIntrinsicElements {
   ellipse: SvgEllipseProps
   rect: SvgRectProps
   defs: SvgGroupProps
+  linearGradient: SvgLinearGradientProps
+  stop: SvgStopProps
   title: SvgGroupProps
   desc: SvgGroupProps
 }
@@ -709,6 +711,14 @@ export interface NativeViewProps extends DataAttributes, NativeEventAttributes {
   pressId?: number
   pressValue?: number
   momentum?: boolean | string
+  /**
+   * A scroller whose pages are its own width (or height): a released drag
+   * settles on the nearest page, or the next one in a fling's direction, and a
+   * programmatic `scrollLeft`/`scrollTop` animates there -- LVGL's tabview
+   * content. A `scroll` event fires when it settles.
+   */
+  'snap-page'?: boolean
+  onScroll?: (event: Event) => void
   children?: any
 }
 
@@ -765,6 +775,17 @@ export interface SvgCircleProps extends SvgPresentationProps { cx?: SvgNumber; c
 export interface SvgEllipseProps extends SvgPresentationProps { cx?: SvgNumber; cy?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber }
 export interface SvgRectProps extends SvgPresentationProps {
   x?: SvgNumber; y?: SvgNumber; width?: SvgNumber; height?: SvgNumber; rx?: SvgNumber; ry?: SvgNumber
+}
+// A paint server for fill/stroke="url(#id)": x1..y2 are fractions of the
+// painted shape's box (objectBoundingBox, the default) or user-space units.
+export interface SvgLinearGradientProps extends SvgPresentationProps {
+  x1?: SvgNumber; y1?: SvgNumber; x2?: SvgNumber; y2?: SvgNumber
+  gradientUnits?: 'objectBoundingBox' | 'userSpaceOnUse'
+}
+export interface SvgStopProps extends SvgPresentationProps {
+  offset?: SvgNumber
+  'stop-color'?: string
+  'stop-opacity'?: SvgNumber
 }
 
 export interface GeaNode extends Node {}
@@ -1272,6 +1293,23 @@ export interface CanvasRenderingContext2D {
    * Allocate once, write every frame, then draw with `putImageData`.
    */
   createImageData565(width: number, height: number): ImageData565
+  /**
+   * How many display buffers a frame can be rendered into in place; 0 where it
+   * cannot (no swap buffers, a panel that is not plain RGB565, the browser).
+   */
+  panelBufferCount(): number
+  /**
+   * An `ImageData565` whose `data16` is display buffer `index` itself: write a
+   * whole frame there and `putImageData` it at (0, 0) without a copy. Make one
+   * per buffer, once; each frame draw into the one `acquirePanelBuffer` names.
+   */
+  createPanelImageData565(index: number): ImageData565
+  /**
+   * Waits until the display has released the buffer the next frame draws into
+   * and returns its index, or -1 when frames cannot be drawn in place. The
+   * frame must repaint every pixel: the buffer holds an older frame.
+   */
+  acquirePanelBuffer(): number
   /** Draw an `ImageData565` with its top-left corner at (dx, dy): one blit. */
   putImageData(image: ImageData565, dx: number, dy: number): void
   /** Draw only the dirty rectangle of an `ImageData565`, at (dx + dirtyX, dy + dirtyY). */
@@ -1463,6 +1501,12 @@ export interface MemoryController {
   allocationPsramPeakBytes(): number
   stats(): EmbeddedMemoryStats
   config(): EmbeddedMemoryConfig
+  // Typed arrays and other allocations made between these two calls prefer
+  // fast on-chip RAM (ESP32-S3 SRAM instead of PSRAM), for tables read at
+  // random per pixel. `bytes` is how much room to make: the display may give
+  // up some internal staging for it. No-ops where there is one kind of RAM.
+  beginInternal(bytes: number): void
+  endInternal(): void
 }
 
 export declare const Memory: MemoryController
@@ -1739,6 +1783,30 @@ export interface NotifyController {
 }
 
 export declare const Notify: NotifyController
+
+export interface SimdController {
+  // Sums byte windows into a clamped byte grid, vectorized where the chip has
+  // SIMD (ESP32-S3 PIE) and an exact scalar loop elsewhere:
+  //   dst[dstStart + r*dstStride + x] =
+  //     min(255, ((sum over k of src[offsets[k] + r*srcStride + x]) * multiplier) >> shift)
+  // for r < rows, x < width, k < windows (at most 8). A call that would read
+  // or write outside its arrays does nothing.
+  sumWindowsU8(
+    dst: Uint8Array,
+    dstStart: number,
+    dstStride: number,
+    src: Uint8Array,
+    offsets: Int32Array,
+    windows: number,
+    srcStride: number,
+    width: number,
+    rows: number,
+    multiplier: number,
+    shift: number,
+  ): void
+}
+
+export declare const Simd: SimdController
 
 export interface DeviceControlController {
   // Run a host shell command, return combined stdout+stderr. macOS companion

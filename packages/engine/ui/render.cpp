@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -186,6 +187,31 @@ extern "C" __attribute__((weak)) int gea_current_render_core() { return 0; }
 extern "C" __attribute__((weak)) int gea_replay_stage_rows() { return 0; }
 extern "C" __attribute__((weak)) bool gea_replay_stage_begin(int, int, int, int) { return false; }
 extern "C" __attribute__((weak)) void gea_replay_stage_end() {}
+// True while this core has a stage open: its draws already land in SRAM.
+extern "C" __attribute__((weak)) bool gea_replay_stage_active() { return false; }
+extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows() { return 0; }
+// Rows a staged window `width` pixels wide may span; a display packing narrow
+// windows tighter returns more than gea_bulk_replay_stage_rows().
+extern "C" __attribute__((weak)) int gea_bulk_replay_stage_rows_for_width(int) { return gea_bulk_replay_stage_rows(); }
+extern "C" __attribute__((weak)) void gea_replay_stage_skip_seed(bool) {}
+extern "C" __attribute__((weak)) void gea_replay_stage_pipeline(bool) {}
+// A replay is about to draw straight into the framebuffer (no stage open), so
+// its rows sit dirty in the cache until the publish writes them back.
+extern "C" __attribute__((weak)) void gea_display_note_direct_draw() {}
+namespace {
+// A repaint this large (a quarter of an 800x480 panel) is a burst: a tab's
+// first scroll, a content swap. Raster it through the display's SRAM strips
+// even where per-frame repaints go direct -- unstaged, its PSRAM writes starve
+// a bounce-buffered panel's scanout refill (a visible tear). Steady per-frame
+// repaints stay below it, so the per-strip list walk never taxes animation.
+constexpr long kBulkStagePixels = 96000;
+int replayStageRowsForArea(long area)
+{
+	const int rows = gea_replay_stage_rows();
+	if (rows > 0) return rows;
+	return area >= kBulkStagePixels ? gea_bulk_replay_stage_rows() : 0;
+}
+}  // namespace
 
 // Share (permille of the split region's rows) the SUBMITTING core keeps in the
 // coarse 2-core replay split. 500 = even split. A target whose render core pays a
@@ -253,6 +279,7 @@ extern "C" __attribute__((weak)) void gea_rgb565_lut_blend_const_alpha_span(std:
 
 namespace gea::embedded::ui
 {
+
 
 bool gScrollStripReplayActive = false;
 bool gScrollRanThisFrame = false;
@@ -544,6 +571,18 @@ int gLastScrollUiFrame = -1000;
 			int commandCount = 0;
 			bool imageReferences[gea::framework::graphics::kImageMax]{};
 			bool textClippedBackgrounds = false;
+			// Scrollbar thumbs in the command stream (recorded after their
+			// container's children, so outside every node's command range). Direct
+			// dirty-region replay walks node ranges and never draws them; a frame
+			// whose dirty rects touch one must take the full-list path instead.
+			static constexpr int kMaxScrollbarBoxes = 16;
+			std::int16_t scrollbarBoxes[kMaxScrollbarBoxes][4]{};
+			// Each thumb's own command, so direct replay can repaint it.
+			int scrollbarCommands[kMaxScrollbarBoxes]{};
+			// Each thumb's scroll container, so a subtree translate can move it.
+			int scrollbarNodes[kMaxScrollbarBoxes]{};
+			int scrollbarBoxCount = 0;
+			bool scrollbarBoxOverflow = false;
 			// Sticky: an append() was dropped because the command buffer is full.
 			// Reset by clear(); lets a caller detect a truncated record.
 			bool commandOverflow = false;
@@ -804,6 +843,8 @@ int gLastScrollUiFrame = -1000;
 				commandsExternal = false;
 				commandCount = 0;
 				textClippedBackgrounds = false;
+				scrollbarBoxCount = 0;
+				scrollbarBoxOverflow = false;
 				appendOverride = nullptr;
 				appendOverrideCount = nullptr;
 				appendOverrideCapacity = 0;
@@ -854,6 +895,11 @@ int gLastScrollUiFrame = -1000;
 					if (nodeDrawEnd[i] >= old_end)
 						nodeDrawEnd[i] += delta;
 				}
+				// Scrollbar thumbs sit outside every node range but are addressed by
+				// command index too (scrollbarThumbsPaintLast, replayScrollbarThumbsInRegion).
+				for (int i = 0; i < scrollbarBoxCount; i++)
+					if (scrollbarCommands[i] >= old_end)
+						scrollbarCommands[i] += delta;
 			}
 		};
 
@@ -5348,9 +5394,9 @@ int gLastScrollUiFrame = -1000;
 				// Memoize per node per refresh. The child z-sort runs at every tree level,
 				// so an ancestor's sort recurses a subtree that a descendant's sort then
 				// re-walks. Caching collapses those repeated O(subtree) walks to O(1).
-				static int memo[kMaxNodes];
-				static uint64_t memoSerial[kMaxNodes];
-				static int memoContextRoot[kMaxNodes];
+				GEA_EXT_BSS static int memo[kMaxNodes];
+				GEA_EXT_BSS static uint64_t memoSerial[kMaxNodes];
+				GEA_EXT_BSS static int memoContextRoot[kMaxNodes];
 				const uint64_t serial = tree.refreshSerial();
 				if (node < kMaxNodes && memoSerial[node] == serial && memoContextRoot[node] == contextRoot)
 					return memo[node];
@@ -7869,6 +7915,22 @@ int gLastScrollUiFrame = -1000;
 				}
 			};
 
+			// The commands one region's strips replay (DisplayCommandReplayer::
+			// buildRegionIndex). The list itself lives in PSRAM, and a strip-by-strip
+			// replay walked all of it per 24-row strip: ~800 commands, ~1.1 ms a strip,
+			// about a third of a CrowPanel chart scroll frame.
+			// Sized to the list on demand (a static of kMaxCommands took 32 KB of
+			// PSRAM, which the CrowPanel app could not spare).
+			static std::uint16_t *gRegionIndex = nullptr;
+			static int gRegionIndexCapacity = 0;
+			// Per thread: the render worker replays bands on the other core while the
+			// list is active, and must walk the whole list as before.
+			static thread_local int gRegionIndexCount = -1;
+			// The clip the list was filtered under: a replay under any clip inside it
+			// may use the list, any other walks the whole list.
+			static thread_local int gRegionX0, gRegionY0, gRegionX1, gRegionY1;
+			static thread_local bool gRegionCovered = false;
+
 			struct DisplayCommandReplayer
 		{
 			static bool transformedRoundedRectPaintsRegion(const DisplayCommand &command, int x0, int y0, int x1, int y1)
@@ -7966,6 +8028,75 @@ int gLastScrollUiFrame = -1000;
 																			y1);
 			}
 
+			// What state.drawNodeBBox (one packed box per draw-order slot) holds. The
+			// simple dirty replay keeps node layout boxes there; the region replays
+			// below keep the union of each node's command boxes there instead, for one
+			// replay scope (beginSimpleReplayScope..endSimpleReplayScope, inside which
+			// the tree and the display list hold still). A frame takes one path or the
+			// other, and whichever fills the mirror marks the other's contents stale.
+			// No new memory: PSRAM on the 800x480 panels has no 10 KB to spare.
+			static inline std::uint64_t gDrawNodeBBoxLayoutSerial = ~0ull;  // serial whose layout boxes it holds
+			static inline bool gDrawNodeBBoxCommandScope = false;           // inside a replay scope
+			static inline bool gDrawNodeBBoxHoldsCommandUnions = false;     // filled for this scope
+
+			static void fillDrawNodeCommandUnions()
+			{
+				for (int oi = 0; oi < state.drawNodeOrderCount; oi++)
+				{
+					// Empty marker: x0 = INT16_MAX, x1 = INT16_MIN.
+					int bx0 = 32767, by0 = 32767, bx1 = -32768, by1 = -32768;
+					const int id = state.drawNodeOrder[oi];
+					if (state.hasNodeScratchFor(id))
+					{
+						const int start = state.nodeDrawStart[id];
+						const int end = state.nodeDrawEnd[id];
+						if (start >= 0 && end > start && end <= state.commandCount)
+						{
+							bx0 = by0 = INT_MAX;
+							bx1 = by1 = INT_MIN;
+							for (int ci = start; ci < end; ci++)
+							{
+								// Same box arithmetic as commandBBoxOverlapsRegion, degenerate
+								// boxes included, so the union passes every box that test passes.
+								const DisplayCommand &c = state.commands[ci];
+								bx0 = std::min(bx0, static_cast<int>(c.bx));
+								by0 = std::min(by0, static_cast<int>(c.by));
+								bx1 = std::max(bx1, c.bx + c.bw - 1);
+								by1 = std::max(by1, c.by + c.bh - 1);
+							}
+						}
+					}
+					int16_t *bb = &state.drawNodeBBox[oi * 4];
+					bb[0] = static_cast<int16_t>(std::clamp(bx0, -32768, 32767));
+					bb[1] = static_cast<int16_t>(std::clamp(by0, -32768, 32767));
+					bb[2] = static_cast<int16_t>(std::clamp(bx1, -32768, 32767));
+					bb[3] = static_cast<int16_t>(std::clamp(by1, -32768, 32767));
+				}
+				gDrawNodeBBoxHoldsCommandUnions = true;
+				gDrawNodeBBoxLayoutSerial = ~0ull;
+			}
+
+			// Whether any of the node in draw slot `oi` has a recorded command whose box
+			// reaches the region. The region loops ask it of every node in draw order,
+			// once per region; with every tab page mounted that is ~400 nodes, nearly
+			// all far from the region, so inside a replay scope the answer comes from
+			// the packed union rather than the node's commands scattered through PSRAM.
+			// A miss is exact; a hit on the union may still be a near miss, which
+			// replayNodeCommandRange then turns away command by command.
+			static bool GEA_RENDER_HOT_SRAM nodeCommandsReachRegion(int oi, int node_id, int x0, int y0, int x1, int y1)
+			{
+				if (!state.hasNodeScratchFor(node_id))
+					return false;
+				if (!gDrawNodeBBoxCommandScope || !state.drawNodeBBox)
+					return commandRangeBBoxOverlaps(state.nodeDrawStart[node_id], state.nodeDrawEnd[node_id], x0, y0, x1, y1);
+				if (!gDrawNodeBBoxHoldsCommandUnions)
+					fillDrawNodeCommandUnions();
+				const int16_t *bb = &state.drawNodeBBox[oi * 4];
+				if (bb[0] == 32767 && bb[2] == -32768)
+					return false;
+				return ClipMath::rectsOverlap(bb[0], bb[1], bb[2], bb[3], x0, y0, x1, y1);
+			}
+
 			static bool commandRangeOverlaps(int start, int end, int x0, int y0, int x1, int y1)
 			{
 				if (start < 0 || end <= start || end > state.commandCount)
@@ -8002,6 +8133,58 @@ int gLastScrollUiFrame = -1000;
 						return true;
 				}
 				return false;
+			}
+
+			// nodeHasTransformChain for every node of one pass: each node's own state is
+			// tested once and each answer reused by its descendants, where asking per node
+			// walks every ancestor chain again (N x depth tests of the 20-field state).
+			// Bit 0: some node on the chain to the root (self included) holds transform
+			// state; bit 1: this node itself does. Valid only while the tree is unchanged.
+			struct TransformChainMemo
+			{
+				std::vector<std::int8_t> memo;
+				std::vector<int> path;
+				// With no transform anywhere this frame or last (the cached whole-tree scan
+				// every transform path consults), every answer is 0 without a node read.
+				bool none = false;
+				void reset(int nodeCount)
+				{
+					none = !ViewRenderer::anyTransformActive();
+					if (!none)
+						memo.assign(static_cast<std::size_t>(nodeCount), -1);
+				}
+				int at(int node_id, Node *nodes, int nodeCount)
+				{
+					if (none)
+						return 0;
+					path.clear();
+					int cursor = node_id;
+					int above = 0;
+					while (cursor >= 0 && cursor < nodeCount)
+					{
+						if (memo[cursor] >= 0)
+						{
+							above = memo[cursor] & 1;
+							break;
+						}
+						path.push_back(cursor);
+						cursor = nodes[cursor].parent;
+					}
+					for (int k = static_cast<int>(path.size()) - 1; k >= 0; --k)
+					{
+						const int self = hasRetainedTransformState(nodes[path[k]]) ? 1 : 0;
+						above |= self;
+						memo[path[k]] = static_cast<std::int8_t>(above | (self << 1));
+					}
+					return memo[node_id];
+				}
+				bool retained(int node_id, Node *nodes, int nodeCount) { return (at(node_id, nodes, nodeCount) & 2) != 0; }
+				bool chain(int node_id, Node *nodes, int nodeCount) { return (at(node_id, nodes, nodeCount) & 1) != 0; }
+			};
+			static TransformChainMemo &transformChainMemo()
+			{
+				static TransformChainMemo memo;
+				return memo;
 			}
 
 			static bool nodeRecordsOverflowClip(int node_id, Node *nodes, int nodeCount)
@@ -8059,6 +8242,93 @@ int gLastScrollUiFrame = -1000;
 					int x, y, w, h;
 					overflowClipBounds(clip, x, y, w, h);
 					gea::platform::display::Display::pushClip(x, y, w, h);
+					pushed++;
+				}
+				return pushed;
+			}
+
+			// The ancestor chain of the node replayNodeCommandRange last resolved, root
+			// first, with what pushNodeReplayClips and effectiveAlphaForNode read at
+			// each level. Those walk every ancestor's style for each node replayed, and
+			// draw order is depth-first, so the next node's chain is almost all this
+			// one: only the levels below the shared ancestor are read again. The tree
+			// holds still inside a replay scope, the only place this is used (it is
+			// emptied when one opens); the answers match the two walks exactly.
+			struct ReplayChainMemo
+			{
+				int depth;  // zero-initialized (static storage)
+				int id[kScratchDepth];
+				std::uint8_t alpha[kScratchDepth];  // opacity product, root..level, as effectiveAlphaForNode folds it
+				bool fixed[kScratchDepth];          // LayoutEngine::isViewportFixed
+				bool clips[kScratchDepth];          // nodeRecordsOverflowClip
+				int clip[kScratchDepth][4];         // its overflowClipBounds
+			};
+			static inline ReplayChainMemo gReplayChain;
+
+			// Brings gReplayChain to `node_id`'s chain. False when the chain is deeper
+			// than the walks allow (they give up there); the caller then uses them.
+			static bool GEA_RENDER_HOT_SRAM resolveReplayChain(int node_id, Node *nodes, int nodeCount)
+			{
+				auto &m = gReplayChain;
+				int below[kScratchDepth];  // node_id and the ancestors not in the memo, leaf first
+				int belowCount = 0;
+				int keep = 0;  // memo levels that stay: the shared ancestor's chain
+				for (int cursor = node_id; cursor >= 0 && cursor < nodeCount; cursor = nodes[cursor].parent)
+				{
+					int level = -1;
+					for (int k = m.depth - 1; k >= 0; --k)
+						if (m.id[k] == cursor)
+						{
+							level = k;
+							break;
+						}
+					if (level >= 0)
+					{
+						keep = level + 1;
+						break;
+					}
+					if (belowCount >= kScratchDepth)
+						return false;
+					below[belowCount++] = cursor;
+				}
+				if (keep + belowCount > kScratchDepth)
+					return false;
+				m.depth = keep;
+				for (int i = belowCount - 1; i >= 0; --i)
+				{
+					const int id = below[i];
+					const int k = m.depth++;
+					const int parentAlpha = k > 0 ? m.alpha[k - 1] : 255;
+					m.id[k] = id;
+					m.alpha[k] = static_cast<std::uint8_t>((parentAlpha * static_cast<int>(nodes[id].computedStyle().opacity)) / 255);
+					m.fixed[k] = LayoutEngine::isViewportFixed(nodes[id]);
+					m.clips[k] = nodeRecordsOverflowClip(id, nodes, nodeCount);
+					if (m.clips[k])
+					{
+						overflowClipBounds(nodes[id], m.clip[k][0], m.clip[k][1], m.clip[k][2], m.clip[k][3]);
+					}
+				}
+				return m.depth > 0;
+			}
+
+			// pushNodeReplayClips from the resolved chain: the clipping ancestors from
+			// the nearest viewport-fixed level (the node's own included) down to its parent.
+			static int GEA_RENDER_HOT_SRAM pushReplayChainClips()
+			{
+				const auto &m = gReplayChain;
+				int first = 0;
+				for (int k = m.depth - 1; k >= 0; --k)
+					if (m.fixed[k])
+					{
+						first = k;
+						break;
+					}
+				int pushed = 0;
+				for (int k = first; k < m.depth - 1; ++k)
+				{
+					if (!m.clips[k])
+						continue;
+					gea::platform::display::Display::pushClip(m.clip[k][0], m.clip[k][1], m.clip[k][2], m.clip[k][3]);
 					pushed++;
 				}
 				return pushed;
@@ -8139,11 +8409,13 @@ int gLastScrollUiFrame = -1000;
 				// content-only frames (markNodeDisplayCommandsDirty patches a node's commands
 				// without a full re-record), so a moved absolute leaf would carry a stale bbox
 				// here and get wrongly AABB-skipped in the chunk it actually occupies.
-				static std::uint64_t bboxRebuildSerial = ~0ull;
+				// The region replays may have left command unions in the mirror
+				// (gDrawNodeBBoxLayoutSerial says whose boxes it holds).
 				const std::uint64_t serial = tree.refreshSerial();
-				if (bboxRebuildSerial == serial)
+				if (gDrawNodeBBoxLayoutSerial == serial)
 					return;
-				bboxRebuildSerial = serial;
+				gDrawNodeBBoxLayoutSerial = serial;
+				gDrawNodeBBoxHoldsCommandUnions = false;
 				for (int oi = 0; oi < state.drawNodeOrderCount; oi++)
 				{
 					const int id = state.drawNodeOrder[oi];
@@ -8204,7 +8476,151 @@ int gLastScrollUiFrame = -1000;
 				}
 			};
 
+			// The simple-replay verdict walks every node and every command, and the
+			// unified flush asks it once per dirty region: on a busy screen (Analytics,
+			// 238 nodes, 8 regions) that walk was ~5 ms a region, most of the frame's
+			// replay. Only the transformed-ink test depends on the region, so inside a
+			// replay scope -- the display list and tree held still -- the rest is
+			// computed once and the region test runs over the transformed nodes alone.
+			struct SimpleReplayVerdictCache
+			{
+				static constexpr int kMaxTransformed = 64;
+				int scopeDepth = 0;
+				bool valid = false;
+				int width = 0;
+				int height = 0;
+				bool baseOk = false;			// every region-independent check passed
+				bool anyRetainedTransform = false; // fails a region-less query
+				bool transformOverflow = false; // too many transformed nodes to list
+				bool transformMissingScratch = false;
+				int transformedCount = 0;
+				int transformed[kMaxTransformed];
+			};
+			static SimpleReplayVerdictCache &simpleReplayVerdictCache()
+			{
+				static SimpleReplayVerdictCache cache;
+				return cache;
+			}
+
+			static void beginSimpleReplayScope()
+			{
+				auto &cache = simpleReplayVerdictCache();
+				if (cache.scopeDepth++ == 0)
+				{
+					cache.valid = false;
+					gDrawNodeBBoxCommandScope = true;
+					gDrawNodeBBoxHoldsCommandUnions = false;
+					gReplayChain.depth = 0;
+				}
+			}
+
+			static void endSimpleReplayScope()
+			{
+				auto &cache = simpleReplayVerdictCache();
+				if (cache.scopeDepth > 0 && --cache.scopeDepth == 0)
+				{
+					cache.valid = false;
+					gDrawNodeBBoxCommandScope = false;
+					gDrawNodeBBoxHoldsCommandUnions = false;
+					gReplayChain.depth = 0;
+				}
+			}
+
 			static bool canUseSimpleDirtyReplay(int width, int height, const DisplayReplayRegion *regions = nullptr, int count = 0)
+			{
+				auto &cache = simpleReplayVerdictCache();
+				if (cache.scopeDepth <= 0)
+					return canUseSimpleDirtyReplayUncached(width, height, regions, count);
+				if (!cache.valid || cache.width != width || cache.height != height)
+					fillSimpleReplayVerdictCache(width, height);
+				if (cache.transformOverflow)
+					return canUseSimpleDirtyReplayUncached(width, height, regions, count);
+				if (!cache.baseOk)
+					return false;
+				if (cache.transformedCount == 0)
+					return true;
+				// The uncached walk: any retained transform fails a region-less query;
+				// a transform chain only counts once regions are given.
+				if (!regions || count <= 0)
+					return !cache.anyRetainedTransform;
+				if (cache.transformMissingScratch)
+					return false;
+				for (int t = 0; t < cache.transformedCount; ++t)
+				{
+					const int i = cache.transformed[t];
+					for (int ri = 0; ri < count; ++ri)
+						if (commandRangeBBoxOverlaps(state.nodeDrawStart[i], state.nodeDrawEnd[i],
+						                            regions[ri].x0, regions[ri].y0, regions[ri].x1, regions[ri].y1))
+							return false;
+				}
+				return true;
+			}
+
+			// Region-independent half of canUseSimpleDirtyReplayUncached, plus the list
+			// of nodes its transformed-ink test would visit.
+			static void fillSimpleReplayVerdictCache(int width, int height)
+			{
+				auto &cache = simpleReplayVerdictCache();
+				cache.valid = true;
+				cache.width = width;
+				cache.height = height;
+				cache.baseOk = false;
+				cache.anyRetainedTransform = false;
+				cache.transformOverflow = false;
+				cache.transformMissingScratch = false;
+				cache.transformedCount = 0;
+				if (DisplayList::instance().hasTextClippedBackgrounds())
+					return;
+				Tree &tree = Tree::instance();
+				Node *nodes = tree.nodes();
+				const int nodeCount = tree.nodeCount();
+				auto &chains = transformChainMemo();
+				chains.reset(nodeCount);
+				for (int i = 0; i < nodeCount; i++)
+				{
+					const Node &node = nodes[i];
+					if ((GEA_CSS_FILTERS ? rstyle(node.computedStyle()).filter_blur_radius : 0) > 0)
+						return;
+					if (node.computedStyle().opacity != 255 && node.computedStyle().opacity != 0)
+						if (!simpleTextAlphaNode(i, nodes, nodeCount))
+							return;
+					if (node.computedStyle().mask_right_fade_width > 0)
+						return;
+					const bool retained = chains.retained(i, nodes, nodeCount);
+					if (chains.chain(i, nodes, nodeCount))
+					{
+						if (retained)
+							cache.anyRetainedTransform = true;
+						if (!state.hasNodeScratchFor(i))
+							cache.transformMissingScratch = true;
+						else if (cache.transformedCount < SimpleReplayVerdictCache::kMaxTransformed)
+							cache.transformed[cache.transformedCount++] = i;
+						else
+							cache.transformOverflow = true;
+					}
+				}
+				// A transformed node without scratch fails every query, region-less ones
+				// included (it is listed so the region-less path sees a transform).
+				if (cache.transformMissingScratch && cache.transformedCount == 0)
+					cache.transformed[cache.transformedCount++] = 0;
+				for (int ci = 0; ci < state.commandCount; ci++)
+				{
+					const DisplayCommand &command = state.commands[ci];
+					const bool plainTextAlpha = command.type == DisplayCommandType::SetAlpha &&
+					                            command.alpha.recordParentAlpha == 255 &&
+					                            simpleTextAlphaNode(command.alpha.nodeId, nodes, nodeCount);
+					if ((command.type == DisplayCommandType::SetAlpha && command.alpha.alpha != 255 && !plainTextAlpha) ||
+							command.type == DisplayCommandType::BeginFilterBlur ||
+							command.type == DisplayCommandType::ApplyFilterBlur)
+						return;
+					if (command.type == DisplayCommandType::PushClip &&
+							!clipCoversViewport(command, width, height))
+						return;
+				}
+				cache.baseOk = true;
+			}
+
+			static bool canUseSimpleDirtyReplayUncached(int width, int height, const DisplayReplayRegion *regions, int count)
 			{
 				if (DisplayList::instance().hasTextClippedBackgrounds()) return false;
 #if GEA_EMBEDDED_SIMPLE_REPLAY_DEBUG
@@ -8217,6 +8633,8 @@ int gLastScrollUiFrame = -1000;
 				Tree &tree = Tree::instance();
 				Node *nodes = tree.nodes();
 				const int nodeCount = tree.nodeCount();
+				auto &chains = transformChainMemo();
+				chains.reset(nodeCount);
 				for (int i = 0; i < nodeCount; i++)
 				{
 					const Node &node = nodes[i];
@@ -8227,7 +8645,7 @@ int gLastScrollUiFrame = -1000;
 							{ SRDBG("opacity node", i); return false; }
 					if (node.computedStyle().mask_right_fade_width > 0)
 						{ SRDBG("mask node", i); return false; }
-					if (hasRetainedTransformState(node) || (regions && nodeHasTransformChain(i, nodes, nodeCount)))
+					if (chains.retained(i, nodes, nodeCount) || (regions && chains.chain(i, nodes, nodeCount)))
 					{
 						if (!regions || count <= 0 || !state.hasNodeScratchFor(i))
 							{ SRDBG("transform node", i); return false; }
@@ -8635,19 +9053,37 @@ int gLastScrollUiFrame = -1000;
 				const int nodeCount = tree.nodeCount();
 				if (node_id < 0 || node_id >= nodeCount)
 					return;
-				if (retainedBackgroundNodeCanBeSkippedInRegion(node_id, x0, y0, x1, y1))
-					return;
 				if (!state.hasNodeScratchFor(node_id))
 					return;
 				const int start = state.nodeDrawStart[node_id];
 				const int end = state.nodeDrawEnd[node_id];
 				if (start < 0 || end <= start || end > state.commandCount)
 					return;
-
-				const int pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
-				if (pushedClips < 0)
+				// A node none of whose commands reach the region paints nothing in it
+				// (the loop below filters every draw by the same box), so skip its
+				// ancestor clip and opacity walks too, as the multi-region path does.
+				// With every tab page mounted the draw order holds ~400 nodes, and
+				// those walks for each of them in each of a frame's ~7 small regions
+				// were most of the CrowPanel Analytics meters' replay time.
+				if (!commandRangeBBoxOverlaps(start, end, x0, y0, x1, y1))
 					return;
-				const std::uint8_t alpha = effectiveAlphaForNode(node_id, nodes, nodeCount);
+				if (retainedBackgroundNodeCanBeSkippedInRegion(node_id, x0, y0, x1, y1))
+					return;
+
+				int pushedClips;
+				std::uint8_t alpha;
+				if (gDrawNodeBBoxCommandScope && resolveReplayChain(node_id, nodes, nodeCount))
+				{
+					pushedClips = pushReplayChainClips();
+					alpha = gReplayChain.alpha[gReplayChain.depth - 1];
+				}
+				else
+				{
+					pushedClips = pushNodeReplayClips(node_id, nodes, nodeCount);
+					if (pushedClips < 0)
+						return;
+					alpha = effectiveAlphaForNode(node_id, nodes, nodeCount);
+				}
 				const bool stateChanged = pushedClips > 0 || alpha != 255;
 				if (stateChanged)
 				{
@@ -8764,6 +9200,12 @@ int gLastScrollUiFrame = -1000;
 					int node_id = state.drawNodeOrder[oi];
 					if (node_id < 0 || node_id >= tree.nodeCount())
 						continue;
+					// The command boxes first: they are what replayNodeCommandRange filters
+					// by, ancestors included (one that reaches no pixel of the region paints
+					// none), and most of the ~400 nodes reach none, so they are turned away
+					// before their Node is read.
+					if (!nodeCommandsReachRegion(oi, node_id, x0, y0, x1, y1))
+						continue;
 					Node *n = &nodes[node_id];
 					if (n->computedStyle().display == 1)
 						continue;
@@ -8778,11 +9220,6 @@ int gLastScrollUiFrame = -1000;
 							!nodeOrAncestorRenderDirty(node_id, nodes, tree.nodeCount()))
 						continue;
 
-					const int start = state.nodeDrawStart[node_id];
-					const int end = state.nodeDrawEnd[node_id];
-					const bool isAncestor = nodeInList(node_id, ancestors, ancestorCount);
-					if (!isAncestor && !commandRangeBBoxOverlaps(start, end, x0, y0, x1, y1))
-						continue;
 					replayNodeCommandRange(node_id, x0, y0, x1, y1, roundedRects);
 				}
 				roundedRects.flush();
@@ -8813,6 +9250,12 @@ int gLastScrollUiFrame = -1000;
 				const int savedH = canvas->height();
 				const int savedStride = canvas->strideBytes() / static_cast<int>(sizeof(gea::framework::graphics::pixel::native_t));
 				const std::uint8_t savedAlpha = gea::platform::display::Display::alpha();
+				// bindPixels clears the scroll region; a ring-scrolling display keeps its
+				// framebuffer rows rotated across frames, so drawing on after the bake
+				// without the region would land in the wrong rows.
+				const int savedRegionY = canvas->scrollRegionY();
+				const int savedRegionH = canvas->scrollRegionH();
+				const int savedRegionOffset = canvas->scrollOffsetY();
 
 				gBackdropBaking = true;
 				canvas->bindPixels(bg, width, height, width);
@@ -8849,6 +9292,8 @@ int gLastScrollUiFrame = -1000;
 				gea::platform::display::Display::popClip();
 
 				canvas->bindPixels(savedPixels, savedW, savedH, savedStride);
+				if (savedRegionH > 0)
+					canvas->setScrollRegion(savedRegionY, savedRegionH, savedRegionOffset);
 				canvas->resetDirty();
 				gea::platform::display::Display::resetClip();
 				gea::platform::display::Display::setAlpha(savedAlpha);
@@ -8871,6 +9316,11 @@ int gLastScrollUiFrame = -1000;
 				constexpr int kMinPixelsToSplitFrame = GEA_EMBEDDED_RENDER_PARALLEL_MIN_PIXELS;
 				const int regionW = x1 - x0 + 1;
 				const int regionH = y1 - y0 + 1;
+				// Staging runs on this core's strip; a band handed to the other core
+				// could not stage, so a bulk-staged region is not split.
+				const int stageRows = gea_replay_stage_active() ? 0 : replayStageRowsForArea(static_cast<long>(regionW) * regionH);
+				if (stageRows > 0 && gea_replay_stage_rows() <= 0)
+					allowSplit = false;
 				if (GEA_EMBEDDED_RENDER_PARALLEL_DIRTY_REPLAY && GEA_RENDER_SPLIT_ALLOWED && allowSplit && regionW > 0 && regionH >= kMinRowsToSplitFrame &&
 						regionW * regionH >= kMinPixelsToSplitFrame)
 				{
@@ -8907,7 +9357,6 @@ int gLastScrollUiFrame = -1000;
 				// byte-identical to the direct path for any scene. Composes with the 2-core
 				// band split above: each band re-enters here with allowSplit=false and
 				// strip-stages its own rows on its own core.
-				const int stageRows = gea_replay_stage_rows();
 				if (stageRows > 0)
 				{
 					for (int sy0 = y0; sy0 <= y1; sy0 += stageRows)
@@ -9043,6 +9492,10 @@ int gLastScrollUiFrame = -1000;
 						continue;
 					if (!state.hasNodeScratchFor(node_id))
 						continue;
+					// A node whose commands reach none of the region covers none of it;
+					// inside a replay scope the packed union says so without the command.
+					if (gDrawNodeBBoxCommandScope && !nodeCommandsReachRegion(oi, node_id, x0, y0, x1, y1))
+						continue;
 					const int start = state.nodeDrawStart[node_id];
 					const int end = state.nodeDrawEnd[node_id];
 					if (start < 0 || end <= start || end > state.commandCount)
@@ -9065,6 +9518,18 @@ int gLastScrollUiFrame = -1000;
 						{
 							spanX0 = c.blit.dx;
 							spanX1 = c.blit.dx + c.blit.sourceWidth - 1;
+						}
+					}
+					// A rounded card covers a region that lies inside its corners (one
+					// pixel of slack: an edge pixel can still be antialiased), the same
+					// rule regionHasOpaqueBase uses. Without it every dirty region on a
+					// card replayed the page backgrounds underneath it as well.
+					else if (c.type == DisplayCommandType::FillRoundedRect)
+					{
+						if (regionInsideRetainedBackground(c, x0 - 1, y0 - 1, x1 + 1, y1 + 1))
+						{
+							spanX0 = x0;
+							spanX1 = x1;
 						}
 					}
 					if (spanX0 < x0)
@@ -9167,6 +9632,8 @@ int gLastScrollUiFrame = -1000;
 				{
 					int node_id = state.drawNodeOrder[oi];
 					if (node_id < 0 || node_id >= tree.nodeCount())
+						continue;
+					if (!nodeCommandsReachRegion(oi, node_id, x0, y0, x1, y1))  // before the Node is read
 						continue;
 					Node *n = &nodes[node_id];
 					if (n->computedStyle().display == 1)
@@ -9387,7 +9854,7 @@ int gLastScrollUiFrame = -1000;
 					gea::platform::display::Display::setAlpha(255);
 			}
 
-			static void GEA_RENDER_HOT_SRAM replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count, bool allowSplit = true)
+			static void GEA_RENDER_HOT_SRAM replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count, bool allowSplit = true, bool allowStage = true)
 			{
 				GEA_REFRESH_PERF(refreshPerfStatsMutable().treeReplayDirectRegionsCalls++);
 				if (!regions || count <= 0)
@@ -9407,6 +9874,74 @@ int gLastScrollUiFrame = -1000;
 																	regions[0].x1,
 																	regions[0].y1,
 																	regions[0].origin);
+					return;
+				}
+				// SRAM-staged strips, as replayDirectDirtyRegion does for one region:
+				// several regions (a scroll's exposed band plus ticking content) otherwise
+				// draw straight into a framebuffer the panel is scanning, and their fills
+				// at full speed, from both cores, starved the RGB panel's bounce refills.
+				// Each strip stages the bbox of the regions clipped to it and replays them
+				// there -- the same per-band clipping the 2-core split below applies, so
+				// the pixels are the same. Inside a strip the stage is active, so the
+				// nested calls draw into it.
+				constexpr int kMaxStagedRegions = 32;
+				long stageArea = 0;
+				for (int i = 0; i < count; i++)
+					if (regions[i].x0 <= regions[i].x1 && regions[i].y0 <= regions[i].y1)
+						stageArea += static_cast<long>(regions[i].x1 - regions[i].x0 + 1) * (regions[i].y1 - regions[i].y0 + 1);
+				const int stageRows = replayStageRowsForArea(stageArea);
+				if (allowStage && stageRows > 0 && count <= kMaxStagedRegions && !gea_replay_stage_active())
+				{
+					int minY = 0x7fffffff, maxY = -0x7fffffff;
+					for (int i = 0; i < count; i++)
+					{
+						if (regions[i].x0 > regions[i].x1 || regions[i].y0 > regions[i].y1)
+							continue;
+						minY = std::min(minY, regions[i].y0);
+						maxY = std::max(maxY, regions[i].y1);
+					}
+					for (int sy0 = minY; sy0 <= maxY; sy0 += stageRows)
+					{
+						const int sy1 = std::min(maxY, sy0 + stageRows - 1);
+						DisplayReplayRegion strip[kMaxStagedRegions];
+						int n = 0;
+						int bx0 = 0x7fffffff, by0 = 0x7fffffff, bx1 = -0x7fffffff, by1 = -0x7fffffff;
+						for (int i = 0; i < count; i++)
+						{
+							DisplayReplayRegion r = regions[i];
+							if (r.x0 > r.x1)
+								continue;
+							r.y0 = std::max(r.y0, sy0);
+							r.y1 = std::min(r.y1, sy1);
+							if (r.y0 > r.y1)
+								continue;
+							strip[n++] = r;
+							bx0 = std::min(bx0, r.x0);
+							by0 = std::min(by0, r.y0);
+							bx1 = std::max(bx1, r.x1);
+							by1 = std::max(by1, r.y1);
+						}
+						if (n == 0)
+							continue;
+						if (!gea_replay_stage_begin(bx0, by0, bx1, by1))
+						{
+							// No stage: the rest goes straight to the framebuffer, as before.
+							DisplayReplayRegion rest[kMaxStagedRegions];
+							int m = 0;
+							for (int i = 0; i < count; i++)
+							{
+								DisplayReplayRegion r = regions[i];
+								r.y0 = std::max(r.y0, sy0);
+								if (r.x0 <= r.x1 && r.y0 <= r.y1)
+									rest[m++] = r;
+							}
+							if (m > 0)
+								replayDirectDirtyRegions(rest, m, /*allowSplit=*/false, /*allowStage=*/false);
+							return;
+						}
+						replayDirectDirtyRegions(strip, n, /*allowSplit=*/false, /*allowStage=*/false);
+						gea_replay_stage_end();
+					}
 					return;
 				}
 				constexpr int kMaxRegionSplit = 32;
@@ -9552,22 +10087,11 @@ int gLastScrollUiFrame = -1000;
 				roundedRects.flush();
 			}
 
-			static void GEA_RENDER_HOT_SRAM replay()
+			// Occlusion-cull start for the clip now in force (see replay()).
+			static int GEA_RENDER_HOT_SRAM cullStartIndex()
 			{
-				int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
-				int clip_dirty = 1;
-				int clip_stack_depth = 0;
-				UniformRoundedRectBatch roundedRects;
-
-				// Occlusion cull against the CALLER's clip (the conservative tree_render
-				// path pushes each dirty rect around a full replay): start at the last
-				// opaque full-cover fill's first command. Unlike the node walks, this
-				// stream carries clip state INLINE, and an orphan PopClip at depth 0
-				// pops the caller's region clip — so only cull when the cover has no
-				// clipping ancestors (whose Pop would run unmatched), the skipped
-				// prefix is Push/Pop balanced, and no filter-blur pair could straddle
-				// the cut.
 				int startCi = 0;
+				cullCovered = false;
 				{
 					int rx0 = 0, ry0 = 0, rx1 = -1, ry1 = -1;
 					gea::platform::display::Display::clip(&rx0, &ry0, &rx1, &ry1);
@@ -9593,6 +10117,7 @@ int gLastScrollUiFrame = -1000;
 								if (depth >= kCullClipDepth)
 								{
 									startCi = 0;
+									cullCovered = false;
 									break;
 								}
 								clipX0[depth] = curX0;
@@ -9610,6 +10135,7 @@ int gLastScrollUiFrame = -1000;
 								if (--depth < 0)
 								{
 									startCi = 0;
+									cullCovered = false;
 									break;
 								}
 								curX0 = clipX0[depth];
@@ -9625,6 +10151,7 @@ int gLastScrollUiFrame = -1000;
 											 c.type == DisplayCommandType::ApplyFilterBlur)
 							{
 								startCi = 0;
+								cullCovered = false;
 								break;
 							}
 							else if (c.type == DisplayCommandType::FillRect && alpha == 255 &&
@@ -9635,13 +10162,282 @@ int gLastScrollUiFrame = -1000;
 											 c.bx + c.bw - 1 >= rx1 && c.by + c.bh - 1 >= ry1)
 							{
 								startCi = i;
+								cullCovered = true;
 							}
 						}
 					}
 				}
 
-				for (int i = 0; i < state.commandCount; i++)
+				return startCi;
+			}
+
+			// One walk under the clip now in force keeps the clip/alpha commands and
+			// the draws that can land inside it, drops clip scopes that miss it whole,
+			// and finds the occlusion cull start as cullStartIndex() does (a cover
+			// drops the draws kept before it). False (nothing filtered) on a filter
+			// blur, whose backdrop capture depends on draws outside the clip.
+			static bool buildRegionIndex()
+			{
+				gRegionIndexCount = -1;
+				cullCovered = false;
+				int rx0 = 0, ry0 = 0, rx1 = -1, ry1 = -1;
+				gea::platform::display::Display::clip(&rx0, &ry0, &rx1, &ry1);
+				if (rx1 < rx0 || ry1 < ry0) return false;
+				gRegionX0 = rx0; gRegionY0 = ry0; gRegionX1 = rx1; gRegionY1 = ry1;
+				if (gRegionIndexCapacity < state.commandCount)
 				{
+					const int capacity = (state.commandCount + 511) & ~511;
+					void *grown = gea::framework::memory::Allocator::reallocatePreferSpiram(gRegionIndex, sizeof(std::uint16_t) * capacity);
+					if (!grown) return false;
+					gRegionIndex = static_cast<std::uint16_t *>(grown);
+					gRegionIndexCapacity = capacity;
+				}
+				constexpr int kDepth = 64;
+				int clipX0[kDepth], clipY0[kDepth], clipX1[kDepth], clipY1[kDepth], pushCmd[kDepth];
+				int depth = 0, skip = 0, alpha = 255, n = 0, startCi = 0;
+				int pendingAlpha = -1, emittedAlpha = -1;
+				int curX0 = rx0, curY0 = ry0, curX1 = rx1, curY1 = ry1;
+				for (int i = 0; i < state.commandCount; ++i)
+				{
+					const DisplayCommand &c = state.commands[i];
+					switch (c.type)
+					{
+					case DisplayCommandType::PushClip:
+					{
+						if (skip) { skip++; continue; }
+						const int nx0 = std::max(curX0, static_cast<int>(c.clip.x));
+						const int ny0 = std::max(curY0, static_cast<int>(c.clip.y));
+						const int nx1 = std::min(curX1, static_cast<int>(c.clip.x) + static_cast<int>(c.clip.w) - 1);
+						const int ny1 = std::min(curY1, static_cast<int>(c.clip.y) + static_cast<int>(c.clip.h) - 1);
+						if (nx0 > nx1 || ny0 > ny1) { skip = 1; continue; }  // nothing in the scope can show
+						if (depth >= kDepth) return false;
+						clipX0[depth] = curX0; clipY0[depth] = curY0; clipX1[depth] = curX1; clipY1[depth] = curY1;
+						pushCmd[depth] = i;
+						depth++;
+						curX0 = nx0; curY0 = ny0; curX1 = nx1; curY1 = ny1;
+						gRegionIndex[n++] = static_cast<std::uint16_t>(i);
+						continue;
+					}
+					case DisplayCommandType::PopClip:
+						if (skip) { skip--; continue; }
+						if (depth > 0)
+						{
+							depth--;
+							curX0 = clipX0[depth]; curY0 = clipY0[depth]; curX1 = clipX1[depth]; curY1 = clipY1[depth];
+							// A scope that kept no draw is dropped whole (most clip scopes
+							// overlap the region yet draw nothing inside it).
+							if (n > 0 && gRegionIndex[n - 1] == pushCmd[depth]) { n--; continue; }
+						}
+						gRegionIndex[n++] = static_cast<std::uint16_t>(i);  // at depth 0 it pops the caller's clip
+						continue;
+					case DisplayCommandType::SetAlpha:
+						// Alpha is one value, not a stack: only the last one before each
+						// kept draw matters (most scopes hold no draw in the region).
+						alpha = c.alpha.alpha;
+						pendingAlpha = i;
+						continue;
+					case DisplayCommandType::BeginFilterBlur:
+					case DisplayCommandType::ApplyFilterBlur:
+						cullCovered = false;
+						return false;
+					default:
+						break;
+					}
+					if (skip) continue;
+					if (c.bx > curX1 || c.by > curY1 || c.bx + c.bw - 1 < curX0 || c.by + c.bh - 1 < curY0) continue;
+					if (c.type == DisplayCommandType::FillRect && alpha == 255 &&
+					    curX0 <= rx0 && curY0 <= ry0 && curX1 >= rx1 && curY1 >= ry1 &&
+					    c.fill.x <= rx0 && c.fill.y <= ry0 &&
+					    c.fill.x + c.fill.w - 1 >= rx1 && c.fill.y + c.fill.h - 1 >= ry1 &&
+					    c.bx <= rx0 && c.by <= ry0 && c.bx + c.bw - 1 >= rx1 && c.by + c.bh - 1 >= ry1)
+					{
+						// Everything drawn so far is hidden under this fill: keep only the
+						// clip/alpha state kept before it.
+						int kept = 0;
+						for (int k = 0; k < n; ++k)
+						{
+							const DisplayCommandType t = state.commands[gRegionIndex[k]].type;
+							if (t == DisplayCommandType::PushClip || t == DisplayCommandType::PopClip || t == DisplayCommandType::SetAlpha)
+								gRegionIndex[kept++] = gRegionIndex[k];
+						}
+						n = kept;
+						startCi = i;
+						cullCovered = true;
+						emittedAlpha = -1;
+					}
+					if (pendingAlpha != emittedAlpha)
+					{
+						gRegionIndex[n++] = static_cast<std::uint16_t>(pendingAlpha);
+						emittedAlpha = pendingAlpha;
+					}
+					gRegionIndex[n++] = static_cast<std::uint16_t>(i);
+				}
+				// Leave alpha where the whole list leaves it: the next strip starts there.
+				if (pendingAlpha != emittedAlpha) gRegionIndex[n++] = static_cast<std::uint16_t>(pendingAlpha);
+				(void)startCi;
+				gRegionCovered = cullCovered;
+				gRegionIndexCount = n;
+				return true;
+			}
+
+			// Per row of the viewport (vx, vy, vw, vh): a signature of what a
+			// horizontal scroll cannot change, or 0. A row that only full-width plain
+			// fills touch (a background, a horizontal rule, a rounded rect's straight
+			// middle) looks the same at every scroll offset, and its signature hashes
+			// those fills in paint order; any other draw reaching the row, or a fill
+			// cut short of either edge, makes it 0. False when it cannot tell (a
+			// filter blur, a clip stack too deep).
+			static bool scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig)
+			{
+				const int vx1 = vx + vw - 1, vy1 = vy + vh - 1;
+				for (int r = 0; r < vh; ++r) sig[r] = 2166136261u;
+				constexpr int kDepth = 64;
+				int clipX0[kDepth], clipY0[kDepth], clipX1[kDepth], clipY1[kDepth];
+				int depth = 0, alpha = 255;
+				int curX0 = vx, curY0 = vy, curX1 = vx1, curY1 = vy1;
+				auto vary = [&](int y0, int y1) {
+					y0 = std::max(y0, curY0); y1 = std::min(y1, curY1);
+					for (int y = y0; y <= y1; ++y) sig[y - vy] = 0;
+				};
+				auto band = [&](int y0, int y1, std::uint32_t color) {
+					y0 = std::max(y0, curY0); y1 = std::min(y1, curY1);
+					const std::uint32_t mix = (color << 8) ^ static_cast<std::uint32_t>(alpha);
+					for (int y = y0; y <= y1; ++y)
+						if (sig[y - vy]) sig[y - vy] = ((sig[y - vy] ^ mix) * 16777619u) | 1u;
+				};
+				for (int i = 0; i < state.commandCount; ++i)
+				{
+					const DisplayCommand &c = state.commands[i];
+					switch (c.type)
+					{
+					case DisplayCommandType::PushClip:
+						if (depth >= kDepth) return false;
+						clipX0[depth] = curX0; clipY0[depth] = curY0; clipX1[depth] = curX1; clipY1[depth] = curY1;
+						depth++;
+						curX0 = std::max(curX0, static_cast<int>(c.clip.x));
+						curY0 = std::max(curY0, static_cast<int>(c.clip.y));
+						curX1 = std::min(curX1, static_cast<int>(c.clip.x) + static_cast<int>(c.clip.w) - 1);
+						curY1 = std::min(curY1, static_cast<int>(c.clip.y) + static_cast<int>(c.clip.h) - 1);
+						continue;
+					case DisplayCommandType::PopClip:
+						if (depth > 0)
+						{
+							depth--;
+							curX0 = clipX0[depth]; curY0 = clipY0[depth]; curX1 = clipX1[depth]; curY1 = clipY1[depth];
+						}
+						continue;
+					case DisplayCommandType::SetAlpha:
+						alpha = c.alpha.alpha;
+						continue;
+					case DisplayCommandType::BeginFilterBlur:
+					case DisplayCommandType::ApplyFilterBlur:
+						return false;
+					default:
+						break;
+					}
+					if (curX0 > curX1 || curY0 > curY1) continue;
+					if (c.bx > curX1 || c.by > curY1 || c.bx + c.bw - 1 < curX0 || c.by + c.bh - 1 < curY0) continue;
+					// Only a fill spanning the whole viewport width, with the clip
+					// leaving it whole, is the same at every offset.
+					const bool spans = curX0 <= vx && curX1 >= vx1;
+					if (spans && c.type == DisplayCommandType::FillRect && c.textClipOwner < 0 &&
+					    c.fill.x <= vx && c.fill.x + c.fill.w - 1 >= vx1)
+					{
+						band(c.fill.y, c.fill.y + c.fill.h - 1, c.fill.color);
+						continue;
+					}
+					if (spans && c.type == DisplayCommandType::FillRoundedRect && c.textClipOwner < 0 &&
+					    c.fillRoundedRect.x <= vx && c.fillRoundedRect.x + c.fillRoundedRect.w - 1 >= vx1)
+					{
+						const auto &f = c.fillRoundedRect;
+						const int x1 = f.x + f.w - 1, y1 = f.y + f.h - 1;
+						// Corners clear of the viewport leave every row straight; else
+						// only the rows between the corners are.
+						const int top = std::max(f.tl, f.tr), bottom = std::max(f.bl, f.br);
+						const bool cornersOut = f.x + std::max(f.tl, f.bl) <= vx && x1 - std::max(f.tr, f.br) >= vx1;
+						if (cornersOut || f.y + top > y1 - bottom)
+						{
+							if (cornersOut) band(f.y, y1, f.color);
+							else vary(f.y, y1);
+						}
+						else
+						{
+							vary(f.y, f.y + top - 1);
+							band(f.y + top, y1 - bottom, f.color);
+							vary(y1 - bottom + 1, y1);
+						}
+						continue;
+					}
+										// A border whose side edges (corners included) lie outside the
+					// viewport paints only its top and bottom bands inside it: a card's
+					// outline around a scroller leaves the rows between untouched.
+					if (c.type == DisplayCommandType::StrokeRect || c.type == DisplayCommandType::StrokeRoundedRect)
+					{
+						int sx, sy, sw, sh, reach = 1;
+						if (c.type == DisplayCommandType::StrokeRect)
+						{
+							sx = c.stroke.x; sy = c.stroke.y; sw = c.stroke.w; sh = c.stroke.h;
+						}
+						else
+						{
+							const auto &st = c.strokeRoundedRect;
+							sx = st.x; sy = st.y; sw = st.w; sh = st.h;
+							reach = std::max<int>({st.tl, st.tr, st.br, st.bl, 0}) + std::max<int>(st.lineWidth, 1);
+							if (st.cssRadii)
+								for (int k = 0; k < 4; ++k) reach = std::max(reach, (std::max(st.rx8[k], st.ry8[k]) + 7) / 8 + std::max<int>(st.lineWidth, 1));
+						}
+						if (sx + reach < vx && sx + sw - 1 - reach > vx1 && sh > 2 * reach)
+						{
+							vary(std::min<int>(sy, c.by), sy + reach);
+							vary(sy + sh - 1 - reach, std::max<int>(sy + sh - 1, c.by + c.bh - 1));
+							continue;
+						}
+					}
+					vary(c.by, c.by + c.bh - 1);
+				}
+				return true;
+			}
+
+			// A strip-by-strip replay of one region computes the cull once for the
+			// whole region (a cover of the region covers every strip of it) instead
+			// of re-scanning the list per strip.
+			static inline int cullStartOverride = -1;
+			// Whether the last cullStartIndex() found an opaque fill covering the clip.
+			static inline bool cullCovered = false;
+
+			static void GEA_RENDER_HOT_SRAM replay()
+			{
+				int cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+				int clip_dirty = 1;
+				int clip_stack_depth = 0;
+				UniformRoundedRectBatch roundedRects;
+
+				// Occlusion cull against the CALLER's clip (the conservative tree_render
+				// path pushes each dirty rect around a full replay): start at the last
+				// opaque full-cover fill's first command. Unlike the node walks, this
+				// stream carries clip state INLINE, and an orphan PopClip at depth 0
+				// pops the caller's region clip — so only cull when the cover has no
+				// clipping ancestors (whose Pop would run unmatched), the skipped
+				// prefix is Push/Pop balanced, and no filter-blur pair could straddle
+				// the cut.
+				// A filtered region list already dropped the culled draws; replay()
+				// below decides whether the clip lets it use the list.
+				int startCi = -1;
+
+				int listed = gRegionIndexCount;
+				if (listed >= 0)
+				{
+					int qx0 = 0, qy0 = 0, qx1 = -1, qy1 = -1;
+					gea::platform::display::Display::clip(&qx0, &qy0, &qx1, &qy1);
+					if (qx1 >= qx0 && qy1 >= qy0 &&
+					    (qx0 < gRegionX0 || qy0 < gRegionY0 || qx1 > gRegionX1 || qy1 > gRegionY1))
+						listed = -1;
+				}
+				const int total = listed >= 0 ? listed : state.commandCount;
+				if (startCi < 0) startCi = listed >= 0 ? 0 : cullStartOverride >= 0 ? cullStartOverride : cullStartIndex();
+				for (int k = 0; k < total; k++)
+				{
+					const int i = listed >= 0 ? gRegionIndex[k] : k;
 					DisplayCommand *c = &state.commands[i];
 
 					// Occlusion cull: draws before the covering fill are invisible; only
@@ -9794,7 +10590,7 @@ int gLastScrollUiFrame = -1000;
 	{
 		// This is also the recorder's traversal, so retained draws cannot invent a
 		// second hierarchy or lose document-order ties after a depth crossing.
-		static int ranks[kMaxNodes];
+		GEA_EXT_BSS static int ranks[kMaxNodes];
 		static uint64_t serial = ~0ull;
 		static uint32_t recordSerial = 0;
 		auto &tree = Tree::instance();
@@ -9911,6 +10707,12 @@ int gLastScrollUiFrame = -1000;
 
 	void DisplayList::pruneImageReferences()
 	{
+		// Runs after every re-recorded node: with no image held there is nothing
+		// to release, and only blit commands can hold one.
+		bool anyHeld = false;
+		for (int id = 0; id < gea::framework::graphics::kImageMax && !anyHeld; ++id)
+			anyHeld = state.imageReferences[id];
+		if (!anyHeld) return;
 		bool referenced[gea::framework::graphics::kImageMax]{};
 		auto &images = gea::framework::graphics::ImageStore::instance();
 		for (int i = 0; i < state.commandCount; ++i) {
@@ -9919,6 +10721,7 @@ int gLastScrollUiFrame = -1000;
 			if (command.type == DisplayCommandType::BlitImage) pixels = command.blit.pixels;
 			else if (command.type == DisplayCommandType::BlitImageScaled) pixels = command.scaledBlit.pixels;
 			else if (command.type == DisplayCommandType::BlitImageProjected) pixels = command.projectedBlit.pixels;
+			else continue;
 			const int id = images.idForPixels(pixels);
 			if (id >= 0) referenced[id] = true;
 		}
@@ -9932,6 +10735,7 @@ int gLastScrollUiFrame = -1000;
 
 	void DisplayList::clear()
 	{
+		gRegionIndexCount = -1;  // its indices name the old list
 		Tree &tree = Tree::instance();
 		state.displayListSerial++;
 		if (state.displayListSerial == 0)
@@ -9941,6 +10745,8 @@ int gLastScrollUiFrame = -1000;
 		state.commandCount = 0;
 		pruneImageReferences();
 		state.textClippedBackgrounds = false;
+		state.scrollbarBoxCount = 0;
+		state.scrollbarBoxOverflow = false;
 		state.commandOverflow = false;
 		state.drawNodeOrderCount = 0;
 		if (!state.ensureNodeScratchCapacity(tree.nodeCount()))
@@ -10018,6 +10824,14 @@ int gLastScrollUiFrame = -1000;
 		Tree &weldTree = Tree::instance();
 		Node *weldNodes = weldTree.nodes();
 		const int weldNodeCount = weldTree.nodeCount();
+		// No transform-dirty node, no dynamic subtree: nothing below can weld. One
+		// pass over a flag instead of an ancestor walk per node, on every refresh
+		// of every screen without a transform animation.
+		bool anyTransformDirty = false;
+		for (int id = 0; id < weldNodeCount && !anyTransformDirty; id++)
+			anyTransformDirty = weldNodes[id].render.transform_dirty;
+		if (!anyTransformDirty)
+			return;
 		for (int id = 0; id < weldNodeCount && wn + 4 <= kMaxWeld; id++)
 		{
 			bool nodeInDynamicSubtree = false;
@@ -10568,9 +11382,11 @@ int gLastScrollUiFrame = -1000;
 		{
 			if ((GEA_CSS_FILTERS ? rstyle(nodes[i].computedStyle()).filter_blur_radius : 0) > 0)
 				return false;
-			if (nodes[i].computedStyle().overflow == 2)
-				return false;
 		}
+		// Scroll containers replay like overflow:hidden ones (their clips come
+		// from overflowClipBounds); only their scrollbar thumbs sit outside the
+		// node ranges, and tree_render keeps frames that touch a thumb on the
+		// full-list path (scrollbarOverlapsRegion).
 		(void)width;
 		(void)height;
 
@@ -10581,6 +11397,81 @@ int gLastScrollUiFrame = -1000;
 	bool DisplayList::hasTextClippedBackgrounds() const
 	{
 		return state.textClippedBackgrounds;
+	}
+
+	void DisplayList::noteScrollbarBox(int node, int x, int y, int w, int h)
+	{
+		if (state.scrollbarBoxCount >= DisplayListState::kMaxScrollbarBoxes)
+		{
+			state.scrollbarBoxOverflow = true;
+			return;
+		}
+		// Called right after the thumb's append(), so it is the last command.
+		state.scrollbarCommands[state.scrollbarBoxCount] = state.commandCount - 1;
+		state.scrollbarNodes[state.scrollbarBoxCount] = node;
+		std::int16_t *box = state.scrollbarBoxes[state.scrollbarBoxCount++];
+		box[0] = static_cast<std::int16_t>(x);
+		box[1] = static_cast<std::int16_t>(y);
+		box[2] = static_cast<std::int16_t>(x + w - 1);
+		box[3] = static_cast<std::int16_t>(y + h - 1);
+	}
+
+	bool DisplayList::scrollbarOverlapsRegion(int x0, int y0, int x1, int y1) const
+	{
+		if (state.scrollbarBoxOverflow)
+			return true;
+		for (int i = 0; i < state.scrollbarBoxCount; ++i)
+		{
+			const std::int16_t *box = state.scrollbarBoxes[i];
+			if (box[0] <= x1 && box[2] >= x0 && box[1] <= y1 && box[3] >= y0)
+				return true;
+		}
+		return false;
+	}
+
+	// Direct replay walks node command ranges, which a thumb sits outside. It can
+	// still serve a frame that touches a thumb by painting the thumb after the
+	// nodes -- correct only while nothing recorded after the thumb paints over it
+	// (an overlay above the scroll container would otherwise end up under it).
+	bool DisplayList::scrollbarThumbsPaintLast() const
+	{
+		if (state.scrollbarBoxOverflow)
+			return false;
+		for (int i = 0; i < state.scrollbarBoxCount; ++i)
+		{
+			const int index = state.scrollbarCommands[i];
+			if (index < 0 || index >= state.commandCount)
+				return false;
+			const std::int16_t *box = state.scrollbarBoxes[i];
+			for (int ci = index + 1; ci < state.commandCount; ++ci)
+			{
+				const DisplayCommand &c = state.commands[ci];
+				if (c.type == DisplayCommandType::PushClip || c.type == DisplayCommandType::PopClip)
+					continue;
+				if (c.bw <= 0 || c.bh <= 0)
+					continue;
+				if (ClipMath::rectsOverlap(c.bx, c.by, c.bx + c.bw - 1, c.by + c.bh - 1, box[0], box[1], box[2], box[3]))
+					return false;
+			}
+		}
+		return true;
+	}
+
+	void DisplayList::replayScrollbarThumbsInRegion(int x0, int y0, int x1, int y1)
+	{
+		for (int i = 0; i < state.scrollbarBoxCount; ++i)
+		{
+			const std::int16_t *box = state.scrollbarBoxes[i];
+			if (!(box[0] <= x1 && box[2] >= x0 && box[1] <= y1 && box[3] >= y0))
+				continue;
+			const int index = state.scrollbarCommands[i];
+			if (index < 0 || index >= state.commandCount)
+				continue;
+			gea::platform::display::Display::setAlpha(255);
+			gea::platform::display::Display::pushClip(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+			DisplayCommandDrawer::replay(state.commands[index]);
+			gea::platform::display::Display::popClip();
+		}
 	}
 
 	void DisplayList::clearRetainedBackgroundRecolors()
@@ -10771,23 +11662,65 @@ int gLastScrollUiFrame = -1000;
 			return;
 		Tree &tree = Tree::instance();
 		Node *nodes = tree.nodes();
-		auto belongsToSubtree = [&](int id) {
-			for (int cursor = id; cursor >= 0 && cursor < tree.nodeCount(); cursor = nodes[cursor].parent)
-				if (cursor == node)
-					return true;
-			return false;
-		};
-		for (int id = 0; id < tree.nodeCount(); id++)
+		const int count = tree.nodeCount();
+		// Mark the subtree in one walk down its child links. Testing every node's
+		// ancestor chain instead cost O(nodes x depth) on every scroll frame: 4-12
+		// ms of a CrowPanel chart scroll frame, on a tab of ~600 commands.
+		static std::vector<std::uint32_t> subtreeMark;
+		static std::uint32_t subtreeStamp = 0;
+		if (subtreeMark.size() < static_cast<std::size_t>(count))
+			subtreeMark.resize(static_cast<std::size_t>(count), 0);
+		if (++subtreeStamp == 0)
 		{
-			if (!belongsToSubtree(id) || !state.hasNodeScratchFor(id))
-				continue;
-			const int start = state.nodeDrawStart[id];
-			const int end = state.nodeDrawEnd[id];
-			if (start >= 0 && end > start && end <= state.commandCount)
+			std::fill(subtreeMark.begin(), subtreeMark.end(), 0);
+			subtreeStamp = 1;
+		}
+		for (int id = node; id >= 0;)
+		{
+			subtreeMark[id] = subtreeStamp;
+			if (state.hasNodeScratchFor(id))
 			{
-				for (int ci = start; ci < end; ci++)
-					DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+				const int start = state.nodeDrawStart[id];
+				const int end = state.nodeDrawEnd[id];
+				if (start >= 0 && end > start && end <= state.commandCount)
+				{
+					for (int ci = start; ci < end; ci++)
+						DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+				}
 			}
+			if (nodes[id].first_child >= 0)
+			{
+				id = nodes[id].first_child;
+				continue;
+			}
+			while (id != node && nodes[id].next_sibling < 0)
+				id = nodes[id].parent;
+			if (id == node)
+				break;
+			id = nodes[id].next_sibling;
+		}
+		auto belongsToSubtree = [&](int id) {
+			return id >= 0 && id < count && subtreeMark[id] == subtreeStamp;
+		};
+		// A scroll container's thumb sits outside every node paint range too. The
+		// thumbs of containers inside the subtree move with it (the root's own
+		// thumb stays: it is viewport-fixed like the root's box, and its caller
+		// repositions it -- patchScrollbarThumb). Left behind, a scrolling page
+		// replayed a nested list's thumb at its old place into every revealed
+		// strip that crossed it, and the blit then dragged those stale pieces up
+		// the screen with the content.
+		for (int i = 0; i < state.scrollbarBoxCount; ++i)
+		{
+			const int owner = state.scrollbarNodes[i];
+			const int ci = state.scrollbarCommands[i];
+			if (owner == node || !belongsToSubtree(owner) || ci < 0 || ci >= state.commandCount)
+				continue;
+			DisplayCommandTranslator::translate(&state.commands[ci], dx, dy);
+			std::int16_t *box = state.scrollbarBoxes[i];
+			box[0] = static_cast<std::int16_t>(box[0] + dx);
+			box[1] = static_cast<std::int16_t>(box[1] + dy);
+			box[2] = static_cast<std::int16_t>(box[2] + dx);
+			box[3] = static_cast<std::int16_t>(box[3] + dy);
 		}
 		// Clip scopes sit outside node paint ranges. Scan the command buffer once
 		// after translating all paint ranges, rather than once per descendant.
@@ -10823,10 +11756,14 @@ int gLastScrollUiFrame = -1000;
 			if (ViewRenderer::anyTransformActive())
 				return false;
 			Node *nodes = tree.nodes();
-			int x0 = 0;
-			int y0 = 0;
-			int x1 = width - 1;
-			int y1 = height - 1;
+			// Built inside out, so the screen bound goes on last: recordNode hands
+			// the children of an expanded-clip node (recordNodeWithExpandedClip) the
+			// coverage window in place of everything above it, screen included.
+			int x0 = INT_MIN / 2;
+			int y0 = INT_MIN / 2;
+			int x1 = INT_MAX / 2;
+			int y1 = INT_MAX / 2;
+			bool expanded = false;
 			for (int a = LayoutEngine::isViewportFixed(nodes[id]) ? -1 : nodes[id].parent; a >= 0 && a < nodeCount; a = nodes[a].parent)
 			{
 				const Node &ancestor = nodes[a];
@@ -10835,8 +11772,24 @@ int gLastScrollUiFrame = -1000;
 					if (LayoutEngine::isViewportFixed(ancestor)) break;
 					continue;
 				}
+				if (a == state.recordExpandedClipNode)
+				{
+					x0 = std::max(x0, state.recordExpandedClipX0);
+					y0 = std::max(y0, state.recordExpandedClipY0);
+					x1 = std::min(x1, state.recordExpandedClipX1);
+					y1 = std::min(y1, state.recordExpandedClipY1);
+					expanded = true;
+					break;
+				}
 				ClipMath::clampToNode(ancestor, &x0, &y0, &x1, &y1);
 				if (LayoutEngine::isViewportFixed(ancestor)) break;
+			}
+			if (!expanded)
+			{
+				x0 = std::max(x0, 0);
+				y0 = std::max(y0, 0);
+				x1 = std::min(x1, width - 1);
+				y1 = std::min(y1, height - 1);
 			}
 			*cx0 = x0;
 			*cy0 = y0;
@@ -12406,7 +13359,7 @@ int gLastScrollUiFrame = -1000;
 			const std::int64_t totalStartUs = refreshPerfNowUs();
 			FillBandDirty dMain{canvas->width(), canvas->height(), -1, -1};
 			FillBandDirty dWork{canvas->width(), canvas->height(), -1, -1};
-			static RecolorPixelCache protectedPixelCaches[2];
+			GEA_EXT_BSS static RecolorPixelCache protectedPixelCaches[2];
 			if (protectForegroundDuringFill)
 			{
 				protectedPixelCaches[0].clear();
@@ -13023,17 +13976,30 @@ int gLastScrollUiFrame = -1000;
 			return false;
 		int start = state.nodeDrawStart[node];
 		int end = state.nodeDrawEnd[node];
+		// recordNode culls a node outside its ancestors' overflow clips to the
+		// empty range (-1, -1). While it stays outside, a full record would cull it
+		// again, so a change to it (a ticking legend just below a scroll view's
+		// edge) leaves the list exactly as it is -- refusing here instead threw the
+		// whole retained list away and re-recorded the screen every frame.
+		if (start < 0 && end < 0 && !isDocumentCanvasRoot(nodes[node]) &&
+				nodeOutsideRecordClip(node, tree.mountedWidth(), tree.mountedHeight()))
+			return true;
 		if (start < 0 || end < start || end > state.commandCount)
 			return false;
 
-		DisplayCommand tmp[96];
+		// Raw storage, like the list's own buffer: append() hands out slots the
+		// recorders fill, so constructing 96 commands per re-record (a few KB of
+		// zeroing, every changed node, every frame) bought nothing.
+		constexpr int kTmpCommands = 96;
+		alignas(DisplayCommand) unsigned char tmpStorage[sizeof(DisplayCommand) * kTmpCommands];
+		DisplayCommand *tmp = reinterpret_cast<DisplayCommand *>(tmpStorage);
 		int tmp_len = 0;
 		DisplayCommand *prev_override = state.appendOverride;
 		int *prev_override_len = state.appendOverrideCount;
 		int prev_override_cap = state.appendOverrideCapacity;
 		state.appendOverride = tmp;
 		state.appendOverrideCount = &tmp_len;
-		state.appendOverrideCapacity = (int)(sizeof(tmp) / sizeof(tmp[0]));
+		state.appendOverrideCapacity = kTmpCommands;
 
 		Node *n = &nodes[node];
 		// recordNode gates every paint on `overlaps_clip` — a node outside its
@@ -13072,6 +14038,15 @@ int gLastScrollUiFrame = -1000;
 		int delta = tmp_len - old_len;
 		if (old_len == 0 && tmp_len > 0)
 			return false;
+		// Only a replaced blit can drop the last reference to an image; new ones
+		// retain theirs while recording.
+		bool replacedBlit = false;
+		for (int ci = start; ci < end && !replacedBlit; ++ci)
+		{
+			const DisplayCommandType type = state.commands[ci].type;
+			replacedBlit = type == DisplayCommandType::BlitImage || type == DisplayCommandType::BlitImageScaled ||
+			               type == DisplayCommandType::BlitImageProjected;
+		}
 		if (delta > 0 && state.commandCount + delta > DisplayListState::kMaxCommands)
 			return false;
 		if (delta != 0 && end < state.commandCount)
@@ -13094,8 +14069,25 @@ int gLastScrollUiFrame = -1000;
 			state.nodeDrawEnd[node] = -1;
 		}
 		state.shiftNodeDrawRangesAfter(end, delta, node);
-		pruneImageReferences();
+		if (replacedBlit)
+			pruneImageReferences();
 		return true;
+	}
+
+	bool DisplayList::rerecordNodeCommandsWithExpandedClip(int node, int clipNode, int clipX0, int clipY0, int clipX1, int clipY1)
+	{
+		state.recordExpandedClipNode = clipNode;
+		state.recordExpandedClipX0 = clipX0;
+		state.recordExpandedClipY0 = clipY0;
+		state.recordExpandedClipX1 = clipX1;
+		state.recordExpandedClipY1 = clipY1;
+		const bool ok = rerecordNodeCommands(node);
+		state.recordExpandedClipNode = -1;
+		state.recordExpandedClipX0 = 0;
+		state.recordExpandedClipY0 = 0;
+		state.recordExpandedClipX1 = -1;
+		state.recordExpandedClipY1 = -1;
+		return ok;
 	}
 
 	std::uint32_t DisplayList::recordSerial() const
@@ -13114,6 +14106,10 @@ int gLastScrollUiFrame = -1000;
 		Tree &tree = Tree::instance();
 		Node *nodes = tree.nodes();
 		if (!state.commands || node < 0 || node >= tree.nodeCount())
+			return false;
+		// Untracked thumbs (more than the box table holds) cannot follow a
+		// translate (translateSubtreeCommands): have the caller re-record.
+		if (state.scrollbarBoxOverflow)
 			return false;
 		const Node *n = &nodes[node];
 
@@ -13141,7 +14137,7 @@ int gLastScrollUiFrame = -1000;
 		};
 		const int oldY = thumbY(n->layout.previous_scroll_y);
 		const int newY = thumbY(n->layout.scroll_y);
-		const int thumbX = n->layout.x + n->layout.width - 7;
+		const int thumbX = n->layout.x + n->layout.width - 6 - 4;
 		if (oldY == newY)
 			return true;
 
@@ -13150,10 +14146,17 @@ int gLastScrollUiFrame = -1000;
 			DisplayCommand &c = state.commands[ci];
 			if (c.type != DisplayCommandType::FillRoundedRect)
 				continue;
-			if (c.bx != thumbX || c.bw != 3 || c.by != oldY || c.bh != thumb_h)
+			if (c.bx != thumbX || c.bw != 4 || c.by != oldY || c.bh != thumb_h)
 				continue;
 			c.by = static_cast<std::int16_t>(newY);
 			c.fillRoundedRect.y = static_cast<std::int16_t>(newY);
+			// The thumb's box steers which repaints replay it; keep it on the thumb.
+			for (int i = 0; i < state.scrollbarBoxCount; ++i)
+				if (state.scrollbarCommands[i] == ci)
+				{
+					state.scrollbarBoxes[i][1] = static_cast<std::int16_t>(newY);
+					state.scrollbarBoxes[i][3] = static_cast<std::int16_t>(newY + thumb_h - 1);
+				}
 			return true;
 		}
 		return false;
@@ -13169,6 +14172,7 @@ int gLastScrollUiFrame = -1000;
 		// background re-blend over themselves and drift outward every replay.
 		DisplayCommandReplayer::restoreClearBaseInRegion(x0, y0, x1, y1);
 		DisplayCommandReplayer::replayDirectDirtyRegion(x0, y0, x1, y1, origin);
+		replayScrollbarThumbsInRegion(x0, y0, x1, y1);
 	}
 
 	void DisplayList::replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count)
@@ -13176,6 +14180,18 @@ int gLastScrollUiFrame = -1000;
 		for (int i = 0; i < count; ++i)
 			DisplayCommandReplayer::restoreClearBaseInRegion(regions[i].x0, regions[i].y0, regions[i].x1, regions[i].y1);
 		DisplayCommandReplayer::replayDirectDirtyRegions(regions, count);
+		for (int i = 0; i < count; ++i)
+			replayScrollbarThumbsInRegion(regions[i].x0, regions[i].y0, regions[i].x1, regions[i].y1);
+	}
+
+	void DisplayList::beginSimpleReplayScope()
+	{
+		DisplayCommandReplayer::beginSimpleReplayScope();
+	}
+
+	void DisplayList::endSimpleReplayScope()
+	{
+		DisplayCommandReplayer::endSimpleReplayScope();
 	}
 
 	bool DisplayList::canReplaySimpleDirtyRegions(int width, int height) const
@@ -13198,14 +14214,16 @@ int gLastScrollUiFrame = -1000;
 		// chunk. The worker canvas has neither that binding nor the clip, so this
 		// already-clipped entry must stay on the submitting canvas.
 		DisplayCommandReplayer::replaySimpleClippedDirtyRegion(x0, y0, x1, y1, origin, /*allowSplit=*/false);
+		replayScrollbarThumbsInRegion(x0, y0, x1, y1);
 	}
 
 	void DisplayList::maybeBakeStaticBackdrop(int width, int height, bool stableThisFrame, bool directReplay,
 																						bool bakeEligibleThisFrame)
 	{
 		// The backdrop cache only helps the direct dirty-region replay path; without it
-		// we render the full list anyway, so don't bake.
-		if (!directReplay)
+		// we render the full list anyway, so don't bake. Nor with scrollbar thumbs:
+		// the bake would capture a thumb that direct replay repaints elsewhere.
+		if (!directReplay || state.scrollbarBoxCount > 0)
 		{
 			gBackdropCacheValid = false;
 			gBackdropStableFrames = 0;
@@ -13268,8 +14286,52 @@ int gLastScrollUiFrame = -1000;
 			*misses = state.filterBlurCacheMisses;
 	}
 
+	int DisplayList::replayCullStart()
+	{
+		return DisplayCommandReplayer::cullStartIndex();
+	}
+
+	bool DisplayList::replayCullCovered()
+	{
+		return DisplayCommandReplayer::cullCovered;
+	}
+
+	bool DisplayList::scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig)
+	{
+		return DisplayCommandReplayer::scrollRowSignatures(vx, vy, vw, vh, sig);
+	}
+
+	bool DisplayList::beginRegionReplay()
+	{
+		return DisplayCommandReplayer::buildRegionIndex();
+	}
+
+	bool DisplayList::regionReplayActive()
+	{
+		return gRegionIndexCount >= 0;
+	}
+
+	bool DisplayList::regionReplayHolds(int x, int y, int w, int h, bool *covered)
+	{
+		if (gRegionIndexCount < 0 || x < gRegionX0 || y < gRegionY0 || x + w - 1 > gRegionX1 || y + h - 1 > gRegionY1)
+			return false;
+		if (covered) *covered = gRegionCovered;
+		return true;
+	}
+
+	void DisplayList::endRegionReplay()
+	{
+		gRegionIndexCount = -1;
+	}
+
+	void DisplayList::setReplayCullStart(int start)
+	{
+		DisplayCommandReplayer::cullStartOverride = start;
+	}
+
 	void DisplayList::replay()
 	{
+		if (!gea_replay_stage_active()) gea_display_note_direct_draw();
 		DisplayCommandReplayer::replay();
 	}
 

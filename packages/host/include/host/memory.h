@@ -3,6 +3,13 @@
 
 #include "backends.h"
 
+#include <cstddef>
+
+// A platform with fast on-chip RAM next to a large slow one (ESP32-S3: SRAM
+// and PSRAM) defines these; elsewhere they are absent and the calls do nothing.
+extern "C" void gea_memory_begin_internal(std::size_t bytes) __attribute__((weak));
+extern "C" void gea_memory_end_internal() __attribute__((weak));
+
 namespace gea::host {
 
 struct MemoryFacade {
@@ -37,6 +44,14 @@ struct MemoryFacade {
   double allocationPsramBytes() const { return gea::framework::memory::MemoryBackend::allocationPsramBytes(); }
   double allocationSramPeakBytes() const { return gea::framework::memory::MemoryBackend::allocationSramPeakBytes(); }
   double allocationPsramPeakBytes() const { return gea::framework::memory::MemoryBackend::allocationPsramPeakBytes(); }
+  // Allocations this task makes until endInternal() prefer on-chip RAM; `bytes`
+  // says how much to make room for (the display may yield staging buffers).
+  void beginInternal(double bytes) const {
+    if (gea_memory_begin_internal) gea_memory_begin_internal(bytes > 0 ? static_cast<std::size_t>(bytes) : 0);
+  }
+  void endInternal() const {
+    if (gea_memory_end_internal) gea_memory_end_internal();
+  }
 };
 
 inline constexpr MemoryFacade Memory{};

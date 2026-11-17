@@ -74,6 +74,7 @@ const geaProfilerHostMethods = ['nowUs', 'nowCycles']
 const geaStorageHostMethods = ['getItem', 'setItem', 'removeItem', 'clear', 'key']
 const geaBatteryHostMethods = ['level', 'charging']
 const geaNotifyHostMethods = ['text', 'seq']
+const geaSimdHostMethods = ['sumWindowsU8']
 const geaDeviceControlHostMethods = ['exec']
 const geaNativeBenchHostMethods = [
   'loopOverhead', 'arrayRead', 'arrayWrite', 'closure', 'methodCalls', 'mathIntensive',
@@ -125,6 +126,8 @@ const geaMemoryHostMethods = [
   'allocationPsramBytes',
   'allocationSramPeakBytes',
   'allocationPsramPeakBytes',
+  'beginInternal',
+  'endInternal',
 ]
 
 const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntries([
@@ -161,6 +164,7 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       ...geaStorageHostMethods.map((method): [string, string[]] => [`gea::host::Storage.${method}`, geaHostDeclarations]),
       ...geaBatteryHostMethods.map((method): [string, string[]] => [`gea::host::Battery.${method}`, geaHostDeclarations]),
       ...geaNotifyHostMethods.map((method): [string, string[]] => [`gea::host::Notify.${method}`, geaHostDeclarations]),
+      ...geaSimdHostMethods.map((method): [string, string[]] => [`gea::host::Simd.${method}`, geaHostDeclarations]),
       ...geaDeviceControlHostMethods.map((method): [string, string[]] => [`gea::host::DeviceControl.${method}`, geaHostDeclarations]),
       ...geaNativeBenchHostMethods.map((method): [string, string[]] => [`gea::host::native_bench::${method}`, geaNativeBenchDeclarations]),
       ...geaEpubArchiveHostMethods.map((method): [string, string[]] => [`gea::host::epub_archive::${method}`, geaEpubArchiveDeclarations]),

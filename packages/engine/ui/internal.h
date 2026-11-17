@@ -328,6 +328,27 @@ void rootScrollImageHoldTick();
 		void recordNodeWithExpandedClip(int id, uint8_t parentAlpha, int clipNode,
 																		int clipX0, int clipY0, int clipX1, int clipY1);
 		void replay();
+		// The occlusion-cull start replay() would use under the clip now in
+		// force; setReplayCullStart(n) makes replay() use n (-1: compute again).
+		int replayCullStart();
+		void setReplayCullStart(int start);
+		// Whether the last replayCullStart() found an opaque fill covering the clip.
+		bool replayCullCovered();
+		// Filters the list once for the clip now in force: replay() then walks only
+		// the commands that can paint inside it until endRegionReplay(). Computes
+		// the cull too (replayCullCovered() reports it). False: not filtered, and
+		// replay() walks the whole list as before.
+		bool beginRegionReplay();
+		// Per viewport row: what a horizontal scroll leaves unchanged, or 0
+		// (DisplayCommandReplayer::scrollRowSignatures).
+		bool scrollRowSignatures(int vx, int vy, int vw, int vh, std::uint32_t *sig);
+		void endRegionReplay();
+		// A list filtered by beginRegionReplay() is in force (replay() uses it for
+		// any clip inside the rect it was filtered for).
+		bool regionReplayActive();
+		// Whether the list in force was filtered for a rect holding this one, and
+		// whether an opaque fill covered that rect.
+		bool regionReplayHolds(int x, int y, int w, int h, bool *covered);
 		bool canReplayDirectDirtyRegions(int width, int height) const;
 		void translateNodeCommands(int node, int dx, int dy);
 		void translateSubtreeCommands(int node, int dx, int dy);
@@ -338,6 +359,9 @@ void rootScrollImageHoldTick();
 		// full record. Returns true when such a reveal exists.
 		bool subtreeRevealsUnrecordedContent(int node, int width, int height) const;
 		bool rerecordNodeCommands(int node);
+		// rerecordNodeCommands for a node recorded under recordNodeWithExpandedClip:
+		// the expanded-clip node's children see the coverage window, as they did then.
+		bool rerecordNodeCommandsWithExpandedClip(int node, int clipNode, int clipX0, int clipY0, int clipX1, int clipY1);
 		// A pixel buffer referenced by retained blit commands is about to be freed
 		// (canvas surface mode flip / resize / removal). The owning node is only
 		// *marked* dirty — its re-record happens later — so any replay in the gap
@@ -385,6 +409,10 @@ void rootScrollImageHoldTick();
 		void replayDirectDirtyRegions(const DisplayReplayRegion *regions, int count);
 		bool canReplaySimpleDirtyRegions(int width, int height) const;
 		bool canReplaySimpleDirtyRegions(int width, int height, const DisplayReplayRegion *regions, int count) const;
+		// Between begin and end the tree and display list must not change: the
+		// region-independent half of the simple-replay verdict is computed once.
+		void beginSimpleReplayScope();
+		void endSimpleReplayScope();
 		void replaySimpleClippedDirtyRegion(int x0, int y0, int x1, int y1, int origin = -1);
 		// Static-backdrop cache: bake every non-dirty (static) node into the bg cache
 		// buffer once it's stable, so the dirty-region replay can blit that backdrop and
@@ -427,6 +455,12 @@ void rootScrollImageHoldTick();
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
 		bool hasTextClippedBackgrounds() const;
+		// Scrollbar thumbs are recorded outside every node's command range;
+		// see DisplayListState::scrollbarBoxes.
+		void noteScrollbarBox(int node, int x, int y, int w, int h);
+		bool scrollbarOverlapsRegion(int x0, int y0, int x1, int y1) const;
+		bool scrollbarThumbsPaintLast() const;
+		void replayScrollbarThumbsInRegion(int x0, int y0, int x1, int y1);
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;
