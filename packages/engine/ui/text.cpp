@@ -1073,7 +1073,7 @@ struct TextCoverageSink {
 	}
 };
 
-static void drawStyledTextFontFamily(const char *text,int x,int y,std::uint16_t color,int family,int size,int weight=400,int stretch=1000) {
+static void drawStyledTextFontFamily(const char *text,int x,int y,gea::framework::graphics::pixel::native_t color,int family,int size,int weight=400,int stretch=1000) {
 #if GEA_EMBEDDED_TTF_FREETYPE
  gea::platform::display::Display::drawTextFontFamily(text,x,y,color,family,size,weight,stretch);
 #else
@@ -1211,7 +1211,7 @@ public:
 
 private:
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
-	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawRasterizedWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int ellipsisMaxHeight = 0, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		// Inline continuation: the run's first line starts `firstLineIndent` px in
 		// from the box's left edge (the pen position it inherited from the box
@@ -1358,7 +1358,7 @@ private:
 	// appending an ASCII "..." when text-overflow: ellipsis is set, or hard-
 	// clipping at the box edge otherwise. The truncated run always fits within
 	// maxWidth, so it never wraps and never spills past the content box.
-	static void drawRasterizedSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawRasterizedSingleLine(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, int textAlign, int containerWidth, int fontId, int fontSize, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		gea::framework::graphics::RasterizedFont font = gea::framework::graphics::FontRegistry::rasterizedFamily(fontId, fontSize, fontWeight, fontStretch);
 		if (!font.valid()) return;
@@ -1445,7 +1445,7 @@ private:
 	}
 #endif
 
-	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawBitmapWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int lineHeight, int clipX0, int clipY0, int clipX1, int clipY1, int firstLineIndent = 0, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		if (scale < 0.1f) scale = 1.0f;
 		int glyphWidth = static_cast<int>(kBitmapFontWidth * scale + 0.5f);
@@ -1496,7 +1496,7 @@ private:
 	// that is what `measureBitmap` charges for, so counting bytes here put the
 	// truncation, the ellipsis budget and the alignment offset in different units
 	// from the layout that placed the text.
-	static void drawBitmapSingleLine(const char *text, int x, int y, int maxWidth, std::uint16_t color, float scale, int textAlign, int containerWidth, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
+	static void drawBitmapSingleLine(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign, int containerWidth, int lineHeight, bool ellipsis, int clipX0, int clipY0, int clipX1, int clipY1, const TextCoverageSink *coverageSink = nullptr, int fontWeight = 400, int fontStretch = 1000)
 	{
 		(void)lineHeight;
 		if (scale < 0.1f) scale = 1.0f;
