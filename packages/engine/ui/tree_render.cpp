@@ -3674,9 +3674,18 @@ namespace gea::embedded::ui
 					gea_replay_stage_skip_seed(DisplayList::instance().replayCullCovered() ||
 					                           gea::framework::display::Underlay::covers(r->x0, r->y0, r->x1, r->y1));
 					gea::platform::display::Display::popClip();
-					for (int sy0 = r->y0; sy0 <= r->y1; sy0 += band)
+#ifndef GEA_EMBEDDED_STAGE_GRID_STRIPS
+#define GEA_EMBEDDED_STAGE_GRID_STRIPS 0
+#endif
+					// With GEA_EMBEDDED_STAGE_GRID_STRIPS (an app opt-in) staged
+					// strips sit on a fixed grid of the staging height, so a strip's
+					// rows map to one band of an underlay that keeps per-band lists
+					// (gea3d); strips that start wherever the dirty box does straddle
+					// two bands and rescan the whole primitive list.
+					const bool gridStrips = GEA_EMBEDDED_STAGE_GRID_STRIPS && band == stageRows && stageRows > 0;
+					for (int sy0 = r->y0, sy1 = 0; sy0 <= r->y1; sy0 = sy1 + 1)
 					{
-						const int sy1 = std::min(r->y1, sy0 + band - 1);
+						sy1 = std::min(r->y1, gridStrips ? (sy0 / band + 1) * band - 1 : sy0 + band - 1);
 						gea::platform::display::Display::resetClip();
 						gea::platform::display::Display::setAlpha(255);
 						const bool staged = stageRows > 0 && band == stageRows && gea_replay_stage_begin(r->x0, sy0, r->x1, sy1);
