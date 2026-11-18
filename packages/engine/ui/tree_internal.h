@@ -176,6 +176,11 @@ public:
 	// Bumped on every mount()/refresh(); native renderers diff against the last
 	// value they synced to decide whether a re-sync is needed at all.
 	uint64_t refreshSerial() const;
+	// A host that presents the tree with its own native views (the iOS/tvOS
+	// UIKit renderer) never shows the software framebuffer: while suppressed,
+	// refresh() still lays out and records, but skips rasterizing and flushing.
+	// The first refresh after suppression ends repaints the whole viewport.
+	void setSoftwareRasterSuppressed(bool suppressed);
 	void setDisplayListRebuildRequired(bool required);
 	bool nodeDisplayCommandsDirty(int node) const;
 	void clearNodeDisplayCommandDirty(int node);

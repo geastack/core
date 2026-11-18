@@ -104,7 +104,14 @@ gea::framework::graphics::Canvas *CanvasStore::bindOwned(CanvasSurfaceState &sur
 	// Cache-line aligned (size rounded up to the alignment) so DMA engines — the
 	// ESP32-P4 PPA in particular — can scale/rotate straight into this buffer with
 	// no bounce copy. A few padding bytes per canvas is a negligible cost.
+	// Apple hosts align to the page instead, so the GPU can read the buffer in
+	// place (a Metal buffer wraps whole, page-aligned pages) and presenting a
+	// canvas copies nothing.
+#ifdef __APPLE__
+	constexpr std::size_t kCanvasAlign = 16384;
+#else
 	constexpr std::size_t kCanvasAlign = 128;
+#endif
 	const auto pixelBytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * sizeof(gea::framework::graphics::pixel::native_t);
 	const auto byteCount = (pixelBytes + (kCanvasAlign - 1)) & ~(kCanvasAlign - 1);
 	surface.pixels = static_cast<gea::framework::graphics::pixel::native_t *>(

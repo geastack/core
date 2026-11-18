@@ -2161,6 +2161,13 @@ namespace gea::embedded::ui
 		}
 	} // namespace
 
+	namespace {
+		bool gSoftwareRasterSuppressed = false;
+		bool gSoftwareRasterStale = false;  // frames went unrasterized since the last repaint
+	}
+
+	void Tree::setSoftwareRasterSuppressed(bool suppressed) { gSoftwareRasterSuppressed = suppressed; }
+
 	void Tree::refresh(int root, int width, int height)
 	{
 #if defined(ESP_PLATFORM) && CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
@@ -2180,7 +2187,10 @@ namespace gea::embedded::ui
 #endif
 		const bool viewportChanged = gLayoutViewportRoot != root ||
 		    gLayoutViewportWidth != width || gLayoutViewportHeight != height;
-		if (viewportChanged) {
+		const bool rasterResumed = gSoftwareRasterStale && !gSoftwareRasterSuppressed;
+		if (rasterResumed)
+			gSoftwareRasterStale = false;
+		if (viewportChanged || rasterResumed) {
 			state.displayListDirty = true;
 			state.displayListRebuildStructural = true;
 			state.nodes[root].render.dirty = true;
@@ -2741,6 +2751,22 @@ namespace gea::embedded::ui
 		if (reprojected)
 			GEA_REFRESH_PERF(perf.treeReprojects++);
 		GEA_REFRESH_PERF(perf.treeDisplayListUs += refreshPerfNowUs() - displayListStartUs);
+		if (gSoftwareRasterSuppressed)
+		{
+			// The host shows native views, not the framebuffer: finish the frame's
+			// bookkeeping (as the end of a rasterized refresh does) without painting.
+			gSoftwareRasterStale = true;
+			LayoutSnapshot::capture();
+			state.canvases.forEach([](CanvasSurfaceState &surface)
+														 {
+		if (auto *canvas = surface.canvas()) canvas->resetDirty(); });
+			CanvasRenderingContext2D::clearRetainedCanvasDamage();
+#if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
+			if (displayCanvas)
+				displayCanvas->resetDirty();
+#endif
+			return;
+		}
 
 		// Horizontal-pan fast path: when a camera/world wrapper translated the viewport
 		// this frame (and nothing structural changed), memcpy-shift the viewport instead
