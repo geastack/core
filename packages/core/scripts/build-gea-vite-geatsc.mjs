@@ -4724,14 +4724,16 @@ if (hasFlag('--gea-ir-backend') || hasFlag('--gea-replace-renderers')) {
 // compiles in under 1 GiB of live heap) while stopping V8 from growing the heap
 // freely: under a 32 GiB cap the same compile held ~1.8 GB resident, mostly
 // uncollected garbage.
-// GEA_GEATSC_MAX_OLD_SPACE_SIZE (MiB) lowers or raises that limit for a
-// machine with less memory to spare; a heap the analysis outgrows then fails
-// the build instead of exhausting the machine.
+// An app whose analysis needs more (three.js and a game on top of it peaks
+// past 4 GiB) states its own limit in package.json: compiler.heapMiB in its
+// target's build settings. GEA_GEATSC_MAX_OLD_SPACE_SIZE (MiB) overrides both
+// for a machine with less memory to spare; a heap the analysis outgrows then
+// fails the build instead of exhausting the machine.
 // Native interface call graphs can exceed V8's default ~1 MiB stack during
 // closure analysis; keep the compiler stack below the host's 8 MiB limit.
 const geatscHeapMiB = (() => {
   const stated = process.env.GEA_GEATSC_MAX_OLD_SPACE_SIZE
-  if (stated === undefined || stated === '') return 4096
+  if (stated === undefined || stated === '') return compilerSettings.heapMiB ?? 4096
   const value = Number(stated)
   if (!Number.isInteger(value) || value < 512) fail(`GEA_GEATSC_MAX_OLD_SPACE_SIZE must be a whole number of MiB (at least 512): ${stated}`)
   return value
