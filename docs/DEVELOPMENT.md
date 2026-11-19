@@ -9,8 +9,17 @@ For the public core package:
 ```sh
 cd packages/core
 npm install
-node test/test_gea_app_manifest.mjs
-./test/run-tests.sh
+```
+
+The native pipelines (`test/run-gea-*-pipeline.sh`) compile apps from
+[geastack/examples](https://github.com/geastack/examples), so
+`test/run-tests.sh` is started from a checkout of that repo, as
+`test/native-test-common.sh` describes. From any other directory the
+pipelines print `SKIP` and exit 0.
+
+```sh
+cd /path/to/examples
+bash /path/to/core/packages/core/test/run-tests.sh
 ```
 
 For the Gea compiler plugin:
@@ -29,7 +38,7 @@ The scaffold packages do not all have build scripts yet. Treat their
 
 Use focused tests whenever possible:
 
-- app manifest and launcher behavior: `packages/core/test/test_gea_*.mjs`;
+- launcher behavior: `packages/core/test/run-gea-app-launcher-pipeline.sh`;
 - native pipeline behavior: `packages/core/test/run-gea-*-pipeline.sh`;
 - rendering or input behavior: source-specific shell tests under
   `packages/core/test`;
@@ -46,9 +55,11 @@ a test fixture explicitly owns it.
 
 ## App Manifest Tools
 
-The app manifest and launcher catalog helpers live under
-`packages/core/tools`. Keep their behavior aligned with the examples repo and
-with `@geastack/cli` manifest validation.
+App discovery and manifest validation live in
+[geastack/cli](https://github.com/geastack/cli): `src/manifest.mjs` and
+`validateBuildManifest` in `src/build-config.mjs`. The launcher catalog is
+`src/apps/launcher-catalog.mjs` there. Keep manifest changes aligned with the
+examples repo.
 
 ## Change Checklist
 
