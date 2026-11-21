@@ -406,7 +406,8 @@
       "adapters": {
         "esp32-idf": {
           "mcus": [
-            "esp32s3"
+            "esp32s3",
+            "esp32p4"
           ],
           "bindingSources": [
             "chip_bindings/displays/rgb_panel.cpp"
@@ -638,7 +639,8 @@
       "adapters": {
         "esp32-idf": {
           "mcus": [
-            "esp32s3"
+            "esp32s3",
+            "esp32p4"
           ],
           "bindingSources": [
             "chip_bindings/touch/gt911.cpp"
@@ -833,7 +835,8 @@
       "adapters": {
         "esp32-idf": {
           "mcus": [
-            "esp32s3"
+            "esp32s3",
+            "esp32p4"
           ],
           "bindingSources": [
             "chip_bindings/audio/ns4168.cpp"
@@ -897,6 +900,46 @@
           ],
           "bindingSources": [
             "chip_bindings/expanders/elecrow_board_control.cpp"
+          ]
+        }
+      },
+      "configuration": []
+    },
+    "elecrow_stc8h1k17": {
+      "label": "Elecrow CrowPanel Advanced ESP32-P4 board control (STC8H1K17 MCU at 0x2F: backlight PWM, amplifier shutdown, camera reset, battery gauge)",
+      "category": "expander",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [],
+      "headers": [],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32p4"
+          ],
+          "bindingSources": [
+            "chip_bindings/expanders/elecrow_stc8h1k17.cpp"
+          ]
+        }
+      },
+      "configuration": []
+    },
+    "elecrow_stc8h1k17_battery": {
+      "label": "Elecrow CrowPanel Advanced ESP32-P4 battery gauge (read from the STC8H1K17 board-control MCU; needs chips.expander elecrow_stc8h1k17)",
+      "category": "power",
+      "interfaces": [
+        "i2c"
+      ],
+      "sources": [],
+      "headers": [],
+      "adapters": {
+        "esp32-idf": {
+          "mcus": [
+            "esp32p4"
+          ],
+          "bindingSources": [
+            "chip_bindings/power/elecrow_stc8h1k17.cpp"
           ]
         }
       },
