@@ -1344,18 +1344,28 @@ void Tree::setActiveInputCaret(int pos)
 #endif
 }
 
+namespace {
+// lv_textarea's pwd_show_time: the last typed characters stay in clear this long.
+constexpr int kPasswordShowMs = 1500;
+// pwdRevealUntilMs while the reveal waits for its first frame tick.
+constexpr int kPasswordRevealPending = -1;
+}
+
 void Tree::noteActiveInputTyped(int from, int to)
 {
 #if GEA_UI_INPUT_NODES
 	auto &state = treeState();
-	constexpr int kPasswordShowMs = 1500;
 	if (state.pwdRevealUntilMs != 0 && from == state.pwdRevealTo) {
 		state.pwdRevealTo = to;  // the same burst: keep showing it
 	} else {
 		state.pwdRevealFrom = from;
 		state.pwdRevealTo = to;
 	}
-	state.pwdRevealUntilMs = (state.lastFrameMs ? state.lastFrameMs : 1) + kPasswordShowMs;
+	// The timer starts at the next frame tick, not at lastFrameMs: a key tap
+	// lands between frames, and once the screen goes idle lastFrameMs can be
+	// seconds old -- lastFrameMs + 1500 was already past, so the very next
+	// tick turned the character into a bullet before it was ever drawn.
+	state.pwdRevealUntilMs = kPasswordRevealPending;
 #else
 	(void)from;
 	(void)to;
@@ -1385,7 +1395,9 @@ void Tree::tickInputCaret(int timestampMs)
 		return;
 	}
 	// The password characters typed last turn to bullets once their time is up.
-	if (state.pwdRevealUntilMs != 0 && timestampMs >= state.pwdRevealUntilMs) {
+	if (state.pwdRevealUntilMs == kPasswordRevealPending) {
+		state.pwdRevealUntilMs = (timestampMs > 0 ? timestampMs : 1) + kPasswordShowMs;
+	} else if (state.pwdRevealUntilMs != 0 && timestampMs >= state.pwdRevealUntilMs) {
 		state.pwdRevealUntilMs = 0;
 		state.pwdRevealFrom = state.pwdRevealTo = 0;
 		markActiveInputRepaint(state);

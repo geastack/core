@@ -1055,6 +1055,11 @@ void onKeyboardPress(gea::framework::events::PointerEvent &event)
 	const int code = gState.keyCodes[slot];
 	if (code == 0) return;
 	applyKeyToActiveInput(code);
+	// The keyboard / OK keys (and return on the wide layout) drop focus. A tap
+	// inside the keyboard skips touch_runtime's focus block, which is what
+	// normally calls sync() -- so without this the keys stayed on screen bound
+	// to no input, and every later key did nothing.
+	VirtualKeyboard::instance().sync();
 }
 
 }  // namespace
