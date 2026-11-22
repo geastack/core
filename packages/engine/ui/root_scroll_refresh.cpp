@@ -37,7 +37,11 @@ extern "C" __attribute__((weak)) bool gea_display_scroll_rect_self_flushing() { 
 // this one repaints the exposed strip starts it here (false: it cannot, and the
 // caller blits with Display::scrollRect) and joins it in the end call.
 extern "C" __attribute__((weak)) bool gea_display_scroll_rect_begin(int, int, int, int, int, int) { return false; }
+#if defined(GEA_LINKED_HOOK_DEFAULTS) && GEA_LINKED_HOOK_DEFAULTS
+extern "C" void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int);
+#else
 extern "C" __attribute__((weak)) void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int) {}
+#endif
 // Per screen row from y0: what the coming sideways scroll copy leaves unchanged
 // (DisplayList::scrollRowSignatures), so the display may skip rows its back
 // buffer already holds. Taken by the next gea_display_scroll_rect_begin.

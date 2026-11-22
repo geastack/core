@@ -128,12 +128,20 @@ private:
 	const RasterizedFontData *data_ = nullptr;
 };
 
+struct RuntimeFontProvider {
+	int (*lookupFamily)(const char *family);
+	const char *(*familyName)(int familyId);
+	const std::uint8_t *(*fontBytes)(int familyId, unsigned long *length);
+};
+
 class FontRegistry {
 public:
 	static RasterizedFont rasterized(int fontId);
 	static RasterizedFont rasterizedFamily(int familyId, int sizePx);
 	static RasterizedFont rasterizedFamily(int familyId, int sizePx, int weight, int stretch);
 	static const BitmapFont8x16 &bitmap8x16();
+	static void invalidateRuntimeFonts();
+	static void setRuntimeFontProvider(const RuntimeFontProvider *provider);
 	static int familyId(const char *family);
 	static const char *familyName(int familyId);
 };

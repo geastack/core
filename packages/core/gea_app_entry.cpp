@@ -37,6 +37,8 @@ void drainMicrotasks();
 // sets GEA_LINKED_HOOK_DEFAULTS and the references become ordinary ones.
 #if defined(GEA_LINKED_HOOK_DEFAULTS) && GEA_LINKED_HOOK_DEFAULTS
 #define GEA_PROGRAM_HOOK
+#elif defined(__APPLE__)
+#define GEA_PROGRAM_HOOK __attribute__((weak_import))
 #else
 #define GEA_PROGRAM_HOOK __attribute__((weak))
 #endif

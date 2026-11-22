@@ -49,7 +49,11 @@
 // else and skip those rects: on the CrowPanel 7 a scrolling page otherwise
 // copied the whole viewport between buffers (~1.4 MB of PSRAM traffic a frame)
 // only to redraw it, and that traffic starved the panel's scanout.
+#if defined(GEA_LINKED_HOOK_DEFAULTS) && GEA_LINKED_HOOK_DEFAULTS
+extern "C" void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int);
+#else
 extern "C" __attribute__((weak)) void gea_display_prepare_repaint(const gea::platform::display::DisplayFlushRect *, int) {}
+#endif
 extern "C" int gea_bulk_replay_stage_rows_for_width(int width);
 extern "C" bool gea_replay_stage_begin(int x0, int y0, int x1, int y1);
 extern "C" void gea_replay_stage_end();
