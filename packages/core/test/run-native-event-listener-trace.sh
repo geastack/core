@@ -2,6 +2,7 @@
 set -euo pipefail
 [[ $# == 0 || ( $# == 1 && "$1" == --build-only ) ]] || { echo 'Use --build-only or no arguments' >&2;exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
 : "${GEA_TEST_RUNTIME_HEADER:?Set actual shared compiler runtime gea_runtime.h}"
 [[ -f "$GEA_TEST_RUNTIME_HEADER" ]] || { echo 'Actual shared runtime header missing' >&2;exit 2; }
 BUILD_DIR="$ROOT/dist/event-listener-trace/normal"

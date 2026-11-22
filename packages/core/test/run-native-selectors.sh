@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
 BUILD_DIR="$ROOT/packages/core/test/.build/native-selectors"
 CXX_BIN="${CXX:-clang++}"
 mkdir -p "$BUILD_DIR"

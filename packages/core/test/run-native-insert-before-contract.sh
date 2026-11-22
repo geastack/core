@@ -2,6 +2,8 @@
 set -euo pipefail
 [[ $# == 0 || ( $# == 1 && ( "$1" == --build-only || "$1" == --prepare-only ) ) ]] || { echo "usage: $0 [--build-only|--prepare-only]" >&2;exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_plugin_build
 BUILD_DIR="$ROOT/dist/native-insert-before-contract"
 CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-1}"

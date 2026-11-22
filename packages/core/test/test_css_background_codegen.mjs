@@ -5,7 +5,7 @@ import vm from 'node:vm'
 import test from 'node:test'
 
 // Exercise the real registration emitter without invoking the application build.
-const require = createRequire(new URL('../../geatsc-plugin-gea/package.json', import.meta.url))
+const require = createRequire(import.meta.url)
 const ts = require('typescript')
 const source = fs.readFileSync(new URL('../scripts/build-gea-vite-geatsc.mjs', import.meta.url), 'utf8')
 const parsed = ts.createSourceFile('build-gea-vite-geatsc.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)

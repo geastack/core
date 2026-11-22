@@ -2,7 +2,7 @@ import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {fileURLToPath} from 'node:url'
-import ts from '../../geatsc-plugin-gea/node_modules/typescript/lib/typescript.js'
+import ts from 'typescript'
 const config=ts.readConfigFile(new URL('./tsconfig-native-insert-before.json',import.meta.url).pathname,ts.sys.readFile)
 const parsed=ts.parseJsonConfigFileContent(config.config,ts.sys,fileURLToPath(new URL('./',import.meta.url)))
 const declaration=fileURLToPath(new URL('../index.d.ts',import.meta.url))

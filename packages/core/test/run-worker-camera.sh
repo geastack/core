@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-out="$PWD/packages/geatsc-plugin-gea/dist"
-test -d "$out" # use the normal package build output; never invent a scratch tree
+source packages/core/test/test-env.sh
+gea_require_plugin_build
+out="$PWD/packages/geatsc-plugin-gea/dist" # the plugin package's normal build output
 export TMPDIR="$out"
 source packages/core/test/native-host.sh
 "${CXX:-clang++}" -std=c++20 -pthread -fsanitize=address,undefined \

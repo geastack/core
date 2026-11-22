@@ -274,6 +274,10 @@ function buildSourceAliases(entry: string): SourceAlias[] {
   }
   aliases.push({ find: /^three$/, replacement: () => path.join(geaThreeSrcDir, 'Three.ts') })
   aliases.push({ find: /^three\/src\/(.+)\.js$/, replacement: (m) => path.join(geaThreeSrcDir, `${m[1]}.ts`) })
+  aliases.push({
+    find: /^three\/(?:addons|examples\/jsm)\/(.+)\.js$/,
+    replacement: (m) => path.join(geaThreeSrcDir, `addons/${m[1]}.ts`),
+  })
   try {
     appRequire.resolve('troika-three-text')
     const troika = fs.realpathSync(appRequire.resolve('@geastack/native-webgl-angle/troika-three-text'))

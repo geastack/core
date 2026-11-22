@@ -11,8 +11,9 @@ if [[ "$module" != /* || ! -f "$module" || ! "$entry" =~ ^[a-zA-Z_][a-zA-Z_0-9]*
   exit 2
 fi
 cd "$(dirname "$0")/../../.."
-out="$PWD/packages/geatsc-plugin-gea/dist"
-test -d "$out"
+source packages/core/test/test-env.sh
+gea_require_plugin_build
+out="$PWD/packages/geatsc-plugin-gea/dist" # the plugin package's normal build output
 export TMPDIR="$out"
 source packages/core/test/native-host.sh
 flags=(-O2)

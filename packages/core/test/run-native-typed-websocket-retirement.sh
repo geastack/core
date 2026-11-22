@@ -2,7 +2,14 @@
 set -euo pipefail
 TEST_DIR=$(cd "$(dirname "$0")" && pwd)
 CORE_ROOT=$(cd "$TEST_DIR/../../.." && pwd)
-if [[ -n "${GEA_COMPILER_CLI:-}" ]]; then COMPILER_ROOT=$(cd "$(dirname "$GEA_COMPILER_CLI")/.." && pwd); else COMPILER_ROOT=$(cd "$CORE_ROOT/../compiler" && pwd); fi
+source "$TEST_DIR/test-env.sh"
+COMPILER_ROOT=${GEA_COMPILER_ROOT:-}
+# The lifetime test itself is one of the compiler's own test sources, which the
+# published @geastack/compiler package does not ship.
+if [[ ! -f "$COMPILER_ROOT/test/runtime/native-websocket-lifetime.cpp" ]]; then
+  echo "SKIP: needs a geastack/compiler checkout next to core (or GEA_COMPILER_CLI pointing into one) for test/runtime/native-websocket-lifetime.cpp" >&2
+  exit 0
+fi
 OUT_DIR="$TEST_DIR/.build/native-typed-websocket-retirement"
 mkdir -p "$OUT_DIR"
 CXX_BIN=${CXX:-clang++}

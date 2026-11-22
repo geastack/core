@@ -2,6 +2,7 @@
 set -euo pipefail
 [[ $# == 0 || ( $# == 1 && "$1" == --build-only ) ]] || { echo 'Use --build-only or no arguments' >&2;exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
 BUILD_DIR="$ROOT/dist/native-dom-mutations"
 mkdir -p "$BUILD_DIR"
 CXX_BIN="${CXX:-clang++}"

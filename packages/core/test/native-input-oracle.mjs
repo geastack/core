@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import vm from 'node:vm'
 import assert from 'node:assert/strict'
-import ts from '../../geatsc-plugin-gea/node_modules/typescript/lib/typescript.js'
+import ts from 'typescript'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 if (!process.env.GEA_JSDOM_PACKAGE) throw new Error('GEA_JSDOM_PACKAGE must name the actual installed package')

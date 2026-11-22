@@ -59,8 +59,9 @@ changes need to preserve the shared component and native-type contracts.
 
 ## Native WebSocket connection headers
 
-`@geastack/core` 0.1.41 and `@geastack/host` 0.1.16 add an optional third
-WebSocket constructor argument for connection headers on ESP32 native hosts:
+On ESP32 native hosts the WebSocket constructor takes an optional third
+argument with connection headers (since `@geastack/core` 0.1.41 and
+`@geastack/host` 0.1.16):
 
 ```ts
 const socket = new WebSocket("wss://api.openai.com/v1/live/sessions", "", {
@@ -70,8 +71,8 @@ const socket = new WebSocket("wss://api.openai.com/v1/live/sessions", "", {
 });
 ```
 
-Use these paired versions or newer when a service requires bearer authentication
-in the WebSocket handshake. Header names and values are validated before the
+Use it when a service requires bearer authentication in the WebSocket
+handshake. Header names and values are validated before the
 connection starts. This native option is unavailable in browser WebSockets.
 
 ## File-backed native assets
@@ -165,8 +166,10 @@ bubble through the UI tree, and focus and `preventDefault` work as for any key.
 ## Digital pins: `Gpio` and `Digital`
 
 Two classes drive and read pins. Use whichever you prefer; they are two TS
-front ends over one native backend (`host/gpio.h`, `host/gpio.cpp`) and behave
-the same way underneath.
+front ends over one native backend in `@geastack/host`
+(`packages/host/include/host/gpio.h`, `packages/host/host/gpio.cpp`), which
+drives the platform contract in `packages/core/include/gpio.h`, and behave the
+same way underneath.
 
 - `Gpio` is the GeaStack class: string options, boolean levels, and an
   `onChange(value)` callback.

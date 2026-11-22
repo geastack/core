@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
 # Its own build directory: tests run in parallel, and a shared one has them
 # overwrite each other's program.cpp and object cache mid-build.
 BUILD_DIR="$ROOT/packages/core/test/.build/ui-memory-census"

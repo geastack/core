@@ -9,6 +9,8 @@ mkdir -p "$BUILD_DIR"
 export TMPDIR="$BUILD_DIR"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
 source "$ROOT/packages/core/test/native-test-common.sh"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_compiler_runtime
 
 cat > "$BUILD_DIR/program.cpp" <<'CPP'
 void __gea_top_level() {}
@@ -18,7 +20,7 @@ gea_build_native_test \
   "$BUILD_DIR" \
   "$BUILD_DIR/input-transformed-hit-test" \
   "$ROOT/packages/core/test/test_input_transformed_hit_test_main.cpp" \
-  "-I${GEA_COMPILER_RUNTIME:-$ROOT/../compiler/src/targets/cpp/runtime}"
+  "-I$GEA_COMPILER_RUNTIME"
 
 "$BUILD_DIR/input-transformed-hit-test"
 

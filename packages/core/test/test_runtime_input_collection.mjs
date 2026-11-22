@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const core = path.resolve(testDir, "../../..");
 const build = path.join(testDir, ".build/runtime-input-collection");
+// The sibling compiler checkout in a workspace, otherwise the installed
+// @geastack/compiler (the same order as test-env.sh).
+const siblingRuntime = path.resolve(core, "../compiler/src/targets/cpp/runtime");
 const compilerRuntime =
   process.env.GEA_COMPILER_RUNTIME ??
-  path.resolve(core, "../compiler/src/targets/cpp/runtime");
+  (existsSync(path.join(siblingRuntime, "gea_runtime.h"))
+    ? siblingRuntime
+    : path.join(
+        path.dirname(createRequire(import.meta.url).resolve("@geastack/compiler/package.json")),
+        "src/targets/cpp/runtime",
+      ));
 mkdirSync(build, { recursive: true });
 
 // Compile the production dispatcher verbatim. Only platform services are fakes;

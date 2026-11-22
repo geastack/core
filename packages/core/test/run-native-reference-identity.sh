@@ -2,6 +2,7 @@
 set -euo pipefail
 [[ $# == 0 || ( $# == 1 && "$1" == --build-only ) ]] || { echo 'Use --build-only or no arguments' >&2;exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
 BUILD_DIR="$ROOT/packages/core/test/.build/native-reference-identity"
 CXX_BIN="${CXX:-clang++}"
 : "${GEA_TEST_RUNTIME_HEADER:?Set actual shared compiler runtime gea_runtime.h}"

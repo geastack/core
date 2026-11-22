@@ -70,7 +70,7 @@ export function geaAppleNativeModuleAliases(options = {}) {
 // typed TypeScript, with a native software renderer) by setting
 // `"gea": { "geaThreejs": true }` gets three's import surface redirected to
 // the port on non-apple native targets: bare `three`,
-// every `three/src/*.js` path (to its `.ts` source), and `troika-three-text`
+// every `three/src/*.js` and `three/addons/*.js` path (to its `.ts` source), and `troika-three-text`
 // (to the native atlas text, whose own `three/src` imports land on the port
 // through the same aliases).
 export function geaThreeModuleAliases(options = {}) {
@@ -81,6 +81,11 @@ export function geaThreeModuleAliases(options = {}) {
   }
   aliases.push({ find: /^three$/, replacement: path.join(options.geaThreeSrcDir, 'Three.ts') })
   aliases.push({ find: /^three\/src\/(.+)\.js$/, replacement: path.join(options.geaThreeSrcDir, '$1.ts') })
+  // three's addons, under either of the two spellings upstream publishes.
+  aliases.push({
+    find: /^three\/(?:addons|examples\/jsm)\/(.+)\.js$/,
+    replacement: path.join(options.geaThreeSrcDir, 'addons/$1.ts'),
+  })
   if (options.troikaThreeTextModule) {
     if (!path.isAbsolute(options.troikaThreeTextModule)) {
       throw new TypeError('troikaThreeTextModule must be an absolute module resolved from the application package boundary')
