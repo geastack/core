@@ -77,48 +77,11 @@ void appendAlphaCommand(uint8_t alpha, int bx, int by, int bw, int bh)
 	cmd->alpha.alpha = alpha;
 }
 
-uint16_t interpolateColor(uint16_t from, uint16_t to, int permille)
-{
-	if (permille <= 0) return from;
-	if (permille >= 1000) return to;
-	return gea::framework::graphics::pixel::blend(to, from, (permille * 255 + 500) / 1000);
-}
-
 uint8_t interpolateAlpha(uint8_t from, uint8_t to, int permille)
 {
 	if (permille <= 0) return from;
 	if (permille >= 1000) return to;
 	return static_cast<uint8_t>((static_cast<int>(from) * (1000 - permille) + static_cast<int>(to) * permille + 500) / 1000);
-}
-
-uint16_t interpolatePremultipliedColor(uint16_t fromColor, uint8_t fromAlpha,
-                                       uint16_t toColor, uint8_t toAlpha,
-                                       int permille)
-{
-	if (permille <= 0) return fromColor;
-	if (permille >= 1000) return toColor;
-	int fr = 0, fg = 0, fb = 0, tr = 0, tg = 0, tb = 0;
-	gea::framework::graphics::pixel::unpackRgb565(fromColor, &fr, &fg, &fb);
-	gea::framework::graphics::pixel::unpackRgb565(toColor, &tr, &tg, &tb);
-	fr = (fr * 255 + 15) / 31;
-	fg = (fg * 255 + 31) / 63;
-	fb = (fb * 255 + 15) / 31;
-	tr = (tr * 255 + 15) / 31;
-	tg = (tg * 255 + 31) / 63;
-	tb = (tb * 255 + 15) / 31;
-	const int fromWeight = static_cast<int>(fromAlpha) * (1000 - permille);
-	const int toWeight = static_cast<int>(toAlpha) * permille;
-	const int weight = fromWeight + toWeight;
-	if (weight <= 0) return toColor;
-	const int r = (fr * fromWeight + tr * toWeight + weight / 2) / weight;
-	const int g = (fg * fromWeight + tg * toWeight + weight / 2) / weight;
-	const int b = (fb * fromWeight + tb * toWeight + weight / 2) / weight;
-	// Panel-endian-aware: framebuffer pixels are byte-swapped when
-	// GEA_EMBEDDED_PIXEL_PANEL_ENDIAN=1 (the endpoints above return the already
-	// byte-swapped stop colors). Emitting raw rgb565FromRgb888 here made the
-	// interpolated middle of transformed gradient faces land un-swapped → scrambled
-	// hues on device. fromRgb888 == rgb565FromRgb888 on host.
-	return gea::framework::graphics::pixel::fromRgb888(r, g, b);
 }
 
 int clampPermille(int value)
@@ -141,31 +104,6 @@ int stopRangePermille(int permille, int start, int end)
 	const int span = end - start;
 	if (span <= 0) return 1000;
 	return ((permille - start) * 1000 + span / 2) / span;
-}
-
-uint16_t gradientColorAt(const Node &node, int permille)
-{
-	permille = clampPermille(permille);
-	const int toStop = gradientToStop(node);
-	if (rstyle(node.computedStyle()).bg_gradient_has_mid && rstyle(node.computedStyle()).bg_gradient_mid_stop > 0 && rstyle(node.computedStyle()).bg_gradient_mid_stop < toStop) {
-		const int stop = rstyle(node.computedStyle()).bg_gradient_mid_stop;
-		if (permille <= stop)
-			return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_from_color,
-			                                     rstyle(node.computedStyle()).bg_gradient_from_alpha,
-			                                     rstyle(node.computedStyle()).bg_gradient_mid_color,
-			                                     rstyle(node.computedStyle()).bg_gradient_mid_alpha,
-			                                     stopRangePermille(permille, 0, stop));
-		return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_mid_color,
-		                                     rstyle(node.computedStyle()).bg_gradient_mid_alpha,
-		                                     rstyle(node.computedStyle()).bg_gradient_to_color,
-		                                     rstyle(node.computedStyle()).bg_gradient_to_alpha,
-		                                     stopRangePermille(permille, stop, toStop));
-	}
-	return interpolatePremultipliedColor(rstyle(node.computedStyle()).bg_gradient_from_color,
-	                                     rstyle(node.computedStyle()).bg_gradient_from_alpha,
-	                                     rstyle(node.computedStyle()).bg_gradient_to_color,
-	                                     rstyle(node.computedStyle()).bg_gradient_to_alpha,
-	                                     stopRangePermille(permille, 0, toStop));
 }
 
 uint8_t gradientAlphaAt(const Node &node, int permille)
@@ -285,7 +223,7 @@ void appendFillQuadStrokeSegmentRaw(const int16_t *xs, const int16_t *ys, style_
 void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, int *x1, int *y1);
 
 DisplayCommand *appendLinearGradientRectRaw(const Node &node, int x, int y, int w, int h,
-                                 uint16_t fromColor, uint16_t midColor, uint16_t toColor,
+                                 style_color_t fromColor, style_color_t midColor, style_color_t toColor,
                                  uint16_t midStop, uint16_t toStop, int16_t angle, uint8_t fromAlpha,
                                  uint8_t midAlpha, uint8_t toAlpha, uint8_t hasMid)
 {
@@ -1554,8 +1492,8 @@ void appendReliefBordersWithAlpha(const Node &node, uint8_t parentAlpha)
 		const int relief = rstyle(node.computedStyle()).border_relief[side];
 		const int bands = relief == 1 || relief == 2 ? 2 : 1;
 		const auto color = borderPaintColor(node.computedStyle(), side);
-		int r, g, b; pixel::unpackRgb565(color, &r, &g, &b);
-		r = pixel::expand5To8(r); g = pixel::expand6To8(g); b = pixel::expand5To8(b);
+		int r, g, b, a;
+		pixel::unpackNative8(color, &r, &g, &b, &a);
 		// CSS permits UA-defined relief shades. Mixing with white keeps even a
 		// black currentColor border visibly raised or recessed.
 		const auto light = pixel::nativeColor((r * 3 + 510) / 5, (g * 3 + 510) / 5, (b * 3 + 510) / 5);

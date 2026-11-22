@@ -1,5 +1,10 @@
 #include "canvas.h"
 #include "pixel.h"
+#include "display.h"
+#include "native_test_harness.h"
+#include "ui/document.h"
+#include "ui/internal.h"
+#include "ui/tree_internal.h"
 
 #include <cassert>
 #include <cstdio>
@@ -12,6 +17,94 @@ void drainMicrotasks() {}
 namespace gea::framework::graphics::generated {
 void ensureLinked() {}
 } // namespace gea::framework::graphics::generated
+
+namespace {
+namespace pixel = gea::framework::graphics::pixel;
+using namespace gea::embedded::ui;
+using namespace gea::embedded::test;
+
+void checkRect(int x, int y, int width, int height, pixel::native_t expected) {
+  for (int row = y; row < y + height; ++row) {
+    for (int column = x; column < x + width; ++column) {
+      const auto actual = displayPixelAt(column, row);
+      if (actual != expected) {
+        std::fprintf(stderr, "format %d: (%d,%d) got 0x%08x, expected 0x%08x\n",
+                     GEA_EMBEDDED_PIXEL_FORMAT, column, row,
+                     static_cast<unsigned>(actual), static_cast<unsigned>(expected));
+        std::abort();
+      }
+    }
+  }
+}
+
+void checkGradients() {
+  auto &list = DisplayList::instance();
+  for (const int fill : {1, 2}) {
+    // Repeatedly replay the same box to warm its cache, then change only blue.
+    for (const auto color : {pixel::nativeColor(0, 0, 0), pixel::nativeColor(0, 0, 255)}) {
+      for (int repeat = 0; repeat < 3; ++repeat) {
+        list.clear();
+        Node node{};
+        node.type = NodeType::View;
+        node.layout.x = 8;
+        node.layout.y = 8;
+        node.layout.width = 48;
+        node.layout.height = 48;
+        node.style.has_bg = 1;
+        node.style.bg_alpha = 255;
+        node.style.bg_fill = fill;
+        auto &style = rstyleMut(node.style);
+        style.bg_gradient_from_color = color;
+        style.bg_gradient_to_color = color;
+        style.bg_gradient_from_alpha = 255;
+        style.bg_gradient_to_alpha = 255;
+        style.bg_gradient_angle = 900;
+        style.bg_radial_gradient = fill == 2;
+        style.bg_radial_gradient_from_color = color;
+        style.bg_radial_gradient_to_color = color;
+        style.bg_radial_gradient_from_alpha = 255;
+        style.bg_radial_gradient_to_alpha = 255;
+        style.bg_radial_gradient_cx = 500;
+        style.bg_radial_gradient_cy = 500;
+        style.bg_radial_gradient_rx = 500;
+        style.bg_radial_gradient_ry = 500;
+        style.bg_radial_gradient_stop = 1000;
+        ViewRenderer::recordBox(node);
+        list.replay();
+        checkRect(8, 8, 48, 48, color);
+      }
+    }
+  }
+  list.clear();
+}
+
+void checkPressAndRecolor() {
+  auto &document = Document::instance();
+  auto &tree = Tree::instance();
+  const auto root = document.createView();
+  const auto button = document.createButton();
+  button.style().width(48);
+  button.style().height(32);
+  button.style().setProperty("border-radius", "0");
+  button.style().setProperty("background-color", "#123456");
+  root.appendChild(button);
+  document.mount(root, 64, 64);
+  const auto normal = pixel::nativeColor(0x12, 0x34, 0x56);
+  const auto &layout = tree.node(button.id()).layout;
+  checkRect(layout.x, layout.y, 48, 32, normal);
+  tree.pointerDown(layout.x + 8, layout.y + 8);
+  document.refreshMountedIfDirty();
+  const auto pressed = tree.node(button.id()).computedStyle().bg_color;
+  assert(pressed != normal);
+  checkRect(layout.x, layout.y, 48, 32, pressed);
+  tree.pointerUp();
+  document.refreshMountedIfDirty();
+  checkRect(layout.x, layout.y, 48, 32, normal);
+  button.style().setProperty("background-color", "#1234EF");
+  document.refreshMountedIfDirty();
+  checkRect(layout.x, layout.y, 48, 32, pixel::nativeColor(0x12, 0x34, 0xEF));
+}
+}
 
 int main() {
   using gea::framework::graphics::Canvas;
@@ -49,6 +142,11 @@ int main() {
         assert(pixels[5 * stride + 19] == base);
     }
   }
+  resetNativeHost();
+  setNativeDisplaySize(64, 64);
+  checkGradients();
+  checkPressAndRecolor();
+  std::printf("PASS: native color pixel checks in format %d\n", GEA_EMBEDDED_PIXEL_FORMAT);
   std::puts(
       "PASS: contiguous opaque fills preserve clipping, stride padding, scroll mapping and alpha");
 }

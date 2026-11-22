@@ -3372,36 +3372,9 @@ int gLastScrollUiFrame = -1000;
 		// identical to view.cpp's interpolatePremultipliedColor so the per-pixel
 		// transformed gradient matches the colors the old strip path produced
 		// (panel-endian aware via fromRgb888).
-		uint16_t tgPremulColor(uint16_t fromColor, uint8_t fromAlpha, uint16_t toColor, uint8_t toAlpha, int permille)
-		{
-			if (permille <= 0)
-				return fromColor;
-			if (permille >= 1000)
-				return toColor;
-			int fr = 0, fg = 0, fb = 0, tr = 0, tg = 0, tb = 0;
-			gea::framework::graphics::pixel::unpackRgb565(fromColor, &fr, &fg, &fb);
-			gea::framework::graphics::pixel::unpackRgb565(toColor, &tr, &tg, &tb);
-			fr = (fr * 255 + 15) / 31;
-			fg = (fg * 255 + 31) / 63;
-			fb = (fb * 255 + 15) / 31;
-			tr = (tr * 255 + 15) / 31;
-			tg = (tg * 255 + 31) / 63;
-			tb = (tb * 255 + 15) / 31;
-			const int fw = static_cast<int>(fromAlpha) * (1000 - permille);
-			const int tw = static_cast<int>(toAlpha) * permille;
-			const int wsum = fw + tw;
-			if (wsum <= 0)
-				return toColor;
-			const int r = (fr * fw + tr * tw + wsum / 2) / wsum;
-			const int g = (fg * fw + tg * tw + wsum / 2) / wsum;
-			const int b = (fb * fw + tb * tw + wsum / 2) / wsum;
-			return gea::framework::graphics::pixel::fromRgb888(r, g, b);
-		}
+		// Interpolate in 8-bit channels before the target-specific packing step.
+		using GradientKeyWord = std::conditional_t<GEA_PIXEL_FORMAT_IS_8888, std::uint32_t, std::uint16_t>;
 
-		// Same premultiplied interpolation as tgPremulColor but returns the un-quantized
-		// RGB888 (not packed to RGB565), so the face LUT can store the per-channel Bayer
-		// dither floor+remainder and dither per pixel — otherwise dark transformed
-		// gradients (the perspective floor) show hard RGB565 bands.
 		void tgPremulRgb888(gea::framework::graphics::pixel::native_t fromColor, uint8_t fromAlpha, gea::framework::graphics::pixel::native_t toColor, uint8_t toAlpha, int permille, int *outR, int *outG, int *outB)
 		{
 			// Unpack the native gradient endpoints to 8-bit channels (5/6-bit expand on
@@ -3608,7 +3581,7 @@ int gLastScrollUiFrame = -1000;
 			struct FaceLutSlot
 			{
 				bool valid = false;
-				std::uint16_t key[5] = {};
+				GradientKeyWord key[5] = {};
 				std::uint8_t keyA[4] = {};
 				FaceDitherStop e[251];
 				// Hot-path SoA mirrors of e[]: the per-pixel SIMD gather reads ONLY the
@@ -3682,7 +3655,7 @@ int gLastScrollUiFrame = -1000;
 			};
 			lockSlots();
 #endif
-			const std::uint16_t key[5] = {static_cast<std::uint16_t>(g.fromColor), static_cast<std::uint16_t>(g.midColor), static_cast<std::uint16_t>(g.toColor),
+			const GradientKeyWord key[5] = {g.fromColor, g.midColor, g.toColor,
 																		static_cast<std::uint16_t>(midStop), static_cast<std::uint16_t>(toStop)};
 			const std::uint8_t keyA[4] = {g.fromAlpha, g.midAlpha, g.toAlpha, g.hasMid};
 			FaceLutSlot *slot = nullptr;
@@ -5632,17 +5605,17 @@ int gLastScrollUiFrame = -1000;
 			gea::framework::graphics::pixel::native_t *color = nullptr;
 			std::uint8_t *alpha = nullptr;
 			int cap = 0, kw = 0, kh = 0;
-			std::uint16_t key[24] = {0};
-			std::uint16_t lastKey[24] = {0};
+			GradientKeyWord key[24] = {0};
+			GradientKeyWord lastKey[24] = {0};
 			int keyLen = 0;
 			int stable = 0;
 			bool valid = false;
 
 			template <typename SpanFn>
-			bool blit(const std::uint16_t *keyNow, int kl, int x0, int y0, int x1, int y1, int scrW, int scrH, SpanFn span)
+			bool blit(const GradientKeyWord *keyNow, int kl, int x0, int y0, int x1, int y1, int scrW, int scrH, SpanFn span)
 			{
 				if (!valid || kw != scrW || kh != scrH || keyLen != kl ||
-						std::memcmp(keyNow, key, static_cast<std::size_t>(kl) * sizeof(std::uint16_t)) != 0)
+						std::memcmp(keyNow, key, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord)) != 0)
 					return false;
 				for (int y = y0; y <= y1; ++y)
 				{
@@ -5658,15 +5631,15 @@ int gLastScrollUiFrame = -1000;
 			}
 
 			template <typename SpanFn, typename PixelFn>
-			void bake(const std::uint16_t *keyNow, int kl, int boxX, int boxY, int boxW, int boxH, int scrW, int scrH, SpanFn span, PixelFn pixel)
+			void bake(const GradientKeyWord *keyNow, int kl, int boxX, int boxY, int boxW, int boxH, int scrW, int scrH, SpanFn span, PixelFn pixel)
 			{
-				if (keyLen == kl && std::memcmp(keyNow, lastKey, static_cast<std::size_t>(kl) * sizeof(std::uint16_t)) == 0)
+				if (keyLen == kl && std::memcmp(keyNow, lastKey, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord)) == 0)
 				{
 					stable++;
 				}
 				else
 				{
-					std::memcpy(lastKey, keyNow, static_cast<std::size_t>(kl) * sizeof(std::uint16_t));
+					std::memcpy(lastKey, keyNow, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord));
 					keyLen = kl;
 					stable = 1;
 					valid = false;
@@ -5700,7 +5673,7 @@ int gLastScrollUiFrame = -1000;
 						pixel(x, y, &color[off], &alpha[off]);
 					}
 				}
-				std::memcpy(key, keyNow, static_cast<std::size_t>(kl) * sizeof(std::uint16_t));
+				std::memcpy(key, keyNow, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord));
 				kw = scrW;
 				kh = scrH;
 				valid = true;
@@ -5710,15 +5683,15 @@ int gLastScrollUiFrame = -1000;
 			// but hands the filler whole rows so drawers can use their span fast
 			// paths (e.g. the vertical-gradient constant-row fill).
 			template <typename SpanFn, typename RowFn>
-			void bakeRows(const std::uint16_t *keyNow, int kl, int boxX, int boxY, int boxW, int boxH, int scrW, int scrH, SpanFn span, RowFn rowFn)
+			void bakeRows(const GradientKeyWord *keyNow, int kl, int boxX, int boxY, int boxW, int boxH, int scrW, int scrH, SpanFn span, RowFn rowFn)
 			{
-				if (keyLen == kl && std::memcmp(keyNow, lastKey, static_cast<std::size_t>(kl) * sizeof(std::uint16_t)) == 0)
+				if (keyLen == kl && std::memcmp(keyNow, lastKey, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord)) == 0)
 				{
 					stable++;
 				}
 				else
 				{
-					std::memcpy(lastKey, keyNow, static_cast<std::size_t>(kl) * sizeof(std::uint16_t));
+					std::memcpy(lastKey, keyNow, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord));
 					keyLen = kl;
 					stable = 1;
 					valid = false;
@@ -5749,7 +5722,7 @@ int gLastScrollUiFrame = -1000;
 					const long long off = static_cast<long long>(y) * scrW + rowX0;
 					rowFn(y, rowX0, rowX1, &color[off], &alpha[off]);
 				}
-				std::memcpy(key, keyNow, static_cast<std::size_t>(kl) * sizeof(std::uint16_t));
+				std::memcpy(key, keyNow, static_cast<std::size_t>(kl) * sizeof(GradientKeyWord));
 				kw = scrW;
 				kh = scrH;
 				valid = true;
@@ -5830,35 +5803,10 @@ int gLastScrollUiFrame = -1000;
 				gea::framework::graphics::pixel::unpackNative8(color, r, g, b, &a);
 			}
 
-			static uint16_t packDitheredRgb888(int r, int g, int b, int x, int y)
-			{
-				static constexpr uint8_t bayer4[4][4] = {
-						{0, 8, 2, 10},
-						{12, 4, 14, 6},
-						{3, 11, 1, 9},
-						{15, 7, 13, 5},
-				};
-				const int threshold = bayer4[y & 3][x & 3] * 16 + 8;
-				auto quantize = [threshold](int value, int levels)
-				{
-					if (value <= 0)
-						return 0;
-					if (value >= 255)
-						return levels;
-					const int scaled = value * levels;
-					const int q = scaled / 255;
-					return q + ((scaled - q * 255) > threshold ? 1 : 0);
-				};
-				return gea::framework::graphics::pixel::packRgb565Components(
-						quantize(r, 31),
-						quantize(g, 63),
-						quantize(b, 31));
-			}
-
 			// One per-permille LUT entry. Holds the dither quantize floor `q` and the
 			// remainder `rem` for each RGB565 channel, so the per-pixel dither is a
 			// single compare (`rem > threshold`) with no divide. Bit-identical to the
-			// old packDitheredRgb888 quantize.
+			// direct RGB565 quantization.
 			struct DitherStop
 			{
 				uint8_t qR, remR, qG, remG, qB, remB, alpha;
@@ -6028,7 +5976,7 @@ int gLastScrollUiFrame = -1000;
 				*x1 = std::min(*x1, rowRight);
 			}
 
-			static void fillRun(int x, int y, int w, uint16_t color, uint8_t alpha, uint8_t baseAlpha)
+			static void fillRun(int x, int y, int w, style_color_t color, uint8_t alpha, uint8_t baseAlpha)
 			{
 				const uint8_t effectiveAlpha = combineAlpha(baseAlpha, alpha);
 				if (effectiveAlpha == 0 || w <= 0)
@@ -6077,14 +6025,14 @@ int gLastScrollUiFrame = -1000;
 														 static_cast<long long>(scrW) * scrH;
 				const bool bgCacheable = bgBuf && bgCanvas && bgCanvas->pixels() && bgOpaque && bgLarge &&
 																 scrW > 0 && scrH > 0 && bgCap >= scrW * scrH;
-				const std::uint16_t bgKeyNow[14] = {
-						static_cast<std::uint16_t>(c.gradient.fromColor), static_cast<std::uint16_t>(c.gradient.midColor), static_cast<std::uint16_t>(c.gradient.toColor), c.gradient.midStop,
+				const GradientKeyWord bgKeyNow[14] = {
+						c.gradient.fromColor, c.gradient.midColor, c.gradient.toColor, c.gradient.midStop,
 						c.gradient.toStop, static_cast<std::uint16_t>(c.gradient.angle), c.gradient.fromAlpha,
 						c.gradient.midAlpha, c.gradient.toAlpha, c.gradient.hasMid,
 						static_cast<std::uint16_t>(c.gradient.x), static_cast<std::uint16_t>(c.gradient.y),
 						static_cast<std::uint16_t>(c.gradient.w), static_cast<std::uint16_t>(c.gradient.h)};
-				static std::uint16_t bgKey[14];
-				static std::uint16_t bgLastKey[14];
+				static GradientKeyWord bgKey[14];
+				static GradientKeyWord bgLastKey[14];
 				static int bgStable = 0;
 				static bool bgValid = false;
 				static int bgKW = 0, bgKH = 0;
@@ -6116,8 +6064,8 @@ int gLastScrollUiFrame = -1000;
 																		 (c.gradient.hasMid && c.gradient.midAlpha < 255);
 				const bool transCacheable = bgCanvas && bgCanvas->pixels() && scrW > 0 && scrH > 0 && hasTransparency &&
 																		static_cast<long long>(c.gradient.w) * c.gradient.h * 16 >= static_cast<long long>(scrW) * scrH;
-				const std::uint16_t transKey[14] = {
-						static_cast<std::uint16_t>(c.gradient.fromColor), static_cast<std::uint16_t>(c.gradient.midColor), static_cast<std::uint16_t>(c.gradient.toColor), c.gradient.midStop, c.gradient.toStop,
+				const GradientKeyWord transKey[14] = {
+						c.gradient.fromColor, c.gradient.midColor, c.gradient.toColor, c.gradient.midStop, c.gradient.toStop,
 						static_cast<std::uint16_t>(c.gradient.angle), c.gradient.fromAlpha, c.gradient.midAlpha, c.gradient.toAlpha,
 						c.gradient.hasMid, static_cast<std::uint16_t>(c.gradient.x), static_cast<std::uint16_t>(c.gradient.y),
 						static_cast<std::uint16_t>(c.gradient.w), static_cast<std::uint16_t>(c.gradient.h)};
@@ -6199,7 +6147,7 @@ int gLastScrollUiFrame = -1000;
 				struct LutSlot
 				{
 					DitherStop lut[1001];
-					std::uint16_t key[5];
+					GradientKeyWord key[5];
 					std::uint8_t keyA[4];
 					std::uint32_t lastUse;
 				};
@@ -6245,7 +6193,7 @@ int gLastScrollUiFrame = -1000;
 				}
 				lutSlot->lastUse = ++lutUseCounter;
 				DitherStop *lut = lutSlot->lut;
-				std::uint16_t *lutKey = lutSlot->key;
+				GradientKeyWord *lutKey = lutSlot->key;
 				std::uint8_t *lutKeyA = lutSlot->keyA;
 				if (!lutMatch)
 				{
@@ -6563,25 +6511,6 @@ int gLastScrollUiFrame = -1000;
 				return (permille * 1000 + stop / 2) / stop;
 			}
 
-			static uint16_t colorAt(const DisplayCommand &c, int permille, int x, int y)
-			{
-				const int local = localPermille(c, permille);
-				int r = 0, g = 0, b = 0;
-				LinearGradientDrawer::interpolatePremultipliedRgb888(c.radialGradient.fromColor,
-																														 c.radialGradient.fromAlpha,
-																														 c.radialGradient.toColor,
-																														 c.radialGradient.toAlpha,
-																														 local,
-																														 &r,
-																														 &g,
-																														 &b);
-				return LinearGradientDrawer::packDitheredRgb888(r,
-																												g,
-																												b,
-																												x,
-																												y);
-			}
-
 			static uint8_t alphaAt(const DisplayCommand &c, int permille)
 			{
 				return LinearGradientDrawer::interpolateAlpha(c.radialGradient.fromAlpha,
@@ -6632,14 +6561,14 @@ int gLastScrollUiFrame = -1000;
 				const bool cacheable = rcanvas && rcanvas->pixels() && scrW > 0 && scrH > 0 &&
 															 static_cast<long long>(c.radialGradient.w) * c.radialGradient.h * 16 >=
 																	 static_cast<long long>(scrW) * scrH;
-				const std::uint16_t keyNow[17] = {
+				const GradientKeyWord keyNow[17] = {
 						static_cast<std::uint16_t>(c.radialGradient.x), static_cast<std::uint16_t>(c.radialGradient.y),
 						static_cast<std::uint16_t>(c.radialGradient.w), static_cast<std::uint16_t>(c.radialGradient.h),
 						static_cast<std::uint16_t>(c.radialGradient.tl), static_cast<std::uint16_t>(c.radialGradient.tr),
 						static_cast<std::uint16_t>(c.radialGradient.br), static_cast<std::uint16_t>(c.radialGradient.bl),
 						static_cast<std::uint16_t>(c.radialGradient.cxPermille), static_cast<std::uint16_t>(c.radialGradient.cyPermille),
 						static_cast<std::uint16_t>(c.radialGradient.rxPermille), static_cast<std::uint16_t>(c.radialGradient.ryPermille),
-						static_cast<std::uint16_t>(c.radialGradient.fromColor), static_cast<std::uint16_t>(c.radialGradient.toColor), c.radialGradient.stopPermille,
+						c.radialGradient.fromColor, c.radialGradient.toColor, c.radialGradient.stopPermille,
 						c.radialGradient.fromAlpha, c.radialGradient.toAlpha};
 				static StaticGradientCache cache;
 				auto span = [&](int y, int *a, int *b)
@@ -6659,7 +6588,7 @@ int gLastScrollUiFrame = -1000;
 #else
 				static LinearGradientDrawer::DitherStop lut[1001];
 #endif
-				static uint16_t lutKeyFrom = 0xFFFF, lutKeyTo = 0;
+				static style_color_t lutKeyFrom = 0xFFFF, lutKeyTo = 0;
 				static uint8_t lutKeyFromA = 0xFF, lutKeyToA = 0;
 				static uint16_t lutKeyStop = 0xFFFF;
 				if (lutKeyFrom != c.radialGradient.fromColor || lutKeyTo != c.radialGradient.toColor ||
@@ -11941,9 +11870,9 @@ int gLastScrollUiFrame = -1000;
 																		y1);
 		}
 
-		bool commandDoesNotPaintColor(const DisplayCommand &command, uint16_t color)
+		bool commandDoesNotPaintColor(const DisplayCommand &command, style_color_t color)
 		{
-			uint16_t commandColor = 0;
+			style_color_t commandColor = 0;
 			switch (command.type)
 			{
 			case DisplayCommandType::PushClip:
@@ -11990,7 +11919,7 @@ int gLastScrollUiFrame = -1000;
 			return commandColor != color;
 		}
 
-		bool laterOverlappingCommandsAvoidColor(int node, const DisplayCommand &backgroundCommand, uint16_t color)
+		bool laterOverlappingCommandsAvoidColor(int node, const DisplayCommand &backgroundCommand, style_color_t color)
 		{
 			Tree &tree = Tree::instance();
 			Node *nodes = tree.nodes();
@@ -12068,8 +11997,8 @@ int gLastScrollUiFrame = -1000;
 		}
 
 		bool recolorRetainedFillRect(const DisplayCommand &command,
-																 uint16_t oldColor,
-																 uint16_t newColor,
+																 style_color_t oldColor,
+																 style_color_t newColor,
 																 int *outX0,
 																 int *outY0,
 																 int *outX1,
@@ -13302,10 +13231,10 @@ int gLastScrollUiFrame = -1000;
 			const int edgePad = useAntialias ? axisRoundedRectAntialiasEdgePad(kernelWidth) : 0;
 			const bool fastInterior = useAntialias &&
 																static_cast<int>(r.w) * static_cast<int>(r.h) >= kRetainedRoundedRectFastInteriorArea;
-			if (useAntialias && !fastInterior)
+			if (useAntialias && (!fastInterior || GEA_EMBEDDED_PIXEL_FORMAT != GEA_PIXEL_RGB565))
 			{
-				// Small AA circles/pills are cheaper to repaint through the normal dirty-region
-				// path than to reverse-blend their retained edge pixels.
+				// Reverse blending is specialized for RGB565. Use normal dirty-region
+				// replay for other formats and for small antialiased shapes.
 				return false;
 			}
 			const bool protectForegroundDuringFill = fastInterior;
@@ -13610,8 +13539,8 @@ int gLastScrollUiFrame = -1000;
 		}
 
 		bool recolorRetainedTransformedRoundedRect(const DisplayCommand &command,
-																							 uint16_t oldColor,
-																							 uint16_t newColor,
+																							 style_color_t oldColor,
+																							 style_color_t newColor,
 																							 int *outX0,
 																							 int *outY0,
 																							 int *outX1,
