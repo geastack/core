@@ -185,7 +185,7 @@ uint8_t gradientAlphaAt(const Node &node, int permille)
 	return interpolateAlpha(rstyle(node.computedStyle()).bg_gradient_from_alpha, rstyle(node.computedStyle()).bg_gradient_to_alpha, stopRangePermille(permille, 0, toStop));
 }
 
-void appendFillRectWithAlpha(int x, int y, int w, int h, uint16_t color, uint8_t alpha, uint8_t parentAlpha, int bx, int by, int bw, int bh)
+void appendFillRectWithAlpha(int x, int y, int w, int h, style_color_t color, uint8_t alpha, uint8_t parentAlpha, int bx, int by, int bw, int bh)
 {
 	const uint8_t effectiveAlpha = combineAlpha(parentAlpha, alpha);
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(effectiveAlpha, bx, by, bw, bh);
@@ -200,7 +200,7 @@ void appendFillRectWithAlpha(int x, int y, int w, int h, uint16_t color, uint8_t
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx, by, bw, bh);
 }
 
-void appendFillRectRaw(int x, int y, int w, int h, uint16_t color, int bx, int by, int bw, int bh)
+void appendFillRectRaw(int x, int y, int w, int h, style_color_t color, int bx, int by, int bw, int bh)
 {
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
@@ -211,7 +211,7 @@ void appendFillRectRaw(int x, int y, int w, int h, uint16_t color, int bx, int b
 	cmd->fill.color = color;
 }
 
-void appendFillQuadWithAlpha(const int16_t *xs, const int16_t *ys, uint16_t color, uint8_t alpha, uint8_t parentAlpha,
+void appendFillQuadWithAlpha(const int16_t *xs, const int16_t *ys, style_color_t color, uint8_t alpha, uint8_t parentAlpha,
                              int bx, int by, int bw, int bh,
                              int lx = 0, int ly = 0, int lw = 0, int lh = 0, uint8_t reprojectMode = 0)
 {
@@ -237,7 +237,7 @@ void appendFillQuadWithAlpha(const int16_t *xs, const int16_t *ys, uint16_t colo
 	if (effectiveAlpha != parentAlpha) appendAlphaCommand(parentAlpha, bx, by, bw, bh);
 }
 
-void appendFillQuadRaw(const int16_t *xs, const int16_t *ys, uint16_t color, int bx, int by, int bw, int bh,
+void appendFillQuadRaw(const int16_t *xs, const int16_t *ys, style_color_t color, int bx, int by, int bw, int bh,
                        int lx = 0, int ly = 0, int lw = 0, int lh = 0, uint8_t reprojectMode = 0)
 {
 	DisplayCommand *cmd = DisplayList::instance().append();
@@ -258,7 +258,7 @@ void appendFillQuadRaw(const int16_t *xs, const int16_t *ys, uint16_t color, int
 	cmd->quad.reprojectMode = reprojectMode;
 }
 
-void appendFillQuadStrokeSegmentRaw(const int16_t *xs, const int16_t *ys, uint16_t color,
+void appendFillQuadStrokeSegmentRaw(const int16_t *xs, const int16_t *ys, style_color_t color,
                                     int bx, int by, int bw, int bh,
                                     float localX0, float localY0, float localX1, float localY1, float strokeWidth)
 {
@@ -365,7 +365,7 @@ DisplayCommand *appendRadialGradientRectRaw(const Node &node, int x, int y, int 
 	return cmd;
 }
 
-void appendDrawLineRaw(int x0, int y0, int x1, int y1, uint16_t color)
+void appendDrawLineRaw(int x0, int y0, int x1, int y1, style_color_t color)
 {
 	DisplayCommand *cmd = DisplayList::instance().append();
 	if (!cmd) return;
@@ -385,7 +385,7 @@ void appendDrawLineRaw(int x0, int y0, int x1, int y1, uint16_t color)
 	cmd->line.color = color;
 }
 
-void appendStrokeSegmentBandRaw(float x0, float y0, float x1, float y1, float width, uint16_t color,
+void appendStrokeSegmentBandRaw(float x0, float y0, float x1, float y1, float width, style_color_t color,
                                 float localX0 = 0.0f, float localY0 = 0.0f,
                                 float localX1 = 0.0f, float localY1 = 0.0f,
                                 bool reprojectable = false)

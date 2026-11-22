@@ -7771,7 +7771,7 @@ int gLastScrollUiFrame = -1000;
 					continue;
 				if (!regionInsideRetainedBackground(entry.command, x0, y0, x1, y1))
 					continue;
-				const std::uint16_t color = entry.command.type == DisplayCommandType::FillRect
+				const auto color = entry.command.type == DisplayCommandType::FillRect
 																				? entry.command.fill.color
 																				: entry.command.fillRoundedRect.color;
 				gea::platform::display::Display::fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1, color);
