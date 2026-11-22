@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "graphics/font.h"
 
+namespace {
+const gea::framework::graphics::RuntimeFontProvider *runtimeFontProvider = nullptr;
+}
+
 #ifndef GEA_EMBEDDED_TTF_RUNTIME_FONTS
 #define GEA_EMBEDDED_TTF_RUNTIME_FONTS 0
 #endif
@@ -235,7 +239,8 @@ bool buildRuntimeFontSlot(RuntimeRasterizedFontSlot &slot, int familyId, int siz
 #endif
 
 	unsigned long fontLength = 0;
-	const std::uint8_t *fontBytes = generated::lookupRuntimeTtfFontForFamily(familyId, &fontLength);
+	const std::uint8_t *fontBytes = runtimeFontProvider ? runtimeFontProvider->fontBytes(familyId, &fontLength) : nullptr;
+	if (!fontBytes) fontBytes = generated::lookupRuntimeTtfFontForFamily(familyId, &fontLength);
 	runtimeTtfTrace("slot.lookup family=%d bytes=%p len=%lu", familyId, static_cast<const void *>(fontBytes), fontLength);
 	if (!fontBytes || fontLength == 0) return false;
 
@@ -675,6 +680,12 @@ void FontRegistry::invalidateRuntimeFonts()
 #endif
 }
 
+void FontRegistry::setRuntimeFontProvider(const RuntimeFontProvider *provider)
+{
+	invalidateRuntimeFonts();
+	runtimeFontProvider = provider;
+}
+
 const BitmapFont8x16 &FontRegistry::bitmap8x16()
 {
 	return BitmapFont8x16::instance();
@@ -683,12 +694,19 @@ const BitmapFont8x16 &FontRegistry::bitmap8x16()
 int FontRegistry::familyId(const char *family)
 {
 	ensureGeneratedFontsLinked();
+	if (runtimeFontProvider) {
+		const int id = runtimeFontProvider->lookupFamily(family);
+		if (id >= 0) return id;
+	}
 	return generated::lookupFontFamily(family);
 }
 
 const char *FontRegistry::familyName(int familyId)
 {
 	ensureGeneratedFontsLinked();
+	if (runtimeFontProvider) {
+		if (const char *name = runtimeFontProvider->familyName(familyId)) return name;
+	}
 	return generated::lookupFontFamilyName(familyId);
 }
 
