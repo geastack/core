@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-out="$PWD/packages/geatsc-plugin-gea/dist"
-test -d "$out"
+source packages/core/test/test-env.sh
+gea_require_plugin_build
+gea_require_compiler_runtime
+out="$PWD/packages/geatsc-plugin-gea/dist" # the plugin package's normal build output
 export TMPDIR="$out"
-include=(-I"${GEA_COMPILER_RUNTIME:-../compiler/src/targets/cpp/runtime}" -Ipackages/host/include -Ipackages/core/include -Ipackages/engine -Ipackages/engine/ui -Ipackages/elements/ui)
+include=(-I"$GEA_COMPILER_RUNTIME" -Ipackages/host/include -Ipackages/core/include -Ipackages/engine -Ipackages/engine/ui -Ipackages/elements/ui)
 "${CXX:-clang++}" -std=c++20 -pthread -fsanitize=address,undefined "${include[@]}" \
   packages/core/test/test_http_typed.cpp packages/host/host/http.cpp -o "$out/test_http_typed"
 "$out/test_http_typed"

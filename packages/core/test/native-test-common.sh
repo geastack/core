@@ -30,6 +30,13 @@ gea_require_apple_root() {
   exit 0
 }
 
+# Tests that link Apple frameworks build only on macOS.
+gea_require_macos() {
+  [ "$(uname -s)" = Darwin ] && return 0
+  echo "SKIP: links Apple frameworks, so it builds only on macOS" >&2
+  exit 0
+}
+
 gea_native_sources() {
   local engine_root="${GEA_NATIVE_TEST_ENGINE_ROOT:-$ROOT/packages/engine}"
   local host_root="$ROOT/packages/host"

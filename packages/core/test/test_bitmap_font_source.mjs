@@ -18,7 +18,17 @@ const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../..",
 );
-const app = path.resolve(root, "../examples/apps/m5-stopwatch");
+// The fixture is an example app from geastack/examples: the app project the
+// tests run from (see native-test-common.sh), or a checkout next to core.
+const app = [process.cwd(), path.resolve(root, "../examples")]
+  .map((project) => path.join(project, "apps/m5-stopwatch"))
+  .find((dir) => fs.existsSync(path.join(dir, "package.json")));
+if (!app) {
+  console.error(
+    "SKIP: needs geastack/examples (apps/m5-stopwatch); run from an examples checkout or clone it next to core",
+  );
+  process.exit(0);
+}
 const script = path.join(
   root,
   "packages/core/scripts/generate-gea-embedded-fonts.mjs",
@@ -81,7 +91,7 @@ test("default TTF rasterization and emitted C++ remain byte-for-byte unchanged",
       { cwd: root, encoding: "utf8" },
     ),
   );
-  const opentype = createRequire(path.join(app, "package.json"))("opentype.js");
+  const opentype = createRequire(import.meta.url)("opentype.js");
   const fontPath = path.join(app, "assets/Montserrat-Medium.ttf");
   const charset = new Set(
     Array.from("AV 2000/1/28 FRI", (character) => character.codePointAt(0)),

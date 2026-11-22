@@ -36,8 +36,12 @@ static void check(bool ok, const char *what)
 	++failures;
 }
 
+// The scrollbar thumb: 4 px wide, 6 px in from the right edge (x 70..73), the
+// LVGL default-theme geometry recordScrollbar draws.
+static constexpr int kThumbX = kW - 6 - 4 + 1;
+
 // Row 1 (relative) slides through `lefts`. With width `rowWidth` it stays clear of
-// the thumb (x 73..75) or reaches over it.
+// the thumb (x 70..73) or reaches over it.
 static void run(int rowWidth, const int (&lefts)[4], bool expectDirect)
 {
 	resetNativeHost();
@@ -65,7 +69,7 @@ static void run(int rowWidth, const int (&lefts)[4], bool expectDirect)
 	}
 	document.mount(root, kW, kH);
 	document.refresh(root, kW, kH);
-	const std::uint16_t thumb = presentedPixelAt(74, 10);
+	const std::uint16_t thumb = presentedPixelAt(kThumbX, 10);
 	check(thumb != 0 && thumb != 0x07e0 && thumb != 0xf800, "scrollbar thumb is drawn");
 
 	for (int frame = 0; frame < 4; ++frame) {
@@ -76,7 +80,7 @@ static void run(int rowWidth, const int (&lefts)[4], bool expectDirect)
 		if (expectDirect)
 			check(perf.treeDirectReplayCalls > 0, "a change clear of the thumb uses direct replay");
 		const auto incremental = presented();
-		check(presentedPixelAt(74, 10) == thumb, "thumb survives the incremental frame");
+		check(presentedPixelAt(kThumbX, 10) == thumb, "thumb survives the incremental frame");
 		Tree::instance().markDisplayListDirty();
 		Tree::instance().node(root.id()).render.dirty = true;
 		document.refresh(root, kW, kH);

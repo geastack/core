@@ -28,7 +28,6 @@ const bash = process.platform === 'win32'
 const workspaceRoot = join(coreRoot, '..')
 const simulatorRoot = join(workspaceRoot, 'simulator')
 
-const buildScript = readFileSync(join(simulatorRoot, 'targets', 'web', 'build-web.sh'), 'utf8')
 const fetchHost = readFileSync(join(coreRoot, 'packages', 'host', 'host', 'fetch.cpp'), 'utf8')
 
 const manifestSources = execFileSync(
@@ -70,8 +69,23 @@ for (const source of requiredFrameworkSources) {
   )
 }
 
+assert.ok(
+  fetchHost.includes('EM_ASYNC_JS'),
+  'web host fetch should use an async Emscripten bridge'
+)
+assert.ok(
+  !fetchHost.includes('xhr.open(method, url, false)'),
+  'web host fetch must not block the browser main thread with synchronous XHR'
+)
+
 // Web-only target shims: the manifest deliberately excludes these, so they are
-// still spelled out in the build script.
+// still spelled out in the build script, which lives in geastack/simulator.
+const buildScriptPath = join(simulatorRoot, 'targets', 'web', 'build-web.sh')
+if (!existsSync(buildScriptPath)) {
+  console.error('SKIP: web target build script: clone geastack/simulator next to core')
+  process.exit(0)
+}
+const buildScript = readFileSync(buildScriptPath, 'utf8')
 const requiredTargetSources = [
   'targets/web/main/web_power.cpp',
   'targets/web/main/web_storage_service.cpp'
@@ -91,12 +105,4 @@ for (const source of requiredTargetSources) {
 assert.ok(
   buildScript.includes('ASYNCIFY=1'),
   'web builds should enable Asyncify so host fetch can yield to real browser fetch'
-)
-assert.ok(
-  fetchHost.includes('EM_ASYNC_JS'),
-  'web host fetch should use an async Emscripten bridge'
-)
-assert.ok(
-  !fetchHost.includes('xhr.open(method, url, false)'),
-  'web host fetch must not block the browser main thread with synchronous XHR'
 )

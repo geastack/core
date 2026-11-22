@@ -9,10 +9,12 @@ CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
 export TMPDIR="$BUILD_DIR"
 source "$ROOT/packages/core/test/native-test-common.sh"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_compiler_runtime
 cat > "$BUILD_DIR/program.cpp" <<'CPP'
 void __gea_top_level() {}
 CPP
 gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/canvas-numeric-triangles" \
   "$ROOT/packages/core/test/test_canvas_numeric_triangles_main.cpp" \
-  "-I${GEA_COMPILER_RUNTIME:-$ROOT/../compiler/src/targets/cpp/runtime}"
+  "-I$GEA_COMPILER_RUNTIME"
 "$BUILD_DIR/canvas-numeric-triangles"

@@ -13,9 +13,11 @@ simulators, and physical targets.
 | --- | --- |
 | `packages/core` | Public `@geastack/core` package with type declarations, runtime helpers, reactivity headers, app lifecycle/frame-loop sources, tools, scripts, and tests. |
 | `packages/geatsc-plugin-gea` | Gea IR backend plugin for `geatsc`. |
-| `packages/host` | Scaffold plus host service implementations and platform abstractions. |
-| `packages/engine` | Scaffold plus rendering, font, canvas, image, and input engine sources. |
-| `packages/elements` | Scaffold for non-intrinsic JSX elements and component library extraction. |
+| `packages/host` | `@geastack/host`: the C++ host contract and the portable host service implementations. |
+| `packages/engine` | `@geastack/engine`: intrinsic JSX primitives and the rendering, layout, style, font, canvas, image and input engine sources. |
+| `packages/elements` | `@geastack/elements`: non-intrinsic JSX elements (`VirtualList`, `CameraView`) with their native backends. |
+| `packages/geaos` | `@geastack/geaos`: installed-application runtime sources (app manager, installed-app registry) for targets that host more than one app. |
+| `packages/daily` | `@geastack/daily`: work-in-progress native Daily WebRTC transport. Private, not published. |
 | `packages/chips` | `@geastack/chips`: target-independent drivers plus the catalog consumed by the CLI and target adapters. |
 | `LICENSES` | The GPL-3.0-only text `packages/chips` is licensed under; everything else in this repo is Apache-2.0 (`LICENSE`). |
 | `packages/core/gea_sources.sh` | Shared source list helper used by target build scripts. |
@@ -23,32 +25,12 @@ simulators, and physical targets.
 
 ## Quick Start
 
-Install dependencies where package manifests exist:
+Requires Node.js 20.19 or newer, `clang++` with AddressSanitizer, and
+`pkg-config` with the `opus` and `vpx` development libraries (on Debian or
+Ubuntu: `sudo apt install clang pkg-config libopus-dev libvpx-dev`).
 
-```sh
-cd packages/core
-npm install
-```
-
-Run representative checks:
-
-```sh
-cd packages/core
-node test/test_gea_app_manifest.mjs
-./test/run-tests.sh
-```
-
-Some tests compile or read applications that live outside this repository, in
-[geastack/examples](https://github.com/geastack/examples) or your own project.
-Run the suite from that project's directory; the tests use the apps in the
-current directory. From a directory without an `apps/` folder they print `SKIP`
-and pass:
-
-```sh
-cd /path/to/examples && bash /path/to/core/packages/core/test/run-tests.sh
-```
-
-Build/test the Gea compiler plugin:
+Build and test the Gea compiler plugin first; the core native tests compile
+with it:
 
 ```sh
 cd packages/geatsc-plugin-gea
@@ -56,6 +38,49 @@ npm install
 npm run build
 npm test
 ```
+
+Then install core's dependencies and run its suite:
+
+```sh
+cd ../core
+npm install
+./test/run-tests.sh
+```
+
+The suite compiles against the `@geastack/compiler` that `npm install` puts in
+`packages/core/node_modules`, or against a `compiler` checkout next to `core`
+when there is one. Set `GEA_COMPILER_CLI` and `GEA_COMPILER_RUNTIME` to use
+another compiler.
+
+### What a clone of this repo alone covers
+
+Every test in `packages/core/test` runs from a clone of this repo alone,
+except these, which print a `SKIP:` line naming what is missing and pass:
+
+| Tests | Need |
+| --- | --- |
+| `run-gea-*-pipeline.sh` and the other example-app pipelines, `test_bitmap_font_source.mjs` | the apps in [geastack/examples](https://github.com/geastack/examples): run the suite from an examples checkout |
+| Apple parts of `test_desktop_websocket_sources.mjs`, `run-macos-*` and `run-native-text-decoration-source-test.sh`, `run-gea-companion-*` | `GEA_APPLE_ROOT` set to the `@geastack/apple` package root (`apple/packages/geastack-apple` in a [geastack/apple](https://github.com/geastack/apple) checkout); `run-gea-companion-*` link Apple frameworks and also need macOS |
+| Linux parts of `test_desktop_websocket_sources.mjs` | a [geastack/linux](https://github.com/geastack/linux) checkout next to `core` |
+| Web target part of `test_web_build_sources.mjs` | a [geastack/simulator](https://github.com/geastack/simulator) checkout next to `core` |
+| `run-native-typed-websocket-retirement.sh` | a [geastack/compiler](https://github.com/geastack/compiler) checkout next to `core` (it compiles one of the compiler's own test sources) |
+
+To run the full set, clone those repos next to this one and run the suite from
+the examples checkout:
+
+```sh
+git clone https://github.com/geastack/examples
+git clone https://github.com/geastack/apple
+git clone https://github.com/geastack/linux
+git clone https://github.com/geastack/simulator
+git clone https://github.com/geastack/compiler   # optional: test against the compiler sources
+(cd examples && npm install)
+cd examples
+GEA_APPLE_ROOT="$PWD/../apple/packages/geastack-apple" bash ../core/packages/core/test/run-tests.sh
+```
+
+A sibling `compiler` checkout is used as is, so build it first
+(`npm install && npm run build` in `compiler`).
 
 ## Documentation
 
@@ -77,7 +102,7 @@ npm test
 
 | Package | License |
 | --- | --- |
-| `@geastack/core`, `engine`, `host`, `elements`, `geaos`, `geatsc-plugin-gea` | Apache-2.0 |
+| `@geastack/core`, `engine`, `host`, `elements`, `geaos`, `geatsc-plugin-gea`, `daily` | Apache-2.0 |
 | `@geastack/chips` (board drivers, embedded only) | GPL-3.0-only |
 
 The framework, the compiler and the desktop, mobile and web targets are

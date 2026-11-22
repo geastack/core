@@ -177,13 +177,16 @@ void geometryTests()
 		svg::PathBuilder fb(frac, {});
 		svg::addRect(fb, 10.25f, 10.5f, 7.5f, 3.25f, 0, 0);
 		check(near(static_cast<float>(coverageArea(frac.contours, 0, 0, 64, 64)), 24.375f, 0.3f), "fractional rect area is exact");
-		// Circle area: the flattened circle is the inscribed polygon whose chords
-		// sag 0.1px, short of pi r^2 by about pi r^2 theta^2 / 6 (~8.4px here).
+		// Circle area: the flattened circle is the inscribed polygon. Arc points
+		// sit on a fixed grid of 0.8 tolerance steps (PathBuilder::arcTo): for a
+		// 0.1px tolerance at r = 20 that is 40 points per turn, so the area is
+		// (40 / 2) r^2 sin(2 pi / 40), about 1251.5px.
 		svg::Path circle;
 		svg::PathBuilder cb(circle, {}, 0.1f);
 		svg::addEllipse(cb, 32, 32, 20, 20);
 		const double circleArea = coverageArea(circle.contours, 0, 0, 64, 64);
-		check(near(static_cast<float>(circleArea), 3.14159f * 400 - 8.4f, 1.5f), "circle area is the inscribed polygon's");
+		check(near(static_cast<float>(circleArea), 20.0f * 400 * std::sin(2 * 3.14159265f / 40), 1.5f),
+		      "circle area is the inscribed polygon's");
 		// Clipped to the region: only the inside quarter counts.
 		check(near(static_cast<float>(coverageArea(circle.contours, 32, 32, 64, 64)), 3.14159f * 100 - 2.1f, 1.0f),
 		      "clipping to a quadrant keeps exactly the quarter");

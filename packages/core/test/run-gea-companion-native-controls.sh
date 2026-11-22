@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 APPLE_ROOT="${GEA_APPLE_ROOT:-}"
 source "$ROOT/packages/core/test/native-test-common.sh"
 gea_require_apple_root
+gea_require_macos
 BUILD_DIR="$APPLE_ROOT/targets/macos/generated/gea-companion"
 OUTPUT_DIR="$ROOT/packages/core/test/.build/gea-companion-native-controls"
 CXX_BIN="${CXX:-clang++}"

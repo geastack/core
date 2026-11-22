@@ -24,7 +24,7 @@ compiler; an app never references it directly. The same can be done by hand:
 
 ```sh
 geatsc compile-module-graph gea-module-graph.json --entry src/index.tsx \
-  --plugin @geastack/geatsc-plugin-gea
+  --out-dir build/generated --plugin @geastack/geatsc-plugin-gea
 ```
 
 The module's default export is the plugin factory, as described in the

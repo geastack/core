@@ -3,7 +3,7 @@ import vm from 'node:vm'
 import path from 'node:path'
 import {createRequire} from 'node:module'
 import assert from 'node:assert/strict'
-import ts from '../../geatsc-plugin-gea/node_modules/typescript/lib/typescript.js'
+import ts from 'typescript'
 if(!process.env.GEA_JSDOM_PACKAGE)throw Error('GEA_JSDOM_PACKAGE must name the actual installed package')
 const require=createRequire(path.join(path.resolve(process.env.GEA_JSDOM_PACKAGE),'package.json'))
 const {JSDOM}=require('./lib/api.js')

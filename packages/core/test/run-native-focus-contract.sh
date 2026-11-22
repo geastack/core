@@ -2,6 +2,8 @@
 set -euo pipefail
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_plugin_build
 BUILD_DIR="$ROOT/packages/core/test/.build/native-focus-contract"
 CXX_BIN="${CXX:-clang++}"
 : "${GEA_COMPILER_CLI:?Set GEA_COMPILER_CLI to the actual shared compiler dist/cli.js}"

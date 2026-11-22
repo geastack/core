@@ -9,11 +9,9 @@ CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-1}"
 export TMPDIR="$BUILD_DIR"
 source "$ROOT/packages/core/test/native-test-common.sh"
-RUNTIME_DIR="${GEA_COMPILER_RUNTIME:-$ROOT/../compiler/src/targets/cpp/runtime}"
-if [[ ! -f "$RUNTIME_DIR/gea_runtime.h" ]]; then
-  echo "SKIP: reactive list runtime test needs gea_runtime.h under $RUNTIME_DIR (the sibling compiler checkout, or GEA_COMPILER_RUNTIME)" >&2
-  exit 0
-fi
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_compiler_runtime
+RUNTIME_DIR="$GEA_COMPILER_RUNTIME"
 cat > "$BUILD_DIR/program.cpp" <<'CPP'
 void __gea_top_level() {}
 CPP

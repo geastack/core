@@ -7,7 +7,11 @@ import { resolve } from 'node:path'
 import * as manifest from '../gea_sources.mjs'
 const core = fileURLToPath(new URL('../../../', import.meta.url))
 const workspace = resolve(core, '..')
-const apple = resolve(workspace, 'apple/packages/geastack-apple')
+// The Apple and Linux target build scripts live in other repos: @geastack/apple
+// (GEA_APPLE_ROOT, or an apple checkout next to core) and geastack/linux (a
+// checkout next to core). Their halves of this test skip when they are absent.
+const apple = process.env.GEA_APPLE_ROOT ? resolve(process.env.GEA_APPLE_ROOT) : resolve(workspace, 'apple/packages/geastack-apple')
+const linux = resolve(workspace, 'linux')
 const env = {
   ...process.env,
   GEA_CORE: resolve(core, 'packages/core'), GEA_HOST_DIR: resolve(core, 'packages/host'),
@@ -32,6 +36,9 @@ const setup = '. "$GEA_CORE/gea_sources.sh"\n'
 assert.deepEqual(shell(setup + 'gea_fw_objcxx_sources'), [nativeApple], 'real shell consumer emits Apple source')
 assert.equal(count(shell(setup + 'GEA_DESKTOP_WEBSOCKET_CURL=1 gea_fw_cxx_sources'), curl), 1)
 // Execute the actual target array-selection blocks, not an authored stand-in.
+if (!existsSync(resolve(apple, 'targets/macos/build-macos.sh'))) {
+  console.error('SKIP: Apple target source arrays: set GEA_APPLE_ROOT to the @geastack/apple package root, or clone geastack/apple next to core')
+} else {
 const appleBuild = readFileSync(resolve(apple, 'targets/macos/build-macos.sh'), 'utf8')
 const appleStart = appleBuild.indexOf('\nMM_SOURCES=(')
 const appleEnd = appleBuild.indexOf('\nif [[ "${GEA_NATIVE_DEBUGGER:-0}"', appleStart)
@@ -48,8 +55,12 @@ for (const replacement of ['return 1', 'return 0']) {
   assert.equal(refused.status, 1, 'failed/empty source query must stop Apple build')
   assert.ok(!refused.stdout.includes('UNREACHABLE'))
 }
+}
 
-const linuxBuild = readFileSync(resolve(workspace, 'linux/targets/raspberry-pi-os/build-raspberry-pi-os.sh'), 'utf8')
+if (!existsSync(resolve(linux, 'targets/raspberry-pi-os/build-raspberry-pi-os.sh'))) {
+  console.error('SKIP: Linux target source arrays: clone geastack/linux next to core')
+} else {
+const linuxBuild = readFileSync(resolve(linux, 'targets/raspberry-pi-os/build-raspberry-pi-os.sh'), 'utf8')
 const linuxStart = linuxBuild.indexOf('\nCXX_SOURCES=()')
 const linuxEnd = linuxBuild.indexOf('\nCXX_SOURCES+=(', linuxStart)
 assert.ok(linuxStart >= 0 && linuxEnd > linuxStart)
@@ -67,9 +78,10 @@ assert.ok(!oldCore.stdout.includes('UNREACHABLE'))
 assert.match(linuxBuild, /source "\$GEA_CORE\/gea_sources\.sh"/, 'Raspberry Pi uses the current package manifest path')
 assert.match(linuxBuild, /export GEA_CORE GEA_HOST_DIR GEA_ENGINE_DIR GEA_ELEMENTS_DIR GEA_GEAOS_PACKAGE_DIR/)
 // Sailfish stages source files before calling the same opt-in manifest.
-const sailfish = readFileSync(resolve(workspace, 'linux/targets/sailfish-os/prepare.mjs'), 'utf8')
+const sailfish = readFileSync(resolve(linux, 'targets/sailfish-os/prepare.mjs'), 'utf8')
 assert.match(sailfish, /cxxSources\(\{\s*\.\.\.env,\s*GEA_DESKTOP_WEBSOCKET_CURL:\s*'1'\s*\}\)/)
-const cmake = readFileSync(resolve(workspace, 'linux/targets/sailfish-os/CMakeLists.txt'), 'utf8')
+const cmake = readFileSync(resolve(linux, 'targets/sailfish-os/CMakeLists.txt'), 'utf8')
 assert.match(cmake, /PkgConfig::CURL/, 'Sailfish real target links curl')
 assert.match(linuxBuild, /-lcurl/, 'Raspberry Pi real target links curl')
-console.log('PASS native Apple/Linux provider manifests and actual target source arrays; unrelated default sources unchanged')
+}
+console.log('PASS native Apple/Linux provider manifests and the available target source arrays; unrelated default sources unchanged')

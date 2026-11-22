@@ -2,6 +2,8 @@
 set -euo pipefail
 if [[ "$#" -gt 1 || ( "$#" == 1 && "$1" != "--build-only" && "$1" != "--prepare-only" ) ]]; then echo "usage: $0 [--build-only|--prepare-only]" >&2; exit 2; fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_plugin_build
 BUILD_DIR="$ROOT/dist/native-dom-structural-contract"
 CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"

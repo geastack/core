@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-out="$PWD/packages/geatsc-plugin-gea/dist"
-test -d "$out"
+source packages/core/test/test-env.sh
+gea_require_plugin_build
+out="$PWD/packages/geatsc-plugin-gea/dist" # the plugin package's normal build output
 export TMPDIR="$out"
-export GEA_COMPILER_CLI="${GEA_COMPILER_CLI:-$PWD/../compiler/dist/cli.js}"
 node --input-type=module <<'JS'
 import assert from 'node:assert/strict'
 import path from 'node:path'

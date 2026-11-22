@@ -4,16 +4,7 @@ This guide covers day-to-day framework work in the core repo.
 
 ## Package Commands
 
-For the public core package:
-
-```sh
-cd packages/core
-npm install
-node test/test_gea_app_manifest.mjs
-./test/run-tests.sh
-```
-
-For the Gea compiler plugin:
+Build the Gea compiler plugin first; the core native tests compile with it:
 
 ```sh
 cd packages/geatsc-plugin-gea
@@ -22,6 +13,17 @@ npm run build
 npm test
 ```
 
+Then the public core package:
+
+```sh
+cd packages/core
+npm install
+./test/run-tests.sh
+```
+
+The repository [README](../README.md#what-a-clone-of-this-repo-alone-covers)
+lists the tests that skip without the sibling repositories and how to run them.
+
 The scaffold packages do not all have build scripts yet. Treat their
 `package.json` files as ownership markers until implementation is moved in.
 
@@ -29,7 +31,7 @@ The scaffold packages do not all have build scripts yet. Treat their
 
 Use focused tests whenever possible:
 
-- app manifest and launcher behavior: `packages/core/test/test_gea_*.mjs`;
+- build tooling and generated sources: `packages/core/test/test_*.mjs`;
 - native pipeline behavior: `packages/core/test/run-gea-*-pipeline.sh`;
 - rendering or input behavior: source-specific shell tests under
   `packages/core/test`;
@@ -43,12 +45,6 @@ layout, event, rendering, or generated app behavior.
 Generated build folders such as `.build-test`, generated app output, and native
 build products are disposable. Do not rely on generated output as source unless
 a test fixture explicitly owns it.
-
-## App Manifest Tools
-
-The app manifest and launcher catalog helpers live under
-`packages/core/tools`. Keep their behavior aligned with the examples repo and
-with `@geastack/cli` manifest validation.
 
 ## Change Checklist
 

@@ -162,11 +162,14 @@ async function testStaticAssetGraph() {
       path.join(scratchRoot, 'first-graph', 'gea-module-graph.json'),
       '--out-dir',
       path.join(scratchRoot, 'asset-native'),
-      '--allow-any',
     ],
     {
       encoding: 'utf8',
       env: {
+        // The Gea host's declarations come from this repo's packages, not
+        // from an @geastack/core installed next to the compiler.
+        GEA_CORE_DIR: packageDir,
+        GEA_HOST_DIR: path.join(repoRoot, 'packages/host'),
         ...process.env,
         GEA_THREE_AUDIO_MUTED: '1',
         TMPDIR: processTmpDir,

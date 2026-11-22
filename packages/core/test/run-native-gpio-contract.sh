@@ -5,6 +5,8 @@
 set -euo pipefail
 [[ $# == 0 ]] || { echo 'No arguments' >&2;exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+source "$ROOT/packages/core/test/test-env.sh"
+gea_require_plugin_build
 BUILD_DIR="$ROOT/dist/native-gpio-contract"
 CXX_BIN="${CXX:-clang++}"
 export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"

@@ -24,7 +24,8 @@ GEA_WEAK_DEVICE bool setEpochMs(double timestamp) {
   if (!std::isfinite(timestamp) || timestamp < 0) {
     return false;
   }
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__EMSCRIPTEN__)
+  // Neither host lets a program set the wall clock (Emscripten has no settimeofday).
   return false;
 #else
   const auto seconds = static_cast<time_t>(timestamp / 1000);

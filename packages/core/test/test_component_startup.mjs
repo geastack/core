@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
-const require = createRequire(new URL('../../geatsc-plugin-gea/package.json', import.meta.url))
+const require = createRequire(import.meta.url)
 const ts = require('typescript')
 const runtimeFile = new URL('../runtime/compiler.ts', import.meta.url)
 const javascript = ts.transpileModule(readFileSync(runtimeFile, 'utf8'), {
