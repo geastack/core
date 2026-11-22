@@ -134,6 +134,7 @@ public:
 	static RasterizedFont rasterizedFamily(int familyId, int sizePx);
 	static RasterizedFont rasterizedFamily(int familyId, int sizePx, int weight, int stretch);
 	static const BitmapFont8x16 &bitmap8x16();
+	static void invalidateRuntimeFonts();
 	static int familyId(const char *family);
 	static const char *familyName(int familyId);
 };

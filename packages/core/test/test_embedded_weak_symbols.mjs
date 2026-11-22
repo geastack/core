@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const entry = readFileSync(new URL('../gea_app_entry.cpp', import.meta.url), 'utf8')
 
-assert.doesNotMatch(entry, /weak_import/, 'embedded GCC does not support the Mach-O weak_import attribute')
+assert.match(entry, /#elif defined\(__APPLE__\)\n#define GEA_PROGRAM_HOOK __attribute__\(\(weak_import\)\)/, 'Mach-O needs weak imports for absent program hooks')
 // The deferral hooks are weak through GEA_PROGRAM_HOOK, which only a target
 // that links their defaults (GEA_LINKED_HOOK_DEFAULTS) turns into plain references.
 assert.match(entry, /#else\n#define GEA_PROGRAM_HOOK __attribute__\(\(weak\)\)\n#endif/)

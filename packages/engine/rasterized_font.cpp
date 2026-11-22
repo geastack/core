@@ -192,10 +192,10 @@ int ceilToInt(float value)
 	return static_cast<int>(std::ceil(value));
 }
 
-RuntimeRasterizedFontSlot *runtimeFontSlots()
+RuntimeRasterizedFontSlot *runtimeFontSlots(bool allocate = true)
 {
 	static RuntimeRasterizedFontSlot *slots = nullptr;
-	if (!slots) {
+	if (!slots && allocate) {
 		void *storage = memory::Allocator::allocatePreferSpiram(
 		    sizeof(RuntimeRasterizedFontSlot) * kRuntimeFontCacheSlots,
 		    alignof(RuntimeRasterizedFontSlot));
@@ -664,6 +664,15 @@ RasterizedFont FontRegistry::rasterizedFamily(int familyId, int sizePx,int weigh
 	}
 #endif
 	return RasterizedFont(generated::lookupFontForFamily(familyId, sizePx));
+}
+
+void FontRegistry::invalidateRuntimeFonts()
+{
+#if GEA_EMBEDDED_TTF_RUNTIME_FONTS
+	if (auto *slots = runtimeFontSlots(false)) {
+		for (int i = 0; i < kRuntimeFontCacheSlots; ++i) releaseRuntimeFontSlot(slots[i]);
+	}
+#endif
 }
 
 const BitmapFont8x16 &FontRegistry::bitmap8x16()
