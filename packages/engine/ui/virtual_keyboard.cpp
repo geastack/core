@@ -454,23 +454,18 @@ KbMetrics kbMetrics()
 // zone — what both the mount position and the app-resize math key off.
 int keyboardOccupiedHeight() { return kbMetrics().height + bottomInset(); }
 
-// `setStyle(Property::BackgroundColor, X)` expects X to be a RAW RGB565
-// value — the framework's renderer byte-swaps once on the way to the
-// display. Using `pixel::fromRgb888` here would double-swap and land
-// the bytes in the wrong order on the wire (the earlier "purple
-// keyboard on purple background" symptom). Use `rgb565FromRgb888`
-// which returns the plain RGB565 value the framework expects.
+// Tree::setStyle applies the native style-to-framebuffer conversion.
 // The wide layout wears LVGL's default light theme: a #f5f5f5 screen
 // background, white keys, #e0e0e0 "checked" keys, #212121 text, and a
 // pressed state darkened by LV_OPA_35 of black.
-std::uint16_t rgb(int r, int g, int b) { return gea::framework::graphics::pixel::rgb565FromRgb888(r, g, b); }
-std::uint16_t kbBg()              { return gState.wide ? rgb(0xf5, 0xf5, 0xf5) : rgb(0xd1, 0xd3, 0xda); }
-std::uint16_t keyLightBg()        { return gState.wide ? rgb(0xff, 0xff, 0xff) : rgb(0xf2, 0xf2, 0xf7); }
-std::uint16_t keyUtilityBg()      { return gState.wide ? rgb(0xe0, 0xe0, 0xe0) : rgb(0x6f, 0x73, 0x7d); }
-std::uint16_t keyPrimaryBg()      { return gea::framework::graphics::pixel::rgb565FromRgb888(0x0a, 0x84, 0xff); }
-std::uint16_t keyShiftActiveBg()  { return gea::framework::graphics::pixel::rgb565FromRgb888(0xff, 0xff, 0xff); }
-std::uint16_t labelDark()         { return gState.wide ? rgb(0x21, 0x21, 0x21) : rgb(0x11, 0x11, 0x16); }
-std::uint16_t labelLight()        { return gea::framework::graphics::pixel::rgb565FromRgb888(0xff, 0xff, 0xff); }
+style_color_t rgb(int r, int g, int b) { return gea::framework::graphics::pixel::nativeStyleValue(r, g, b); }
+style_color_t kbBg()              { return gState.wide ? rgb(0xf5, 0xf5, 0xf5) : rgb(0xd1, 0xd3, 0xda); }
+style_color_t keyLightBg()        { return gState.wide ? rgb(0xff, 0xff, 0xff) : rgb(0xf2, 0xf2, 0xf7); }
+style_color_t keyUtilityBg()      { return gState.wide ? rgb(0xe0, 0xe0, 0xe0) : rgb(0x6f, 0x73, 0x7d); }
+style_color_t keyPrimaryBg()      { return gea::framework::graphics::pixel::nativeStyleValue(0x0a, 0x84, 0xff); }
+style_color_t keyShiftActiveBg()  { return gea::framework::graphics::pixel::nativeStyleValue(0xff, 0xff, 0xff); }
+style_color_t labelDark()         { return gState.wide ? rgb(0x21, 0x21, 0x21) : rgb(0x11, 0x11, 0x16); }
+style_color_t labelLight()        { return gea::framework::graphics::pixel::nativeStyleValue(0xff, 0xff, 0xff); }
 
 void applyKeyStyle(Tree &tree, int node, KeyKind kind, bool shiftActiveKey, const KbMetrics &m)
 {
@@ -482,17 +477,17 @@ void applyKeyStyle(Tree &tree, int node, KeyKind kind, bool shiftActiveKey, cons
 	tree.setStyle(node, Property::BorderRadiusTopRight, m.borderRadius);
 	tree.setStyle(node, Property::BorderRadiusBottomRight, m.borderRadius);
 	tree.setStyle(node, Property::BorderRadiusBottomLeft, m.borderRadius);
-	std::uint16_t bg;
-	std::uint16_t activeBg;
+	style_color_t bg;
+	style_color_t activeBg;
 	switch (kind) {
 	case KeyKind::Primary:
 		bg = keyPrimaryBg();
 		// Slightly darker iOS blue for the press feedback. The framework's
 		// InputController::pointerDown lightens bg-having nodes by default
-		// (lightenRgb565), which would turn the already-bright blue near
+		// (lightenNativeColor), which would turn the already-bright blue near
 		// white — explicitly setting active_bg makes the press obviously
 		// "darker, not lighter".
-		activeBg = gea::framework::graphics::pixel::rgb565FromRgb888(0x06, 0x6a, 0xd6);
+		activeBg = gea::framework::graphics::pixel::nativeStyleValue(0x06, 0x6a, 0xd6);
 		break;
 	case KeyKind::Utility:
 		bg = shiftActiveKey ? keyShiftActiveBg() : keyUtilityBg();
@@ -508,7 +503,7 @@ void applyKeyStyle(Tree &tree, int node, KeyKind kind, bool shiftActiveKey, cons
 		// Light keys go slightly darker to a visible iOS-press grey rather
 		// than the framework's default "lighten" which would push #f2f2f7
 		// past pure white and look like nothing happened.
-		activeBg = gea::framework::graphics::pixel::rgb565FromRgb888(0xc7, 0xc7, 0xcc);
+		activeBg = gea::framework::graphics::pixel::nativeStyleValue(0xc7, 0xc7, 0xcc);
 		break;
 	}
 	tree.setStyle(node, Property::BackgroundColor, static_cast<int>(bg));
@@ -543,7 +538,7 @@ void applyLabelStyle(Tree &tree, int node, LabelKind kind, KeyKind keyKind, bool
 	// focused input's, so the keys read in the app's own face instead of
 	// the 8x16 bitmap fallback.
 	tree.setStyle(node, Property::FontId, keyboardFontId());
-	std::uint16_t color;
+	style_color_t color;
 	if (gState.wide || keyKind == KeyKind::Light || (keyKind == KeyKind::Utility && shiftActiveKey)) color = labelDark();
 	else color = labelLight();
 	tree.setStyle(node, Property::Color, static_cast<int>(color));

@@ -159,7 +159,7 @@ public:
 		activeTouchNode_ = activeNodeId;activeTouchOwner_=NodeHandle(activeNodeId);
 		savedBackgroundColor_ = node.computedStyle().bg_color;
 		savedHasBackground_ = node.computedStyle().has_bg;
-		node.mutableStyle().bg_color = node.mutableStyle().has_active_bg ? node.mutableStyle().active_bg_color : lightenRgb565(node.mutableStyle().bg_color);
+		node.mutableStyle().bg_color = node.mutableStyle().has_active_bg ? node.mutableStyle().active_bg_color : lightenNativeColor(node.mutableStyle().bg_color);
 		node.mutableStyle().has_bg = 1;
 		activeBackgroundColor_ = node.computedStyle().bg_color;
 		activeHasBackground_ = node.computedStyle().has_bg;
@@ -855,8 +855,9 @@ private:
 #endif
 }
 
-	static std::uint16_t lightenRgb565(std::uint16_t color)
+	static style_color_t lightenNativeColor(style_color_t color)
 	{
+#if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGB565
 		int r;
 		int g;
 		int b;
@@ -867,6 +868,13 @@ private:
 		b += ((31 - b) * 6) / 32;
 
 		return gea::framework::graphics::pixel::packRgb565Components(r, g, b);
+#else
+		int r, g, b, a;
+		gea::framework::graphics::pixel::unpackNative8(color, &r, &g, &b, &a);
+		return gea::framework::graphics::pixel::packNative8(
+			r + ((255 - r) * 6) / 32, g + ((255 - g) * 6) / 32,
+			b + ((255 - b) * 6) / 32, a);
+#endif
 	}
 
 	static int findActiveTouchNodeId(int nodeId)
@@ -1100,9 +1108,9 @@ private:
 
 	NodeHandle activeTouchOwner_,activeScrollOwner_,momentumOwner_,hoveredOwner_;
 	int activeTouchNode_ = -1;
-	std::uint16_t savedBackgroundColor_ = 0;
+	style_color_t savedBackgroundColor_ = 0;
 	std::int8_t savedHasBackground_ = 0;
-	std::uint16_t activeBackgroundColor_ = 0;
+	style_color_t activeBackgroundColor_ = 0;
 	std::int8_t activeHasBackground_ = 0;
 	int activeScrollNode_ = -1;
 	int snapAccumDy_ = 0;

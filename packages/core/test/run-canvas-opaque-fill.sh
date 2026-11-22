@@ -12,6 +12,9 @@ source "$ROOT/packages/core/test/native-test-common.sh"
 cat > "$BUILD_DIR/program.cpp" <<'CPP'
 void __gea_top_level() {}
 CPP
-gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/canvas-opaque-fill" \
-  "$ROOT/packages/core/test/test_canvas_opaque_fill_main.cpp"
-"$BUILD_DIR/canvas-opaque-fill"
+for format in 0 1; do
+  gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/canvas-opaque-fill" \
+    "$ROOT/packages/core/test/test_canvas_opaque_fill_main.cpp" \
+    "-DGEA_EMBEDDED_PIXEL_FORMAT=$format"
+  "$BUILD_DIR/canvas-opaque-fill"
+done

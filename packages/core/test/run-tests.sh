@@ -35,6 +35,7 @@ NATIVE_TESTS=(
   run-bouncing-balls-regressions.sh
   run-text-sprite-cache.sh
   run-canvas-rounded-rect-alpha.sh
+  run-canvas-opaque-fill.sh
   run-transformed-rounded-rect.sh
   run-renderer-features.sh
   run-rotated-projected-text.sh
