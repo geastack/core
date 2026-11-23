@@ -7,6 +7,10 @@
 #include <cstdlib>
 #include <new>
 #include <utility>
+
+#ifndef GEA_EMBEDDED_DEFAULT_FONT_FAMILY_ID
+#define GEA_EMBEDDED_DEFAULT_FONT_FAMILY_ID -1
+#endif
 #if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
 #endif
@@ -194,7 +198,7 @@ constexpr ComputedStyle makeDefaultStyle()
 #if GEA_CSS_FONT_STRETCH
 	style.font_stretch = 1000;
 #endif
-	style.font_id = -1;
+	style.font_id = GEA_EMBEDDED_DEFAULT_FONT_FAMILY_ID;
 	style.font_size = 0;
 #if GEA_CSS_FONT_WEIGHT
 	style.font_weight = 400;

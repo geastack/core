@@ -58,6 +58,13 @@ const devicePixelRatios = parseDevicePixelRatios(
   readAllOptions("--device-pixel-ratio"),
 );
 const runtimeTtfFonts = hasFlag("--runtime-ttf-fonts");
+// "<family>=<ttf>": the family of text with no font-family, registered as
+// family 0 so the engine can use it as its initial font_id
+// (GEA_EMBEDDED_DEFAULT_FONT_FAMILY_ID=0). An app @font-face of the same family
+// wins over the given file.
+const defaultFontFace = readOption("--default-font-face");
+if (defaultFontFace && !(runtimeTtfFonts && defaultFontFace.includes("=")))
+  fail("--default-font-face <family>=<ttf> requires --runtime-ttf-fonts");
 // Glyph rasterization supersampling. 4 (default) = antialiased coverage for
 // grayscale/color panels. 1 = sample at 1:1 = NO antialiasing = crisp binary
 // glyphs, which read better on 1-bit B/W e-paper than thresholded AA (every
@@ -169,7 +176,7 @@ function mergeCharsets(a, b) {
   return new Set([...a, ...b]);
 }
 
-function findCssFiles(dir) {
+function findCssFiles(dir, pattern = /\.css$/) {
   const files = [];
   const stack = [dir];
   while (stack.length > 0) {
@@ -178,7 +185,7 @@ function findCssFiles(dir) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile() && entry.name.endsWith(".css")) files.push(full);
+      else if (entry.isFile() && pattern.test(entry.name)) files.push(full);
     }
   }
   files.sort();
@@ -1689,17 +1696,47 @@ function writeFileIfChanged(filePath, contents) {
   return changed;
 }
 
+function familiesNamedByBuild(fontFaces) {
+  const text = findCssFiles(cssDir, /\.(?:css|js)$/)
+    .map((file) => {
+      const source = fs.readFileSync(file, "utf8");
+      return file.endsWith(".css")
+        ? stripCssComments(source).replace(/@font-face\s*\{[^}]*\}/gi, "")
+        : source;
+    })
+    .join("\n");
+  return [...fontFaces.keys()].filter((family) =>
+    new RegExp(
+      `(?:^|[\\s"'\`,:(])${family.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*(?:$|["'\`,;)}!\\\\])`,
+      "m",
+    ).test(text),
+  );
+}
+
 function writeGeneratedFonts() {
   const fontFaces = collectSourceFontFaces();
+  const defaultFamily = defaultFontFace?.slice(0, defaultFontFace.indexOf("="));
+  if (defaultFamily && !fontFaces.has(defaultFamily))
+    fontFaces.set(
+      defaultFamily,
+      path.resolve(defaultFontFace.slice(defaultFamily.length + 1)),
+    );
   const tuples = collectUsedFontTuples(fontFaces);
   runtimeDeclaredCodepoints = collectRuntimeDeclaredCodepoints(tuples);
   // Runtime fonts are selected at actual layout time, including CSS variables
   // and programmatic styles with no statically discoverable family/size tuple.
-  // Keep every explicitly declared local face; raster-only builds retain their
-  // existing tuple-pruned size/charset policy.
+  // Keep every declared local face whose family the built CSS (outside
+  // @font-face) or JS names anywhere; raster-only builds retain their existing
+  // tuple-pruned size/charset policy.
   const familyNames = runtimeTtfFonts
-    ? [...fontFaces.keys()].sort()
+    ? [...familiesNamedByBuild(fontFaces)].sort()
     : [...new Set(tuples.map((tuple) => tuple.family))].sort();
+  if (defaultFamily && !familyNames.includes(defaultFamily))
+    familyNames.push(defaultFamily);
+  if (defaultFamily) {
+    familyNames.splice(familyNames.indexOf(defaultFamily), 1);
+    familyNames.unshift(defaultFamily);
+  }
   const families = familyNames.map((name, id) => ({ id, name }));
   const familyIds = new Map(families.map((family) => [family.name, family.id]));
 
