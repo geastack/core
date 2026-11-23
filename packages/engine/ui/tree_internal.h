@@ -103,6 +103,9 @@ public:
 	void displayBackedFailDebug(int *reason, int *extra, int *count) const;
 	void canvasSlotDebug(int id, int *mode, int *rebinds) const;
 	void markCanvasDirty(int node);
+	// The <canvas> node whose owned bitmap is `pixels` (-1: none), and how many
+	// times it has been redrawn (markCanvasDirty) since its surface was created.
+	int canvasForPixels(const gea::framework::graphics::pixel::native_t *pixels, std::uint32_t *redraws) const;
 
 	// A <camera> leaf reuses the same per-node RGB565 surface machinery as a
 	// canvas, but the pixels are produced by the platform camera backend each
