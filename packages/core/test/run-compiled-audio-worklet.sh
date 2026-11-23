@@ -37,6 +37,13 @@ const result = spawnSync(process.execPath, [
 ], { encoding: 'utf8', env: process.env })
 assert.equal(result.error, undefined)
 assert.notEqual(result.status, null, result.stderr)
-assert.notEqual(result.status, 0, 'an erased abstract constructor cannot fabricate a native process implementation')
-assert.match(result.stdout + result.stderr, /computed-class-method-virtual/)
+// An erased abstract constructor cannot fabricate a native process
+// implementation. Either the compiler refuses the program, or it compiles the
+// call as the miss it is in JavaScript: a TypeError, never a made-up body.
+if (result.status !== 0) assert.match(result.stdout + result.stderr, /computed-class-method-virtual/)
+else {
+  const { readFileSync } = await import('node:fs')
+  const emitted = readFileSync(path.join(out, 'test_audio_worklet_abstract_constructor.cpp'), 'utf8')
+  assert.match(emitted, /throwRuntimeError\("TypeError", "process is not a function"\)/)
+}
 JS
