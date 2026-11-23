@@ -110,14 +110,24 @@ private:
       AnimationEngine::instance().start(a, nowMs);
     };
 
+    // Color attributes are RGB565; 8888 style values hold 8 bits per channel.
+    auto color = [](int rgb565) {
+#if GEA_PIXEL_FORMAT_IS_8888
+      namespace pixel = gea::framework::graphics::pixel;
+      return static_cast<int>(pixel::nativeStyleValueFromRgba8888(pixel::rgba8888FromRgb565(static_cast<std::uint16_t>(rgb565))));
+#else
+      return rgb565;
+#endif
+    };
+
     if (!std::strcmp(kind, "rotate"))
       startOne(Property::TransformRotate, from, to);
     else if (!std::strcmp(kind, "opacity"))
       startOne(Property::Opacity, from, to);
     else if (!std::strcmp(kind, "color"))
-      startOne(Property::Color, from, to);
+      startOne(Property::Color, color(from), color(to));
     else if (!std::strcmp(kind, "bg") || !std::strcmp(kind, "background"))
-      startOne(Property::BackgroundColor, from, to);
+      startOne(Property::BackgroundColor, color(from), color(to));
     else if (!std::strcmp(kind, "width"))
       startOne(Property::Width, from, to);
     else if (!std::strcmp(kind, "height"))
