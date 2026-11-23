@@ -1783,7 +1783,9 @@ private:
 		int extent = 0;
 		for (int c = childNode.first_child; c >= 0; c = nodes[c].next_sibling) {
 			const Node &grand = nodes[c];
-			if (isLayoutExcluded(grand) || isOutOfFlowPosition(grand.computedStyle().position)) continue;
+			// Ignored DOM whitespace has no box to contribute to the flex item's minimum.
+			if (isLayoutExcluded(grand) || isOutOfFlowPosition(grand.computedStyle().position) ||
+			    suppressAnonymousWhitespace(nodes, grand.parent, c)) continue;
 			// layout.{x,y} are still parent-relative here: resolveAbsoluteCoords runs
 			// after the whole layout pass. A text run's laid-out box is its line box,
 			// as wide as the space it was offered (and offset by text-align), so it
