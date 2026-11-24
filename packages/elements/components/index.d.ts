@@ -1,5 +1,7 @@
 export { CameraView } from './CameraView'
 export type { CameraViewProps } from './CameraView'
 export type { CameraFacing, CameraFlashMode, CameraDevice, CameraOpenOptions, CameraCaptureOptions, CameraPhoto, CameraController } from '@geastack/core'
+export { default as InlineAlert, inlineAlertSeverityLabel } from './InlineAlert'
+export type { InlineAlertProps, InlineAlertVariant } from './InlineAlert'
 export { default as VirtualList } from './VirtualList'
 export type { VirtualListProps, VirtualListItemTemplate } from './VirtualList'
