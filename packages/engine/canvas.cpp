@@ -3313,6 +3313,9 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 				if (gHotTextSprite.owner == &slot) gHotTextSprite.owner = nullptr;
 #endif
 				if (buildTextSprite(slot, text, font)) {
+#if GEA_EMBEDDED_TEXT_SPRITE_DIAG
+					gTsDiag.built++;
+#endif
 					slot.state = TextSprite::Cached;
 					blitGlyphSprite(slot.cov, slot.rowX0, slot.rowX1,
 					                slot.rleValid ? slot.rleVal : nullptr,
