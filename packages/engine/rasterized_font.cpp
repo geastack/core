@@ -139,7 +139,21 @@ constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints)/sizeof(int);
 constexpr int kRuntimeExtraCodepoints[] = {0x00b0, 0x2022};
 constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints) / sizeof(int);
 #endif
-constexpr int kRuntimeGlyphCapacity = kRuntimeAsciiCount + kRuntimeExtraGlyphs;
+// Room for the glyphs an app declares beyond the fixed set above: the build's
+// font generator emits generated::runtimeTtfDeclaredCodepoints() -- the raster
+// baseline plus every `--gea-font-charset` the app's CSS names -- so a runtime
+// TTF slot covers the same characters a baked atlas would. Each entry costs a
+// Glyph in every cache slot, so the default stays 0 where there is no FreeType
+// (small boards); desktop builds raise it.
+#ifndef GEA_EMBEDDED_TTF_RUNTIME_DECLARED_GLYPHS
+#if GEA_EMBEDDED_TTF_FREETYPE
+#define GEA_EMBEDDED_TTF_RUNTIME_DECLARED_GLYPHS 128
+#else
+#define GEA_EMBEDDED_TTF_RUNTIME_DECLARED_GLYPHS 0
+#endif
+#endif
+constexpr int kRuntimeDeclaredGlyphCapacity = GEA_EMBEDDED_TTF_RUNTIME_DECLARED_GLYPHS;
+constexpr int kRuntimeGlyphCapacity = kRuntimeAsciiCount + kRuntimeExtraGlyphs + kRuntimeDeclaredGlyphCapacity;
 constexpr int kRuntimeFontCacheSlots = 64;
 #if GEA_EMBEDDED_TTF_FREETYPE
 constexpr int kRuntimeMaxAtlasWidth = 4096;
@@ -179,11 +193,28 @@ struct RuntimeRasterizedFontSlot {
 	int atlasRowHeight = 0;
 };
 
+bool runtimeFixedCodepoint(int codepoint)
+{
+	if (codepoint >= kRuntimeAsciiFirst && codepoint <= kRuntimeAsciiLast) return true;
+	for (int i = 0; i < kRuntimeExtraGlyphs; ++i)
+		if (kRuntimeExtraCodepoints[i] == codepoint) return true;
+	return false;
+}
+
 int runtimeCodepointAt(int index)
 {
 	if (index >= 0 && index < kRuntimeAsciiCount) return kRuntimeAsciiFirst + index;
-	if (index >= kRuntimeAsciiCount && index < kRuntimeGlyphCapacity) return kRuntimeExtraCodepoints[index - kRuntimeAsciiCount];
-	return -1;
+	index -= kRuntimeAsciiCount;
+	if (index >= 0 && index < kRuntimeExtraGlyphs) return kRuntimeExtraCodepoints[index];
+	index -= kRuntimeExtraGlyphs;
+	if (index < 0 || index >= kRuntimeDeclaredGlyphCapacity) return -1;
+	// Declared codepoints the fixed set already covers leave a gap (-1) rather
+	// than a duplicate entry.
+	int count = 0;
+	const int *declared = generated::runtimeTtfDeclaredCodepoints(&count);
+	if (!declared || index >= count) return -1;
+	const int codepoint = declared[index];
+	return codepoint > 0 && !runtimeFixedCodepoint(codepoint) ? codepoint : -1;
 }
 
 int roundToInt(float value)
@@ -741,6 +772,12 @@ __attribute__((weak)) const std::uint8_t *lookupRuntimeTtfFontForFamily(int fami
 {
 	(void)familyId;
 	if (length) *length = 0;
+	return nullptr;
+}
+
+__attribute__((weak)) const int *runtimeTtfDeclaredCodepoints(int *count)
+{
+	if (count) *count = 0;
 	return nullptr;
 }
 

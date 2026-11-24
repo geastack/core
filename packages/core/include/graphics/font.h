@@ -153,6 +153,9 @@ const RasterizedFontData *lookupFontForFamily(int familyId, int sizePx);
 int lookupFontFamily(const char *family);
 const char *lookupFontFamilyName(int familyId);
 const std::uint8_t *lookupRuntimeTtfFontForFamily(int familyId, unsigned long *length);
+// Codepoints beyond printable ASCII that runtime TTF slots must cover: the
+// generator's raster baseline plus every `--gea-font-charset` the app declares.
+const int *runtimeTtfDeclaredCodepoints(int *count);
 void ensureLinked();
 
 }  // namespace generated
