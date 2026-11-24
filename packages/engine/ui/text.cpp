@@ -267,6 +267,8 @@ void appendAlphaCommand(uint8_t alpha, int bx, int by, int bw, int bh)
 	cmd->type = DisplayCommandType::SetAlpha;
 	cmd->bx = bx; cmd->by = by; cmd->bw = bw; cmd->bh = bh;
 	cmd->alpha.alpha = alpha;
+	cmd->alpha.recordParentAlpha = alpha;
+	cmd->alpha.nodeId = -1;
 }
 
 void boundsFromCorners(const int16_t *xs, const int16_t *ys, int *x0, int *y0, int *x1, int *y1)

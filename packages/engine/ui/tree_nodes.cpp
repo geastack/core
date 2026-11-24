@@ -523,6 +523,20 @@ void Tree::canvasSlotDebug(int id, int *mode, int *rebinds) const
 	*rebinds = gCanvasRebindCount;
 }
 
+int Tree::canvasForPixels(const gea::framework::graphics::pixel::native_t *pixels, std::uint32_t *redraws) const
+{
+	const auto &state = treeState();
+	int found = -1;
+	state.canvases.forEach([&](const CanvasSurfaceState &surface) {
+		if (found >= 0 || !surface.ownsPixels() || surface.pixels != pixels || surface.nodeId < 0 || surface.nodeId >= state.nodeCount ||
+		    state.nodes[surface.nodeId].type != NodeType::Canvas)
+			return;
+		found = surface.nodeId;
+		*redraws = surface.redraws;
+	});
+	return found;
+}
+
 bool Tree::isDisplayBackedCanvas(int id) const
 {
 	const auto &state = treeState();
@@ -535,8 +549,9 @@ void Tree::markCanvasDirty(int id)
 {
 	auto &state = treeState();
 	if (id < 0 || id >= state.nodeCount) return;
-	const auto *surface = state.canvases.find(id);
+	auto *surface = state.canvases.find(id);
 	if (surface && surface->displayBacked()) return;
+	if (surface) ++surface->redraws;
 	// Pixels only: drawing never changes the element's box, so no layout_dirty.
 	// It used to be set here, and a canvas redrawn every frame (Ember's heat
 	// arc) then cost a full relayout of the whole screen per frame (~5.5 ms of

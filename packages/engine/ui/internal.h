@@ -454,6 +454,7 @@ void rootScrollImageHoldTick();
 		bool reprojectDirtyRect(int *x0, int *y0, int *x1, int *y1) const;
 		void filterBlurCacheStats(int *hits, int *misses) const;
 		int commandCount() const;
+		const DisplayCommand *commandAt(int index) const;
 		bool hasTextClippedBackgrounds() const;
 		// Scrollbar thumbs are recorded outside every node's command range;
 		// see DisplayListState::scrollbarBoxes.

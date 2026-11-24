@@ -4413,6 +4413,7 @@ const fontViewportWidths = readAllOptions('--font-viewport-width')
 const fontViewportHeights = readAllOptions('--font-viewport-height')
 const fontDevicePixelRatios = readAllOptions('--font-device-pixel-ratio')
 const runtimeTtfFonts = hasFlag('--runtime-ttf-fonts')
+const defaultFontFace = readOption('--default-font-face')
 
 // Physical panel resolution per board, mirroring each target's
 // GEA_EMBEDDED_DISPLAY_WIDTH/HEIGHT (the lib/gea-embedded/include/display.h
@@ -4601,6 +4602,7 @@ run('node', [
   ...(effectiveFontAtlasBits ? ['--atlas-bits', effectiveFontAtlasBits] : []),
   ...(fontSymbolPrefix ? ['--symbol-prefix', fontSymbolPrefix] : []),
   ...(runtimeTtfFonts ? ['--runtime-ttf-fonts'] : []),
+  ...(defaultFontFace ? ['--default-font-face', defaultFontFace] : []),
 ])
 // Embed app assets (images referenced as `<img src="...">`) as `.rodata` linked
 // into the app binary, registered by path. Like the font TU above, this always

@@ -185,6 +185,7 @@ struct Item {
 	bool evenOdd = false;
 	bool hittable = true;
 	float halfStroke = 0.0f;
+	StrokeStyle strokeStyle;
 	Bounds fillBounds, strokeBounds;
 	// Everything the geometry and edges depend on (attributes, transform,
 	// stroke style): an unchanged item keeps them across scene rebuilds, so a
@@ -783,6 +784,7 @@ void walk(int id, const Context &parent, std::vector<Item> &items, ItemCache &ca
 			// distance to the path), so it goes straight to edges.
 			strokePathEdges(item.geometry, style, item.strokeEdges, item.strokeBounds);
 			item.halfStroke = width / 2;
+			item.strokeStyle = style;
 		}
 		if (item.fill.on) {
 			item.fillBounds.add(item.geometry.contours);
@@ -1566,6 +1568,18 @@ void paint(const DisplayCommand &c)
 	}
 #endif
 	paintRows(&band, cy0, cy1);
+}
+
+void visitScene(int root, void (*visit)(void *user, const ScenePaint &paint), void *user)
+{
+	auto it = g_scenes.find(root);
+	if (it == g_scenes.end()) return;
+	for (const Item &item : it->second.items) {
+		if (item.fill.on)
+			visit(user, {&item.geometry, nullptr, item.evenOdd, item.fill.gradient, item.fill.color, std::min(1.0f, item.fill.alpha)});
+		if (!item.strokeEdges.empty())
+			visit(user, {&item.geometry, &item.strokeStyle, false, item.stroke.gradient, item.stroke.color, std::min(1.0f, item.stroke.alpha)});
+	}
 }
 
 int hitTest(int rootId, int x, int y)
