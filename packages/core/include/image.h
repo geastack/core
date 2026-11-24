@@ -111,6 +111,8 @@ public:
 	// boot otherwise holds its framebuffer-sized decode for the life of the app.
 	// Call once per frame, never between a release and the re-retain that
 	// follows it (a style recompute), so a still in use is not thrown away.
+	// A still whose pixels were read since the previous call (a canvas
+	// drawImage holds no reference) is in use too and stays decoded.
 	void releaseIdleDecodes();
 	// Register an externally-owned native-format pixel buffer. `takeOwnership`
 	// transfers ownership to the store (freed on dispose) — used by the iOS
@@ -171,6 +173,11 @@ private:
 	ImageSlot images_[kImageMax]{};
 	bool used_[kImageMax]{};
 	unsigned references_[kImageMax]{};
+	// Pixels read since the last releaseIdleDecodes(). A canvas that draws a
+	// still every frame holds no reference; without this its full-screen
+	// backdrop was freed after each frame and decoded again on the next draw
+	// (a 480x502 PNG: 114 ms of a 148 ms frame on the ESP32-S31).
+	mutable bool touched_[kImageMax]{};
 	bool retired_[kImageMax]{};
 	// Guards slot ALLOCATION and DISPOSAL only (reservation-style): the async
 	// tile loader decodes on the second core while the frame task blits and
