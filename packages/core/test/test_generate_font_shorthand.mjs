@@ -3,13 +3,13 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 
 const source = fs.readFileSync(new URL('../scripts/generate-gea-embedded-fonts.mjs', import.meta.url), 'utf8')
-const start = source.indexOf('function parseFontShorthand(')
+const start = source.indexOf('function parseFontShorthandFor(')
 const end = source.indexOf('function fontCssSelectors(', start)
 const parse = vm.runInNewContext(`
 const firstFontFamily = value => value.split(',')[0].trim().replace(/^['"]|['"]$/g, '')
-const parseFontSizes = value => [value]
+const fontSizesFor = value => [value]
 ${source.slice(start, end)}
-parseFontShorthand
+value => parseFontShorthandFor(value, {})
 `)
 
 for (const [font, family, size] of [

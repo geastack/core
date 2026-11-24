@@ -146,3 +146,53 @@ for (const codepoint of [0x00b5, 0x00b7, 0x2212]) {
 // The ten digits, the escaped em dash, and the space and `?` every atlas keeps.
 assert.equal(atlasGlyphCounts.get(100), 13, 'a charset narrows its own atlas, honouring CSS escapes')
 assert.equal(atlasGlyphCounts.get(120), baselineGlyphCount, 'one rule without a charset widens the shared atlas back')
+
+// Media queries are evaluated against the board. On a 135x240 panel at DPR 1.5
+// (a 90x160 CSS viewport) the desktop 40px of `.key` is overridden by the
+// narrow branch's 20px, so only 30 device px is baked for it. The wide branch
+// cannot match and bakes nothing. A condition the generator cannot evaluate
+// (`monochrome`) may apply, so its size is kept alongside.
+const mediaDir = path.join(tempRoot, 'media-css')
+const mediaCpp = path.join(tempRoot, 'media.cpp')
+const mediaH = path.join(tempRoot, 'media.h')
+fs.mkdirSync(mediaDir, { recursive: true })
+fs.writeFileSync(
+  path.join(mediaDir, 'styles.css'),
+  `
+.key { font-family: 'Bebas Neue'; font-size: 40px; }
+.label { font-family: 'Bebas Neue'; font-size: 12px; }
+.strong { font-family: 'Bebas Neue'; font-size: 16px !important; }
+@media (max-width: 140px) {
+  .key { font-size: 20px; }
+  .strong { font-size: 10px; }
+}
+@media (min-width: 600px) {
+  .label { font-size: 44px; }
+}
+@media (monochrome) {
+  .label { font-size: 14px; }
+}
+`,
+)
+execFileSync(
+  process.execPath,
+  [
+    path.join(repoRoot, 'packages/core/scripts/generate-gea-embedded-fonts.mjs'),
+    '--app-dir', appDir,
+    '--css-dir', mediaDir,
+    '--out-cpp', mediaCpp,
+    '--out-h', mediaH,
+    '--viewport-width', '135',
+    '--viewport-height', '240',
+    '--device-pixel-ratio', '1.5',
+  ],
+  { cwd: appDir, stdio: 'pipe' },
+)
+const mediaSizes = [...fs.readFileSync(mediaCpp, 'utf8').matchAll(/font_data_\d+\s*=\s*\{\s*\d+,\s*(\d+),/g)]
+  .map((match) => Number(match[1]))
+assert.deepEqual(
+  mediaSizes,
+  [18, 21, 24, 30],
+  'a size overridden by a matching media branch, or behind a non-matching one, bakes no atlas; !important holds',
+)
+console.log('Embedded font generator media cascade passed')

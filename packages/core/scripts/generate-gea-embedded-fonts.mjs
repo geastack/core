@@ -352,34 +352,14 @@ function resolveLengthForCombo(value, width, height, dpr) {
   return null;
 }
 
-// Bake one atlas size per distinct resolved value across every configured
-// (viewport, DPR) combination. Each (width, height) pair is one board; absolute
-// px is viewport-independent (width/height fall back to 0 so it still resolves).
-// uniqueSizes drops non-positive (viewport-relative tokens with no viewport) and
-// duplicate sizes. This mirrors the runtime so each requested px hits an atlas.
-function parseFontSizes(value) {
-  const combos = viewportCombos();
-  const sizes = [];
-  for (const dpr of devicePixelRatios) {
-    for (const { width, height } of combos) {
-      const size = resolveLengthForCombo(value, width, height, dpr);
-      if (size !== null) sizes.push(size);
-    }
-  }
-  return uniqueSizes(sizes);
-}
-
-function parseFontShorthand(value) {
-  // Style/weight precede the required size; optional line-height follows it.
-  // Keep the family tail intact so quoted names and fallback lists use the
-  // same parser as an explicit font-family declaration.
+function parseFontShorthandFor(value, context) {
   const match = value.match(
     /(?:^|\s)([+]?(?:\d*\.)?\d+(?:px|pt|em|rem|vw|vh|vmin|vmax|%))(?:\s*\/\s*[^\s]+)?\s+(.+)$/i,
   );
   if (!match) return null;
   return {
     family: firstFontFamily(match[2]),
-    sizePxs: parseFontSizes(match[1]),
+    sizePxs: fontSizesFor(match[1], context),
   };
 }
 
@@ -478,80 +458,232 @@ function collectSourceFontFaces() {
   return fontFaces;
 }
 
+// Every (viewport, DPR) the board renders at. Font sizes and media queries are
+// resolved once per context, so a rule that cannot apply on this board bakes
+// nothing.
+function fontContexts() {
+  const contexts = [];
+  for (const dpr of devicePixelRatios) {
+    for (const { width, height } of viewportCombos())
+      contexts.push({ width, height, dpr });
+  }
+  return contexts;
+}
+
+function fontSizesFor(value, context) {
+  const size = resolveLengthForCombo(
+    value,
+    context.width,
+    context.height,
+    context.dpr,
+  );
+  return size === null ? [] : uniqueSizes([size]);
+}
+
+// One media feature against a context: true, false, or null when the generator
+// cannot know (colour depth, monochrome, hover, ...). Widths are compared in CSS
+// px, the physical viewport divided by the DPR, as the runtime compares them.
+function evaluateMediaFeature(feature, context) {
+  const match = feature
+    .trim()
+    .toLowerCase()
+    .match(/^(min-|max-)?(width|height)\s*:\s*(\d+(?:\.\d+)?)(px|em|rem)?$/);
+  if (!match) return null;
+  const physical = match[2] === "width" ? context.width : context.height;
+  if (!physical || !context.dpr) return null;
+  const css = physical / context.dpr;
+  const limit = Number(match[3]) * (match[4] === "em" || match[4] === "rem" ? 16 : 1);
+  if (match[1] === "min-") return css >= limit;
+  if (match[1] === "max-") return css <= limit;
+  return css === limit;
+}
+
+function evaluateMediaQuery(query, context) {
+  let text = query.trim().toLowerCase();
+  if (text.startsWith("only ")) text = text.slice(5).trim();
+  if (text.startsWith("not ")) return null;
+  let result = true;
+  for (const part of text.split(/\s+and\s+/)) {
+    const term = part.trim();
+    let value;
+    if (term === "" || term === "all" || term === "screen") value = true;
+    else if (term === "print") value = false;
+    else if (term.startsWith("(") && term.endsWith(")"))
+      value = evaluateMediaFeature(term.slice(1, -1), context);
+    else value = null;
+    if (value === false) return false;
+    if (value === null) result = null;
+  }
+  return result;
+}
+
+// An at-rule prelude as a condition: `@media` lists are ORed; every other
+// block at-rule (`@supports`, `@layer`, `@keyframes`, ...) may apply.
+function evaluateAtRule(prelude, context) {
+  const match = prelude.match(/^@media\b(.*)$/is);
+  if (!match) return null;
+  let result = false;
+  for (const query of splitTopLevel(match[1], ",")) {
+    const value = evaluateMediaQuery(query, context);
+    if (value === true) return true;
+    if (value === null) result = null;
+  }
+  return result;
+}
+
+// Style rules in source order, each with the at-rule preludes around it.
+function cssStyleRules(css) {
+  const rules = [];
+  const stack = [];
+  let boundary = 0;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === ";") boundary = i + 1;
+    else if (ch === "}") {
+      stack.pop();
+      boundary = i + 1;
+    } else if (ch === "{") {
+      const prelude = css.slice(boundary, i).trim();
+      if (prelude.startsWith("@")) {
+        stack.push(prelude);
+        boundary = i + 1;
+        continue;
+      }
+      const close = css.indexOf("}", i + 1);
+      if (close < 0) break;
+      rules.push({
+        selector: prelude,
+        body: css.slice(i + 1, close),
+        atRules: [...stack],
+      });
+      i = close;
+      boundary = close + 1;
+    }
+  }
+  return rules;
+}
+
+function ruleApplies(rule, context) {
+  let result = true;
+  for (const prelude of rule.atRules) {
+    const value = evaluateAtRule(prelude, context);
+    if (value === false) return false;
+    if (value === null) result = null;
+  }
+  return result;
+}
+
+function parseFontDeclarations(body) {
+  const declarations = [];
+  for (const declaration of body.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon <= 0) continue;
+    let value = declaration.slice(colon + 1).trim();
+    const important = /!\s*important\s*$/i.test(value);
+    if (important) value = value.replace(/!\s*important\s*$/i, "").trim();
+    declarations.push({
+      name: declaration.slice(0, colon).trim().toLowerCase(),
+      value,
+      important,
+    });
+  }
+  return declarations;
+}
+
+// The families and atlas sizes the app's CSS can ask for on this board.
+//
+// Rules are walked per (viewport, DPR) context in source order. A rule whose
+// media query cannot match the board is skipped. A rule that certainly applies
+// REPLACES the sizes earlier rules gave the same selector, because the same
+// selector later in the same file wins the cascade; a normal size after an
+// `!important` one loses outright. A rule whose condition the generator cannot evaluate
+// (`@media (monochrome)`, `@supports`) may or may not apply, so its sizes are
+// added to the earlier ones instead. A desktop size that a board's own
+// `@media (max-width: ...)` branch overrides therefore bakes no atlas there.
 function collectUsedFontTuples(fontFaces) {
   const tuples = new Map();
   const usedFamilies = new Set();
   const inheritedSizes = new Map();
+  const rememberInherited = (sizePx, charset) => {
+    inheritedSizes.set(
+      sizePx,
+      inheritedSizes.has(sizePx)
+        ? mergeCharsets(inheritedSizes.get(sizePx), charset)
+        : charset,
+    );
+  };
+  const contexts = fontContexts();
   for (const file of findCssFiles(cssDir)) {
-    const css = stripCssComments(fs.readFileSync(file, "utf8"));
-    const selectorStates = new Map();
-    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
-    let match;
-    while ((match = ruleRe.exec(css)) !== null) {
-      const selector = match[1].trim();
-      if (selector.startsWith("@")) continue;
-      const selectors = fontCssSelectors(selector);
-      if (selectors.length === 0) continue;
-      let family = null;
-      let sizePxs = null;
-      let charset = null;
-      for (const declaration of match[2].split(";")) {
-        const colon = declaration.indexOf(":");
-        if (colon <= 0) continue;
-        const name = declaration.slice(0, colon).trim().toLowerCase();
-        const value = declaration.slice(colon + 1).trim();
-        if (name === "font-family") family = firstFontFamily(value);
-        else if (name === "font-size") sizePxs = parseFontSizes(value);
-        else if (name === "font") {
-          const shorthand = parseFontShorthand(value);
-          if (shorthand) {
-            family = shorthand.family;
-            sizePxs = shorthand.sizePxs;
-          }
-        } else if (name === "--gea-font-charset")
-          charset = parseFontCharset(value);
-      }
-      // Accumulate every family/size a selector is ever assigned: repeated
-      // rules are usually media-query branches (the block regex sees through
-      // `@media { ... }` wrappers), and the generator can't evaluate media
-      // conditions, so every branch needs an atlas.
-      for (const selector of selectors) {
-        const state = selectorStates.get(selector) ?? {
-          families: new Set(),
-          sizePxs: new Set(),
-          charset: undefined,
-        };
-        if (family) state.families.add(family);
-        // Only a rule that names a size has an opinion about that size's atlas.
-        // A rule on the same selector that just sets a colour must not widen it.
-        if (sizePxs) {
-          for (const sizePx of sizePxs) state.sizePxs.add(sizePx);
-          state.charset =
-            state.charset === undefined
-              ? charset
-              : mergeCharsets(state.charset, charset);
+    const rules = cssStyleRules(stripCssComments(fs.readFileSync(file, "utf8")))
+      .map((rule) => ({
+        ...rule,
+        selectors: fontCssSelectors(rule.selector),
+        declarations: parseFontDeclarations(rule.body),
+      }))
+      .filter((rule) => rule.selectors.length > 0);
+    for (const context of contexts) {
+      const selectorStates = new Map();
+      for (const rule of rules) {
+        const applies = ruleApplies(rule, context);
+        if (applies === false) continue;
+        let family = null;
+        let sizePxs = null;
+        let important = false;
+        let charset = null;
+        for (const { name, value, important: flag } of rule.declarations) {
+          if (name === "font-family") family = firstFontFamily(value);
+          else if (name === "font-size") {
+            sizePxs = fontSizesFor(value, context);
+            important = flag;
+          } else if (name === "font") {
+            const shorthand = parseFontShorthandFor(value, context);
+            if (shorthand) {
+              family = shorthand.family;
+              sizePxs = shorthand.sizePxs;
+              important = flag;
+            }
+          } else if (name === "--gea-font-charset")
+            charset = parseFontCharset(value);
         }
-        selectorStates.set(selector, state);
+        for (const selector of rule.selectors) {
+          const state = selectorStates.get(selector) ?? {
+            families: new Set(),
+            sizes: new Map(),
+            important: false,
+          };
+          if (family) state.families.add(family);
+          // Only a rule that names a size has an opinion about that size's
+          // atlas. A rule on the same selector that just sets a colour must not
+          // widen or replace it.
+          // A normal declaration never beats an earlier `!important` one.
+          if (sizePxs && !(state.important && !important)) {
+            if (applies === true) {
+              state.sizes = new Map();
+              state.important = important;
+            }
+            for (const sizePx of sizePxs) {
+              state.sizes.set(
+                sizePx,
+                state.sizes.has(sizePx)
+                  ? mergeCharsets(state.sizes.get(sizePx), charset)
+                  : charset,
+              );
+            }
+          }
+          selectorStates.set(selector, state);
+        }
       }
-    }
-    for (const state of selectorStates.values()) {
-      const charset = state.charset ?? null;
-      for (const family of state.families) {
-        if (fontFaces.has(family)) usedFamilies.add(family);
-        rememberFontTuples(
-          tuples,
-          fontFaces,
-          family,
-          [...state.sizePxs],
-          charset,
-        );
-      }
-      if (state.families.size === 0) {
-        for (const sizePx of state.sizePxs) {
-          const merged = inheritedSizes.has(sizePx)
-            ? mergeCharsets(inheritedSizes.get(sizePx), charset)
-            : charset;
-          inheritedSizes.set(sizePx, merged);
+      for (const state of selectorStates.values()) {
+        for (const family of state.families) {
+          if (fontFaces.has(family)) usedFamilies.add(family);
+          if (state.sizes.size === 0)
+            rememberFontTuples(tuples, fontFaces, family, [], null);
+          for (const [sizePx, charset] of state.sizes)
+            rememberFontTuples(tuples, fontFaces, family, [sizePx], charset);
+        }
+        if (state.families.size === 0) {
+          for (const [sizePx, charset] of state.sizes)
+            rememberInherited(sizePx, charset);
         }
       }
     }
