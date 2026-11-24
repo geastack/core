@@ -99,8 +99,8 @@ public:
 	~VideoClock() { videoTick = nullptr; videoFps = 0; }
 };
 
-template <typename Paint>
-void streamVideoFrames(VideoFrames &stream, int fps, int startMs, int endMs, Paint paint)
+template <typename Frames, typename Paint>
+void streamVideoFrames(Frames &stream, int fps, int startMs, int endMs, Paint paint)
 {
 	// Warm up on the app timeline. Sample the requested half-open range on
 	// its own cadence so the first encoded frame is always exactly startMs.
