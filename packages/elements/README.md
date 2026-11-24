@@ -52,6 +52,9 @@ export class App extends Component {
 The native backends are compiled into a target through `@geastack/core`'s
 source manifest; apps only import the components.
 
+To add a component, follow the
+[component contribution contract](https://github.com/geastack/core/blob/main/docs/COMPONENTS.md).
+
 ## License
 
 Apache-2.0. See `LICENSE`.
