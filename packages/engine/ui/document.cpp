@@ -318,6 +318,7 @@ void Document::addEventListener(const char *type, gea::framework::events::EventL
 namespace
 {
 	gea::framework::display::Underlay::Paint underlayPaint = nullptr;
+	gea::framework::display::Underlay::Describe underlayDescribe = nullptr;
 	void *underlayUser = nullptr;
 	int underlayX0 = 0, underlayY0 = 0, underlayX1 = -1, underlayY1 = -1;
 	bool underlayOpaque = false;
@@ -328,9 +329,10 @@ bool gea::framework::display::Underlay::composited()
 	return !gea::embedded::ui::Document::directCanvasContextUsed() && gea::embedded::ui::Tree::instance().mountedRoot() >= 0;
 }
 
-void gea::framework::display::Underlay::set(Paint paint, void *user, int x0, int y0, int x1, int y1)
+void gea::framework::display::Underlay::set(Paint paint, void *user, int x0, int y0, int x1, int y1, Describe describe)
 {
 	underlayPaint = paint;
+	underlayDescribe = describe;
 	underlayUser = user;
 	underlayX0 = x0;
 	underlayY0 = y0;
@@ -352,8 +354,17 @@ bool gea::framework::display::Underlay::covers(int x0, int y0, int x1, int y1)
 void gea::framework::display::Underlay::clear()
 {
 	underlayPaint = nullptr;
+	underlayDescribe = nullptr;
 	underlayUser = nullptr;
 	underlayOpaque = false;
+}
+
+bool gea::framework::display::Underlay::describe(Sink &sink)
+{
+	if (!underlayPaint || !underlayDescribe) return false;
+	sink.area(underlayX0, underlayY0, underlayX1, underlayY1);
+	underlayDescribe(sink, underlayUser);
+	return true;
 }
 
 bool gea::framework::display::Underlay::active()

@@ -11323,6 +11323,10 @@ int gLastScrollUiFrame = -1000;
 	}
 
 	int DisplayList::commandCount() const { return state.commandCount; }
+	const DisplayCommand *DisplayList::commandAt(int index) const
+	{
+		return state.commands && index >= 0 && index < state.commandCount ? &state.commands[index] : nullptr;
+	}
 	bool DisplayList::hasTextClippedBackgrounds() const
 	{
 		return state.textClippedBackgrounds;

@@ -75,6 +75,8 @@ void appendAlphaCommand(uint8_t alpha, int bx, int by, int bw, int bh)
 	cmd->type = DisplayCommandType::SetAlpha;
 	cmd->bx = bx; cmd->by = by; cmd->bw = bw; cmd->bh = bh;
 	cmd->alpha.alpha = alpha;
+	cmd->alpha.recordParentAlpha = alpha;
+	cmd->alpha.nodeId = -1;
 }
 
 uint8_t interpolateAlpha(uint8_t from, uint8_t to, int permille)

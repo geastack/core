@@ -196,3 +196,36 @@ assert.deepEqual(
   'a size overridden by a matching media branch, or behind a non-matching one, bakes no atlas; !important holds',
 )
 console.log('Embedded font generator media cascade passed')
+
+// Runtime TTF builds keep a declared face only when the built CSS (outside
+// @font-face) or JS names its family; the default family is always kept.
+const runtimeApp = path.join(tempRoot, 'runtime-app')
+const runtimeBuild = path.join(tempRoot, 'runtime-build')
+fs.mkdirSync(path.join(runtimeApp, 'fonts'), { recursive: true })
+fs.mkdirSync(runtimeBuild, { recursive: true })
+fs.copyFileSync(path.join(appDir, 'fonts/bebas-neue-400.ttf'), path.join(runtimeApp, 'fonts/face.ttf'))
+const faces = ['Styled', 'Inline', 'Space Mono', 'Space Mono B', 'Unused']
+  .map((family) => `@font-face { font-family: '${family}'; src: url('./fonts/face.ttf'); }`)
+  .join('\n')
+fs.writeFileSync(path.join(runtimeApp, 'fonts.css'), faces)
+fs.writeFileSync(path.join(runtimeBuild, 'index.css'), `${faces}\n.a { font-family: "Styled", sans-serif; }\n.b { font: 12px Space Mono B; }\n`)
+fs.writeFileSync(path.join(runtimeBuild, 'index.js'), `h('span', { style: { fontFamily: 'Inline' } }, 'Unusedly');\n`)
+const runtimeCpp = path.join(tempRoot, 'runtime.cpp')
+execFileSync(
+  process.execPath,
+  [
+    path.join(repoRoot, 'packages/core/scripts/generate-gea-embedded-fonts.mjs'),
+    '--app-dir', runtimeApp,
+    '--css-dir', runtimeBuild,
+    '--out-cpp', runtimeCpp,
+    '--out-h', path.join(tempRoot, 'runtime.h'),
+    '--runtime-ttf-fonts',
+    '--default-font-face', `Default=${path.join(runtimeApp, 'fonts/face.ttf')}`,
+  ],
+  { cwd: runtimeApp, stdio: 'pipe' },
+)
+assert.deepEqual(
+  [...fs.readFileSync(runtimeCpp, 'utf8').matchAll(/\{ (\d+), "([^"]+)" \},/g)].map((match) => match[2]),
+  ['Default', 'Inline', 'Space Mono B', 'Styled'],
+  'runtime fonts are the default family plus the families the build names',
+)

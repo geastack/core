@@ -89,6 +89,23 @@ void validateScenes();
 void record(const Node &svgNode);
 void paint(const DisplayCommand &command);
 
+struct Path;
+struct StrokeStyle;
+
+// One paint of a scene item, for a target that draws scenes itself: the fill
+// of `geometry` (svg-local pixels), or with `stroke` set its stroke outline.
+// A gradient paint is only flagged.
+struct ScenePaint {
+	const Path *geometry;
+	const StrokeStyle *stroke;
+	bool evenOdd;
+	bool gradient;
+	std::uint32_t color;  // native
+	float alpha;
+};
+// The paints of an svg root's scene as last recorded, in paint order.
+void visitScene(int root, void (*visit)(void *user, const ScenePaint &paint), void *user);
+
 // Hit test inside an svg root whose box contains (x, y): the topmost shape
 // under the point, or -1 when no shape paints there.
 int hitTest(int rootId, int x, int y);

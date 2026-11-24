@@ -20,6 +20,7 @@ struct CanvasSurfaceState {
 	gea::framework::graphics::pixel::native_t *pixels = nullptr;
 	int width = 0;
 	int height = 0;
+	std::uint32_t redraws = 0;
 	CanvasSurfaceState *next = nullptr;
 
 	bool ownsPixels() const;
