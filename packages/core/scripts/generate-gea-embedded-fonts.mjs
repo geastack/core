@@ -1112,6 +1112,7 @@ function fontFunctionNames() {
       lookupFontFamily: "lookupFontFamily",
       lookupFontFamilyName: "lookupFontFamilyName",
       lookupRuntimeTtfFontForFamily: "lookupRuntimeTtfFontForFamily",
+      runtimeTtfDeclaredCodepoints: "runtimeTtfDeclaredCodepoints",
     };
   }
   return {
@@ -1123,7 +1124,38 @@ function fontFunctionNames() {
     lookupFontFamily: `${symbolPrefix}_lookup_font_family`,
     lookupFontFamilyName: `${symbolPrefix}_lookup_font_family_name`,
     lookupRuntimeTtfFontForFamily: `${symbolPrefix}_lookup_runtime_ttf_font_for_family`,
+    runtimeTtfDeclaredCodepoints: `${symbolPrefix}_runtime_ttf_declared_codepoints`,
   };
+}
+
+// A runtime TTF slot rasterizes from the face at layout time, so it is not
+// limited to the characters a baked atlas holds -- but it can only cover the
+// codepoints it is told about. Hand it the same set a baked atlas would get: the
+// baseline plus every codepoint any `--gea-font-charset` names (printable ASCII
+// is always covered, so it is left out).
+let runtimeDeclaredCodepoints = [];
+
+function collectRuntimeDeclaredCodepoints(tuples) {
+  const codepoints = new Set(embeddedFontExtraCodepoints);
+  for (const tuple of tuples)
+    for (const codepoint of tuple.charset ?? []) codepoints.add(codepoint);
+  return [...codepoints]
+    .filter((codepoint) => codepoint > 0x7e)
+    .sort((a, b) => a - b);
+}
+
+function emitRuntimeDeclaredCodepoints(lines, names) {
+  const list = runtimeDeclaredCodepoints;
+  lines.push(
+    `static const int kRuntimeTtfDeclaredCodepoints[] = {${list.length > 0 ? list.map((cp) => `0x${cp.toString(16)}`).join(", ") : "0"}};`,
+  );
+  lines.push("");
+  lines.push(`const int *${names.runtimeTtfDeclaredCodepoints}(int *count)`);
+  lines.push("{");
+  lines.push(`    if (count) *count = ${list.length};`);
+  lines.push("    return kRuntimeTtfDeclaredCodepoints;");
+  lines.push("}");
+  lines.push("");
 }
 
 function emitEmptyFontLookup(lines, names) {
@@ -1180,6 +1212,7 @@ function generatedCpp(fonts, families) {
 
   if (fonts.length === 0) {
     emitEmptyFontLookup(lines, names);
+    emitRuntimeDeclaredCodepoints(lines, names);
     if (names.namespaceClose) lines.push(names.namespaceClose);
     lines.push("");
     return lines.join("\n");
@@ -1346,6 +1379,7 @@ function generatedCpp(fonts, families) {
   lines.push("    return nullptr;");
   lines.push("}");
   lines.push("");
+  emitRuntimeDeclaredCodepoints(lines, names);
   if (names.namespaceClose) lines.push(names.namespaceClose);
   lines.push("");
   return lines.join("\n");
@@ -1502,6 +1536,7 @@ function generatedRuntimeTtfCpp(runtimeFonts, families) {
   lines.push("    return nullptr;");
   lines.push("}");
   lines.push("");
+  emitRuntimeDeclaredCodepoints(lines, names);
   if (names.namespaceClose) lines.push(names.namespaceClose);
   lines.push("");
   return lines.join("\n");
@@ -1657,6 +1692,7 @@ function writeFileIfChanged(filePath, contents) {
 function writeGeneratedFonts() {
   const fontFaces = collectSourceFontFaces();
   const tuples = collectUsedFontTuples(fontFaces);
+  runtimeDeclaredCodepoints = collectRuntimeDeclaredCodepoints(tuples);
   // Runtime fonts are selected at actual layout time, including CSS variables
   // and programmatic styles with no statically discoverable family/size tuple.
   // Keep every explicitly declared local face; raster-only builds retain their
