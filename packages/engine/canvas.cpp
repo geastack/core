@@ -144,11 +144,29 @@ void glyphStampCacheReset();  // defined below (same anon namespace); used by se
 #if GEA_EMBEDDED_TEXT_SPRITE_CACHE
 namespace {
 
-constexpr int kTextSpriteSlots = 4;
+// With PSRAM, small text is cached too: re-rasterizing a label from the flash
+// atlas misses the cache on every glyph row (~40 cycles/px measured on the
+// ESP32-S31 for 17-28px labels, 3 ms/frame for a weather screen's 20 labels),
+// while a sprite's RLE runs are contiguous. A dynamic list with more distinct
+// strings than slots never reaches a second sighting, so it never builds.
+// Without PSRAM the sprites would eat internal RAM, so only large text caches.
+#ifndef GEA_EMBEDDED_TEXT_SPRITE_SLOTS
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+#define GEA_EMBEDDED_TEXT_SPRITE_SLOTS 32
+#else
+#define GEA_EMBEDDED_TEXT_SPRITE_SLOTS 4
+#endif
+#endif
+#ifndef GEA_EMBEDDED_TEXT_SPRITE_MIN_SIZE_PX
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+#define GEA_EMBEDDED_TEXT_SPRITE_MIN_SIZE_PX 12
+#else
+#define GEA_EMBEDDED_TEXT_SPRITE_MIN_SIZE_PX 40
+#endif
+#endif
+constexpr int kTextSpriteSlots = GEA_EMBEDDED_TEXT_SPRITE_SLOTS;
 constexpr int kTextSpriteMaxLen = 63;
-// Only cache genuinely large text. The per-frame re-raster of small UI text is
-// cheap, and caching it would risk churn (alloc/blit overhead) on dynamic lists.
-constexpr int kTextSpriteMinSizePx = 40;
+constexpr int kTextSpriteMinSizePx = GEA_EMBEDDED_TEXT_SPRITE_MIN_SIZE_PX;
 // Skip caching anything whose sprite would be larger than this (a runaway title).
 constexpr std::size_t kTextSpriteMaxBytes = 768u * 1024u;
 
@@ -266,7 +284,7 @@ void adoptHotTextSprite(const TextSprite &s)
 
 TextSprite &textSpriteFor(const char *text, const RasterizedFont &font)
 {
-	// Search all four slots: a direct-mapped hash makes alternating labels
+	// Search every slot: a direct-mapped hash makes alternating labels
 	// such as "FPS: 59" and "FPS: 60" evict each other. Hits stay read-only;
 	// a four-byte replacement cursor advances only for a new cache key.
 	for (TextSprite &candidate : gTextSprites) {
@@ -1403,6 +1421,18 @@ void Canvas::blendCoverageSpan(int y, int x0, int count, std::uint8_t coverage, 
 	if (markRowDirty) markDirty(begin, y, end, y);
 }
 
+#if !GEA_PIXEL_FORMAT_IS_8888 && !GEA_PIXEL_FORMAT_IS_GRAY && !GEA_PIXEL_STORAGE_PACKED
+#define GEA_CANVAS_CONST_BLEND 1
+// Spans this long amortize building the per-channel tables (128 entries).
+constexpr int kConstBlendMinSpan = 48;
+static inline void blendSpanTable(pixel::native_t *dst, int count, const pixel::ConstBlend565 &table)
+{
+	for (int i = 0; i < count; i++) dst[i] = table.apply(dst[i]);
+}
+#else
+#define GEA_CANVAS_CONST_BLEND 0
+#endif
+
 // A run blends one colour at one alpha, so the result for a given destination
 // pixel repeats -- and under a chart the destination is mostly one colour.
 void Canvas::blendSpanAlpha(int y, int phys, int x, int n, pixel::native_t color, int a)
@@ -1418,6 +1448,14 @@ void Canvas::blendSpanAlpha(int y, int phys, int x, int n, pixel::native_t color
 	for (int i = 0; i < n; ++i) pixel::packed::blendPixel(packedRow(phys), x + i, color, a);
 #else
 	pixel::native_t *p = &pixels_[phys * stride_ + x];
+#if GEA_CANVAS_CONST_BLEND
+	if (n >= kConstBlendMinSpan) {
+		pixel::ConstBlend565 table;
+		table.prepare(color, a);
+		blendSpanTable(p, n, table);
+		return;
+	}
+#endif
 	pixel::native_t lastBg = p[0];
 	pixel::native_t lastOut = pixel::blendNative(color, lastBg, a);
 	p[0] = lastOut;
@@ -1474,6 +1512,14 @@ void Canvas::fillSpanGlobalAlpha(int phys, int x0, int count, pixel::native_t co
 	for (int i = 0; i < count; i++) pixel::packed::blendPixel(row, x0 + i, c, a);
 #else
 	pixel::native_t *dst = &pixels_[phys * stride_ + x0];
+#if GEA_CANVAS_CONST_BLEND
+	if (count >= kConstBlendMinSpan) {
+		pixel::ConstBlend565 table;
+		table.prepare(c, a);
+		blendSpanTable(dst, count, table);
+		return;
+	}
+#endif
 	for (int i = 0; i < count; i++) dst[i] = pixel::blendNative(c, dst[i], a);
 #endif
 }
@@ -1983,6 +2029,17 @@ void Canvas::fillRect(int x, int y, int w, int h, pixel::native_t color)
 			return;
 		}
 #endif
+#if GEA_CANVAS_CONST_BLEND
+		// Every pixel blends the same colour at the same alpha: one table per call.
+		if ((x1 - x0 + 1) * (y1 - y0 + 1) >= kConstBlendMinSpan) {
+			pixel::ConstBlend565 table;
+			table.prepare(c, a);
+			for (int row = y0; row <= y1; row++)
+				blendSpanTable(&pixels_[rowToPhysical(row) * stride_ + x0], x1 - x0 + 1, table);
+			markDirty(x0, y0, x1, y1);
+			return;
+		}
+#endif
 		for (int row = y0; row <= y1; row++) {
 #if GEA_PIXEL_STORAGE_PACKED
 			std::uint8_t *dstRow = packedRow(rowToPhysical(row));
@@ -2070,6 +2127,24 @@ bool Canvas::fillCircleNoDirty(int cx, int cy, int r, pixel::native_t color)
 	const ClipRect *clip = &clipStack_[clipDepth_];
 	if (cx + r < clip->x0 || cx - r > clip->x1 || cy + r < clip->y0 || cy - r > clip->y1) return false;
 
+#if GEA_CANVAS_CONST_BLEND
+	// A translucent disc blends one colour at one alpha: build the tables once
+	// for the whole circle rather than per row.
+	const bool tabled = globalAlpha_ != 255 && globalAlpha_ != 0 && r >= 8
+#if GEA_EMBEDDED_DISPLAY_ROTATE_LANDSCAPE
+		&& !landscapeRot_
+#endif
+		;
+	pixel::ConstBlend565 table;
+	if (tabled) table.prepare(color, globalAlpha_);
+	auto span = [&](int py, int x0, int x1) {
+		if (tabled) blendSpanTable(&pixels_[rowToPhysical(py) * stride_ + x0], x1 - x0 + 1, table);
+		else fillSpanGlobalAlpha(rowToPhysical(py), x0, x1 - x0 + 1, color);
+	};
+#else
+	auto span = [&](int py, int x0, int x1) { fillSpanGlobalAlpha(rowToPhysical(py), x0, x1 - x0 + 1, color); };
+#endif
+
 	const std::uint8_t (*spans)[2] = CanvasMath::circleRadiusSpans(r);
 	if (!spans) {
 		const int rr = r * r;
@@ -2091,7 +2166,7 @@ bool Canvas::fillCircleNoDirty(int cx, int cy, int r, pixel::native_t color)
 			if (x1 >= width_) x1 = width_ - 1;
 			if (x0 > x1) continue;
 
-			fillSpanGlobalAlpha(rowToPhysical(py), x0, x1 - x0 + 1, color);
+			span(py, x0, x1);
 		}
 		return true;
 	}
@@ -2116,7 +2191,7 @@ bool Canvas::fillCircleNoDirty(int cx, int cy, int r, pixel::native_t color)
 		if (x1 >= width_) x1 = width_ - 1;
 		if (x0 > x1) continue;
 
-		fillSpanGlobalAlpha(rowToPhysical(py), x0, x1 - x0 + 1, color);
+		span(py, x0, x1);
 	}
 	return true;
 }
@@ -3174,7 +3249,10 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 				const std::uint16_t *bLen = slot.rleValid ? slot.rleLen : nullptr;
 				const std::int32_t *bStart = slot.rleValid ? slot.rleRowStart : nullptr;
 #if GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES > 0
-				if (slot.rleValid) {
+				// Only large text stages: with small labels cached too, several
+				// sprites blit per frame and would steal the one stage from
+				// each other, re-copying every frame.
+				if (slot.rleValid && slot.sizePx >= 40) {
 					if (gHotTextSprite.owner != &slot) adoptHotTextSprite(slot);
 					if (gHotTextSprite.owner == &slot) {
 						bRowX0 = gHotTextSprite.rowX0;
@@ -3227,6 +3305,26 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 #if GEA_EMBEDDED_TEXT_SPRITE_DIAG
 				gTsDiag.seen++;
 #endif
+				// Build and blit on the first sighting too: a text drawn once
+				// by the glyph loop and from then on from the sprite changes
+				// its pixels between those two frames (a one-frame flash of a
+				// whole text row every time a full cache evicts it).
+#if GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES > 0
+				if (gHotTextSprite.owner == &slot) gHotTextSprite.owner = nullptr;
+#endif
+				if (buildTextSprite(slot, text, font)) {
+#if GEA_EMBEDDED_TEXT_SPRITE_DIAG
+					gTsDiag.built++;
+#endif
+					slot.state = TextSprite::Cached;
+					blitGlyphSprite(slot.cov, slot.rowX0, slot.rowX1,
+					                slot.rleValid ? slot.rleVal : nullptr,
+					                slot.rleValid ? slot.rleLen : nullptr,
+					                slot.rleValid ? slot.rleRowStart : nullptr,
+					                slot.minLX, slot.minLY, slot.w, slot.h, x, y, color);
+					return;
+				}
+				slot.state = TextSprite::Empty;
 			}
 		}
 	}

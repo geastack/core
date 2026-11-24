@@ -69,9 +69,12 @@ int main()
         require(gTsDiag.blit == before.blit + 1 && pixels == reference, "all four full text/font/size keys must coexist with correct output");
     }
     auto before = gTsDiag;
+    // A new key is built on its first sighting (never drawn once by the glyph
+    // loop and then from the sprite), then hits.
     draw("FPS: 58", true); draw("FPS: 58", true); draw("FPS: 58", true);
-    require(gTsDiag.seen == before.seen + 1 && gTsDiag.built == before.built + 1 && gTsDiag.blit == before.blit + 1,
-            "a fifth key must warm once, then hit within the same bounded cache");
+    require(gTsDiag.seen == before.seen + 1 && gTsDiag.built == before.built + 1 && gTsDiag.blit == before.blit + 2 &&
+                gTsDiag.raster == before.raster,
+            "a fifth key must build once on first sight, then hit within the same bounded cache");
     require(std::size(gTextSprites) == 4, "fix must not grow the four-slot cache");
     std::puts("PASS: text collision, zero steady-state rebuilds, bounded capacity, full cache keys, pixel parity");
 }

@@ -1442,9 +1442,12 @@ function lowerRootEvent(
     ...(hoisted.handler.some((line) => /\bstore\b/.test(line)) ? ['store'] : []),
   ].join(', ')
   const listenerToken = `__gea_event_listener_${sanitizeCppIdentifier(varName)}_${slot.index}`
+  // A non-bubbling event (`scroll`) stops at its target, so a body-delegated
+  // handler never runs; it binds on the node, which is always that target.
+  const listenerOwner = eventType === 'scroll' ? varName : 'gea::embedded::ui::Document::instance().body()'
   const lines = [
     ...hoisted.setup.map((line) => `  ${line}`),
-    `  auto ${listenerToken} = gea::embedded::ui::Document::instance().body().addEventListener(${cppString(eventType)}, [${captureList}](gea::framework::events::PointerEvent &event) mutable {`,
+    `  auto ${listenerToken} = ${listenerOwner}.addEventListener(${cppString(eventType)}, [${captureList}](gea::framework::events::PointerEvent &event) mutable {`,
     `    if (!gea::embedded::ui::Tree::instance().containsNode(${varName}.id(), event.targetId)) return;`,
     '    const auto __gea_prev_current_target = event.currentTarget;',
     '    const auto __gea_prev_current_target_id = event.currentTargetId;',
@@ -1460,8 +1463,9 @@ function lowerRootEvent(
   ]
   if (disposerVar) {
     lines.push(`  if (${disposerVar}) {`)
-    lines.push(`    ${disposerVar}->add([${listenerToken}]() -> void {`)
-    lines.push(`      gea::embedded::ui::Document::instance().body().removeEventListener(${cppString(eventType)}, ${listenerToken});`)
+    const disposerCaptures = listenerOwner === varName ? `${listenerToken}, ${varName}` : listenerToken
+    lines.push(`    ${disposerVar}->add([${disposerCaptures}]() -> void {`)
+    lines.push(`      ${listenerOwner}.removeEventListener(${cppString(eventType)}, ${listenerToken});`)
     lines.push('    });')
     lines.push('  }')
   }

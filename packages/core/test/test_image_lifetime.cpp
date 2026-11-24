@@ -256,6 +256,36 @@ int main(int argc, char **argv) {
     }
     assert(liveImages() == 0);
   }
+  // A large deferred still drawn by a canvas every frame holds no reference.
+  // The per-frame idle release must keep it decoded while it is drawn (a
+  // re-decode per frame was 114 ms of nimbus's 148 ms frame on the Mosaico),
+  // and still drop it once a frame goes by without a draw.
+  {
+    static std::vector<std::uint8_t> encoded;
+    FILE *file = std::fopen(argv[2], "rb");
+    assert(file);
+    std::fseek(file, 0, SEEK_END);
+    encoded.resize(static_cast<std::size_t>(std::ftell(file)));
+    std::fseek(file, 0, SEEK_SET);
+    assert(std::fread(encoded.data(), 1, encoded.size(), file) == encoded.size());
+    std::fclose(file);
+    const int id = images.decodeDeferred(encoded.data(), static_cast<int>(encoded.size()));
+    assert(id >= 0);
+    const pixel::native_t *drawn = images.currentPixels(id);
+    assert(drawn);
+    for (int frame = 0; frame < 3; ++frame) {
+      images.releaseIdleDecodes();
+      assert(images.idForPixels(drawn) == id);
+      assert(images.currentPixels(id) == drawn);
+    }
+    images.releaseIdleDecodes();  // drawn during the last frame: kept
+    assert(images.idForPixels(drawn) == id);
+    images.releaseIdleDecodes();  // a frame without a draw: released
+    assert(images.idForPixels(drawn) == -1);
+    assert(images.currentPixels(id));  // the next draw decodes it again
+    images.dispose(id);
+  }
   std::puts("PASS image lifetime: 200 toggles, overwrite, clone/remove, "
-            "retained disposal, canvas batch, 100 JPEG reloads");
+            "retained disposal, canvas batch, 100 JPEG reloads, drawn "
+            "stills kept decoded");
 }

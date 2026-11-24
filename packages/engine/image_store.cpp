@@ -1053,7 +1053,9 @@ void ImageStore::releaseIdleDecodes()
 	ImageStoreLock lock(slotMutex_);
 	for (int id = 0; id < kImageMax; ++id) {
 		ImageSlot &image = images_[id];
-		if (!used_[id] || references_[id] != 0 || retired_[id]) continue;
+		const bool touched = touched_[id];
+		touched_[id] = false;
+		if (touched || !used_[id] || references_[id] != 0 || retired_[id]) continue;
 		if (!image.sourceData || !image.ownsPixels || !image.pixels || image.mutablePixels) continue;
 		const std::size_t bytes = static_cast<std::size_t>(image.width) * static_cast<std::size_t>(image.height) *
 		                          sizeof(pixel::native_t);
@@ -1102,8 +1104,22 @@ bool ImageStore::pixelsMayChange(const pixel::native_t *pixels) const
 	return false;
 }
 
-const pixel::native_t *ImageStore::currentPixels(int id) const { materializeDeferred(id); const ImageSlot *image = slot(id); return image ? image->pixels : nullptr; }
-const std::uint8_t *ImageStore::currentAlpha(int id) const { materializeDeferred(id); const ImageSlot *image = slot(id); return image ? image->alpha : nullptr; }
+const pixel::native_t *ImageStore::currentPixels(int id) const
+{
+	materializeDeferred(id);
+	const ImageSlot *image = slot(id);
+	if (!image) return nullptr;
+	touched_[id] = true;
+	return image->pixels;
+}
+const std::uint8_t *ImageStore::currentAlpha(int id) const
+{
+	materializeDeferred(id);
+	const ImageSlot *image = slot(id);
+	if (!image) return nullptr;
+	touched_[id] = true;
+	return image->alpha;
+}
 
 void ImageStore::setPlaying(int id, bool playing)
 {
