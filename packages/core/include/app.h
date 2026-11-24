@@ -50,6 +50,8 @@ struct ApplicationFramePerfStats {
 class Application {
 public:
 	static void init(int width, int height, double devicePixelRatio = GEA_EMBEDDED_CSS_DEVICE_PIXEL_RATIO);
+	static void prepareMount(int width, int height, double devicePixelRatio);
+	static void finishMount(bool mounted);
 	static void frame(int timestampMs);
 	static void toggleSettings();
 };

@@ -103,22 +103,17 @@ private:
 
 }  // namespace
 
-void Application::init(int width, int height, double devicePixelRatio)
+void Application::prepareMount(int width, int height, double devicePixelRatio)
 {
     // File-backed static symbols must be populated before generated code can
     // construct an image directly from them. Embedded assets need no hook.
     if (gea_embedded_assets_prepare) gea_embedded_assets_prepare();
-	// Top-level construction allocates the entire native object graph. Keep the
-	// generated collector at a host safepoint until initialization has unwound,
-	// just as Application::frame does for animation callbacks.
-	FrameCycleCollectionDeferral deferCycleCollection;
 #if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 	(void)width;
 	(void)height;
 	(void)devicePixelRatio;
 	gea::host::resetAnimationFrameCallbacks();
 	gea::host::resetScheduledTimers();
-	__gea_top_level();
 #else
 	if (width > 0 && height > 0) {
 		gea::embedded::ui::Document::setPreferredMountSize(width, height);
@@ -147,8 +142,16 @@ void Application::init(int width, int height, double devicePixelRatio)
 	// and recomputing each node's class styles per setTagName/setClassName/
 	// appendChild is O(nodes^2 x rules). endStyleMountBatch() does one full pass.
 	gea::embedded::ui::beginStyleMountBatch();
-	__gea_top_level();
+#endif
+}
+
+void Application::finishMount(bool mounted)
+{
+#if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
+	(void)mounted;
+#else
 	gea::embedded::ui::endStyleMountBatch();
+	if (!mounted) return;
 	gea::embedded::ui::Document::instance().refreshMountedIfDirty();
 
 	// The initial mount inside __gea_top_level() ran while the style batch was
@@ -164,6 +167,14 @@ void Application::init(int width, int height, double devicePixelRatio)
 		if (root >= 0) tree.mount(root, tree.mountedWidth(), tree.mountedHeight());
 	}
 #endif
+}
+
+void Application::init(int width, int height, double devicePixelRatio)
+{
+	FrameCycleCollectionDeferral deferCycleCollection;
+	prepareMount(width, height, devicePixelRatio);
+	__gea_top_level();
+	finishMount(true);
 }
 
 namespace {
