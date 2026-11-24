@@ -305,10 +305,20 @@ struct Lut5To8 { std::uint8_t v[32]; constexpr Lut5To8() : v{} { for (int i = 0;
 struct Lut6To8 { std::uint8_t v[64]; constexpr Lut6To8() : v{} { for (int i = 0; i < 64; i++) v[i] = static_cast<std::uint8_t>((i * 255 + 31) / 63); } };
 struct Lut8To5 { std::uint8_t v[256]; constexpr Lut8To5() : v{} { for (int i = 0; i < 256; i++) v[i] = static_cast<std::uint8_t>((i * 31 + 127) / 255); } };
 struct Lut8To6 { std::uint8_t v[256]; constexpr Lut8To6() : v{} { for (int i = 0; i < 256; i++) v[i] = static_cast<std::uint8_t>((i * 63 + 127) / 255); } };
-inline constexpr Lut5To8 kExp5{};
-inline constexpr Lut6To8 kExp6{};
-inline constexpr Lut8To5 kQuant5{};
-inline constexpr Lut8To6 kQuant6{};
+// On ESP32 targets the tables live in internal RAM, not flash rodata: every
+// blended pixel reads them, and a display upload streaming the framebuffer
+// through the data cache keeps evicting them, so from flash each blend could
+// wait on a flash cache refill (measured on the ESP32-S31: ~300 ns per
+// translucent sprite pixel while an async present streamed the frame).
+#if defined(ESP_PLATFORM)
+#define GEA_PIXEL_LUT_SECTION __attribute__((section(".dram1.gea_pixel_lut")))
+#else
+#define GEA_PIXEL_LUT_SECTION
+#endif
+GEA_PIXEL_LUT_SECTION inline constexpr Lut5To8 kExp5{};
+GEA_PIXEL_LUT_SECTION inline constexpr Lut6To8 kExp6{};
+GEA_PIXEL_LUT_SECTION inline constexpr Lut8To5 kQuant5{};
+GEA_PIXEL_LUT_SECTION inline constexpr Lut8To6 kQuant6{};
 }  // namespace detail
 
 // ---- RGBA8888 (32-bit) helpers ---------------------------------------------
@@ -424,6 +434,50 @@ inline std::uint16_t blend(std::uint16_t fg, std::uint16_t bg, int alpha)
 		detail::kQuant6.v[g8],
 		detail::kQuant5.v[b8]);
 }
+
+// blend(fg, bg, alpha) for ONE fg and alpha, as three per-channel tables. The
+// RGB565 channels blend independently, so a table per channel indexed by the
+// background's channel value gives exactly blend()'s result: three loads and
+// two ORs per pixel instead of six table lookups and six multiplies. A
+// translucent fill (glass, a halo disc, a span of one coverage) blends every
+// pixel at the same fg and alpha, so the 128 entries are built once per
+// colour/alpha change, not per pixel.
+struct ConstBlend565
+{
+	std::uint16_t r[32];
+	std::uint16_t g[64];
+	std::uint16_t b[32];
+	std::uint16_t fg = 0;
+	int alpha = -1;
+
+	void prepare(std::uint16_t fgPixel, int a)
+	{
+		if (fgPixel == fg && a == alpha) return;
+		fg = fgPixel;
+		alpha = a;
+		int fr, fg6, fb;
+		unpackRgb565(fgPixel, &fr, &fg6, &fb);
+		const int inverse = 255 - a;
+		const int tr = detail::kExp5.v[fr] * a + 128;
+		const int tg = detail::kExp6.v[fg6] * a + 128;
+		const int tb = detail::kExp5.v[fb] * a + 128;
+		for (int i = 0; i < 32; i++) {
+			const int bg8 = detail::kExp5.v[i] * inverse;
+			r[i] = static_cast<std::uint16_t>(detail::kQuant5.v[((tr + bg8) * 257) >> 16] << 11);
+			b[i] = detail::kQuant5.v[((tb + bg8) * 257) >> 16];
+		}
+		for (int i = 0; i < 64; i++) {
+			const int bg8 = detail::kExp6.v[i] * inverse;
+			g[i] = static_cast<std::uint16_t>(detail::kQuant6.v[((tg + bg8) * 257) >> 16] << 5);
+		}
+	}
+
+	std::uint16_t apply(std::uint16_t bgPixel) const
+	{
+		const std::uint16_t v = toRgb565(bgPixel);
+		return fromRgb565(static_cast<std::uint16_t>(r[v >> 11] | g[(v >> 5) & 0x3F] | b[v & 0x1F]));
+	}
+};
 
 // ---- Compile-time native pixel type ----------------------------------------
 // `native_t` is THIS target's framebuffer/storage pixel — RGB565 (16-bit) or
@@ -573,6 +627,32 @@ constexpr native_t nativeStyleValue(int r, int g, int b, int a = 255)
 	return nativeStyleValueFromRgba8888(packRgba8888(r, g, b, a));
 }
 
+// Device builds blend RGB565 pixels with a branch-free SWAR form instead of
+// blend()'s nine table lookups: the red and blue fields share one multiply
+// (6-bit weight; blue's product stays below red's field), green takes its own
+// (8-bit weight). Within 1 LSB per channel of blend() over every fg, bg and
+// alpha (checked exhaustively); alpha 0 gives bg and 255 gives fg exactly.
+// On the ESP32-S31 blend() compiled to ~62 instructions per pixel, ~67 cycles
+// on its in-order core; this is ~25. Host builds keep the exact blend, which
+// the pixel tests compare against.
+#ifndef GEA_PIXEL_FAST_BLEND
+#if defined(ESP_PLATFORM)
+#define GEA_PIXEL_FAST_BLEND 1
+#else
+#define GEA_PIXEL_FAST_BLEND 0
+#endif
+#endif
+
+inline std::uint16_t blendFast565(std::uint16_t fg, std::uint16_t bg, int alpha)
+{
+	const std::int32_t a = alpha + (alpha >> 7);  // 0..256
+	const std::int32_t bgRb = bg & 0xF81F;
+	const std::int32_t bgG = bg & 0x07E0;
+	const std::int32_t rb = bgRb + ((((fg & 0xF81F) - bgRb) * (a >> 2)) >> 6);
+	const std::int32_t g = bgG + ((((fg & 0x07E0) - bgG) * a) >> 8);
+	return static_cast<std::uint16_t>((rb & 0xF81F) | (g & 0x07E0));
+}
+
 inline native_t blendNative(native_t fg, native_t bg, int alpha)
 {
 #if GEA_EMBEDDED_PIXEL_FORMAT == GEA_PIXEL_RGBA8888
@@ -583,6 +663,8 @@ inline native_t blendNative(native_t fg, native_t bg, int alpha)
 	return gray4Blend(fg, bg, alpha);
 #elif GEA_PIXEL_FORMAT_IS_GRAY2
 	return gray2Blend(fg, bg, alpha);
+#elif GEA_PIXEL_FAST_BLEND
+	return fromRgb565(blendFast565(toRgb565(fg), toRgb565(bg), alpha));
 #else
 	return blend(fg, bg, alpha);
 #endif

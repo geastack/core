@@ -14,6 +14,98 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#if defined(ESP_PLATFORM)
+// Async-present displays fill each draw buffer with the frame's backdrop off the
+// app's thread (targets/esp32/display.cpp); absent elsewhere.
+extern "C" bool gea_display_backdrop(int imageId, const std::uint16_t *pixels, int width, int height, int dx, int dy)
+	__attribute__((weak));
+extern "C" bool gea_display_backdrop_overlay(int index, int x, int y, int w, int h, std::uint16_t color, int alpha)
+	__attribute__((weak));
+extern "C" bool gea_display_backdrop_prefix_end(int matched) __attribute__((weak));
+#endif
+
+namespace {
+// The frame's backdrop prefix: the opaque full-panel image, then any
+// translucent full-colour rectangles drawn before anything else (a dusk tint,
+// a glass band). The display can hand the frame a draw buffer that already
+// holds the image with those rectangles blended in; the rectangles it holds
+// are skipped here. The prefix ends at the first other draw: if the buffer
+// held more rectangles than the frame asked for, the image is blitted again
+// and the skipped rectangles drawn, which is exact because nothing else has
+// been drawn yet.
+struct BackdropPrefix {
+	struct Rect { int x, y, w, h; gea::framework::graphics::pixel::native_t color; std::uint8_t alpha; };
+	static constexpr int kMaxOverlays = 4;
+	bool active = false;
+	bool imageInBuffer = false;
+	bool inOverlay = false;  // an overlay candidate is drawing: do not end the prefix
+	int count = 0;           // overlays seen
+	int skipped = 0;         // leading overlays found in the buffer
+	Rect rects[kMaxOverlays];
+	gea::framework::graphics::Canvas *surface = nullptr;
+	const gea::framework::graphics::pixel::native_t *pixels = nullptr;
+	int srcW = 0, srcH = 0, dx = 0, dy = 0;
+};
+BackdropPrefix gBackdropPrefix;
+
+// From here on the draw buffer must hold exactly the rectangles skipped so far.
+void settleBackdropBuffer()
+{
+	BackdropPrefix &prefix = gBackdropPrefix;
+	if (!prefix.imageInBuffer) return;
+	prefix.imageInBuffer = false;
+#if defined(ESP_PLATFORM)
+	if (!gea_display_backdrop_prefix_end || gea_display_backdrop_prefix_end(prefix.skipped)) return;
+	// The buffer held rectangles this frame did not draw: start it over.
+	auto &surface = *prefix.surface;
+	const std::uint8_t alpha = surface.globalAlpha();
+	surface.setGlobalAlpha(255);
+	surface.drawImage(prefix.pixels, nullptr, prefix.srcW, prefix.srcH, prefix.dx, prefix.dy);
+	for (int i = 0; i < prefix.skipped; i++) {
+		const BackdropPrefix::Rect &r = prefix.rects[i];
+		surface.setGlobalAlpha(r.alpha);
+		surface.fillRect(r.x, r.y, r.w, r.h, r.color);
+	}
+	surface.setGlobalAlpha(alpha);
+#endif
+}
+
+void endBackdropPrefix()
+{
+	BackdropPrefix &prefix = gBackdropPrefix;
+	if (!prefix.active || prefix.inOverlay) return;
+	settleBackdropBuffer();
+	prefix.active = false;
+}
+}  // namespace
+
+// 0: not part of the prefix (it ends here); 1: part of it, draw it; 2: part
+// of it and already in the buffer, skip it.
+static int backdropOverlay(int x, int y, int w, int h,
+                           gea::framework::graphics::pixel::native_t color, std::uint8_t alpha)
+{
+	BackdropPrefix &prefix = gBackdropPrefix;
+#if defined(ESP_PLATFORM) && !GEA_PIXEL_FORMAT_IS_8888 && !GEA_PIXEL_FORMAT_IS_GRAY
+	if (!prefix.active || !gea_display_backdrop_overlay || alpha == 0 || alpha == 255 || w <= 0 || h <= 0 ||
+	    prefix.count >= BackdropPrefix::kMaxOverlays)
+		return 0;
+	int cx0, cy0, cx1, cy1;
+	prefix.surface->currentClip(&cx0, &cy0, &cx1, &cy1);
+	if (cx0 > 0 || cy0 > 0 || cx1 < prefix.surface->width() - 1 || cy1 < prefix.surface->height() - 1) return 0;
+	const int index = prefix.count++;
+	prefix.rects[index] = BackdropPrefix::Rect{x, y, w, h, color, alpha};
+	const bool held = gea_display_backdrop_overlay(index, x, y, w, h, color, alpha);
+	if (held && prefix.imageInBuffer && prefix.skipped == index) {
+		prefix.skipped++;
+		return 2;
+	}
+	settleBackdropBuffer();
+	return 1;
+#else
+	(void)prefix; (void)x; (void)y; (void)w; (void)h; (void)color; (void)alpha;
+	return 0;
+#endif
+}
 #include <cstdlib>
 #include <unordered_map>
 #include <utility>
@@ -1074,6 +1166,7 @@ gea::framework::graphics::Canvas *CanvasRenderingContext2D::canvas()
 
 gea::framework::graphics::Canvas *CanvasRenderingContext2D::drawingCanvas()
 {
+	if (gBackdropPrefix.active) endBackdropPrefix();
 	if (state_->presentRecording_) {
 			auto *surface = canvas();
 			if (surface) {
@@ -1765,7 +1858,15 @@ void CanvasRenderingContext2D::fillRect(int x, int y, int w, int h)
 		gCanvasPerfStats.fillRectUs += nowUs() - started;
 		return;
 	}
+	const int overlay = gBackdropPrefix.active ? backdropOverlay(x, y, w, h, state_->fillStyle_, state_->globalAlpha_) : 0;
+	if (overlay == 2) {
+		gBackdropPrefix.surface->markDirty(x, y, x + w - 1, y + h - 1);
+		markDrawDirty();
+		return;
+	}
+	gBackdropPrefix.inOverlay = overlay == 1;
 	auto *surface = drawingCanvas();
+	gBackdropPrefix.inOverlay = false;
 	if (!surface) return;
 	const std::int64_t started = nowUs();
 	gCanvasPerfStats.fillRectCalls++;
@@ -2261,6 +2362,34 @@ void CanvasRenderingContext2D::fillText(const std::string &text, double x, doubl
 	fillText(text, rounded(x), rounded(y));
 }
 
+
+// A frame that starts with one opaque image covering the whole display canvas
+// (a scene illustration under the UI) may find it already in the draw buffer:
+// true when the display put it there, so the blit can be skipped. Images whose
+// pixels can change under the same pointer (app buffers, animations) never are.
+static bool backdropAlreadyDrawn(gea::framework::graphics::Canvas &surface, int imageId,
+                                 const gea::framework::graphics::pixel::native_t *pixels,
+                                 const std::uint8_t *alpha, int srcW, int srcH, int dx, int dy,
+                                 bool *candidate)
+{
+	*candidate = false;
+#if defined(ESP_PLATFORM) && !GEA_PIXEL_FORMAT_IS_8888 && !GEA_PIXEL_FORMAT_IS_GRAY
+	if (!gea_display_backdrop) return false;
+	if (alpha || surface.globalAlpha() != 255) return false;
+	if (&surface != gea::platform::display::Display::canvas()) return false;
+	if (dx > 0 || dy > 0 || dx + srcW < surface.width() || dy + srcH < surface.height()) return false;
+	int x0, y0, x1, y1;
+	if (surface.dirty(&x0, &y0, &x1, &y1)) return false;  // not the frame's first draw
+	auto &images = gea::framework::graphics::ImageStore::instance();
+	if (images.isAnimated(imageId) || images.pixelsMayChange(pixels)) return false;
+	*candidate = true;
+	return gea_display_backdrop(imageId, pixels, srcW, srcH, dx, dy);
+#else
+	(void)surface; (void)imageId; (void)pixels; (void)alpha; (void)srcW; (void)srcH; (void)dx; (void)dy; (void)candidate;
+	return false;
+#endif
+}
+
 void CanvasRenderingContext2D::drawImage(int imageId, int dx, int dy)
 {
 	prepareBitmapOnlyDraw();
@@ -2279,7 +2408,31 @@ void CanvasRenderingContext2D::drawImage(int imageId, int dx, int dy)
 	auto *surface = drawingCanvas();
 	if (!surface) return;
 	applyDrawState(*surface);
-	surface->drawImage(pixels, images.currentAlpha(imageId), srcW, srcH, dx, dy);
+	const std::uint8_t *alpha = images.currentAlpha(imageId);
+	bool backdropCandidate = false;
+	if (backdropAlreadyDrawn(*surface, imageId, pixels, alpha, srcW, srcH, dx, dy, &backdropCandidate)) {
+		surface->markDirty(0, 0, surface->width() - 1, surface->height() - 1);
+		gBackdropPrefix = BackdropPrefix{};
+		gBackdropPrefix.active = true;
+		gBackdropPrefix.imageInBuffer = true;
+		gBackdropPrefix.surface = surface;
+		gBackdropPrefix.pixels = pixels;
+		gBackdropPrefix.srcW = srcW;
+		gBackdropPrefix.srcH = srcH;
+		gBackdropPrefix.dx = dx;
+		gBackdropPrefix.dy = dy;
+		gCanvasPerfStats.drawImageUs += nowUs() - started;
+		markDrawDirty();
+		return;
+	}
+	if (backdropCandidate) {
+		// Drawn here, but its rectangles are still reported so the display can
+		// build the composite for later frames.
+		gBackdropPrefix = BackdropPrefix{};
+		gBackdropPrefix.active = true;
+		gBackdropPrefix.surface = surface;
+	}
+	surface->drawImage(pixels, alpha, srcW, srcH, dx, dy);
 	gCanvasPerfStats.drawImageUs += nowUs() - started;
 	markDrawDirty();
 }
@@ -2455,6 +2608,7 @@ void CanvasRenderingContext2D::drawImageTiledX(int imageId, double dx, double dy
 
 void CanvasRenderingContext2D::flush()
 {
+	if (gBackdropPrefix.active) endBackdropPrefix();
 	if (nodeId_ < 0) return;
 	if (!Tree::instance().isDisplayBackedCanvas(nodeId_)) {
 		markDirty();
