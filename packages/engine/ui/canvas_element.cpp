@@ -1817,7 +1817,7 @@ void CanvasRenderingContext2D::setFont(const std::string &font)
 void CanvasRenderingContext2D::clear()
 {
 	if (recordingPresentBatch()) {
-		appendPresentClear(0);
+		appendPresentClear(gea::framework::graphics::pixel::nativeColor(0, 0, 0));
 		return;
 	}
 	auto *surface = drawingCanvas();
