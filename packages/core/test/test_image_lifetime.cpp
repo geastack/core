@@ -285,6 +285,27 @@ int main(int argc, char **argv) {
     assert(images.currentPixels(id));  // the next draw decodes it again
     images.dispose(id);
   }
+  // HTML dimensions participate in the cascade and can change after mounting.
+  {
+    auto sized = document.createImage();
+    sized.setAttribute("width", "12");
+    sized.setAttribute("height", "10");
+    root.appendChild(sized);
+    auto &tree = Tree::instance();
+    document.refresh(root, 32, 32);
+    assert(tree.node(sized.id()).layout.width == 12);
+    assert(tree.node(sized.id()).layout.height == 10);
+    sized.style().setProperty("width", "6px");
+    sized.setAttribute("width", "22");
+    sized.setAttribute("height", "14");
+    document.refresh(root, 32, 32);
+    assert(tree.node(sized.id()).layout.width == 6);
+    assert(tree.node(sized.id()).layout.height == 14);
+    sized.removeAttribute("height");
+    document.refresh(root, 32, 32);
+    assert(tree.node(sized.id()).computedStyle().height == kUnset);
+    sized.remove();
+  }
   std::puts("PASS image lifetime: 200 toggles, overwrite, clone/remove, "
             "retained disposal, canvas batch, 100 JPEG reloads, drawn "
             "stills kept decoded");

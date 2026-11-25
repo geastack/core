@@ -36,6 +36,11 @@ bool sameName(const char *a, const char *b)
 	return a && b && std::strcmp(a, b) == 0;
 }
 
+bool isImageDimensionAttribute(const Node &node, const char *name)
+{
+	return node.type == NodeType::Image && (sameName(name, "width") || sameName(name, "height"));
+}
+
 bool audioBooleanAttributeEnabled(const char *value)
 {
 	if (!value) return false;
@@ -963,6 +968,9 @@ void Tree::setAttribute(int node, const char *name, const char *value)
 	if (state.nodes[node].type == NodeType::Image && sameName(name, "fit")) {
 		Style(node).imageFit(imageFitAttributeValue(value));
 	}
+	if (isImageDimensionAttribute(state.nodes[node], name)) {
+		StyleSheet::instance().recomputeSubtree(node);
+	}
 	applyAudioAttribute(*this, node, name, value ? value : "");
 	if (state.nodes[node].type == NodeType::VirtualList) VirtualListRenderer::configureAttribute(node, name, value);
 	// Tree::setText marks render.dirty + non_scroll_dirty so the
@@ -998,6 +1006,9 @@ void Tree::removeAttribute(int node, const char *name)
 	if (!rd) return;  // no rare-data block → no attributes to remove
 	const bool hadAttribute = rd->attributes.remove(name);
 	if (!hadAttribute) return;
+	if (isImageDimensionAttribute(state.nodes[node], name)) {
+		StyleSheet::instance().recomputeSubtree(node);
+	}
 	if (state.nodes[node].type == NodeType::Image && sameName(name, "src")) {
 		setStyleFromClass(node, Property::ImageId, -1);
 		markDisplayListDirty();
