@@ -45,6 +45,7 @@ enum class ImageFormat {
 	Jpeg = 1,
 	Png = 2,
 	Gif = 3,
+	Svg = 4,
 };
 
 struct ImageSlot {
