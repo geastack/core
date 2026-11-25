@@ -4415,39 +4415,6 @@ const fontDevicePixelRatios = readAllOptions('--font-device-pixel-ratio')
 const runtimeTtfFonts = hasFlag('--runtime-ttf-fonts')
 const defaultFontFace = readOption('--default-font-face')
 
-// Physical panel resolution per board, mirroring each target's
-// GEA_EMBEDDED_DISPLAY_WIDTH/HEIGHT (the lib/gea-embedded/include/display.h
-// default is 410x502; boards override via target_compile_definitions). The
-// font generator pre-rasterizes viewport-relative font sizes (vw/vh/vmin/vmax)
-// and needs the real viewport to bake glyphs at the exact pixel size the
-// runtime's parseLengthForNode will request. Resolved from --cpp-board so the
-// board CMakeLists need not thread dimensions through; an explicit
-// --font-viewport-{width,height} still wins for non-board callers.
-const BOARD_VIEWPORTS = {
-  'esp32-s3-epaper-1.54': { width: 200, height: 200 },
-  'esp32-m5stack-m5paper': { width: 540, height: 960 },
-  'esp32-s3-lilygo-t5-epaper-4.7': { width: 540, height: 960 },
-  'esp32-s3-m5stack-papers3': { width: 540, height: 960 },
-  'esp32-s3-m5stack-sticks3': { width: 135, height: 240 },
-  'esp32-s3-elecrow-rotary-2.1': { width: 480, height: 480 },
-  'esp32-s3-touch-amoled-2.06': { width: 410, height: 502 },
-  'esp32-s3-touch-amoled-1.8': { width: 368, height: 448 },
-  'esp32-s3-lilygo-t-display-s3-long': { width: 180, height: 640 },
-  'esp32-p4-waveshare-touch-lcd-7': { width: 720, height: 1280 },
-  'esp32-p4-waveshare-touch-lcd-3.5': { width: 320, height: 480 },
-  'waveshare-rp2350-amoled-2.41': { width: 450, height: 600 },
-}
-const boardViewport = cppBoard ? BOARD_VIEWPORTS[cppBoard] : undefined
-const effectiveFontViewportWidths = fontViewportWidths.length > 0
-  ? fontViewportWidths
-  : boardViewport
-    ? [String(boardViewport.width)]
-    : []
-const effectiveFontViewportHeights = fontViewportHeights.length > 0
-  ? fontViewportHeights
-  : boardViewport
-    ? [String(boardViewport.height)]
-    : []
 // Glyph antialiasing per board. 1-bit B/W e-paper reads best with crisp,
 // non-antialiased glyphs — sample at 1:1 (supersample 1) so every glyph pixel
 // is fully on/off instead of a thresholded AA edge. Grayscale/color panels keep
@@ -4595,8 +4562,8 @@ run('node', [
   path.join(outDir, 'gea_embedded_font_generated.cpp'),
   '--out-h',
   path.join(outDir, 'gea_embedded_font_generated.h'),
-  ...effectiveFontViewportWidths.flatMap((width) => ['--viewport-width', width]),
-  ...effectiveFontViewportHeights.flatMap((height) => ['--viewport-height', height]),
+  ...fontViewportWidths.flatMap((width) => ['--viewport-width', width]),
+  ...fontViewportHeights.flatMap((height) => ['--viewport-height', height]),
   ...fontDevicePixelRatios.flatMap((ratio) => ['--device-pixel-ratio', ratio]),
   ...(effectiveFontSupersample ? ['--supersample', effectiveFontSupersample] : []),
   ...(effectiveFontAtlasBits ? ['--atlas-bits', effectiveFontAtlasBits] : []),
