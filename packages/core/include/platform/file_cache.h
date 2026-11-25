@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace gea::platform::storage {
 
 // Ensure the persistent file-cache filesystem is mounted; returns true when a
@@ -14,6 +16,9 @@ bool ensureMounted();
 // unit is guaranteed to be linked in (see the waveshare-p4-7 sdcard_mount.cpp,
 // wired from app_main).
 void setMountProvider(bool (*provider)());
+
+// Resolve logical paths backed by read-only platform resources. Install at startup.
+void setReadPathProvider(std::string (*provider)(const std::string &));
 
 // Used by built-in flash storage only when no target-specific provider exists.
 void setFallbackMountProvider(bool (*provider)());

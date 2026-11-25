@@ -55,10 +55,19 @@ namespace gea::platform::storage {
 namespace {
 bool (*g_mount_provider)() = nullptr;
 bool (*g_fallback_mount_provider)() = nullptr;
+std::string (*g_read_path_provider)(const std::string &) = nullptr;
 } // namespace
 void setMountProvider(bool (*provider)()) { g_mount_provider = provider; }
 void setFallbackMountProvider(bool (*provider)()) {
   g_fallback_mount_provider = provider;
+}
+void setReadPathProvider(std::string (*provider)(const std::string &)) {
+  g_read_path_provider = provider;
+}
+static std::FILE *openRead(const std::string &path) {
+  if (g_read_path_provider)
+    return std::fopen(g_read_path_provider(path).c_str(), "rb");
+  return std::fopen(path.c_str(), "rb");
 }
 bool ensureMounted() {
   auto provider =
@@ -164,7 +173,7 @@ void mapReadTask(void *arg) {
 
 std::vector<std::uint8_t> readWholeFile(const std::string &path) {
   std::vector<std::uint8_t> out;
-  std::FILE *f = std::fopen(path.c_str(), "rb");
+  std::FILE *f = gea::platform::storage::openRead(path);
   if (!f)
     return out;
   std::fseek(f, 0, SEEK_END);
@@ -298,7 +307,7 @@ std::vector<std::uint8_t> ImageService::readFileRange(const std::string &path,
     if (path.empty() || offset < 0 || length <= 0 ||
         !gea::platform::storage::ensureMounted())
       return;
-    std::FILE *f = std::fopen(path.c_str(), "rb");
+    std::FILE *f = gea::platform::storage::openRead(path);
     if (!f)
       return;
     if (std::fseek(f, static_cast<long>(offset), SEEK_SET) == 0) {
