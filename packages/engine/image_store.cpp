@@ -4,7 +4,11 @@
 #include "pixel.h"
 #include "gea_perf_config.h"
 
+#include <cmath>
 #include <cstring>
+#include <memory>
+#include <string>
+#include <string_view>
 #include <limits>
 
 #if GEA_EMBEDDED_PERF && defined(ESP_PLATFORM)
@@ -86,6 +90,60 @@ void *gea_stbi_realloc_sized(void *ptr, std::size_t oldSize, std::size_t newSize
 #define STBI_NO_THREAD_LOCALS
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+#if defined(__APPLE__) || defined(_WIN32) || (defined(__linux__) && !defined(ESP_PLATFORM))
+#define GEA_HOST_SVG_IMAGES 1
+#define NANOSVG_IMPLEMENTATION
+#include "vendor/nanosvg/nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "vendor/nanosvg/nanosvgrast.h"
+
+namespace {
+bool isSvgImage(const std::uint8_t *data, int length)
+{
+	std::string_view xml(reinterpret_cast<const char *>(data), length);
+	if (xml.starts_with("\xef\xbb\xbf")) xml.remove_prefix(3);
+	while (true) {
+		const auto start = xml.find_first_not_of(" \t\n\r");
+		if (start == xml.npos) return false;
+		xml.remove_prefix(start);
+		const bool declaration = xml.starts_with("<?");
+		if (!declaration && !xml.starts_with("<!--")) break;
+		const auto close = declaration ? std::string_view("?>") : std::string_view("-->");
+		const auto end = xml.find(close);
+		if (end == xml.npos) return false;
+		xml.remove_prefix(end + close.size());
+	}
+	return xml.starts_with("<svg") && xml.size() > 4 &&
+	       std::string_view(" \t\n\r>/").find(xml[4]) != xml.npos;
+}
+
+stbi_uc *rasterizeSvgImage(const std::uint8_t *data, int length, int &width, int &height)
+{
+	constexpr int maxPixels = 4 * 1024 * 1024;
+	if (length > 1024 * 1024) return nullptr;
+	std::string markup(reinterpret_cast<const char *>(data), length);
+	std::unique_ptr<NSVGimage, decltype(&nsvgDelete)> image(nsvgParse(markup.data(), "px", 96), nsvgDelete);
+	if (!image || !(image->width > 0 && image->width <= 8192 &&
+	               image->height > 0 && image->height <= 8192)) return nullptr;
+
+	width = static_cast<int>(std::ceil(image->width));
+	height = static_cast<int>(std::ceil(image->height));
+	const int pixels = width * height;
+	if (pixels > maxPixels) return nullptr;
+
+	std::unique_ptr<NSVGrasterizer, decltype(&nsvgDeleteRasterizer)> rasterizer(
+	    nsvgCreateRasterizer(), nsvgDeleteRasterizer);
+	if (!rasterizer) return nullptr;
+
+	auto *rgba = static_cast<stbi_uc *>(gea_stbi_malloc(static_cast<std::size_t>(pixels) * 4));
+	if (!rgba) return nullptr;
+	nsvgRasterize(rasterizer.get(), image.get(), 0, 0, 1, rgba, width, height, width * 4);
+	return rgba;
+}
+} // namespace
+#endif
+
 
 #if defined(GEA_EMBEDDED_ROM_TJPGD) && GEA_EMBEDDED_ROM_TJPGD
 // The ROM emits one RGB888 MCU at a time, not a full-frame RGB(A) buffer.
@@ -293,6 +351,9 @@ ImageFormat ImageStore::detectFormat(const std::uint8_t *data, int length) const
 	if (data[0] == 0xFF && data[1] == 0xD8) return ImageFormat::Jpeg;
 	if (data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') return ImageFormat::Png;
 	if (data[0] == 'G' && data[1] == 'I' && data[2] == 'F') return ImageFormat::Gif;
+#if GEA_HOST_SVG_IMAGES
+	if (isSvgImage(data, length)) return ImageFormat::Svg;
+#endif
 	return ImageFormat::Unknown;
 }
 
@@ -915,7 +976,11 @@ int ImageStore::decodeStatic(ImageSlot &image, const std::uint8_t *data, int len
 	}
 #endif
 
-	stbi_uc *rgba = stbi_load_from_memory(data, length, &width, &height, &components, 4);
+	stbi_uc *rgba =
+#if GEA_HOST_SVG_IMAGES
+	    image.format == ImageFormat::Svg ? rasterizeSvgImage(data, length, width, height) :
+#endif
+	    stbi_load_from_memory(data, length, &width, &height, &components, 4);
 	if (!rgba) return -1;
 
 	const int pixelCount = width * height;

@@ -287,22 +287,25 @@ int main(int argc, char **argv) {
   }
   // HTML dimensions participate in the cascade and can change after mounting.
   {
+    auto sizedRoot = document.createView();
     auto sized = document.createImage();
+    sized.setAttribute("src", firstPath.c_str());
     sized.setAttribute("width", "12");
     sized.setAttribute("height", "10");
-    root.appendChild(sized);
+    sizedRoot.appendChild(sized);
+    document.mount(sizedRoot, 32, 32);
     auto &tree = Tree::instance();
-    document.refresh(root, 32, 32);
+    document.refresh(sizedRoot, 32, 32);
     assert(tree.node(sized.id()).layout.width == 12);
     assert(tree.node(sized.id()).layout.height == 10);
     sized.style().setProperty("width", "6px");
     sized.setAttribute("width", "22");
     sized.setAttribute("height", "14");
-    document.refresh(root, 32, 32);
+    document.refresh(sizedRoot, 32, 32);
     assert(tree.node(sized.id()).layout.width == 6);
     assert(tree.node(sized.id()).layout.height == 14);
     sized.removeAttribute("height");
-    document.refresh(root, 32, 32);
+    document.refresh(sizedRoot, 32, 32);
     assert(tree.node(sized.id()).computedStyle().height == kUnset);
     sized.remove();
   }
