@@ -11941,6 +11941,61 @@ void replayInlineStyles(int node)
 #endif
 }
 
+#if GEA_UI_IMAGE_NODES
+struct ImageDimensionHint {
+	double value = -1;
+	bool percentage = false;
+};
+
+ImageDimensionHint parseImageDimensionHint(const char *value)
+{
+	if (!value) return {};
+	while (*value == ' ' || *value == '\t' || *value == '\r' ||
+	       *value == '\n' || *value == '\f') ++value;
+	if (*value < '0' || *value > '9') return {};
+
+	double number = 0;
+	while (*value >= '0' && *value <= '9') {
+		number = number * 10 + (*value++ - '0');
+	}
+	if (*value == '.') {
+		++value;
+		for (double place = 0.1; *value >= '0' && *value <= '9'; place *= 0.1) {
+			number += (*value++ - '0') * place;
+		}
+	}
+	return {number, *value == '%'};
+}
+
+void applyImageDimensionHints(int node)
+{
+	auto &tree = Tree::instance();
+	const auto width = parseImageDimensionHint(tree.getAttribute(node, "width"));
+	const auto height = parseImageDimensionHint(tree.getAttribute(node, "height"));
+
+	const auto apply = [&](ImageDimensionHint hint, Property length, Property percentage) {
+		if (hint.value < 0) return;
+		if (hint.percentage) {
+			tree.setStyleFromClass(node, percentage, roundToInt(std::min(32767.0, hint.value * 10)));
+		} else {
+			tree.setStyleFromClass(node, length, roundToInt(std::min(32767.0, hint.value * g_device_pixel_ratio)));
+		}
+	};
+	apply(width, Property::Width, Property::WidthPercent);
+	apply(height, Property::Height, Property::HeightPercent);
+#if GEA_CSS_ASPECT_RATIO
+	if (!width.percentage && !height.percentage && width.value > 0 && height.value > 0) {
+		// A negative ratio encodes CSS 'auto <ratio>': use the natural ratio
+		// once the image is available, otherwise use the attribute pair.
+		const float ratio = static_cast<float>(-width.value / height.value);
+		int encoded;
+		std::memcpy(&encoded, &ratio, sizeof(encoded));
+		tree.setStyleFromClass(node, Property::AspectRatio, encoded);
+	}
+#endif
+}
+#endif
+
 void applyDefaultStyleOverrides(int node)
 {
 	auto &state = treeState();
@@ -11950,6 +12005,9 @@ void applyDefaultStyleOverrides(int node)
 			const NodeStyleOverride &entry = rd->defaultStyles.at(i);
 			Tree::instance().setStyleFromClass(node, entry.property, entry.value);
 		}
+#if GEA_UI_IMAGE_NODES
+	if (state.nodes[node].type == NodeType::Image) applyImageDimensionHints(node);
+#endif
 }
 
 #if GEA_CSS_PSEUDO_ELEMENTS
