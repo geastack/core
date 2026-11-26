@@ -56,7 +56,10 @@ const compiled = ts.transpileModule(source, {
 const moduleExports = {}
 vm.runInNewContext(compiled, {
   exports: moduleExports,
-  jsx: (type, props) => ({ type, props }),
+  jsx: (type, props, ...children) => ({
+    type,
+    props: { ...props, children },
+  }),
 })
 const { Checkbox } = moduleExports
 
