@@ -114,44 +114,14 @@ test('registers one native click binding for activation', () => {
   assert.equal('onPress' in view.props, false)
 })
 
-test('exposes checkbox semantics and keyboard focus state', () => {
-  const view = render({ checked: false })
-  assert.equal(view.props.role, 'checkbox')
-  assert.equal(view.props['aria-checked'], false)
-  assert.equal(view.props['aria-disabled'], false)
-  assert.equal(view.props.tabIndex, 0)
-
-  const disabled = render({ disabled: true })
-  assert.equal(disabled.props['aria-disabled'], true)
-  assert.equal(disabled.props.tabIndex, -1)
-
-  const mixed = render({ indeterminate: true })
-  assert.equal(mixed.props['aria-checked'], 'mixed')
-})
-
-test('Space activates once from the keyboard and prevents page scrolling', () => {
-  const changes = []
-  let prevented = 0
-  const view = render({ onChange: (value) => changes.push(value) })
-  view.props.onKeyDown({ key: ' ', keyCode: 32, repeat: false, preventDefault() { prevented++ } })
-  assert.deepEqual(changes, [true])
-  assert.equal(prevented, 1)
-})
-
-test('repeated Space keydown and unrelated keys do not activate', () => {
-  const changes = []
-  const view = render({ onChange: (value) => changes.push(value) })
-  const event = (key, keyCode, repeat = false) => ({ key, keyCode, repeat, preventDefault() {} })
-  view.props.onKeyDown(event(' ', 32, true))
-  view.props.onKeyDown(event('Enter', 13))
-  assert.deepEqual(changes, [])
-})
-
-test('disabled Checkbox suppresses keyboard activation', () => {
-  const changes = []
-  const view = render({ disabled: true, onChange: (value) => changes.push(value) })
-  view.props.onKeyDown({ key: ' ', keyCode: 32, repeat: false, preventDefault() {} })
-  assert.deepEqual(changes, [])
+test('does not expose unsupported native accessibility or keyboard props', () => {
+  const view = render({ checked: true, disabled: true, indeterminate: true })
+  assert.equal('role' in view.props, false)
+  assert.equal('aria-checked' in view.props, false)
+  assert.equal('aria-disabled' in view.props, false)
+  assert.equal('aria-label' in view.props, false)
+  assert.equal('tabIndex' in view.props, false)
+  assert.equal('onKeyDown' in view.props, false)
 })
 
 test('passes ClassValue through and supplies overridable default styles', () => {
