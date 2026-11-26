@@ -702,6 +702,11 @@ export interface ViewProps extends DataAttributes {
 
 export interface NativeViewProps extends DataAttributes, NativeEventAttributes {
   key?: string | number
+  /** Browser keyboard focus order; native targets may ignore this until focus navigation is implemented. */
+  tabIndex?: number
+  /** Accessibility state forwarded by DOM-backed renderers. */
+  'aria-checked'?: boolean | 'mixed'
+  'aria-disabled'?: boolean
   /** Accepted on both targets so a shared component can carry it; the native tree has no accessibility layer and ignores it. */
   role?: string
   id?: string
