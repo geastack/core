@@ -30,7 +30,11 @@
       "types": "./components/VirtualList.d.ts",
       "default": "./components/VirtualList.tsx"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./components/Checkbox": {
+      "types": "./components/Checkbox.d.ts",
+      "default": "./components/Checkbox.tsx"
+    }
   },
   "files": [
     "components",
@@ -41,6 +45,6 @@
   },
   "sideEffects": false,
   "dependencies": {
-    "@geastack/core": "^0.1.40"
+    "@geastack/core": "^0.1.66"
   }
 }

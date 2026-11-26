@@ -85,6 +85,7 @@ export type {
   BluetoothMidi,
   BluetoothMouse,
   ButtonProps,
+  CheckboxProps,
   CameraController,
   CameraProps,
   CanvasProps,
