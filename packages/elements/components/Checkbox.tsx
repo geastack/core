@@ -15,10 +15,14 @@ export function Checkbox({
     throw new Error('Checkbox requires a non-empty label.')
   }
 
+  const requestChange = () => {
+    if (!disabled) onChange?.(indeterminate ? true : !checked)
+  }
+
   const activate = (event: Parameters<NonNullable<CheckboxProps['onClick']>>[0]) => {
     if (disabled) return
 
-    onChange?.(indeterminate ? true : !checked)
+    requestChange()
     onPress?.(event)
     onClick?.(event)
   }
@@ -27,7 +31,7 @@ export function Checkbox({
     // Match native checkbox keyboard behavior: Space activates; Enter does not.
     if (disabled || event.repeat || (event.key !== ' ' && event.key !== 'Spacebar' && event.keyCode !== 32)) return
     event.preventDefault()
-    activate(event as Parameters<NonNullable<CheckboxProps['onClick']>>[0])
+    requestChange()
   }
 
   const active = checked || indeterminate
