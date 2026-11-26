@@ -27,13 +27,6 @@ export function Checkbox({
     onClick?.(event)
   }
 
-  const handleKeyDown = (event: { key: string; keyCode: number; repeat: boolean; preventDefault(): void }) => {
-    // Match native checkbox keyboard behavior: Space activates; Enter does not.
-    if (disabled || event.repeat || (event.key !== ' ' && event.key !== 'Spacebar' && event.keyCode !== 32)) return
-    event.preventDefault()
-    requestChange()
-  }
-
   const active = checked || indeterminate
   const rootStyle: Style = {
     display: 'flex',
@@ -57,18 +50,13 @@ export function Checkbox({
     fontSize: 12,
   }
 
-  // One click listener handles both pointer and touch-generated click events.
-  // Binding both onPress and onClick here would dispatch the same activation twice.
+  // One click listener handles activation; binding both onPress and onClick
+  // would dispatch the same activation twice.
   return (
     <div
       class={customClass}
       style={rootStyle}
-      role="checkbox"
-      aria-checked={indeterminate ? 'mixed' : checked}
-      aria-disabled={disabled}
-      tabIndex={disabled ? -1 : 0}
       onClick={activate}
-      onKeyDown={handleKeyDown}
     >
       <span style={boxStyle}>{indeterminate ? '-' : checked ? 'x' : ''}</span>
       <span>{label}</span>
