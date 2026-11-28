@@ -1,6 +1,6 @@
 {
   "name": "@geastack/core",
-  "version": "0.1.67",
+  "version": "0.1.68",
   "description": "GeaStack app API, reactivity headers, runtime sources, and type declarations.",
   "license": "Apache-2.0",
   "repository": {
@@ -42,6 +42,7 @@
     "gea_sources.mjs",
     "gea_app_entry.cpp",
     "prerender_worker.cpp",
+    "program.cpp",
     "include",
     "index.d.ts",
     "jsx.d.ts",
