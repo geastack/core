@@ -12,6 +12,8 @@ struct Request {
 	int height = 1080;
 	double dpr = 1;
 	bool reusePage = false;
+	std::string selector;
+	bool transparent = false;
 };
 
 using Capture = void (*)(const Request &request, bool reuse);

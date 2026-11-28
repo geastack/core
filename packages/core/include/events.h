@@ -134,6 +134,7 @@ struct PointerEvent {
 	EventControlFlag defaultPrevented;
 	EventControlFlag propagationStopped;
 	identity::Occurrence occurrenceIdentity;
+	explicit constexpr operator bool() const noexcept { return true; }
 	const void *identity() const { return occurrenceIdentity.identity(); }
 	std::shared_ptr<const void> weakIdentityOwner() const { return occurrenceIdentity.owner(); }
 	EventPhase eventPhase = EventPhase::None;
@@ -155,6 +156,7 @@ struct PointerEvent {
 // storage. Explicit ADL-traceable callbacks instead own a concrete copy: a
 // shared erased model would report one physical capture once for every copy.
 class EventListener {
+ inline static thread_local const PointerEvent *currentEvent_ = nullptr;
  struct Model {
   virtual ~Model() = default;
   virtual std::unique_ptr<Model> clone() const = 0;
@@ -190,7 +192,15 @@ public:
  EventListener& operator=(std::nullptr_t) noexcept { ordinary_=nullptr; traced_.reset(); return *this; }
  void swap(EventListener& other) noexcept { ordinary_.swap(other.ordinary_); traced_.swap(other.traced_); }
  explicit operator bool() const noexcept { return bool(traced_) || bool(ordinary_); }
- void operator()(PointerEvent& event) const { if(traced_) traced_->invoke(event); else ordinary_(event); }
+ static const PointerEvent *currentEvent() noexcept { return currentEvent_; }
+ void operator()(PointerEvent& event) const {
+  struct RestoreEvent {
+   const PointerEvent *previous;
+   ~RestoreEvent() { currentEvent_ = previous; }
+  } restore{std::exchange(currentEvent_, &event)};
+  if (traced_) traced_->invoke(event);
+  else ordinary_(event);
+ }
  friend void geaTraceRefs(const EventListener& value, gea::detail::RefVisitor& visitor) {
   if(value.traced_) value.traced_->trace(visitor);
  }

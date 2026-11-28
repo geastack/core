@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url'
 /** Honor an app's declared compiler plugin; only legacy undeclared apps inherit Core's. */
 function resolveImport(directory) {
   // Let Node apply real ESM export conditions (the plugin is import-only).
+  // A loaded build machine can take well over 10 s just to start Node.
   const url = execFileSync(process.execPath,
     ['--input-type=module', '-e', "process.stdout.write(import.meta.resolve('@geajs/vite-plugin'))"],
-    { cwd: directory, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] })
+    { cwd: directory, encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'] })
   return fs.realpathSync(fileURLToPath(url))
 }
 

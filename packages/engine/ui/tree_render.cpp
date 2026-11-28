@@ -1942,6 +1942,30 @@ namespace gea::embedded::ui
 		LayoutSnapshot::capture();
 	}
 
+	void Tree::paintCapture(int root, bool transparent)
+	{
+		using gea::platform::display::Display;
+		using gea::framework::graphics::pixel::nativeColor;
+		using gea::framework::graphics::pixel::preserveCaptureAlpha;
+
+		struct RestoreCaptureAlpha {
+			bool previous = preserveCaptureAlpha;
+			~RestoreCaptureAlpha() { preserveCaptureAlpha = previous; }
+		} restoreAlpha;
+		preserveCaptureAlpha = transparent;
+
+		auto &list = DisplayList::instance();
+		Display::resetClip();
+		Display::setAlpha(255);
+		Display::canvas()->clear(transparent ? 0 : nativeColor(255, 255, 255));
+
+		list.clear();
+		list.recordNode(root, 255, false, !transparent);
+		list.weldTransformedFaces();
+		list.replay();
+		markDisplayListDirty();
+	}
+
 	void Tree::computeLayout(int root, int width, int height)
 	{
 		auto &state = treeState();
@@ -1998,6 +2022,23 @@ namespace gea::embedded::ui
 		state.refreshSerial++;
 		if (state.refreshSerial == 0)
 			state.refreshSerial = 1;
+	}
+
+	void Tree::flushLayoutFor(int node)
+	{
+		auto &state = treeState();
+		bool belongsToViewport = false;
+		int remaining = state.nodeCount;
+		for (int ancestor = node; ancestor >= 0 && ancestor < state.nodeCount && remaining-- > 0;
+		     ancestor = state.nodes[ancestor].parent) {
+			if (ancestor == gLayoutViewportRoot) belongsToViewport = true;
+			if (ancestor != state.mountedRoot) continue;
+			if (belongsToViewport && gLayoutViewportRoot != state.mountedRoot)
+				computeLayout(gLayoutViewportRoot, gLayoutViewportWidth, gLayoutViewportHeight);
+			else
+				computeLayout(state.mountedRoot, state.mountedWidth, state.mountedHeight);
+			return;
+		}
 	}
 
 	namespace

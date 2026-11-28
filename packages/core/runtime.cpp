@@ -2,13 +2,13 @@
 #include "runtime.h"
 
 #include "app.h"
-#include "apps.h"
 #include "display.h"
 #include "input.h"
 #include "memory.h"
 #include "events.h"
 #include "touch.h"
 #include "power.h"
+#include "program.h"
 #include "services/app_runner.h"
 #include "services/app_state.h"
 #include "services/battery_service.h"
@@ -51,9 +51,19 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 extern "C" void gea_cycle_collection_defer_begin() __attribute__((weak));
 extern "C" void gea_cycle_collection_defer_end() __attribute__((weak));
+#if GEA_EMBEDDED_GEAPP_HOST
+// The firmware program's stylesheet registration (app_main.cpp calls it at
+// boot); a switch back to the firmware program registers it again.
+void gea_plugin_cpp_register_prelude() __attribute__((weak));
+extern "C" void gea_cpp_retire_finalized_program() __attribute__((weak));
+extern "C" void gea_cpp_collect_released_program() __attribute__((weak));
+extern "C" void gea_render_parallel_release() __attribute__((weak));
+#endif
 
 namespace gea::framework {
 
@@ -152,6 +162,10 @@ void dispatch_event(const events::Event &event, const RuntimeOptions &)
 
 #else
 
+// Declarative [data-anim] animations start on the first frame after a program
+// mounts; a program switch mounts a new tree and clears this again.
+bool g_animationsScanned = false;
+
 void dispatch_rotary_input()
 {
 	const int delta = input::consumeRotaryDelta();
@@ -200,9 +214,8 @@ void run_app_frame(int timestampMs, void *context)
 	services::BatteryService::poll(static_cast<int>(nowMs));
 	// A firmware image contains one application, mounted once before the frame
 	// loop. Start its declarative animations on the first frame.
-	static bool animationsScanned = false;
-	if (!animationsScanned) {
-		animationsScanned = true;
+	if (!g_animationsScanned) {
+		g_animationsScanned = true;
 		gea::css::DeclarativeAnimations::scanAndStart(nowMs);
 	}
 
@@ -280,6 +293,9 @@ void dispatch_event(const events::Event &event, const RuntimeOptions &options)
 		// false after the window and the loop quiesces — no busy-render on a hold.
 		for (;;) {
 			if (Runtime::uiPauseRequested()) break;
+#if GEA_EMBEDDED_GEAPP_HOST
+			if (program::launchPending()) break;
+#endif
 #if defined(ESP_PLATFORM) && defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 			if (services::FrameScheduler::debuggerFrameRate() > 0) break;
 #endif
@@ -320,6 +336,113 @@ void dispatch_event(const events::Event &event, const RuntimeOptions &options)
 		break;
 	}
 }
+
+#if GEA_EMBEDDED_GEAPP_HOST
+// Replaces the running program (program.h). Runs on the runtime loop between
+// frames: the outgoing program is torn down while its code is still mapped
+// (its tree, timers and callbacks go first, then its static destructors), and
+// only then is its image freed and the next program loaded and mounted.
+// A program being read in the background (Host::beginLoad) while the
+// firmware's own program keeps drawing; the switch completes once it is in.
+bool g_programLoading = false;
+char g_programLoadingId[64] = "";
+
+// `background`: the next program was started with beginLoad and is finished
+// here; otherwise it is loaded inline. `backgroundError`: beginLoad refused it.
+void completeSwitch(const RuntimeOptions &options, const char *id, bool background, const char *backgroundError)
+{
+	program::Host *host = program::host();
+	services::AppState::lock();
+	const program::Hooks *previous = program::loaded();
+	app::Application::unmount();
+	if (previous) {
+		// Its module cells go first, while everything they reach is intact, and
+		// the cycles they anchored (a scene graph, a store's tree) are collected
+		// now: after the static destructors that would no longer be safe.
+		if (previous->releaseGlobals) {
+			previous->releaseGlobals();
+			if (gea_cpp_collect_released_program) gea_cpp_collect_released_program();
+		}
+		host->finalize(previous);
+		// Its static destructors ran just now and may have queued work or
+		// buffered cycle candidates of their own: retire those, untraced,
+		// before the image they point into is freed (gea_runtime.h).
+		if (gea_cpp_retire_finalized_program) gea_cpp_retire_finalized_program();
+		program::setLoaded(nullptr, "");
+		host->release(previous);
+	}
+	// The display's second-core render worker is started the first time a
+	// frame splits its raster, and its 8 KB internal stack goes with the
+	// program that needed it -- the launcher's too: its loading screen animates
+	// while the next program is read in, starts the worker, and a worker kept
+	// from there cost Neon 13 KB of internal RAM (4.8 fps, not ~50). Only after
+	// finalize: a program task (gea3d's present pipeline) may have been
+	// submitting to it until finalize deleted it.
+	if (gea_render_parallel_release) gea_render_parallel_release();
+	const program::Hooks *next = nullptr;
+	if (id[0]) {
+		char error[160] = "";
+		if (backgroundError && backgroundError[0]) std::snprintf(error, sizeof(error), "%s", backgroundError);
+		else if (background) next = host->finishLoad(error, sizeof(error));
+		else next = host->load(id, error, sizeof(error));
+		program::setLastError(next ? "" : error);
+	}
+	program::setLoaded(next, id);
+	if (host) host->configure(next ? id : "");
+	if (next) {
+		if (next->registerPrelude) next->registerPrelude();
+	} else if (gea_plugin_cpp_register_prelude) {
+		gea_plugin_cpp_register_prelude();
+	}
+	g_animationsScanned = false;
+	services::AppState::unlock();
+#if defined(ESP_PLATFORM)
+	services::AppRunner::initApplication(options.width, options.height);
+#else
+	app::Application::init(options.width, options.height, GEA_EMBEDDED_CSS_LAYOUT_DEVICE_PIXEL_RATIO);
+#endif
+	// Present the new program at once rather than on the next timer tick.
+	events::Event frame{};
+	frame.type = events::EventType::Frame;
+	dispatch_event(frame, options);
+}
+
+void switchProgram(const RuntimeOptions &options)
+{
+	char id[64];
+	if (!program::takeLaunchRequest(id, sizeof(id))) return;
+	program::Host *host = program::host();
+	if (id[0] && !host) {
+		program::setLastError("this firmware cannot load programs");
+		return;
+	}
+	if (std::strcmp(id, program::runningId()) == 0 && (id[0] == '\0') == (program::loaded() == nullptr)) return;
+	// Leaving the firmware's own program: it keeps running (and animating its
+	// loading screen) while the next program is read in.
+	if (id[0] && !program::loaded()) {
+		char error[160] = "";
+		if (host->beginLoad(id, error, sizeof(error))) {
+			std::snprintf(g_programLoadingId, sizeof(g_programLoadingId), "%s", id);
+			g_programLoading = true;
+			return;
+		}
+		if (error[0]) {
+			completeSwitch(options, id, false, error);
+			return;
+		}
+	}
+	completeSwitch(options, id, false, nullptr);
+}
+
+// Completes a background load once it is in; until then the loop runs frames.
+bool finishProgramLoad(const RuntimeOptions &options)
+{
+	if (!g_programLoading || !program::host()->loadDone()) return false;
+	g_programLoading = false;
+	completeSwitch(options, g_programLoadingId, true, nullptr);
+	return true;
+}
+#endif
 
 #endif
 
@@ -600,6 +723,13 @@ void Runtime::run(const RuntimeOptions &options)
 			dispatch_event(refresh, options);
 			continue;
 		}
+#if GEA_EMBEDDED_GEAPP_HOST && (!defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT)
+		if (finishProgramLoad(options)) continue;
+		if (!g_programLoading && program::launchPending()) {
+			switchProgram(options);
+			continue;
+		}
+#endif
 		events::Event event{};
 		if (services::FrameScheduler::receiveEvent(&event)) {
 			if (uiPauseRequested()) discardPausedEvent(event);

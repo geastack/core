@@ -11,6 +11,16 @@
 
 namespace gea::embedded::ui {
 
+struct MediaQueryMatch {
+	std::string query;
+	bool matches() const;
+};
+
+inline MediaQueryMatch matchMedia(const std::string &query)
+{
+	return MediaQueryMatch{query};
+}
+
 #if defined(GEA_NATIVE_DEBUGGER) && GEA_NATIVE_DEBUGGER
 struct DebuggerCssRule {
 	std::string selector, property, value, media;
@@ -404,6 +414,7 @@ public:
 	// one the CSS parser feeds), rather than duplicating property-name
 	// parsing here.
 	void setProperty(const std::string &property, const std::string &value) const;
+	bool setNamedProperty(const std::string &property, const std::string &value) const;
 	bool setNumberProperty(const std::string &property, double value) const;
 	bool removeProperty(const std::string &property) const;
 

@@ -5,6 +5,26 @@ import ts from "typescript";
 
 import { createGeaHostShims } from "../dist/host-shims.js";
 
+test("devicePixelRatio reads the native display scale", () => {
+  const declaration = fileURLToPath(
+    new URL("../../core/index.d.ts", import.meta.url),
+  );
+  const program = ts.createProgram([declaration], {
+    lib: ["lib.es2022.d.ts"],
+    skipLibCheck: true,
+    types: [],
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(declaration);
+  const symbol = checker.resolveName("devicePixelRatio", source, ts.SymbolFlags.Value, false);
+  assert.ok(symbol);
+  assert.equal(checker.getTypeOfSymbolAtLocation(symbol, source), checker.getNumberType());
+  assert.equal(
+    createGeaHostShims().embeddedHostConstants?.devicePixelRatio?.emit,
+    "gea::host::Display.getDevicePixelRatio()",
+  );
+});
+
 test("native animation frames declare integer timestamps while retaining numeric request handles", () => {
   const declaration = fileURLToPath(
     new URL("../../core/index.d.ts", import.meta.url),
@@ -192,23 +212,23 @@ test('event targets expose native attribute reads', () => {
   assert.ok(method.emit.includes('std::string({arg0}).c_str()'));
 });
 
-// firstChild participates in ordinary native component traversal. Its static
-// result must retain the NodeHandle identity/null carrier, including comments.
-test("firstChild is a nullable SDK Node and its native getter stays typed", () => {
+test("DOM traversal getters return nullable SDK Nodes and retain the native handle", () => {
   const declaration = fileURLToPath(new URL("../../core/index.d.ts", import.meta.url));
   const program = ts.createProgram([declaration], {strict:true, skipLibCheck:true, lib:["lib.es2022.d.ts"]});
   const checker=program.getTypeChecker(), source=program.getSourceFile(declaration);
   const symbol=checker.getExportsOfModule(checker.getSymbolAtLocation(source)).find(s=>s.name==="Node");
   const node=checker.getDeclaredTypeOfSymbol(symbol);
-  const first=checker.getTypeOfSymbolAtLocation(checker.getPropertyOfType(node,"firstChild"),source);
-  assert.ok(first.isUnion());
-  assert.ok(first.types.some(type=>type.flags & ts.TypeFlags.Null));
-  assert.equal(first.types.filter(type=>!(type.flags & ts.TypeFlags.Null)).length,1);
-  assert.ok(first.types.filter(type=>!(type.flags & ts.TypeFlags.Null)).every(type=>type===node));
-  const rows=createGeaHostShims().nativeMemberPropertyGetters.firstChild;
-  assert.ok(rows.length>0);
-  assert.ok(rows.every(row=>row.returnType==="gea::embedded::ui::NodeHandle"));
-  assert.ok(rows.every(row=>row.emit==="({receiver}).firstChildHandle()"));
+  const getters = createGeaHostShims().nativeMemberPropertyGetters;
+  for (const name of ["firstChild", "previousSibling"]) {
+    const result = checker.getTypeOfSymbolAtLocation(checker.getPropertyOfType(node, name), source);
+    assert.ok(result.isUnion(), name);
+    assert.ok(result.types.some(type => type.flags & ts.TypeFlags.Null), name);
+    assert.deepEqual(result.types.filter(type => !(type.flags & ts.TypeFlags.Null)), [node], name);
+    const rows = getters[name];
+    assert.ok(rows.length > 0, name);
+    assert.ok(rows.every(row => row.returnType === "gea::embedded::ui::NodeHandle"), name);
+    assert.ok(rows.every(row => row.emit === `({receiver}).${name}Handle()`), name);
+  }
 });
 
 test("insertBefore states the actual Node return, nullable reference and direct native method", () => {

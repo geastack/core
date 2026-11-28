@@ -208,6 +208,9 @@ struct GridTrackLayout {
 struct ChildNodeListIdentity;
 
 struct NodeRareData {
+	CssAtomId namespaceUri = kInvalidCssAtom;
+	CssAtomId namespacePrefix = kInvalidCssAtom;
+	bool hasExplicitNamespace = false;
 	std::shared_ptr<const ChildNodeListIdentity> childNodeListIdentity;
 	// Reuse the listener record's tail padding for inline-position metadata.
 	// Both members remain ordinary embedded fields with fixed-offset access.
@@ -248,6 +251,9 @@ struct NodeRareData {
 
 	void clear()
 	{
+		namespaceUri = kInvalidCssAtom;
+		namespacePrefix = kInvalidCssAtom;
+		hasExplicitNamespace = false;
 		childNodeListIdentity.reset();
 		attributes.clear();
 		listeners.clear();

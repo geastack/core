@@ -43,6 +43,8 @@ static Request parseRequest(const std::string &line)
 		else if (key == "height") height = reader.readNumberField();
 		else if (key == "dpr") request.dpr = reader.readNumberField();
 		else if (key == "reusePage") request.reusePage = reader.readBoolField();
+		else if (key == "selector") request.selector = reader.readStringField();
+		else if (key == "transparent") request.transparent = reader.readBoolField();
 		else reader.skipValue();
 	} while (reader.consumeIf(','));
 	if (!reader.consumeIf('}')) throw std::invalid_argument("Expected end of capture request");
@@ -99,7 +101,8 @@ int runWorker(Capture capture)
 		std::string reply;
 		try {
 			auto request = parseRequest(line);
-			const bool reuse = request.reusePage && mounted && request.input == mounted->input &&
+			const bool reuse = request.reusePage && mounted && request.selector.empty() && !request.transparent &&
+			                   mounted->selector.empty() && !mounted->transparent && request.input == mounted->input &&
 			                   request.width == mounted->width && request.height == mounted->height &&
 			                   request.dpr == mounted->dpr;
 			const auto started = std::chrono::steady_clock::now();

@@ -75,6 +75,9 @@ int main()
     require(gTsDiag.seen == before.seen + 1 && gTsDiag.built == before.built + 1 && gTsDiag.blit == before.blit + 2 &&
                 gTsDiag.raster == before.raster,
             "a fifth key must build once on first sight, then hit within the same bounded cache");
-    require(std::size(gTextSprites) == 4, "fix must not grow the four-slot cache");
+    require(kTextSpriteSlots == 4, "fix must not grow the four-slot cache");
+    // One bank per render core: a label replayed on both cores at once (the
+    // 2-core band split) builds in its own bank, never in the other core's.
+    require(std::size(gTextSprites) == 2 && gTextSprites[0] && !gTextSprites[1], "one bank per render core, created by its own core");
     std::puts("PASS: text collision, zero steady-state rebuilds, bounded capacity, full cache keys, pixel parity");
 }

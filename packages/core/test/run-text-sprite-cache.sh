@@ -8,7 +8,7 @@ source "$ROOT/packages/core/test/native-host.sh"
   -I "$ROOT/packages/core/include" -I "$ROOT/packages/engine" \
   -ffunction-sections -fdata-sections \
   "$ROOT/packages/core/test/test_text_sprite_cache_main.cpp" \
-  "$ROOT/packages/engine/rasterized_font.cpp" \
+  "$ROOT/packages/engine/rasterized_font.cpp" "$ROOT/packages/core/program.cpp" \
   "${GEA_HOST_LINK_GC[@]}" ${GEA_HOST_CXXFLAGS[@]+"${GEA_HOST_CXXFLAGS[@]}"} -o "$BUILD_DIR/text-sprite-cache"
 "$BUILD_DIR/text-sprite-cache"
 if [[ "${1:-}" == "--mutations" ]]; then
@@ -17,10 +17,10 @@ import pathlib,sys
 s = pathlib.Path(sys.argv[1]).read_text()
 start = s.index('TextSprite &textSpriteFor(')
 end = s.index('\n// Rasterize `text`', start)
-s = s[:start] + '''TextSprite &textSpriteFor(const char *text, const RasterizedFont &) {
+s = s[:start] + '''TextSprite &textSpriteFor(TextSprite *slots, const char *text, const RasterizedFont &, int) {
     unsigned hash = 2166136261u;
     for (const char *p = text; *p; ++p) { hash ^= static_cast<unsigned char>(*p); hash *= 16777619u; }
-    return gTextSprites[hash % kTextSpriteSlots];
+    return slots[hash % kTextSpriteSlots];
 }
 ''' + s[end:]
 pathlib.Path(sys.argv[2]).write_text(s)
@@ -28,7 +28,7 @@ PY
   "${CXX:-clang++}" -std=c++20 -O2 -DGEA_EMBEDDED_PIXEL_PANEL_ENDIAN=1 -DGEA_EMBEDDED_HAS_GENERATED_FONTS=1 \
     "-DGEA_TEXT_CACHE_SOURCE=\"$BUILD_DIR/text-sprite-cache-mutant.cpp\"" \
     -I "$ROOT/packages/core/include" -I "$ROOT/packages/engine" -ffunction-sections -fdata-sections \
-    "$ROOT/packages/core/test/test_text_sprite_cache_main.cpp" "$ROOT/packages/engine/rasterized_font.cpp" \
+    "$ROOT/packages/core/test/test_text_sprite_cache_main.cpp" "$ROOT/packages/engine/rasterized_font.cpp" "$ROOT/packages/core/program.cpp" \
     "${GEA_HOST_LINK_GC[@]}" ${GEA_HOST_CXXFLAGS[@]+"${GEA_HOST_CXXFLAGS[@]}"} -o "$BUILD_DIR/text-sprite-cache-mutant"
   if "$BUILD_DIR/text-sprite-cache-mutant" > "$BUILD_DIR/text-sprite-cache-mutant.log" 2>&1; then
     echo 'FAIL: direct-mapped text collision passed' >&2; exit 1

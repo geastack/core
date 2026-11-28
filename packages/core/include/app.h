@@ -52,6 +52,10 @@ public:
 	static void init(int width, int height, double devicePixelRatio = GEA_EMBEDDED_CSS_DEVICE_PIXEL_RATIO);
 	static void prepareMount(int width, int height, double devicePixelRatio);
 	static void finishMount(bool mounted);
+	// Tears down everything the running program left in the runtime -- its tree,
+	// stylesheet, timers, frame callbacks, microtasks, animations, bundled image
+	// decodes and text rasters -- so another program can mount in its place.
+	static void unmount();
 	static void frame(int timestampMs);
 	static void toggleSettings();
 };

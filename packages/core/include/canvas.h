@@ -63,6 +63,11 @@ public:
 	// subsequent frames instead of re-running the glyph rasterizer. Toggled from
 	// TS via Display.setTextRasterCache(boolean).
 	static void setTextRasterCacheEnabled(bool enabled);
+	// Forgets every cached text raster (they are keyed by font data address,
+	// which a replaced program reuses for different fonts).
+	static void invalidateTextRasterCache();
+	// Frees the rounded-rect coverage tables no frame is using (an app unmounting).
+	static void releaseShapeCaches();
 	static bool textRasterCacheEnabled();
 	// Pre-packed glyph stamping opt-in (packed 4bpp targets; no-op elsewhere).
 	// The app declares text always draws over ONE solid color (0xRRGGBB);

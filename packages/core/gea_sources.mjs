@@ -103,9 +103,9 @@ export function cxxSources(env = process.env) {
       'runtime_log'
     ]),
     // @geastack/core — single-app shell: frame loop + perf + event dispatch
-    ...cpp(core, ['app_frame_perf', 'runtime', 'events']),
+    ...cpp(core, ['app_frame_perf', 'runtime', 'events', 'program']),
     // geaos — installed-application platform integration
-    ...cpp(geaos, ['app_manager', 'installed_apps'])
+    ...cpp(geaos, ['geaos_json', 'geaos_manifest', 'geaos_package', 'geaos_fs_posix', 'geaos_registry', 'geaos_install', 'geaos_monitor', 'geaos_launcher', 'geaos_settings', 'geaos_trust', 'geaos_crypto', 'geaos_system', 'geaos_process'])
   ]
 }
 

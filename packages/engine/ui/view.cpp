@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "internal.h"
+#include "node.h"
 #include "state_init.h"
 #include "renderer_features.h"
 #include "style_values.h"
@@ -1322,6 +1323,12 @@ public:
 	}
 	static void GEA_VIEW_HOT_SRAM_SECTION("project_point") projectPoint(const ChainProjector &pr, float x, float y, float z, int16_t *outX, int16_t *outY)
 	{
+		const auto p = projectPoint(pr, x, y, z);
+		*outX = static_cast<int16_t>(std::lroundf(p.x));
+		*outY = static_cast<int16_t>(std::lroundf(p.y));
+	}
+	static Point3 projectPoint(const ChainProjector &pr, float x, float y, float z)
+	{
 		Point3 p{x, y, z};
 		if (pr.depth >= 0) {
 			for (int k = 0; k < pr.depth; k++) applyCachedTransform(*pr.chain[k], p);
@@ -1331,8 +1338,7 @@ public:
 				applyNodeTransform(state.nodes[id], false, p);
 		}
 		applyPerspective(pr.perspectiveNode, false, p);
-		*outX = static_cast<int16_t>(std::lroundf(p.x));
-		*outY = static_cast<int16_t>(std::lroundf(p.y));
+		return p;
 	}
 
 	static int GEA_VIEW_HOT_SRAM_SECTION("average_depth_compute") averageDepthCompute(const Node &node, bool usePrevious)
@@ -2378,6 +2384,34 @@ void GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_rect_corners") ViewRen
                                           int16_t *xs8, int16_t *ys8)
 {
 	ViewGeometry::transformRectCorners(node, usePrevious, x, y, w, h, xs, ys, xs8, ys8);
+}
+
+gea::host::DOMRect NodeHandle::getBoundingClientRect() const
+{
+	if (!isConnected()) return gea::host::DOMRect::create();
+	auto &tree = Tree::instance();
+	tree.flushLayoutFor(id());
+	if (!valid()) return gea::host::DOMRect::create();
+
+	int remaining = tree.nodeCount();
+	for (int ancestor = id(); ancestor >= 0 && ancestor < tree.nodeCount() && remaining-- > 0;
+	     ancestor = tree.node(ancestor).parent) {
+		if (tree.node(ancestor).computedStyle().display == kDisplayNone)
+			return gea::host::DOMRect::create();
+	}
+	const auto &node = tree.node(id());
+	const auto &box = node.layout;
+	if (!ViewGeometry::hasTransformChain(node, false))
+		return gea::host::DOMRect::create(box.x, box.y, box.width, box.height);
+
+	const auto projector = ViewGeometry::prepareProjector(node);
+	const auto topLeft = ViewGeometry::projectPoint(projector, box.x, box.y, 0);
+	const auto topRight = ViewGeometry::projectPoint(projector, box.x + box.width, box.y, 0);
+	const auto bottomLeft = ViewGeometry::projectPoint(projector, box.x, box.y + box.height, 0);
+	const auto bottomRight = ViewGeometry::projectPoint(projector, box.x + box.width, box.y + box.height, 0);
+	const auto [left, right] = std::minmax({topLeft.x, topRight.x, bottomLeft.x, bottomRight.x});
+	const auto [top, bottom] = std::minmax({topLeft.y, topRight.y, bottomLeft.y, bottomRight.y});
+	return gea::host::DOMRect::create(left, top, right - left, bottom - top);
 }
 
 int GEA_VIEW_HOT_SRAM_SECTION("view_renderer_transformed_depth") ViewRenderer::transformedDepth(const Node &node, bool usePrevious)

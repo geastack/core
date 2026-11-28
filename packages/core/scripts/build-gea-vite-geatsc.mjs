@@ -4404,6 +4404,7 @@ const extraGeatscPlugins = readAllOptions('--extra-geatsc-plugin').map((plugin) 
 const appendJsFiles = readAllOptions('--append-js').map((file) => path.resolve(file))
 const entry = readOption('--entry') ?? 'index.tsx'
 const entrySymbol = readOption('--entry-symbol')
+const releaseGlobalsSymbol = readOption('--release-globals-symbol')
 const cppBoard = readOption('--cpp-board')
 const cxxStandard = readOption('--cxx-standard')
 const pixelPanelEndian = readOption('--pixel-panel-endian')
@@ -4648,7 +4649,12 @@ const geatscArgs = [
   '--plugin-option',
   `gea.native-signature-host-root=${process.env.GEA_HOST_DIR || path.resolve(coreRoot, '..', 'host')}`,
 ]
-if (!moduleGraphCompile) geatscArgs.push('--target', 'cpp')
+if (!moduleGraphCompile) {
+  // The bundled JavaScript already includes the app's implementation files.
+  // Keep the project's options and ambient declarations without compiling a
+  // second copy of its source modules alongside the bundle.
+  geatscArgs.push('--target', 'cpp', '--stated-module-set')
+}
 // --project <tsconfig.json>: the TypeScript project the program means. Without
 // it the compiler reads modules under the project nearest its input, which for
 // an app whose sources live outside its package can be another package's
@@ -4674,6 +4680,7 @@ if (cppBoard) geatscArgs.push('--cpp-board', cppBoard)
 if (cxxStandard) geatscArgs.push('--cxx-standard', cxxStandard)
 if (hasFlag('--allow-any') || compilerSettings.allowAny) geatscArgs.push('--allow-any')
 if (entrySymbol) geatscArgs.push('--entry-symbol', entrySymbol)
+if (releaseGlobalsSymbol) geatscArgs.push('--release-globals-symbol', releaseGlobalsSymbol)
 if (hasFlag('--isolate-symbols')) geatscArgs.push('--isolate-symbols')
 if (process.env.GEA_NATIVE_DEBUGGER === '1') geatscArgs.push('--debug-source')
 // One C++ unit per source module plus a shared header, instead of one unit for

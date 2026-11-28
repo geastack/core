@@ -41,6 +41,9 @@ const NODE_HANDLE_RECEIVER_TYPES = [
 // qualified storage type and every declared interface that lowers to it are
 // listed together -- the same "one runtime type, many declared names" join
 // `NODE_HANDLE_RECEIVER_TYPES` above states.
+const DOM_RECT_RECEIVER_TYPES = ["gea::host::DOMRect", "DOMRect"];
+const WINDOW_EVENT_VALUE = "([] { const auto* event = gea::framework::events::EventListener::currentEvent(); using Event = gea::Optional<gea::framework::events::PointerEvent>; return event ? Event(*event) : Event{}; }())";
+
 const EVENT_RECEIVER_TYPES = [
   "gea::framework::events::PointerEvent",
   // The base interface every event extends, and the parameter `onScroll` and
@@ -310,22 +313,9 @@ export function createGeaHostShims(): HostShimDefinitions {
           "gea::framework::events::PointerEvent",
         ],
         nativeTypes: {
-          // The ambient DOM global `document` (lib.dom.d.ts's `Document`) — a
-          // singleton, not a tree node, so it gets its own storage rather than
-          // sharing `NodeHandle`. Registering it here is what lets
-          // `hostInterfaceCarrierRule` (`driver/type-carriers/host-interfaces.ts`,
-          // via `hostNativeStorageForType`) seal a real carrier for the RECEIVER of
-          // `document.<method>(...)`: without an entry, `document`'s receiver
-          // operand resolved no representation at all and every typed
-          // `document.getElementById(...)` (etc.) rejected with
-          // `missing-operand-source-representation` on top of the template
-          // mismatch fixed alongside this entry. `host-document-calls.ts`'s own
-          // plans never actually load this value (its templates call
-          // `Document::instance()` themselves — `document` is a singleton, so no
-          // receiver value has to flow), so this entry exists purely to satisfy the
-          // semantic-operation graph's requirement that the receiver operand of a
-          // property-access callee resolve SOME carrier.
-          Document: "gea::embedded::ui::Document",
+          // Both document and window.document can flow through native cells.
+          // Their facade names the engine singleton without constructing it.
+          Document: "gea::host::DocumentFacade",
           Node: "gea::embedded::ui::NodeHandle",
           NodeList: "gea::embedded::ui::ChildNodeList",
           ChildNode: "gea::embedded::ui::NodeHandle",
@@ -389,6 +379,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           // `event.currentTarget.getAttribute("value")`.
           InputEventTarget: "gea::framework::events::EventTarget",
           GeaWindow: "gea::host::WindowFacade",
+          GeaDocumentSelection: "gea::host::SelectionFacade",
           PressEventTarget: "gea::framework::events::EventTarget",
           // gea-embedded's own element interfaces (index.d.ts) — without these a
           // `Component<GeaCanvasElement>`'s `this.el` lowers to a record-alias struct
@@ -440,6 +431,12 @@ export function createGeaHostShims(): HostShimDefinitions {
           MediaRecorderDataAvailableEvent: "gea::host::MediaRecorderDataEvent",
           GeaAudioBlob: "gea::host::GeaAudioBlob",
           HTMLAudioElement: "gea::host::HTMLAudioElement",
+          DOMRect: "gea::host::DOMRect",
+          NativeComputedStyle: "gea::embedded::ui::NativeComputedStyle",
+          GeaMediaQueryMatch: "gea::embedded::ui::MediaQueryMatch",
+          GeaNetworkInformation: "gea::host::NetworkInformation",
+          GeaPerformance: "gea::host::PerformanceFacade",
+          GeaResourceTiming: "gea::host::ResourceTiming",
           HTMLVideoElement: "gea::host::HTMLVideoElement",
           // The three ambient CONSTRUCTOR interfaces (`declare var Audio:
           // AudioConstructor`, etc.) share their instance type's own carrier
@@ -509,6 +506,7 @@ export function createGeaHostShims(): HostShimDefinitions {
         // Keyed by the CONSTRUCTOR interface's own declared name (see
         // `nativeConstructors`'s own field comment, types.ts, for why).
         nativeConstructors: {
+          DOMRect: "gea::host::DOMRect::create({args})",
           // Creation allocates shared element state; the default native handle
           // remains null for nullable audio-element fields.
           AudioConstructor: "gea::host::HTMLAudioElement::create({args})",
@@ -535,6 +533,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           // Standard RTC construction and object members are installed by extendRtcShims.
         },
         hostGlobalObjects: {
+          performance: "gea::host::performance",
+          document: "gea::host::documentValue",
           navigator: "gea::host::navigator",
           window: "gea::host::window",
           // `localStorage` (a browser global, no import) resolves to the persistent
@@ -547,6 +547,8 @@ export function createGeaHostShims(): HostShimDefinitions {
         // `HostShimDefinitions.hostGlobalObjectTypes` for why the value spelling
         // alone is not enough.
         hostGlobalObjectTypes: {
+          performance: "gea::host::PerformanceFacade",
+          document: "gea::host::DocumentFacade",
           // `inline constexpr Navigator navigator{}` -- navigator.h.
           navigator: "gea::host::Navigator",
           // `inline constexpr WindowFacade window{}` -- window.h.
@@ -558,6 +560,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           localStorage: "gea::host::StorageFacade",
         },
         hostNamespaces: {
+          CSS: "gea::host::css",
+          Node: "gea::embedded::ui::DocumentPosition",
           navigator: "gea::host::navigator",
           // Fixed singleton member paths are native host calls, alongside its value carrier.
           window: "gea::host::window",
@@ -631,8 +635,16 @@ export function createGeaHostShims(): HostShimDefinitions {
           Display: { moduleSpecifier: "/", exportName: "Display" },
         },
         hostNamespaceMethods: {
+          performance: {
+            now: "gea::host::performance.now",
+            getEntriesByType: "gea::host::performance.getEntriesByType",
+          },
+          CSS: {
+            escape: "gea::host::css::escape",
+          },
           window: {
             addEventListener: "gea::host::window.addEventListener",
+            getSelection: "gea::host::window.getSelection",
             removeEventListener: "gea::host::window.removeEventListener",
           },
           // Free functions in `gea::host::console` (geatsc's `gea_runtime.h`
@@ -1560,15 +1572,32 @@ export function createGeaHostShims(): HostShimDefinitions {
           __gea_Simd: ["sumWindowsU8"],
         },
         hostNamespaceProperties: {
+          Node: {
+            DOCUMENT_POSITION_DISCONNECTED: "static_cast<double>(gea::embedded::ui::DocumentPosition::disconnected)",
+            DOCUMENT_POSITION_PRECEDING: "static_cast<double>(gea::embedded::ui::DocumentPosition::preceding)",
+            DOCUMENT_POSITION_FOLLOWING: "static_cast<double>(gea::embedded::ui::DocumentPosition::following)",
+            DOCUMENT_POSITION_CONTAINS: "static_cast<double>(gea::embedded::ui::DocumentPosition::contains)",
+            DOCUMENT_POSITION_CONTAINED_BY: "static_cast<double>(gea::embedded::ui::DocumentPosition::containedBy)",
+            DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: "static_cast<double>(gea::embedded::ui::DocumentPosition::implementationSpecific)",
+          },
           window: {
+            document: "gea::host::documentValue",
+            ErrorEvent: "gea::Undefined{}",
+            attachEvent: "gea::Undefined{}",
+            detachEvent: "gea::Undefined{}",
+            event: WINDOW_EVENT_VALUE,
+            clipboardData: "gea::Undefined{}",
             innerWidth: "gea::host::window.innerWidth",
             innerHeight: "gea::host::window.innerHeight",
+            scrollX: "gea::host::window.scrollX",
+            scrollY: "gea::host::window.scrollY",
           },
           navigator: {
             userAgent: "gea::host::navigator.userAgent",
             language: "gea::host::navigator.language",
             platform: "gea::host::navigator.platform",
             onLine: "gea::host::navigator.onLine",
+            connection: "gea::Optional<gea::host::NetworkInformation>{}",
           },
           Display: {
             ctx: "gea::host::Display.ctx",
@@ -1651,7 +1680,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           },
         },
         hostNamespacePropertyAccessors: {
-          window: ["innerWidth", "innerHeight"],
+          window: ["innerWidth", "innerHeight", "scrollX", "scrollY"],
           Display: [
             "ctx",
             "width",
@@ -1748,6 +1777,10 @@ export function createGeaHostShims(): HostShimDefinitions {
             emit: "gea::embedded::ui::Document::instance().createElement(({arg0}))",
             returnType: "gea::embedded::ui::NodeHandle",
           },
+          createElementNS: {
+            emit: "gea::host::documentCreateElementNS(({arg0}), ({arg1}))",
+            returnType: "gea::embedded::ui::NodeHandle",
+          },
           createTextNode: {
             emit: "gea::embedded::ui::Document::instance().createText(({arg0}))",
             returnType: "gea::embedded::ui::NodeHandle",
@@ -1798,6 +1831,150 @@ export function createGeaHostShims(): HostShimDefinitions {
         // resolve against the retained tree — matching the gea_cpp_value record
         // protocol (nodeValue) used when a node is value-bridged instead of typed.
         nativeMemberPropertyGetters: {
+          className: [{
+            emit: "({receiver}).classList().value()",
+            returnType: "std::string",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          filter: [{ emit: "({receiver}).filter()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          display: [{ emit: "({receiver}).display()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          position: [{ emit: "({receiver}).position()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          overflow: [{ emit: "({receiver}).overflow()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          borderRadius: [{ emit: "({receiver}).borderRadius()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          paddingTop: [{ emit: "({receiver}).paddingTop()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          paddingBottom: [{ emit: "({receiver}).paddingBottom()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] }],
+          animate: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          getAnimations: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          ErrorEvent: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: ["gea::host::WindowFacade"],
+          }],
+          attachEvent: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: ["gea::host::WindowFacade"],
+          }],
+          detachEvent: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: ["gea::host::WindowFacade"],
+          }],
+          nodeName: [
+            { emit: "((void)({receiver}), std::string(\"#document\"))", returnType: "std::string", receiverTypes: ["gea::host::DocumentFacade"] },
+            { emit: "({receiver}).domNodeName()", returnType: "std::string", receiverTypes: NODE_HANDLE_RECEIVER_TYPES },
+          ],
+          tagName: [{
+            emit: "({receiver}).domNodeName()",
+            returnType: "std::string",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          localName: [{
+            emit: "std::string(({receiver}).tagName())",
+            returnType: "std::string",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          namespaceURI: [{
+            emit: "([&]() -> gea::Optional<std::string> { const auto* value = ({receiver}).namespaceURI(); return value ? gea::Optional<std::string>(*value) : gea::Optional<std::string>{}; }())",
+            returnType: "gea::Optional<std::string>",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          prefix: [{
+            emit: "([&]() -> gea::Optional<std::string> { const auto* value = ({receiver}).namespacePrefix(); return value ? gea::Optional<std::string>(*value) : gea::Optional<std::string>{}; }())",
+            returnType: "gea::Optional<std::string>",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+          }],
+          oninput: [{
+            emit: "((void)({receiver}), nullptr)",
+            returnType: "std::nullptr_t",
+            receiverTypes: ["gea::host::DocumentFacade", ...NODE_HANDLE_RECEIVER_TYPES],
+          }],
+          clipboardData: [{
+            emit: "((void)({receiver}), gea::Undefined{})",
+            returnType: "gea::Undefined",
+            receiverTypes: ["gea::host::WindowFacade"],
+          }],
+          connection: [{
+            emit: "((void)({receiver}), gea::Optional<gea::host::NetworkInformation>{})",
+            returnType: "gea::Optional<gea::host::NetworkInformation>",
+            receiverTypes: ["gea::host::Navigator"],
+          }],
+          downlink: [{
+            emit: "([](const gea::Optional<gea::host::NetworkInformation>& connection) { if (!connection.has_value()) gea::detail::throwNullDereference(true); return connection->downlink; })({receiver})",
+            returnType: "double",
+            receiverTypes: ["gea::host::NetworkInformation"],
+          }],
+          documentMode: [{
+            emit: "((void)({receiver}), gea::Optional<double>{})",
+            returnType: "gea::Optional<double>",
+            receiverTypes: ["gea::host::DocumentFacade"],
+          }],
+          matches: [{
+            emit: "({receiver}).matches()",
+            returnType: "bool",
+            receiverTypes: ["gea::embedded::ui::MediaQueryMatch", "GeaMediaQueryMatch"],
+          }],
+          event: [{
+            emit: WINDOW_EVENT_VALUE,
+            returnType: "gea::Optional<gea::framework::events::PointerEvent>",
+            receiverTypes: ["gea::host::WindowFacade", "GeaWindow"],
+          }],
+          document: [{
+            emit: "gea::host::documentValue",
+            returnType: "gea::host::DocumentFacade",
+            receiverTypes: ["gea::host::WindowFacade", "GeaWindow"],
+          }],
+          defaultView: [{
+            emit: "gea::host::window",
+            returnType: "gea::host::WindowFacade",
+            receiverTypes: ["gea::host::DocumentFacade", "Document"],
+          }],
+          anchorNode: [{
+            emit: "({receiver}).state().anchorNode",
+            returnType: "gea::embedded::ui::NodeHandle",
+            receiverTypes: ["gea::host::SelectionFacade"],
+          }],
+          focusNode: [{
+            emit: "({receiver}).state().focusNode",
+            returnType: "gea::embedded::ui::NodeHandle",
+            receiverTypes: ["gea::host::SelectionFacade"],
+          }],
+          anchorOffset: [{ emit: "static_cast<double>(({receiver}).state().anchorOffset)", returnType: "double", receiverTypes: ["gea::host::SelectionFacade"] }],
+          focusOffset: [{ emit: "static_cast<double>(({receiver}).state().focusOffset)", returnType: "double", receiverTypes: ["gea::host::SelectionFacade"] }],
+          innerWidth: [{
+            emit: "({receiver}).innerWidth()",
+            returnType: "double",
+            receiverTypes: ["gea::host::WindowFacade", "GeaWindow"],
+          }],
+          innerHeight: [{
+            emit: "({receiver}).innerHeight()",
+            returnType: "double",
+            receiverTypes: ["gea::host::WindowFacade", "GeaWindow"],
+          }],
+          scrollX: [{ emit: "({receiver}).scrollX()", returnType: "double", receiverTypes: ["gea::host::WindowFacade", "GeaWindow"] }],
+          scrollY: [{ emit: "({receiver}).scrollY()", returnType: "double", receiverTypes: ["gea::host::WindowFacade", "GeaWindow"] }],
+          documentElement: [{
+            emit: "gea::embedded::ui::Document::instance().documentElement()",
+            returnType: "gea::embedded::ui::NodeHandle",
+            receiverTypes: ["gea::host::DocumentFacade", "Document"],
+          }],
+          head: [{
+            emit: "gea::embedded::ui::Document::instance().head()",
+            returnType: "gea::embedded::ui::NodeHandle",
+            receiverTypes: ["gea::host::DocumentFacade", "Document"],
+          }],
+          top: [{ emit: "({receiver}).top()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          right: [{ emit: "({receiver}).right()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          bottom: [{ emit: "({receiver}).bottom()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          left: [{ emit: "({receiver}).left()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
           // `document.body`, the one PROPERTY the document singleton publishes.
           // `Document::body()` (engine/ui/document.h) is a method in C++ and a
           // readonly property in TypeScript (`Document.body: Element`), which is
@@ -1810,13 +1987,13 @@ export function createGeaHostShims(): HostShimDefinitions {
           activeElement: [{
             emit: "gea::embedded::ui::Document::instance().activeElement()",
             returnType: "gea::embedded::ui::NodeHandle",
-            receiverTypes: ["gea::embedded::ui::Document", "Document"],
+            receiverTypes: ["gea::host::DocumentFacade", "Document"],
           }],
           body: [
             {
               emit: "gea::embedded::ui::Document::instance().body()",
               returnType: "gea::embedded::ui::NodeHandle",
-              receiverTypes: ["gea::embedded::ui::Document", "Document"],
+              receiverTypes: ["gea::host::DocumentFacade", "Document"],
             },
           ],
           // The event a listener DECLARES. Every field the TS `PointerEvent` /
@@ -1965,6 +2142,7 @@ export function createGeaHostShims(): HostShimDefinitions {
             },
           ],
           x: [
+            { emit: "({receiver}).x()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES },
             {
               emit: "static_cast<double>(({receiver}).x)",
               returnType: "double",
@@ -1972,6 +2150,7 @@ export function createGeaHostShims(): HostShimDefinitions {
             },
           ],
           y: [
+            { emit: "({receiver}).y()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES },
             {
               emit: "static_cast<double>(({receiver}).y)",
               returnType: "double",
@@ -2111,6 +2290,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           // type alias `LoadedImage = GeaEmbeddedImage` resolves to `GeaEmbeddedImage`,
           // so the unqualified name covers aliased receivers too.
           width: [
+            { emit: "({receiver}).width()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] },
+            { emit: "({receiver}).width()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES },
             {
               emit: "({receiver}).width",
               returnType: "double",
@@ -2123,6 +2304,8 @@ export function createGeaHostShims(): HostShimDefinitions {
             },
           ],
           height: [
+            { emit: "({receiver}).height()", returnType: "std::string", receiverTypes: ["gea::embedded::ui::NativeComputedStyle"] },
+            { emit: "({receiver}).height()", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES },
             {
               emit: "({receiver}).height",
               returnType: "double",
@@ -2189,6 +2372,11 @@ export function createGeaHostShims(): HostShimDefinitions {
           ],
           nodeType: [
             {
+              emit: "((void)({receiver}), 9.0)",
+              returnType: "double",
+              receiverTypes: ["gea::host::DocumentFacade"],
+            },
+            {
               emit: "static_cast<double>(static_cast<int>(({receiver}).nodeType))",
               returnType: "double",
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
@@ -2208,14 +2396,16 @@ export function createGeaHostShims(): HostShimDefinitions {
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
             },
           ],
-          // `node.ownerDocument` -> the (singleton) document, boxed so the caller's
-          // capability probe (record_get('createDocumentFragment')) resolves. Without
-          // it delegate-click's `root.ownerDocument` hit `gea_cpp_value` with no such
-          // member.
+          // Nodes in the embedded tree all belong to the same document.
           ownerDocument: [
             {
-              emit: "gea_ir::domOwnerDocument({receiver})",
-              returnType: "gea_cpp_value",
+              emit: "((void)({receiver}), nullptr)",
+              returnType: "std::nullptr_t",
+              receiverTypes: ["gea::host::DocumentFacade"],
+            },
+            {
+              emit: "gea::host::documentValue",
+              returnType: "gea::host::DocumentFacade",
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
             },
           ],
@@ -2248,6 +2438,13 @@ export function createGeaHostShims(): HostShimDefinitions {
           nextSibling: [
             {
               emit: "gea_ir::domNextSibling({receiver})",
+              returnType: "gea::embedded::ui::NodeHandle",
+              receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            },
+          ],
+          previousSibling: [
+            {
+              emit: "({receiver}).previousSiblingHandle()",
               returnType: "gea::embedded::ui::NodeHandle",
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
             },
@@ -2367,7 +2564,19 @@ export function createGeaHostShims(): HostShimDefinitions {
           // not, which is the same one-sided statement the recorder's own `stop`
           // and `ondataavailable` write were missing. Keyed by carrier, so the very
           // generic names `data` and `path` answer only for these two structs.
+          nodeValue: [
+            {
+              emit: "([&]() -> gea::Optional<std::string> { const auto* value = ({receiver}).characterData(); return value ? gea::Optional<std::string>(*value) : gea::Optional<std::string>{}; }())",
+              returnType: "gea::Optional<std::string>",
+              receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            },
+          ],
           data: [
+            {
+              emit: "([&]() -> gea::Optional<std::string> { const auto* value = ({receiver}).characterData(); return value ? gea::Optional<std::string>(*value) : gea::Optional<std::string>{}; }())",
+              returnType: "gea::Optional<std::string>",
+              receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            },
             {
               emit: "({receiver}).data",
               returnType: "gea::host::GeaAudioBlob",
@@ -2466,6 +2675,15 @@ export function createGeaHostShims(): HostShimDefinitions {
           ],
         },
         nativeMemberPropertySetters: {
+          className: [{
+            emit: "({receiver}).classList().set({value})",
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            returnType: "void",
+          }],
+          x: [{ emit: "(({receiver}).x() = ({value}))", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          y: [{ emit: "(({receiver}).y() = ({value}))", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          width: [{ emit: "(({receiver}).width() = ({value}))", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
+          height: [{ emit: "(({receiver}).height() = ({value}))", returnType: "double", receiverTypes: DOM_RECT_RECEIVER_TYPES }],
           // Installing an event handler on a WebSocket / RTCPeerConnection.
           //
           // `packages/host/include/host/websocket.h` and `.../rtc.h` already ship
@@ -2570,7 +2788,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           ],
           nodeValue: [
             {
-              emit: "gea_ir::domSetTextContent({receiver}, {value})",
+              emit: "({receiver}).setCharacterData({value})",
               receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
               returnType: "void",
             },
@@ -2817,6 +3035,8 @@ export function createGeaHostShims(): HostShimDefinitions {
           // actually exports.
           // Promise jobs and author microtasks share one FIFO, not a zero-delay timer.
           queueMicrotask: "gea::detail::queuePromiseJob",
+          matchMedia: "gea::embedded::ui::matchMedia",
+          getComputedStyle: "gea::host::getComputedStyle",
           setTimeout: "gea::host::setTimeout",
           clearTimeout: "gea::host::clearTimeout",
           setInterval: "gea::host::setInterval",
@@ -2857,6 +3077,8 @@ export function createGeaHostShims(): HostShimDefinitions {
         // methods), not a boxed `gea_cpp_value` record. Pairs with the `FetchResponse`
         // entry in `nativeTypes` for explicit `FetchResponse` annotations.
         embeddedHostFunctionReturnTypes: {
+          matchMedia: "gea::embedded::ui::MediaQueryMatch",
+          getComputedStyle: "gea::embedded::ui::NativeComputedStyle",
           // Native-pixel marker. Registered so an inferred `const COLORS =
           // [rgb565(...), ...]` (no annotation) still lowers to a
           // `std::vector<NativeColor>`, and the value flows native through the canvas
@@ -2879,6 +3101,17 @@ export function createGeaHostShims(): HostShimDefinitions {
         // cache — stays the concrete struct, even though the bundle erased the
         // declared `make(id): GeaEmbeddedImage` type.
         nativeNamespaceMethods: {
+          performance: {
+            now: {
+              emit: "gea::host::performance.now({args})",
+              returnType: "double",
+              noThrow: true,
+            },
+            getEntriesByType: {
+              emit: "gea::host::performance.getEntriesByType({args})",
+              returnType: "std::vector<gea::host::ResourceTiming>",
+            },
+          },
           "navigator.mediaDevices": {
             getUserMedia: {
               emit: "gea::host::MediaStream(gea::host::media::get_user_media_audio({args}))",
@@ -3085,6 +3318,26 @@ export function createGeaHostShims(): HostShimDefinitions {
         // returnType-only bindings (no `emit`) keep the normal direct method-call
         // emit; receiverTypes bound the match to FetchResponse.
         nativeMemberMethods: {
+          scrollTo: [{ receiverTypes: ["gea::host::WindowFacade", "GeaWindow"], emit: "({receiver}).scrollTo({arg0}, {arg1})", returnType: "void" }],
+          getSelection: [{ receiverTypes: ["gea::host::WindowFacade", "GeaWindow"], emit: "gea::host::window.getSelection()", returnType: "gea::host::SelectionFacade" }],
+          selectAllChildren: [{ receiverTypes: ["gea::host::SelectionFacade"], emit: "({receiver}).selectAllChildren({arg0})", returnType: "void" }],
+          removeAllRanges: [{ receiverTypes: ["gea::host::SelectionFacade"], emit: "({receiver}).removeAllRanges()", returnType: "void" }],
+          now: [{
+            receiverTypes: ["gea::host::PerformanceFacade"],
+            emit: "gea::host::performance.now()",
+            returnType: "double",
+            noThrow: true,
+          }],
+          getEntriesByType: [{
+            receiverTypes: ["gea::host::PerformanceFacade"],
+            emit: "gea::host::performance.getEntriesByType({args})",
+            returnType: "std::vector<gea::host::ResourceTiming>",
+          }],
+          compareDocumentPosition: [{
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            emit: "static_cast<double>(({receiver}).compareDocumentPosition({arg0}))",
+            returnType: "double",
+          }],
           item: [{ emit: "({receiver}).item({arg0})", returnType: "gea::embedded::ui::NodeHandle", receiverTypes: ["gea::embedded::ui::ChildNodeList", "NodeList"] }],
           matches: [{ receiverTypes: [...NODE_HANDLE_RECEIVER_TYPES, ...EVENT_TARGET_RECEIVER_TYPES], emit: "gea::embedded::ui::NodeHandle({receiver}).matches({arg0})", returnType: "bool" }],
           closest: [{ receiverTypes: [...NODE_HANDLE_RECEIVER_TYPES, ...EVENT_TARGET_RECEIVER_TYPES], emit: "gea::embedded::ui::NodeHandle({receiver}).closest({arg0})", returnType: "gea::embedded::ui::NodeHandle" }],
@@ -3149,7 +3402,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           // `document` identifier. The receiver carrier and operation role are
           // authenticated by host-runtime-v1 before this physical symbol is used.
           addEventListener: [
-            { receiverTypes: ["gea::embedded::ui::Document"], emit: "gea::embedded::ui::Document::instance().addEventListener({args})", returnType: "void" },
+            { receiverTypes: ["gea::host::DocumentFacade"], emit: "gea::embedded::ui::Document::instance().addEventListener({args})", returnType: "void" },
             // The same member on a NODE, which is a different receiver carrier and
             // therefore a different physical symbol -- `el.addEventListener('touchstart',
             // handler)` written imperatively on a `Component<GeaCanvasElement>`'s `this.el`,
@@ -3184,7 +3437,7 @@ export function createGeaHostShims(): HostShimDefinitions {
           ],
           // Options are ordinary configuration properties; callback and event carriers stay typed.
           removeEventListener: [
-            { receiverTypes: ["gea::embedded::ui::Document"], emit: "gea::embedded::ui::Document::instance().removeEventListener({args})", returnType: "void" },
+            { receiverTypes: ["gea::host::DocumentFacade"], emit: "gea::embedded::ui::Document::instance().removeEventListener({args})", returnType: "void" },
           ],
           appendChild: [
             {
@@ -3286,6 +3539,10 @@ export function createGeaHostShims(): HostShimDefinitions {
               returnType: "std::string",
             },
           ],
+          getBoundingClientRect: [{
+            receiverTypes: NODE_HANDLE_RECEIVER_TYPES,
+            returnType: "gea::host::DOMRect",
+          }],
           // Text-input focus. `NodeHandle::focus()`/`blur()` (engine/ui/node.cpp)
           // set and clear `Tree`'s active input, which is what raises the virtual
           // keyboard and starts the caret blink. Without these rows the only way to
@@ -3702,6 +3959,10 @@ export function createGeaHostShims(): HostShimDefinitions {
           ...CSS_STYLE_DECLARATION_NATIVE_MEMBER_METHODS,
         },
         embeddedHostConstants: {
+          devicePixelRatio: {
+            emit: "gea::host::Display.getDevicePixelRatio()",
+            type: "double",
+          },
           audioContext: {
             emit: "gea::host::sharedAudioContext()",
             type: "gea::host::AudioContext",
@@ -3712,6 +3973,11 @@ export function createGeaHostShims(): HostShimDefinitions {
           },
         },
         embeddedHostClasses: {
+          DOMRect: {
+            wrapper: "gea::host::DOMRect",
+            construct: "gea::host::DOMRect::create({args})",
+            allowConcrete: true,
+          },
           AudioContext: {
             wrapper: "gea::host::AudioContext",
             construct: "gea::host::AudioContext({args})",

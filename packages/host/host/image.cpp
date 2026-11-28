@@ -7,6 +7,7 @@
 #undef GEA_CPP_VALUE_AVAILABLE
 #endif
 #include "host/image.h"
+#include "program.h"
 
 #include "display.h"
 #include "gea/embedded-host.h"
@@ -93,6 +94,14 @@ extern "C" bool gea_embedded_asset_lookup(const char *path,
                                           unsigned long *length)
     GEA_PROGRAM_HOOK;
 
+// The running program's bundled assets: a loaded program's own registry
+// (program.h), else the one linked into the firmware.
+bool programAssetLookup(const char *path, const unsigned char **data, unsigned long *length) {
+  if (const auto *loaded = gea::framework::program::loaded())
+    return loaded->assetLookup && loaded->assetLookup(path, data, length);
+  return gea_embedded_asset_lookup && gea_embedded_asset_lookup(path, data, length);
+}
+
 namespace {
 
 gea::framework::graphics::ImageStore &store() {
@@ -100,6 +109,13 @@ gea::framework::graphics::ImageStore &store() {
 }
 
 int integer(double value) { return static_cast<int>(value); }
+
+// Bundled-asset decodes by the asset's (stable, flash) address: see
+// ImageService::loadBytesPtr and gea_host_image_dispose_assets.
+std::unordered_map<const void *, int> &assetCache() {
+  static std::unordered_map<const void *, int> cache;
+  return cache;
+}
 
 // An absolute filesystem path: `/...`, and on Windows also a drive path
 // (`C:/...`, `C:\...`) or a UNC path (`\\server\...`), which is how an
@@ -209,7 +225,7 @@ double ImageService::loadBytesPtr(const std::uint8_t *data,
   // One decode per asset; an <img> that remounts reuses the same slot instead
   // of leaking a fresh decode each time. The embedded symbol address is stable,
   // so it's a safe cache key.
-  static std::unordered_map<const void *, int> cache;
+  auto &cache = assetCache();
   const auto cached = cache.find(data);
   if (cached != cache.end())
     return static_cast<double>(cached->second);
@@ -224,10 +240,10 @@ double ImageService::loadAssetPath(const char *path) const {
   if (!path)
     return -1.0;
   // First: a bundled/flash asset (the common <img src="/logo.png"> case).
-  if (gea_embedded_asset_lookup) {
+  {
     const unsigned char *data = nullptr;
     unsigned long length = 0;
-    if (gea_embedded_asset_lookup(path, &data, &length))
+    if (programAssetLookup(path, &data, &length))
       return loadBytesPtr(data, static_cast<std::size_t>(length));
   }
   // Fallback: an absolute filesystem path (e.g. an EPUB cover extracted to the
@@ -444,6 +460,16 @@ void GeaEmbeddedImage::dispose() const { store().dispose(id); }
 
 } // namespace gea::host
 
+// Drops every bundled-asset decode: each slot is disposed (now, or when the
+// last node showing it lets go) and the next load of that asset decodes into a
+// fresh slot. For a program that unloads one screen's images to show
+// another's, so the asset cache does not keep every image it ever showed.
+extern "C" void gea_host_image_dispose_assets() {
+  auto &cache = gea::host::assetCache();
+  for (const auto &entry : cache) gea::host::store().dispose(entry.second);
+  cache.clear();
+}
+
 extern "C" double gea_host_image_load_asset_path(const char *path) {
   return gea::host::image.loadAssetPath(path);
 }
@@ -453,10 +479,10 @@ extern "C" double gea_host_image_load_asset_path(const char *path) {
 extern "C" double gea_host_image_acquire_asset_path(const char *path, bool *owned) {
   *owned = false;
   if (!path) return -1.0;
-  if (gea::host::gea_embedded_asset_lookup) {
+  {
     const unsigned char *data = nullptr;
     unsigned long length = 0;
-    if (gea::host::gea_embedded_asset_lookup(path, &data, &length))
+    if (gea::host::programAssetLookup(path, &data, &length))
       return gea::host::image.loadBytesPtr(data, length);
   }
   if (!gea::host::isAbsoluteFilePath(path)) return -1.0;

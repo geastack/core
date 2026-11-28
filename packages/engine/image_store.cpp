@@ -564,7 +564,8 @@ int ImageStore::decodeJpegTjpgd(ImageSlot &image, const std::uint8_t *data, int 
 	constexpr std::size_t poolSize = 8 * 1024;
 	void *pool = nullptr;
 #ifdef ESP_PLATFORM
-	pool = heap_caps_malloc(poolSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	// MALLOC_CAP_DMA keeps it out of the S31/P4 LP RAM, slower than PSRAM.
+	pool = heap_caps_malloc(poolSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
 #endif
 	if (!pool) pool = memory::Allocator::allocatePreferSpiram(poolSize, alignof(std::max_align_t));
 	if (!pool) return -1;
@@ -1318,6 +1319,13 @@ void ImageStore::disposeAll()
 			if (references_[i] == 0) disposeLocked(i);
 		}
 	}
+}
+
+void ImageStore::disposeEverything()
+{
+	ImageStoreLock lock(slotMutex_);
+	for (int i = 0; i < kImageMax; i++)
+		if (used_[i]) disposeLocked(i);
 }
 
 int ImageStore::registerBuffer(pixel::native_t *pixels, int width, int height, int preferredSlot, bool takeOwnership)

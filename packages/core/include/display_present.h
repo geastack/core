@@ -22,6 +22,7 @@
 #else
 #define GEA_DISPLAY_PRESENT_HAS_ESP_HEAP_CAPS 0
 #define MALLOC_CAP_INTERNAL 0
+#define MALLOC_CAP_DMA 0
 #define MALLOC_CAP_8BIT 0
 inline void *heap_caps_malloc(std::size_t size, int)
 {
@@ -81,6 +82,15 @@ inline Rect clampAndAlign(Rect rect, int width, int height)
 	if (rect.x1 >= width) rect.x1 = width - 1;
 	if (rect.y1 >= height) rect.y1 = height - 1;
 	return rect;
+}
+
+// A hot per-frame table in internal RAM: main SRAM first (MALLOC_CAP_DMA keeps
+// it out of the S31/P4 LP RAM, slower than PSRAM), then any internal RAM. Not
+// PSRAM: a PSRAM allocation on this path blanks the CO5300 panel (below).
+inline void *internalHotAlloc(std::size_t bytes)
+{
+	void *p = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+	return p ? p : heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
 // unique_ptr deleter that frees buffers allocated via heap_caps_malloc.
@@ -449,8 +459,7 @@ inline bool extractFrame(const gea::platform::display::DisplayPresentCommand *co
 						buffer = out.inlineCircles.data();
 					} else {
 						buffer = static_cast<CircleEntry *>(
-							heap_caps_malloc(sizeof(CircleEntry) * static_cast<std::size_t>(count),
-							                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+							internalHotAlloc(sizeof(CircleEntry) * static_cast<std::size_t>(count)));
 						if (!buffer) return false;
 					}
 					bool sortedByBucket = false;
@@ -509,8 +518,7 @@ inline bool extractFrame(const gea::platform::display::DisplayPresentCommand *co
 			int batchY1 = -1;
 			if (count > 0) {
 				TriangleEntry *buffer = static_cast<TriangleEntry *>(
-					heap_caps_malloc(sizeof(TriangleEntry) * static_cast<std::size_t>(count),
-					                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+					internalHotAlloc(sizeof(TriangleEntry) * static_cast<std::size_t>(count)));
 				if (!buffer) return false;
 				std::memcpy(buffer, src.entries, sizeof(TriangleEntry) * static_cast<std::size_t>(count));
 				batchY0 = buffer[0].rowY0;

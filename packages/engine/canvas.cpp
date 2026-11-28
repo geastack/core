@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <new>
 #include <type_traits>
 #include <vector>
 
@@ -208,7 +209,27 @@ struct TextSprite {
 	bool rleValid = false;    // true only when the current sprite has a valid RLE
 };
 
-TextSprite gTextSprites[kTextSpriteSlots];
+// One bank per render core. The display's 2-core band split replays a label
+// that straddles the split line on BOTH cores at once; with one shared bank
+// both built, reallocated and freed the same slot concurrently. On the mosaico
+// that corrupted the heap: a later launch faulted in blitGlyphSprite on a
+// garbage pointer, and GEADEV MEM's heap walk faulted. The projected-text
+// cache in render.cpp is split the same way for the same race.
+// Heap-allocated on a core's first label (PSRAM where malloc prefers it):
+// static, the two banks were 8 KB of internal RAM. A bank is created only by
+// its own core, so creation needs no lock.
+TextSprite *gTextSprites[2] = {nullptr, nullptr};
+
+inline int textSpriteBank()
+{
+#if GEA_CANVAS_HAS_FREERTOS
+	return xPortGetCoreID() & 1;
+#elif GEA_CANVAS_HAS_PICO
+	return get_core_num() & 1;
+#else
+	return 0;
+#endif
+}
 
 // Internal-SRAM staging for the sprite currently being blitted. The RLE blit walks
 // rowX0/rowX1/rleRowStart/rleVal/rleLen several times per frame (once per DMA chunk
@@ -252,7 +273,7 @@ void adoptHotTextSprite(const TextSprite &s)
 		// cached sprite blitted through the hot stage). The S3, where this staging
 		// was built, has byte-accessible IRAM and never showed it.
 		hot.buf = static_cast<std::uint8_t *>(
-				heap_caps_malloc(GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+				heap_caps_malloc(GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
 #else
 		hot.buf = static_cast<std::uint8_t *>(std::malloc(GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES));
 #endif
@@ -282,18 +303,25 @@ void adoptHotTextSprite(const TextSprite &s)
 }
 #endif  // GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES > 0
 
-TextSprite &textSpriteFor(const char *text, const RasterizedFont &font)
+TextSprite *textSpriteBankSlots(int bank)
+{
+	if (!gTextSprites[bank]) gTextSprites[bank] = new (std::nothrow) TextSprite[kTextSpriteSlots];
+	return gTextSprites[bank];
+}
+
+TextSprite &textSpriteFor(TextSprite *slots, const char *text, const RasterizedFont &font, int bank)
 {
 	// Search every slot: a direct-mapped hash makes alternating labels
 	// such as "FPS: 59" and "FPS: 60" evict each other. Hits stay read-only;
 	// a four-byte replacement cursor advances only for a new cache key.
-	for (TextSprite &candidate : gTextSprites) {
+	for (int i = 0; i < kTextSpriteSlots; i++) {
+		TextSprite &candidate = slots[i];
 		if (candidate.fontData == font.data() && candidate.fontGeneration==font.data()->generation && candidate.sizePx == font.sizePx() &&
 		    std::strcmp(candidate.text, text) == 0)
 			return candidate;
 	}
-	static std::atomic<unsigned> nextSlot{0};
-	return gTextSprites[nextSlot.fetch_add(1, std::memory_order_relaxed) % kTextSpriteSlots];
+	static std::atomic<unsigned> nextSlot[2]{};
+	return slots[nextSlot[bank].fetch_add(1, std::memory_order_relaxed) % kTextSpriteSlots];
 }
 
 // Rasterize `text` into `sprite`'s coverage buffer in text-relative coordinates
@@ -528,6 +556,66 @@ void Canvas::setTextRasterCacheEnabled(bool enabled)
 bool Canvas::textRasterCacheEnabled()
 {
 	return gTextRasterCacheEnabled;
+}
+
+namespace {
+void freeRoundedCoverageTables();
+}  // namespace
+
+void Canvas::releaseShapeCaches()
+{
+	freeRoundedCoverageTables();
+}
+
+#ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
+namespace {
+void releaseSolidGlyphCache();
+}  // namespace
+#endif
+
+void Canvas::invalidateTextRasterCache()
+{
+#ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
+	releaseSolidGlyphCache();
+#endif
+	// Runs when an app unmounts: its sprites are keyed by its fonts, and a
+	// program's fonts leave with it, so the buffers go too rather than holding
+	// up to every slot's largest label for the next app.
+#if GEA_EMBEDDED_TEXT_SPRITE_CACHE
+	for (TextSprite *bank : gTextSprites)
+	for (int i = 0; bank && i < kTextSpriteSlots; i++) {
+		TextSprite &sprite = bank[i];
+		sprite.text[0] = '\0';
+		sprite.fontData = nullptr;
+		sprite.sizePx = -1;
+		sprite.state = TextSprite::Empty;
+		sprite.rleValid = false;
+		std::free(sprite.cov);
+		std::free(sprite.rowX0);
+		std::free(sprite.rowX1);
+		std::free(sprite.rleVal);
+		std::free(sprite.rleLen);
+		std::free(sprite.rleRowStart);
+		sprite.cov = nullptr;
+		sprite.rowX0 = nullptr;
+		sprite.rowX1 = nullptr;
+		sprite.rleVal = nullptr;
+		sprite.rleLen = nullptr;
+		sprite.rleRowStart = nullptr;
+		sprite.covCap = 0;
+		sprite.extCap = 0;
+		sprite.rleCap = 0;
+		sprite.rleRowCap = 0;
+	}
+#if GEA_EMBEDDED_TEXT_SPRITE_HOT_STAGE_BYTES > 0
+	// The hot stage is 12 KB of internal RAM, allocated the first time a large
+	// label blits; the launcher an unloaded app returns to has none to spare.
+	gHotTextSprite.owner = nullptr;
+	std::free(gHotTextSprite.buf);
+	gHotTextSprite.buf = nullptr;
+	gHotTextSprite.allocFailed = false;
+#endif
+#endif  // GEA_EMBEDDED_TEXT_SPRITE_CACHE
 }
 
 void Canvas::setTextSolidBackdrop(int rrggbb)
@@ -841,6 +929,18 @@ RoundedCoverageTable gRoundedCoverage[kRoundedCoverageTables];
 std::atomic_flag gRoundedCoverageLock = ATOMIC_FLAG_INIT;
 std::uint32_t gRoundedCoverageClock = 0;
 
+void freeRoundedCoverageTables()
+{
+	while (gRoundedCoverageLock.test_and_set(std::memory_order_acquire)) {}
+	for (auto &table : gRoundedCoverage) {
+		if (table.refs.load(std::memory_order_relaxed) != 0) continue;
+		std::free(table.cells);
+		table.cells = nullptr;
+		table.capacity = 0;
+	}
+	gRoundedCoverageLock.clear(std::memory_order_release);
+}
+
 void *allocRoundedCoverageCells(int bytes)
 {
 #ifdef ESP_PLATFORM
@@ -1040,8 +1140,25 @@ struct SolidGlyphCacheEntry {
 };
 
 constexpr int kSolidGlyphCacheSize = 48;
-SolidGlyphCacheEntry gSolidGlyphCache[kSolidGlyphCacheSize];
-std::uint32_t gSolidGlyphClock = 1;
+// One bank per render core, heap-allocated by its own core on first use: the
+// 2-core band split draws the same label on both cores at once, and one shared
+// bank rebuilt an entry's vectors under the other core's reads.
+struct SolidGlyphBank {
+	SolidGlyphCacheEntry entries[kSolidGlyphCacheSize];
+	std::uint32_t clock = 1;
+};
+SolidGlyphBank *gSolidGlyphBanks[2] = {nullptr, nullptr};
+
+inline int solidGlyphBank()
+{
+#if GEA_CANVAS_HAS_FREERTOS
+	return xPortGetCoreID() & 1;
+#elif GEA_CANVAS_HAS_PICO
+	return get_core_num() & 1;
+#else
+	return 0;
+#endif
+}
 
 SolidGlyphCacheEntry *solidGlyphCacheEntry(const RasterizedFont &font,
                                            pixel::native_t color,
@@ -1050,11 +1167,15 @@ SolidGlyphCacheEntry *solidGlyphCacheEntry(const RasterizedFont &font,
 {
 	const RasterizedFontData *data = font.data();
 	if (!data) return nullptr;
+	SolidGlyphBank *&bankSlot = gSolidGlyphBanks[solidGlyphBank()];
+	if (!bankSlot) bankSlot = new (std::nothrow) SolidGlyphBank();
+	if (!bankSlot) return nullptr;
+	SolidGlyphBank &bank = *bankSlot;
 
-	for (auto &entry : gSolidGlyphCache) {
+	for (auto &entry : bank.entries) {
 		if (entry.font == data && entry.color == color && entry.background == background &&
 		    entry.codepoint == codepoint) {
-			entry.lastUsed = ++gSolidGlyphClock;
+			entry.lastUsed = ++bank.clock;
 			return &entry;
 		}
 	}
@@ -1062,8 +1183,8 @@ SolidGlyphCacheEntry *solidGlyphCacheEntry(const RasterizedFont &font,
 	Glyph glyph{};
 	if (!font.glyph(codepoint, &glyph)) return nullptr;
 
-	SolidGlyphCacheEntry *victim = &gSolidGlyphCache[0];
-	for (auto &entry : gSolidGlyphCache) {
+	SolidGlyphCacheEntry *victim = &bank.entries[0];
+	for (auto &entry : bank.entries) {
 		if (!entry.font) {
 			victim = &entry;
 			break;
@@ -1109,8 +1230,18 @@ SolidGlyphCacheEntry *solidGlyphCacheEntry(const RasterizedFont &font,
 		}
 	}
 
-	victim->lastUsed = ++gSolidGlyphClock;
+	victim->lastUsed = ++bank.clock;
 	return victim;
+}
+
+// An unloaded program's fonts go with it, and the next program's can land at
+// the same address: its glyphs must not come back from this cache.
+void releaseSolidGlyphCache()
+{
+	for (SolidGlyphBank *&bank : gSolidGlyphBanks) {
+		delete bank;
+		bank = nullptr;
+	}
 }
 
 }  // namespace
@@ -3229,8 +3360,12 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 #if GEA_EMBEDDED_TEXT_SPRITE_DIAG
 		if (len == 0 || len > static_cast<std::size_t>(kTextSpriteMaxLen)) gTsDiag.tooLong++;
 #endif
-		if (len > 0 && len <= static_cast<std::size_t>(kTextSpriteMaxLen)) {
-			TextSprite &slot = textSpriteFor(text, font);
+		const int bank = textSpriteBank();
+		TextSprite *slots = textSpriteBankSlots(bank);
+		if (slots && len > 0 && len <= static_cast<std::size_t>(kTextSpriteMaxLen)) {
+			// The hot stage is one internal-RAM buffer: only the render core's
+			// bank uses it, so the worker core never touches it.
+			TextSprite &slot = textSpriteFor(slots, text, font, bank);
 			const bool idMatch = slot.fontData == font.data() && slot.fontGeneration==font.data()->generation &&
 			                     slot.sizePx == font.sizePx() &&
 			                     std::strcmp(slot.text, text) == 0;
@@ -3252,7 +3387,7 @@ void Canvas::drawRasterizedText(const char *text, int x, int y, pixel::native_t 
 				// Only large text stages: with small labels cached too, several
 				// sprites blit per frame and would steal the one stage from
 				// each other, re-copying every frame.
-				if (slot.rleValid && slot.sizePx >= 40) {
+				if (bank == 0 && slot.rleValid && slot.sizePx >= 40) {
 					if (gHotTextSprite.owner != &slot) adoptHotTextSprite(slot);
 					if (gHotTextSprite.owner == &slot) {
 						bRowX0 = gHotTextSprite.rowX0;
@@ -4188,6 +4323,22 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 
 	RoundedCoverageTable *coverageTable = useAntialias ? acquireRoundedCoverage(w, h, tl, tr, br, bl, aaSamples) : nullptr;
 	struct ReleaseCoverage { RoundedCoverageTable *table; ~ReleaseCoverage() { releaseRoundedCoverage(table); } } releaseCoverage{coverageTable};
+	// Edge coverage on the straight sides, keyed by distance from each side
+	// (-1 = not yet computed). Without it every row of an antialiased box
+	// re-sampled its edge band, through a coverage table that a box whose size
+	// changes every frame (a cover flow) never hits.
+	constexpr int kStraightEdgeSlots = 16;
+	std::int8_t straightLeft[kStraightEdgeSlots];
+	std::int8_t straightRight[kStraightEdgeSlots];
+	std::memset(straightLeft, -1, sizeof(straightLeft));
+	std::memset(straightRight, -1, sizeof(straightRight));
+	const float straightTop = static_cast<float>(y) + static_cast<float>(top_r);
+	const float straightBottom = static_cast<float>(y) + static_cast<float>(h) - static_cast<float>(bot_r);
+	// The top and bottom edges are the transpose: a pixel whose samples all lie
+	// between the left and right corner bands has a coverage that depends on
+	// its row alone, so an edge row computes it once instead of per pixel.
+	const float straightLeftX = static_cast<float>(x) + static_cast<float>(tl > bl ? tl : bl);
+	const float straightRightX = static_cast<float>(x) + static_cast<float>(w) - static_cast<float>(tr > br ? tr : br);
 	for (int sy = row0; sy <= row1; sy++) {
 		int sx0 = width_;
 		int sx1 = -1;
@@ -4263,10 +4414,38 @@ void Canvas::fillRoundedRect(int x, int y, int w, int h, int tl, int tr, int br,
 		}
 		if (anyX0 > anyX1) continue;
 
+		// Every sample of this row lies between the corner bands, so no corner
+		// arc reaches it: edge coverage here is a function of px only.
+		const bool straightRow = useAntialias &&
+		    static_cast<float>(sy) + firstOffset >= straightTop &&
+		    static_cast<float>(sy) + lastOffset < straightBottom;
+		std::int8_t straightRowCoverage = -1;
+
 			auto paintCoverageEdge = [&](int px) {
 			if (px < clip->x0 || px > clip->x1 || px < 0 || px >= width_) return;
-			std::uint8_t *cell = coverageTable ? &coverageTable->cells[(sy - y) * w + (px - x)] : nullptr;
-			int decided = cell && *cell != 0xff ? *cell
+			// Straight-side row: the answer depends on px alone, so it is
+			// computed once per shape and reused down the whole side.
+			std::int8_t *straightSlot = nullptr;
+			if (straightRow) {
+				const int fromLeft = px - x;
+				const int fromRight = x + w - 1 - px;
+				straightSlot = fromLeft >= 0 && fromLeft < kStraightEdgeSlots ? &straightLeft[fromLeft]
+				    : fromRight >= 0 && fromRight < kStraightEdgeSlots ? &straightRight[fromRight]
+				                                                       : nullptr;
+			} else if (useAntialias &&
+			           static_cast<float>(px) + firstOffset >= straightLeftX &&
+			           static_cast<float>(px) + lastOffset < straightRightX) {
+				straightSlot = &straightRowCoverage;
+			}
+			if (straightSlot && *straightSlot < 0) {
+				const int known = roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, px, sy,
+				                                             firstOffset, lastOffset, aaSampleCount);
+				*straightSlot = static_cast<std::int8_t>(
+				    known >= 0 ? known : roundedRectCoverage(x, y, w, h, tl, tr, br, bl, px, sy, aaSamples, kernelWidth));
+			}
+			std::uint8_t *cell = !straightSlot && coverageTable ? &coverageTable->cells[(sy - y) * w + (px - x)] : nullptr;
+			int decided = straightSlot ? *straightSlot
+			    : cell && *cell != 0xff ? *cell
 			    : useAntialias ? roundedRectCoverageDecided(x, y, w, h, tl, tr, br, bl, px, sy,
 			                                                firstOffset, lastOffset, aaSampleCount)
 			                   : -1;

@@ -1,7 +1,6 @@
 #pragma once
 
 #include "app.h"
-#include "apps.h"
 #include "audio.h"
 #include "ble.h"
 #include "display.h"

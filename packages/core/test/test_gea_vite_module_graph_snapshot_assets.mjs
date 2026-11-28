@@ -7,6 +7,42 @@ import { build } from 'vite'
 
 import { geaModuleGraphPlugins } from '../scripts/gea-vite-module-graph-plugin.mjs'
 
+test('the snapshot graph retains statically resolved CommonJS edges', async () => {
+  const entry = fileURLToPath(import.meta.url)
+  const root = path.dirname(entry)
+  const output = path.join(root, '.build/module-graph')
+  const target = path.join(root, 'production.cjs')
+  const unloaded = path.join(root, 'unloaded.cjs')
+  const plugins = geaModuleGraphPlugins({ outDir: output, entryReachableOnly: true })
+  for (const plugin of plugins) plugin.configResolved?.({ root })
+  const context = {
+    async resolve(specifier, importer, options) {
+      assert.equal(importer, entry)
+      assert.equal(options.kind, 'require-call')
+      return { id: specifier === 'selected' ? target : unloaded }
+    },
+    getModuleIds: () => [entry, target],
+    getModuleInfo: (id) => id === entry ? { isEntry: true, importedIds: [target] } : null,
+  }
+  const source = "exports.value = require('selected')\n// require('unloaded')\n"
+  plugins[1].transform(source, entry)
+  await plugins[2].transform.call(context, source, entry)
+  const writes = new Map()
+  const originals = { rmSync: fs.rmSync, mkdirSync: fs.mkdirSync, writeFileSync: fs.writeFileSync }
+  try {
+    fs.rmSync = (name) => assert.equal(name, output)
+    fs.mkdirSync = (name) => assert.equal(name, path.join(output, 'sources'))
+    fs.writeFileSync = (name, contents) => { writes.set(name, contents) }
+    plugins[2].generateBundle.call(context, {}, { entry: { type: 'chunk', modules: { [entry]: {}, [target]: {} } } })
+  } finally {
+    Object.assign(fs, originals)
+  }
+  const graph = JSON.parse(writes.get(path.join(output, 'gea-module-graph.json')))
+  assert.deepEqual(graph.modules.find(module => module.id === entry).imports, [
+    { kind: 'require', specifier: 'selected', resolvedId: target, tracked: true },
+  ])
+})
+
 test('original snapshot asset bindings survive transforms without resurrecting unreachable assets', async () => {
   const testDir = path.dirname(fileURLToPath(import.meta.url))
   const outDir = path.join(testDir, '.build/module-graph')

@@ -12,6 +12,7 @@ export interface WorkerErrorEvent {
 
 export interface MessagePort {
   onmessage: ((event: MessageEvent) => void) | null
+  /** @gea-host-no-property-writes */
   postMessage(message: WorkerMessage, transfer?: (ArrayBuffer | MessagePort)[]): void
   start(): void
   close(): void

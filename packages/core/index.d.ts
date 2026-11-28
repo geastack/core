@@ -128,16 +128,97 @@ export interface GeaWindowEventMap extends GeaEventMap {
   resize: Event
 }
 /** Native app-window event authority. No global input posting or browser Window privileges. */
+export interface GeaMediaQueryMatch {
+  readonly matches: boolean
+}
+
+export interface GeaDocumentSelection {
+  /** @gea-host-read-ordinary-or-null */
+  readonly anchorNode: Node | null
+  readonly anchorOffset: number
+  /** @gea-host-read-ordinary-or-null */
+  readonly focusNode: Node | null
+  readonly focusOffset: number
+  selectAllChildren(node: Node): void
+  removeAllRanges(): void
+}
+
 export interface GeaWindow {
+  /** @gea-host-call-ordinary-or-null */
+  getSelection(this: GeaWindow): GeaDocumentSelection
+  /** The native window does not provide the browser ErrorEvent constructor. */
+  readonly ErrorEvent?: undefined
+  readonly attachEvent?: undefined
+  readonly detachEvent?: undefined
+  readonly document: Document
+  readonly event: Event | undefined
+  /** The native host has no window-level legacy clipboard data. */
+  readonly clipboardData?: never
   readonly innerWidth: number
   readonly innerHeight: number
+  readonly scrollX: number
+  readonly scrollY: number
+  scrollTo(this: GeaWindow, x: number, y: number): void
   addEventListener<K extends keyof GeaWindowEventMap>(type: K, listener: (event: GeaWindowEventMap[K]) => void, options?: boolean | WindowEventListenerOptions): void
   removeEventListener<K extends keyof GeaWindowEventMap>(type: K, listener: (event: GeaWindowEventMap[K]) => void, options?: boolean | WindowEventListenerOptions): void
+  /** Listener objects are rejected by the native host with TypeError. */
+  addEventListener<T extends object>(type: string, listener: T & (T extends (...args: never[]) => unknown ? never : unknown), options?: boolean | object): void
+  /** Removing an unsupported listener object has no effect. */
+  removeEventListener<T extends object>(type: string, listener: T & (T extends (...args: never[]) => unknown ? never : unknown), options?: boolean | object): void
 }
 
 declare global {
   const document: Document
   const window: GeaWindow
+  interface GeaResourceTiming {
+    readonly transferSize: number
+    readonly initiatorType: string
+    readonly duration: number
+    readonly startTime: number
+    readonly responseEnd: number
+  }
+  interface GeaPerformance {
+    /** @gea-host-inert */
+    now(): number
+    getEntriesByType(type: string): GeaResourceTiming[]
+  }
+  const performance: GeaPerformance
+  /** Evaluate a media query against the current native document viewport.
+   * @gea-host-no-property-writes */
+  function matchMedia(query: string): GeaMediaQueryMatch
+  /** Read the layout properties exposed by the native CSS engine.
+   * @gea-host-no-property-writes */
+  function getComputedStyle(element: Element, pseudoElement?: string | null): NativeComputedStyle
+  interface ErrorConstructor {
+    /** Optional own property used by libraries that save and restore a stack formatter. */
+    prepareStackTrace?: unknown
+  }
+  /** Current scale from CSS pixels to display pixels. */
+  const devicePixelRatio: number
+  class DOMRect {
+    /** @gea-host-fresh-ordinary-result */
+    constructor(x?: number, y?: number, width?: number, height?: number)
+    x: number
+    y: number
+    width: number
+    height: number
+    readonly top: number
+    readonly right: number
+    readonly bottom: number
+    readonly left: number
+  }
+
+  namespace CSS {
+    function escape(identifier: string): string
+  }
+  namespace Node {
+    const DOCUMENT_POSITION_DISCONNECTED: number
+    const DOCUMENT_POSITION_PRECEDING: number
+    const DOCUMENT_POSITION_FOLLOWING: number
+    const DOCUMENT_POSITION_CONTAINS: number
+    const DOCUMENT_POSITION_CONTAINED_BY: number
+    const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: number
+  }
 
   /**
    * The engine's own console (`gea::host::console`), declared here because the
@@ -156,7 +237,9 @@ declare global {
    * fail to link, which is worse than not being declared.
    */
   interface Console {
+    /** @gea-host-string-coercion-only */
     log(message: string): void
+    /** @gea-host-string-coercion-only */
     error(message: string): void
   }
   const console: Console
@@ -168,7 +251,10 @@ declare global {
   function requestAnimationFrame(callback: (timestampMs: int) => void): number
 
   // Shares the native Promise-job FIFO; app replacement retires pending jobs.
-  /** @gea-host-no-property-writes */
+  /**
+   * @gea-host-no-property-writes
+   * @gea-host-deferred-callback
+   */
   function queueMicrotask(callback: () => void): void
 
   // Native one-shot / repeating timers (gea::host::setTimeout/setInterval,
@@ -176,14 +262,18 @@ declare global {
   // no `dom` or `node` lib here, so without this declaration a `setTimeout`
   // call has no ambient type at all). The native id is a plain numeric handle
   // (`double setTimeout(TimerCallback, double)`), so both the id and the delay
-  // are `number`, and the callback takes no arguments (unlike the browser's,
-  // which forwards extra `setTimeout` arguments to it).
+  // are `number`. The native scheduler supplies no positional timer arguments.
   /** @gea-host-no-property-writes */
-  function setTimeout(callback: () => void, delayMs: number): number
+  function setTimeout(callback: () => void, delayMs?: number): number
+  /**
+   * A single required callback slot receives undefined when no timer arguments are supplied.
+   * @gea-host-no-property-writes
+   */
+  function setTimeout(callback: (value: undefined) => void, delayMs?: number): number
+  /** @gea-host-inert */
+  function clearTimeout(id?: number): void
   /** @gea-host-no-property-writes */
-  function clearTimeout(id: number): void
-  /** @gea-host-no-property-writes */
-  function setInterval(callback: () => void, delayMs: number): number
+  function setInterval(callback: () => void, delayMs?: number): number
   /** @gea-host-no-property-writes */
   function clearInterval(id: number): void
 
@@ -405,11 +495,30 @@ export interface NodeList {
 export interface Node extends EventTarget {
   /** True only for a live allocation in the current mounted document subtree. */
   readonly isConnected: boolean
-  readonly nodeType: number
+  /** @gea-host-inert-read */
+  readonly nodeType: 1 | 3 | 8 | 11
+  /** @gea-host-inert-read */
+  readonly nodeName: string
+  /** @gea-host-inert-read */
+  readonly data: string | undefined
+  /**
+   * Character data for text and comment nodes. Other node kinds read as null.
+   * @gea-host-inert-read
+   * @gea-host-fixed-result-property
+   */
+  nodeValue: string | null
+  readonly ownerDocument: Document
   readonly parentNode: Node | null
   /** The current first child, including text/comments; null when empty. */
   readonly firstChild: Node | null
+  /**
+   * @gea-host-read-ordinary-or-null
+   * @gea-host-inert-read
+   */
+  readonly nextSibling: Node | null
+  readonly previousSibling: Node | null
   readonly childNodes: NodeList
+  compareDocumentPosition(other: Node): number
   appendChild(child: Node): void
   /** Move a live node before a direct child; null appends. Return the inserted node. */
   insertBefore(child: Node, reference: Node | null): Node
@@ -433,14 +542,42 @@ export interface DOMTokenList {
   toggle(token: string, force?: boolean): boolean
 }
 
+/** The engine's live inline style handle for an element. */
+export interface CSSStyleDeclaration {
+  setProperty(name: string, value: string): void
+  removeProperty(name: string): boolean
+}
+
+export interface NativeComputedStyle {
+  readonly display: string
+  readonly position: string
+  readonly overflow: string
+  readonly borderRadius: string
+  readonly filter: string
+  readonly width: string
+  readonly height: string
+  readonly paddingTop: string
+  readonly paddingBottom: string
+}
+
 export interface Element extends Node {
+  readonly localName: string
+  /** @gea-host-inert-read */
+  readonly tagName: string
+  /** @gea-host-inert-read */
+  readonly namespaceURI: string | null
+  readonly prefix: string | null
+  /** String event attributes do not install inline JavaScript handlers. */
+  readonly oninput: null
+  readonly style: CSSStyleDeclaration
   readonly lastElementChild: Element | null
   /** Bounded native selector grammar; malformed/unsupported selectors refuse. */
   matches(selector: string): boolean
   closest<E extends Element = Element>(selector: string): E | null
   querySelector(selector: string): Element | null
+  /** @gea-host-fresh-ordinary-result */
   querySelectorAll(selector: string): readonly Element[]
-  className?: string
+  className: string
   readonly children: readonly Element[]
   scrollLeft?: number
   scrollTop?: number
@@ -455,6 +592,10 @@ export interface Element extends Node {
   removeAttribute(name: string): void
   hasAttribute(name: string): boolean
   toggleAttribute(name: string, force?: boolean): boolean
+  /** Web Animations API methods have no binding on native elements. */
+  readonly animate?: undefined
+  readonly getAnimations?: undefined
+  getBoundingClientRect(): DOMRect
   scrollIntoView(arg?: boolean | ScrollIntoViewOptions): void
   // Text-input focus: `focus()` makes this element the tree's active input,
   // which is what raises the virtual keyboard and starts the caret blink;
@@ -492,22 +633,93 @@ export interface VirtualListElement extends Element {
 }
 
 export interface Document {
+  /** @gea-host-inert-read */
+  readonly nodeType: 9
+  /** @gea-host-inert-read */
+  readonly nodeName: '#document'
+  readonly ownerDocument: null
+  /** The application document belongs to the singleton native window. */
+  readonly defaultView: GeaWindow
+  /** Native input events are delivered through addEventListener. */
+  readonly oninput: null
+  /** Legacy browser compatibility mode. The native document has no such mode. */
+  readonly documentMode?: number
   addEventListener<K extends keyof GeaEventMap>(type: K, listener: (event: GeaEventMap[K]) => void, options?: boolean | WindowEventListenerOptions): void
   removeEventListener<K extends keyof GeaEventMap>(type: K, listener: (event: GeaEventMap[K]) => void, options?: boolean | WindowEventListenerOptions): void
+  /** @gea-host-read-ordinary-result */
   readonly body: Element
-  /** Actual connected native focus, null when no owned responder is focused. */
+  /** @gea-host-read-ordinary-or-null */
+  readonly documentElement: Element | null
+  /** @gea-host-read-ordinary-or-null */
+  readonly head: Element | null
+  /**
+   * Actual connected native focus, null when no owned responder is focused.
+   * @gea-host-read-ordinary-or-null
+   */
   readonly activeElement: Element | null
+  /** @gea-host-call-ordinary-or-null */
   getElementById(id: string): Element | null
+  /** @gea-host-call-ordinary-or-null */
   querySelector(selector: string): Element | null
+  /** @gea-host-fresh-ordinary-result */
   querySelectorAll(selector: string): readonly Element[]
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: 'input'): InputElement
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: 'button'): ButtonElement
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: 'audio'): HTMLAudioElement
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: 'video'): HTMLVideoElement
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: 'virtual-list'): VirtualListElement
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
   createElement(tag: string): Element
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-fresh-result-no-enumerable-own-properties
+   * @gea-host-fresh-result-default-primitive-coercion
+   * @gea-host-fresh-result-absent-property push
+   */
+  createElementNS(namespace: string | null, qualifiedName: string): Element
+  /**
+   * @gea-host-fresh-ordinary-result
+   * @gea-host-string-coercion-only
+   */
   createTextNode(text: string): Node
+  /** @gea-host-fresh-ordinary-result */
   createComment(text: string): Node
+  /** @gea-host-fresh-ordinary-result */
   createDocumentFragment(): Node
 }
 
@@ -2361,6 +2573,7 @@ declare global {
   /** @gea-host-no-property-writes */
   function fetchRelease(id: number): void
   function atob(data: string): string
+  /** @gea-host-no-property-writes */
   function btoa(data: string | ArrayBuffer | Uint8Array): string
 }
 
@@ -2604,7 +2817,13 @@ declare global {
     decodeAudioData(audioData: Uint8Array | GeaAudioBlob): Promise<AudioBuffer>
   }
 
+  interface GeaNetworkInformation {
+    readonly downlink: number
+  }
+
   interface Navigator {
+    /** Absent on native hosts that do not report estimated link throughput. */
+    readonly connection?: GeaNetworkInformation
     readonly mediaDevices: MediaDevices
     readonly geolocation: GeolocationController
   }

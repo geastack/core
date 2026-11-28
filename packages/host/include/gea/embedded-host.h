@@ -10,6 +10,8 @@
 
 #include <display.h>
 #include "host/backends.h"
+#include "host/css.h"
+#include "host/dom_rect.h"
 #include "host/fetch.h"
 #include "geolocation.h"
 #include "host/websocket.h"

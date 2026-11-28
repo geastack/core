@@ -21,7 +21,14 @@
 
 namespace gea::framework::identity {
 struct Token {};
+struct NodeToken : Token {
+  // Node expandos belong to the live allocation. Retiring a node clears
+  // this attachment even if one of its properties retains a handle back
+  // to the same node. Only the node registry lock accesses it.
+  mutable std::shared_ptr<void> propertyStorage;
+};
 using Owner = std::shared_ptr<const Token>;
+using NodeOwner = std::shared_ptr<const NodeToken>;
 // A copied carrier retains the same occurrence, including copies made before
 // the first identity observation. Fresh event carriers have distinct tokens.
 class Occurrence {
@@ -58,7 +65,7 @@ struct NodeRegistry {
   void exit() { mutex.unlock(); }
 #endif
   // Indexed by tree id; ids are small and dense. Changed under the lock.
-  std::vector<Owner> nodes;
+  std::vector<NodeOwner> nodes;
   // The address of each live token, published for lock-free `current`
   // checks. A handle's own owner keeps its token alive, so an equal address
   // is the same allocation. Pages are never freed, so readers never race a
@@ -123,14 +130,25 @@ inline bool current(int id, const Token *token) {
   return index < r.nodes.size() && r.nodes[index].get() == token;
 }
 inline bool current(int id, const Owner &owner) { return current(id, owner.get()); }
+inline std::shared_ptr<void> nodePropertyStorage(int id, const Owner &owner, const std::shared_ptr<void> &initial = {}) {
+  if (id < 0 || !owner) return {};
+  auto &r = registry();
+  RegistryLock lock(r);
+  const auto index = static_cast<std::size_t>(id);
+  if (index >= r.nodes.size() || r.nodes[index] != owner) return {};
+  auto &storage = r.nodes[index]->propertyStorage;
+  if (!storage) storage = initial;
+  return storage;
+}
 GEA_IDENTITY_COLD inline void activate(int id) {
   if (id < 0) return;
   const auto index = static_cast<std::size_t>(id);
   // Declared before the lock: the replaced token and any outgrown storage
   // are released after it.
-  Owner token = std::make_shared<Token>();
+  NodeOwner token = std::make_shared<NodeToken>();
+  std::shared_ptr<void> releasedProperties;
   const Token *published = token.get();
-  std::vector<Owner> spare;
+  std::vector<NodeOwner> spare;
   auto &r = registry();
   r.ensurePage(index);
   for (;;) {
@@ -139,6 +157,7 @@ GEA_IDENTITY_COLD inline void activate(int id) {
       RegistryLock lock(r);
       if (index < r.nodes.size()) {
         std::swap(r.nodes[index], token);
+        if (token) releasedProperties = std::move(token->propertyStorage);
         r.publish(index, published);
         return;
       }
@@ -151,23 +170,30 @@ GEA_IDENTITY_COLD inline void activate(int id) {
       }
       size = r.nodes.size();
     }
-    spare.assign(std::max(index + 1, size * 2), Owner{});
+    spare.assign(std::max(index + 1, size * 2), NodeOwner{});
   }
 }
 GEA_IDENTITY_COLD inline void retire(int id) {
   if (id < 0) return;
   const auto index = static_cast<std::size_t>(id);
-  Owner released;
+  NodeOwner released;
+  std::shared_ptr<void> releasedProperties;
   auto &r = registry();
   RegistryLock lock(r);
   if (index < r.nodes.size()) std::swap(r.nodes[index], released);
+  if (released) releasedProperties = std::move(released->propertyStorage);
   r.publish(index, nullptr);
 }
 GEA_IDENTITY_COLD inline void clear() {
-  std::vector<Owner> released;
+  std::vector<NodeOwner> released;
   auto &r = registry();
-  RegistryLock lock(r);
-  for (std::size_t index = 0; index < r.nodes.size(); ++index) r.publish(index, nullptr);
-  released.swap(r.nodes);
+  {
+    RegistryLock lock(r);
+    for (std::size_t index = 0; index < r.nodes.size(); ++index) r.publish(index, nullptr);
+    released.swap(r.nodes);
+  }
+  // These tokens can no longer pass the registry check, so no lookup can
+  // touch the attachment. Release values after unlocking the registry.
+  for (const auto &token : released) if (token) token->propertyStorage.reset();
 }
 } // namespace gea::framework::identity

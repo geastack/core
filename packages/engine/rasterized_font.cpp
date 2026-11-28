@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "graphics/font.h"
+#include "program.h"
 
 namespace {
 const gea::framework::graphics::RuntimeFontProvider *runtimeFontProvider = nullptr;
@@ -103,9 +104,41 @@ namespace {
 
 void ensureGeneratedFontsLinked()
 {
+	if (const auto *loaded = program::loaded()) {
+		if (loaded->fontsEnsureLinked) loaded->fontsEnsureLinked();
+		return;
+	}
 #ifdef GEA_EMBEDDED_HAS_GENERATED_FONTS
 	generated::ensureLinked();
 #endif
+}
+
+// A loaded program (program.h) brings its own font registry; otherwise the
+// firmware's generated one answers.
+const RasterizedFontData *programLookupFont(int fontId)
+{
+	if (const auto *loaded = program::loaded()) return loaded->lookupFont ? loaded->lookupFont(fontId) : nullptr;
+	return generated::lookupFont(fontId);
+}
+
+const RasterizedFontData *programLookupFontForFamily(int familyId, int sizePx)
+{
+	if (const auto *loaded = program::loaded())
+		return loaded->lookupFontForFamily ? loaded->lookupFontForFamily(familyId, sizePx) : nullptr;
+	return generated::lookupFontForFamily(familyId, sizePx);
+}
+
+int programLookupFontFamily(const char *family)
+{
+	if (const auto *loaded = program::loaded()) return loaded->lookupFontFamily ? loaded->lookupFontFamily(family) : -1;
+	return generated::lookupFontFamily(family);
+}
+
+const char *programLookupFontFamilyName(int familyId)
+{
+	if (const auto *loaded = program::loaded())
+		return loaded->lookupFontFamilyName ? loaded->lookupFontFamilyName(familyId) : nullptr;
+	return generated::lookupFontFamilyName(familyId);
 }
 
 #if GEA_EMBEDDED_TTF_RUNTIME_FONTS
@@ -211,7 +244,9 @@ int runtimeCodepointAt(int index)
 	// Declared codepoints the fixed set already covers leave a gap (-1) rather
 	// than a duplicate entry.
 	int count = 0;
-	const int *declared = generated::runtimeTtfDeclaredCodepoints(&count);
+	const auto *loaded = program::loaded();
+	const int *declared = loaded ? (loaded->runtimeTtfDeclaredCodepoints ? loaded->runtimeTtfDeclaredCodepoints(&count) : nullptr)
+	                             : generated::runtimeTtfDeclaredCodepoints(&count);
 	if (!declared || index >= count) return -1;
 	const int codepoint = declared[index];
 	return codepoint > 0 && !runtimeFixedCodepoint(codepoint) ? codepoint : -1;
@@ -271,7 +306,11 @@ bool buildRuntimeFontSlot(RuntimeRasterizedFontSlot &slot, int familyId, int siz
 
 	unsigned long fontLength = 0;
 	const std::uint8_t *fontBytes = runtimeFontProvider ? runtimeFontProvider->fontBytes(familyId, &fontLength) : nullptr;
-	if (!fontBytes) fontBytes = generated::lookupRuntimeTtfFontForFamily(familyId, &fontLength);
+	if (!fontBytes) {
+		const auto *loaded = program::loaded();
+		fontBytes = loaded ? (loaded->lookupRuntimeTtfFontForFamily ? loaded->lookupRuntimeTtfFontForFamily(familyId, &fontLength) : nullptr)
+		                   : generated::lookupRuntimeTtfFontForFamily(familyId, &fontLength);
+	}
 	runtimeTtfTrace("slot.lookup family=%d bytes=%p len=%lu", familyId, static_cast<const void *>(fontBytes), fontLength);
 	if (!fontBytes || fontLength == 0) return false;
 
@@ -683,7 +722,7 @@ std::uint8_t RasterizedFont::coverage(const Glyph &glyph, int row, int col) cons
 RasterizedFont FontRegistry::rasterized(int fontId)
 {
 	ensureGeneratedFontsLinked();
-	return RasterizedFont(generated::lookupFont(fontId));
+	return RasterizedFont(programLookupFont(fontId));
 }
 
 RasterizedFont FontRegistry::rasterizedFamily(int familyId, int sizePx)
@@ -699,7 +738,7 @@ RasterizedFont FontRegistry::rasterizedFamily(int familyId, int sizePx,int weigh
 		return RasterizedFont(data);
 	}
 #endif
-	return RasterizedFont(generated::lookupFontForFamily(familyId, sizePx));
+	return RasterizedFont(programLookupFontForFamily(familyId, sizePx));
 }
 
 void FontRegistry::invalidateRuntimeFonts()
@@ -729,7 +768,7 @@ int FontRegistry::familyId(const char *family)
 		const int id = runtimeFontProvider->lookupFamily(family);
 		if (id >= 0) return id;
 	}
-	return generated::lookupFontFamily(family);
+	return programLookupFontFamily(family);
 }
 
 const char *FontRegistry::familyName(int familyId)
@@ -738,7 +777,7 @@ const char *FontRegistry::familyName(int familyId)
 	if (runtimeFontProvider) {
 		if (const char *name = runtimeFontProvider->familyName(familyId)) return name;
 	}
-	return generated::lookupFontFamilyName(familyId);
+	return programLookupFontFamilyName(familyId);
 }
 
 namespace generated {

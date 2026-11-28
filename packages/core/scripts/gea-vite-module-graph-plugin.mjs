@@ -10,6 +10,7 @@ const RAW_MODULE_SUFFIX = '.gearawmodule.js'
 const STATIC_IMPORT_RE = /\bimport\s+(?:[^'"()]*?\s+from\s*)?["']([^"']+)["']/g
 const EXPORT_FROM_RE = /\bexport\s+(?:[^'"]*?\s+from\s*)["']([^"']+)["']/g
 const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g
+const STATIC_REQUIRE_RE = /(?<![\w$.])require\s*\(\s*["']([^"']+)["']\s*\)/g
 
 // Native targets replace browser-only package surfaces with reusable native
 // packages. Keeping these aliases here makes the target choice part of Core's
@@ -245,6 +246,7 @@ function writeModuleGraph(pluginContext, state) {
 
   for (const id of ids) {
     const info = pluginContext.getModuleInfo(rawIdsByNormalizedId.get(id))
+    const importedIds = normalizeIdList(info?.importedIds ?? []).filter((dependency) => live.keep.has(dependency))
     const prune = (code) => pruneDeadReExports(code, id, state, live)
     const asset = state.assets.get(id)
     const literal = asset?.url ?? state.rawModules.get(id)
@@ -257,10 +259,13 @@ function writeModuleGraph(pluginContext, state) {
       id,
       file: path.isAbsolute(id) ? id : null,
       relativeFile: path.isAbsolute(id) && state.root ? path.relative(state.root, id) : null,
-      imports: (state.imports.get(id) ?? []).filter(
-        (imported) => !imported.tracked || !imported.resolvedId || live.keep.has(imported.resolvedId),
-      ),
-      importedIds: normalizeIdList(info?.importedIds ?? []).filter((dependency) => live.keep.has(dependency)),
+      imports: (state.imports.get(id) ?? []).filter((imported) => {
+        // Only report a require target that the bundler actually linked from
+        // this module. The source scan alone also sees strings and comments.
+        if (imported.kind === 'require' && !importedIds.includes(imported.resolvedId)) return false
+        return !imported.tracked || !imported.resolvedId || live.keep.has(imported.resolvedId)
+      }),
+      importedIds,
       dynamicallyImportedIds: normalizeIdList(info?.dynamicallyImportedIds ?? []).filter((dependency) => live.keep.has(dependency)),
       importers: normalizeIdList(info?.importers ?? []).filter((importer) => live.keep.has(importer)),
       isEntry: Boolean(info?.isEntry),
@@ -503,7 +508,8 @@ async function captureResolvedImports(pluginContext, state, id, code) {
   for (const source of imports) {
     let resolvedId = null
     try {
-      const resolved = await pluginContext.resolve(source.specifier, id, { skipSelf: true })
+      const options = source.kind === 'require' ? { skipSelf: true, kind: 'require-call' } : { skipSelf: true }
+      const resolved = await pluginContext.resolve(source.specifier, id, options)
       if (resolved && !resolved.external) resolvedId = normalizeModuleId(resolved.id)
     } catch {
       resolvedId = null
@@ -523,6 +529,7 @@ function collectImportSpecifiers(code) {
   collectImportMatches(imports, seen, code, STATIC_IMPORT_RE, 'import')
   collectImportMatches(imports, seen, code, EXPORT_FROM_RE, 'export')
   collectImportMatches(imports, seen, code, DYNAMIC_IMPORT_RE, 'dynamic-import')
+  collectImportMatches(imports, seen, code, STATIC_REQUIRE_RE, 'require')
   return imports
 }
 
