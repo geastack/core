@@ -21,7 +21,7 @@
 #include <cstring>
 
 #include <display.h>
-#include <apps.h>
+#include "geaos.h"
 #include "ui/document.h"
 #include "ui/node.h"
 #include "ui/style.h"
@@ -73,12 +73,20 @@ private:
   void open()
   {
     brightness_ = clampPct(static_cast<int>(gea::platform::display::Display::brightness()));
+    openedBrightness_ = brightness_;
     buildPanel();
     active_ = true;
   }
 
   void close()
   {
+    // The brightness the user left it at is the device's from now on
+    // (geaos settings, applied at boot); written once, not per step.
+    if (active_ && brightness_ != openedBrightness_) {
+      auto &settings = gea::geaos::deviceSettings();
+      settings.setNumber(gea::geaos::settingKeys::kBrightness, brightness_);
+      if (!settings.path().empty()) settings.save(gea::geaos::posixFs());
+    }
     if (rootId_ >= 0) NodeHandle(rootId_).remove();
     rootId_ = -1;
     valueId_ = -1;
@@ -172,7 +180,7 @@ private:
     root.appendChild(value);
     root.appendChild(chip("+", kPlusX, 0x3186));
 
-    const char *appId = apps::AppManager::currentId();
+    const char *appId = gea::geaos::Launcher::currentId();
     char appLine[80];
     std::snprintf(appLine, sizeof(appLine), "App   %s", appId ? appId : "?");
     root.appendChild(label(appLine, 40, 320, 20, 0x9CD3, 330, -1));
@@ -213,6 +221,7 @@ private:
   static constexpr int kDoneH = 64;
 
   bool active_ = false;
+  int openedBrightness_ = -1;
   int brightness_ = 80;
   int rootId_ = -1;
   int valueId_ = -1;

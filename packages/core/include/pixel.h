@@ -377,6 +377,10 @@ inline void unpackArgb8888(std::uint32_t pixel, int *r, int *g, int *b, int *a)
 	*b = static_cast<int>(pixel & 0xFF);
 }
 
+// Only offscreen captures opt into straight-alpha composition. Opaque
+// displays still composite against their existing filled backdrop.
+inline thread_local bool preserveCaptureAlpha = false;
+
 // Alpha-composite fg over bg in full 8-bit per channel (no 565 re-quantization),
 // so gradients / translucent fills / anti-aliased edges stay smooth on iOS.
 inline std::uint32_t blend8888(std::uint32_t fg, std::uint32_t bg, int alpha)
@@ -390,6 +394,16 @@ inline std::uint32_t blend8888(std::uint32_t fg, std::uint32_t bg, int alpha)
 	const int br = static_cast<int>(bg & 0xFF);
 	const int bgc = static_cast<int>((bg >> 8) & 0xFF);
 	const int bb = static_cast<int>((bg >> 16) & 0xFF);
+	const int bgAlpha = static_cast<int>(bg >> 24);
+	if (bgAlpha != 255 && preserveCaptureAlpha) {
+		const int frontWeight = alpha * 255;
+		const int backWeight = bgAlpha * inv;
+		const int combined = frontWeight + backWeight;
+		const auto channel = [&](int front, int back) {
+			return (front * frontWeight + back * backWeight + combined / 2) / combined;
+		};
+		return packRgba8888(channel(fr, br), channel(fgc, bgc), channel(fb, bb), (combined + 127) / 255);
+	}
 	const int r = ((fr * alpha + br * inv) + 128) * 257 >> 16;
 	const int g = ((fgc * alpha + bgc * inv) + 128) * 257 >> 16;
 	const int b = ((fb * alpha + bb * inv) + 128) * 257 >> 16;

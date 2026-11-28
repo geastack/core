@@ -6,6 +6,7 @@
 #include "tree_events.h"
 #include <type_traits>
 #include <cstdlib>
+#include <cstdint>
 #include "image.h"
 #include "canvas_element.h"
 #include "camera_element.h"
@@ -15,18 +16,35 @@
 
 #include <string>
 #include <vector>
+#include <memory>
+#include <mutex>
 
 namespace gea { template <typename Signature> struct CallableObject; }
 
 namespace gea::embedded::ui {
+
+struct DocumentSelection {
+	NodeHandle anchorNode;
+	NodeHandle focusNode;
+	std::uint32_t anchorOffset = 0;
+	std::uint32_t focusOffset = 0;
+};
 
 class Document {
 public:
 	static Document &instance();
 
 	ViewElement body() const;
+	NodeHandle documentElement() const;
+	NodeHandle head() const;
+	int viewportScrollX() const;
+	int viewportScrollY() const;
+	void scrollViewportTo(double x, double y) const;
 	// No guessed body fallback: null handle when no actual connected focus.
 	NodeHandle activeElement() const;
+	DocumentSelection selection() const;
+	void selectAllChildren(const NodeHandle &node);
+	void clearSelection();
 	ViewElement createView() const;
 	ViewElement createButton() const;
 	TextElement createText(const char *text = "") const;
@@ -55,6 +73,7 @@ public:
 	// TYPED handle — boxing happens only if the caller stores it dynamically.
 	NodeHandle createElement(const char *tag) const;
 	NodeHandle createElement(const std::string &tag) const { return createElement(tag.c_str()); }
+	NodeHandle createElementNS(const std::string &namespaceUri, const std::string &qualifiedName) const;
 	NodeHandle getElementById(const char *id) const;
 	// geatsc's `nativeDocumentMethods` binding for `document.getElementById(...)`
 	// passes its argument through untouched (see `createElement`'s identical
@@ -83,6 +102,7 @@ public:
 	static bool directCanvasContextUsed();
 
 	void clear() const;
+	std::shared_ptr<void> propertyStorage(const std::shared_ptr<void> &initial = {}) const;
 	void mount(NodeHandle root, int width, int height) const;
 	void refresh(NodeHandle root, int width, int height) const;
 	void refreshMountedIfDirty() const;
@@ -139,6 +159,9 @@ public:
 
 private:
 	Document() = default;
+	mutable std::mutex propertyStorageMutex_;
+	mutable std::shared_ptr<void> propertyStorage_;
+	mutable DocumentSelection selection_;
 };
 
 // Bracket the initial app mount. Between these calls, per-node class-style

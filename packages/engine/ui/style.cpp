@@ -9393,6 +9393,27 @@ void Style::setProperty(const std::string &property, const std::string &value) c
 	StyleSheet::instance().applyProperty(NodeHandle(nodeId_, identity_), property, value);
 }
 
+bool Style::setNamedProperty(const std::string &property, const std::string &value) const
+{
+	std::string name;
+	if (property == "cssFloat") name = "float";
+	else if (property.starts_with("--")) name = property;
+	else {
+		if (property.size() > 2 && property.starts_with("ms") && property[2] >= 'A' && property[2] <= 'Z')
+			name.push_back('-');
+		for (const char ch : property) {
+			if (ch >= 'A' && ch <= 'Z') {
+				name.push_back('-');
+				name.push_back(static_cast<char>(ch + ('a' - 'A')));
+			} else name.push_back(ch);
+		}
+	}
+	if (name.find('\0') != std::string::npos || classifyDeclaration(name) == CssDeclarationId::Unknown) return false;
+	if (value.empty()) removeProperty(name);
+	else setProperty(name, value);
+	return true;
+}
+
 bool NodeHandle::setStyleNumberProperty(const std::string &property, double value) const
 {
 	// applyNumberDeclarationWithSource validates this handle; no Style, so no
@@ -12910,15 +12931,42 @@ bool mediaQueryMatches(const std::string &query)
 	return true;
 }
 
+bool viewportMediaQueryMatches(const std::string &query)
+{
+	std::string rest = trimCssValue(query);
+	for (char &ch : rest)
+		if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
+	if (rest.empty()) return false;
+
+	const auto takeWord = [&]() {
+		const auto end = rest.find_first_of(" \t\r\n\f(");
+		std::string word = rest.substr(0, end);
+		rest = end == std::string::npos ? std::string{} : trimCssValue(rest.substr(end));
+		return word;
+	};
+	if (rest.front() == '(') return mediaQueryMatches(rest);
+	std::string type = takeWord();
+	const bool negate = type == "not";
+	if (negate || type == "only") {
+		if (negate && !rest.empty() && rest.front() == '(') return !mediaQueryMatches(rest);
+		type = takeWord();
+	}
+	if (type.empty()) return false;
+	const bool matchesType = type == "screen" || type == "all";
+	if (rest.empty()) return negate != matchesType;
+	if (takeWord() != "and" || rest.empty() || rest.front() != '(') return false;
+	return negate != (matchesType && mediaQueryMatches(rest));
+}
+
 // Full condition: comma-separated queries are OR'd.
-bool mediaConditionMatches(const std::string &condition)
+bool mediaConditionMatches(const std::string &condition, bool matchViewportType = false)
 {
 	if (condition.empty()) return true;
 	std::size_t start = 0;
 	while (true) {
 		const std::size_t comma = condition.find(',', start);
 		const std::string query = condition.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-		if (mediaQueryMatches(query)) return true;
+		if (matchViewportType ? viewportMediaQueryMatches(query) : mediaQueryMatches(query)) return true;
 		if (comma == std::string::npos) break;
 		start = comma + 1;
 	}
@@ -13801,6 +13849,16 @@ public:
 		for (std::size_t i = 0; i < spillCount_; ++i) resetActiveRulePlanCacheEntry(spillAt(i));
 		inlineCount_ = 0;
 		spillCount_ = 0;
+	}
+
+	// clear() keeps the spill chunks for the next plans; release() frees them.
+	void release()
+	{
+		clear();
+		for (ActiveRulePlanCacheEntry *&chunk : chunks_) {
+			delete[] chunk;
+			chunk = nullptr;
+		}
 	}
 
 private:
@@ -17785,6 +17843,11 @@ void startAnimationForNode(NodeCssAnimation &entry, std::uint32_t nowMs)
 
 }  // namespace
 
+bool MediaQueryMatch::matches() const
+{
+	return mediaConditionMatches(query, true);
+}
+
 bool StyleValues::hasTextBackgroundClip(const ComputedStyle &style)
 {
 	const auto handle = rstyle(style).bg_clip;
@@ -18111,6 +18174,17 @@ void StyleSheet::clear()
 #endif
 	g_pendingRecomputeMark.clear();
 	g_forceFullSubtreeMark.clear();
+	// clear() keeps capacity, so the rule tables would stay at the size of the
+	// largest stylesheet any app registered (Sonora's left ~170 KB of PSRAM
+	// behind its unload). An app's sheet is replaced whole here: release it.
+	const auto release = [](auto &storage) { storage = std::remove_reference_t<decltype(storage)>{}; };
+	release(rules());
+	release(compiledCssValues());
+	release(cssRuleTexts());
+	activeRulePlanCache().release();
+	activeRulePlanCacheLastHit() = static_cast<std::size_t>(-1);
+	release(cachedStyleApplyOps());
+	g_ruleIndex = RuleIndex{};
 	recomputeAllClassStyles();
 }
 
@@ -18911,6 +18985,17 @@ const char *Tree::tagName(int node) const
 	auto &state = treeState();
 	if (node < 0 || node >= state.nodeCount) return "";
 	return tagFromId(state.nodes[node].tag_id);
+}
+
+int Tree::generatedPseudoChild(int node, bool before) const
+{
+#if GEA_CSS_PSEUDO_ELEMENTS
+	return findPseudoChild(node, before ? CssRule::PseudoElement::Before : CssRule::PseudoElement::After);
+#else
+	(void)node;
+	(void)before;
+	return -1;
+#endif
 }
 
 bool Tree::addClass(int node, const std::string &token)

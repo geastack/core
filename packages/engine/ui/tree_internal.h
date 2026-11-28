@@ -69,6 +69,7 @@ public:
 	bool hasAttribute(int node, const char *name) const;
 	void setTagName(int node, const char *tagName);
 	const char *tagName(int node) const;
+	int generatedPseudoChild(int node, bool before) const;
 	void setClassName(int node, const char *className);
 	void setClassName(int node, const std::string &className);
 	bool addClass(int node, const std::string &token);
@@ -114,11 +115,13 @@ public:
 
 	void mount(int root, int width, int height);
 	void refresh(int root, int width, int height);
+	void paintCapture(int root, bool transparent);
 	// Native targets (macOS) that bypass the display-list pipeline and drive
 	// platform widgets directly need just the flex-layout pass without any
 	// rendering / dirty-region / present side effects. computeLayout is that
 	// pass in isolation; other targets keep calling refresh() unchanged.
 	void computeLayout(int root, int width, int height);
+	void flushLayoutFor(int node);
 	void frame(int timestampMs);
 	void clear();
 

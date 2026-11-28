@@ -14,6 +14,7 @@
 #include <pixel.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cctype>
 #include <climits>
@@ -5600,6 +5601,10 @@ int gLastScrollUiFrame = -1000;
 		// TX). One buffer set per instance, so distinct gradients sharing one fall back to
 		// the normal render. `span(y,&x0,&x1)` narrows a row to the rounded-corner span;
 		// `pixel(x,y,&color,&alpha)` computes one pixel (used only on the one-time bake).
+		struct StaticGradientCache;
+		// Every cache instance, so an app reset can free their full-screen bakes:
+		// Sonora's two gradients left ~1.4 MB of PSRAM behind after it unloaded.
+		std::atomic<StaticGradientCache *> gStaticGradientCaches[8] = {};
 		struct StaticGradientCache
 		{
 			gea::framework::graphics::pixel::native_t *color = nullptr;
@@ -5610,6 +5615,28 @@ int gLastScrollUiFrame = -1000;
 			int keyLen = 0;
 			int stable = 0;
 			bool valid = false;
+
+			StaticGradientCache()
+			{
+				for (auto &slot : gStaticGradientCaches)
+				{
+					StaticGradientCache *empty = nullptr;
+					if (slot.compare_exchange_strong(empty, this))
+						break;
+				}
+			}
+
+			void release()
+			{
+				gea::framework::memory::Allocator::free(color);
+				gea::framework::memory::Allocator::free(alpha);
+				color = nullptr;
+				alpha = nullptr;
+				cap = kw = kh = 0;
+				keyLen = 0;
+				stable = 0;
+				valid = false;
+			}
 
 			template <typename SpanFn>
 			bool blit(const GradientKeyWord *keyNow, int kl, int x0, int y0, int x1, int y1, int scrW, int scrH, SpanFn span)
@@ -10690,6 +10717,9 @@ int gLastScrollUiFrame = -1000;
 	void DisplayList::resetStorage()
 	{
 		state.resetStorage();
+		for (auto &slot : gStaticGradientCaches)
+			if (StaticGradientCache *cache = slot.load())
+				cache->release();
 		pruneImageReferences();
 		invalidateStaticBackdrop();
 	}
@@ -11221,7 +11251,7 @@ int gLastScrollUiFrame = -1000;
 		return true;
 	}
 
-	void DisplayList::recordNode(int id, uint8_t parent_alpha, bool allowSkipStatic)
+	void DisplayList::recordNode(int id, uint8_t parent_alpha, bool allowSkipStatic, bool paintDocumentCanvas)
 	{
 		Tree &tree = Tree::instance();
 		if (id < 0 || id >= tree.nodeCount())
@@ -11259,7 +11289,7 @@ int gLastScrollUiFrame = -1000;
 				}
 			}
 		}
-		if (isDocumentCanvasRoot(nodes[id])) {
+		if (paintDocumentCanvas && isDocumentCanvasRoot(nodes[id])) {
 			// The UA canvas is below the root's opacity/visibility scope and is
 			// independent of its layout box. Replaying it clears removed or
 			// translucent propagated backgrounds across the whole viewport.

@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "host/dom_rect.h"
 #include "events.h"
 #include "style.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace gea::embedded::ui {
 
 class ChildNodeList;
+
+namespace DocumentPosition {
+inline constexpr int disconnected = 1;
+inline constexpr int preceding = 2;
+inline constexpr int following = 4;
+inline constexpr int contains = 8;
+inline constexpr int containedBy = 16;
+inline constexpr int implementationSpecific = 32;
+}
 
 class ClassList {
 public:
@@ -147,6 +158,10 @@ public:
 	}
 	const void *identity() const { return identity_.get(); }
 	std::shared_ptr<const void> weakIdentityOwner() const { return identity_; }
+	std::shared_ptr<void> propertyStorage(const std::shared_ptr<void> &initial = {}) const
+	{
+		return gea::framework::identity::nodePropertyStorage(id_, identity_, initial);
+	}
 	// Event targets and DOM elements are two views of the same tree identity.
 	// Pointer/touch event targets declared as Element therefore project to a
 	// full node handle without boxing or losing the source node id.
@@ -227,6 +242,8 @@ public:
 	NodeHandle firstChildHandle() const;
 	ChildNodeList childNodesHandle() const;
 	NodeHandle nextSiblingHandle() const;
+	NodeHandle previousSiblingHandle() const;
+	int compareDocumentPosition(const NodeHandle &other) const;
 	NodeHandle parentHandle() const;
 	std::vector<NodeHandle> elementChildren() const;
 	NodeHandle lastElementChildHandle() const;
@@ -262,6 +279,7 @@ public:
 	// binds neither `const char *` parameter.
 	const char *getAttribute(const std::string &name) const { return getAttribute(name.c_str()); }
 	bool hasAttribute(const std::string &name) const { return hasAttribute(name.c_str()); }
+	gea::host::DOMRect getBoundingClientRect() const;
 	void scrollIntoView() const;
 	// Text-input focus, the same state `Tree::setActiveInput` already holds for
 	// the virtual keyboard: focusing an `<input>` is what summons the on-screen
@@ -278,11 +296,42 @@ public:
 	void pause() const;
 	void setTagName(const char *tagName) const;
 	const char *tagName() const;
+	std::string domNodeName() const;
+	const std::string *characterData() const;
+	void setCharacterData(const char *text) const;
+	void setCharacterData(const std::string &text) const { setCharacterData(text.c_str()); }
+	const std::string *namespaceURI() const;
+	const std::string *namespacePrefix() const;
 	void setPressId(int pressId) const;
 	void setPressValue(int pressValue) const;
 	gea::framework::events::EventListenerId addEventListener(const char *type, gea::framework::events::EventListener listener) const;
 	bool removeEventListener(const char *type, gea::framework::events::EventListenerId listenerId) const;
 };
+
+// Reads the current native cascade each time, including after stylesheet changes.
+class NativeComputedStyle {
+	enum class Target { element, before, after, absent };
+	NodeHandle owner_;
+	Target target_ = Target::absent;
+	NodeHandle selectedNode() const;
+	std::string resolvedDimension(bool horizontal) const;
+	NativeComputedStyle(NodeHandle owner, Target target) : owner_(owner), target_(target) {}
+	friend NativeComputedStyle getComputedStyle(NodeHandle, std::string_view);
+public:
+	NativeComputedStyle() = default;
+	explicit operator bool() const { return owner_.identity() != nullptr; }
+	std::string display() const;
+	std::string position() const;
+	std::string overflow() const;
+	std::string borderRadius() const;
+	std::string filter() const;
+	std::string width() const;
+	std::string height() const;
+	std::string paddingTop() const;
+	std::string paddingBottom() const;
+};
+
+NativeComputedStyle getComputedStyle(NodeHandle node, std::string_view pseudoElement = {});
 
 // Platform focus owns the actual responder transition. Pixel targets use the
 // unhandled default; native targets must explicitly accept or refuse.

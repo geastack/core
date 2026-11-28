@@ -144,6 +144,9 @@ public:
 	int idForPixels(const pixel::native_t *pixels) const;
 	void dispose(int id);
 	void disposeAll();
+	// Every slot, pinned or not: for an app being torn down whole, whose tree
+	// (every legitimate pin) is already gone.
+	void disposeEverything();
 	ImageFormat detectFormat(const std::uint8_t *data, int length) const;
 
 private:

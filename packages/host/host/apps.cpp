@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <string>
 
-#include "apps.h"
+#include "geaos.h"
 #include "gea/embedded-host.h"
 
 namespace gea::framework::host {
@@ -9,7 +9,7 @@ namespace gea::framework::host {
 class AppHost {
  public:
   static double launch(const std::string &app_id) {
-    return apps::AppManager::launch(app_id.c_str()) ? 1.0 : 0.0;
+    return gea::geaos::Launcher::launch(app_id) ? 1.0 : 0.0;
   }
 };
 

@@ -142,6 +142,11 @@ std::shared_ptr<CanvasContextState> CanvasRenderingContext2D::stateFor(int nodeI
 
 void CanvasRenderingContext2D::releaseState(int nodeId) { contextStates().erase(nodeId); }
 
+// An unmounting app's canvases are gone; their states are freed with the map's
+// buckets, which would otherwise stay in internal RAM, in the middle of the
+// block the next app allocates its large buffers from.
+void CanvasRenderingContext2D::releaseAllStates() { std::unordered_map<int, std::shared_ptr<CanvasContextState>>().swap(contextStates()); }
+
 namespace
 {
 

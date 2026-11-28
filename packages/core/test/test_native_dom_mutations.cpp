@@ -30,7 +30,76 @@ int main(int argc, char **argv) {
   root.appendChild(parent); root.appendChild(other);
   document.mount(root,320,240);
   const std::string mode=argv[1];
-  if(mode=="replace-retained") {
+  if (mode == "namespace-creation") {
+    constexpr auto svg = "http://www.w3.org/2000/svg";
+    constexpr auto math = "http://www.w3.org/1998/Math/MathML";
+    const auto gradient = document.createElementNS(svg, "svg:linearGradient");
+    const auto formula = document.createElementNS(math, "math");
+    const auto noNamespace = document.createElementNS("", "item");
+    assert(gradient.valid() && formula.valid() && noNamespace.valid());
+    assert(gradient.domNodeName() == "svg:linearGradient");
+    const auto clone = gradient.cloneNode(false);
+    assert(clone.domNodeName() == gradient.domNodeName());
+    assert(*clone.namespaceURI() == svg);
+    assert(formula.domNodeName() == "math");
+    assert(parent.domNodeName() == "DIV");
+    const auto text = document.createText("text");
+    const auto comment = document.createComment("comment");
+    assert(text.domNodeName() == "#text");
+    assert(comment.domNodeName() == "#comment");
+    assert(text.characterData() && *text.characterData() == "text");
+    assert(comment.characterData() && *comment.characterData() == "comment");
+    comment.setCharacterData("updated");
+    assert(*comment.characterData() == "updated");
+    comment.setCharacterData(nullptr);
+    assert(comment.characterData() && comment.characterData()->empty());
+    parent.setCharacterData("ignored");
+    assert(tree.node(parent.id()).text.empty());
+    assert(parent.characterData() == nullptr);
+    assert(NodeHandle{}.characterData() == nullptr);
+    assert(document.createDocumentFragment().domNodeName() == "#document-fragment");
+    assert(*gradient.namespaceURI() == svg);
+    assert(*gradient.namespacePrefix() == "svg");
+    assert(std::string(gradient.tagName()) == "linearGradient");
+    assert(*formula.namespaceURI() == math && formula.namespacePrefix() == nullptr);
+    assert(noNamespace.namespaceURI() == nullptr);
+    assert(*parent.namespaceURI() == "http://www.w3.org/1999/xhtml");
+    parent.appendChild(gradient);
+    assert(parent.removeChild(gradient).identity() == gradient.identity());
+    assert(*gradient.namespaceURI() == svg);
+    for (const auto *name : {"", "a b", "xml:item", "xmlns"}) {
+      bool rejected = false;
+      try {
+        document.createElementNS(svg, name);
+      } catch (const std::invalid_argument &) {
+        rejected = true;
+      }
+      assert(rejected);
+    }
+  } else if (mode == "named-style-write") {
+    const auto style = parent.style();
+    const auto fontSize = [&] { return tree.node(parent.id()).computedStyle().font_size; };
+    const auto originalSize = fontSize();
+    assert(style.setNamedProperty("fontSize", "31px"));
+    assert(fontSize() == 31);
+    assert(style.setNamedProperty("fontSize", ""));
+    assert(fontSize() == originalSize);
+    assert(!style.setNamedProperty("notAStyleProperty", "value"));
+  } else if(mode=="document-position") {
+    const auto child = document.createElement("span");
+    parent.appendChild(child);
+    assert(parent.compareDocumentPosition(parent) == 0);
+    assert(parent.compareDocumentPosition(child) == 20);
+    assert(child.compareDocumentPosition(parent) == 10);
+    assert(child.compareDocumentPosition(other) == 4);
+    assert(other.compareDocumentPosition(child) == 2);
+    root.insertBefore(other, parent);
+    assert(child.compareDocumentPosition(other) == 2);
+    root.removeChild(other);
+    const int forward = child.compareDocumentPosition(other);
+    const int backward = other.compareDocumentPosition(child);
+    assert((forward == 35 && backward == 37) || (forward == 37 && backward == 35));
+  } else if(mode=="replace-retained") {
     auto a=document.createElement("div"),b=document.createElement("span");
     parent.appendChild(a);parent.appendChild(b);
     const auto aIdentity=a.identity(),bIdentity=b.identity();
@@ -38,6 +107,9 @@ int main(int argc, char **argv) {
     assert(a.valid() && b.valid() && "replaceChildren must not destroy retained child allocations");
     assert(a.identity()==aIdentity && b.identity()==bIdentity);
     assert(parent.firstChildHandle().identity()==bIdentity && parent.childAt(1).identity()==aIdentity);
+    assert(!b.previousSiblingHandle().valid() && a.previousSiblingHandle().identity()==bIdentity);
+    parent.removeChild(a);
+    assert(!a.previousSiblingHandle().valid() && !b.nextSiblingHandle().valid());
   } else if(mode=="foreign-reference") {
     auto child=document.createElement("div"),reference=document.createElement("span");
     other.appendChild(child);other.appendChild(reference);

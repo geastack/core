@@ -20,6 +20,9 @@ CXX_BIN="$BUILD_DIR/sanitized-cxx"
 printf '#!/bin/sh\nexec "%s" -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer "$@"\n' \
   "${CXX:-clang++}" > "$CXX_BIN"
 chmod +x "$CXX_BIN"
+# A native Windows ccache cannot execute a shell script as its compiler; there
+# bash runs the wrapper itself.
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) export GEA_NATIVE_CCACHE=0 ;; esac
 
 gea_build_native_test \
   "$BUILD_DIR" \

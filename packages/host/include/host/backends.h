@@ -447,7 +447,7 @@ public:
   // closes Settings. Set from the platform's launcher-button task (BOOT
   // short press on ESP32) and from an application's `_settings_toggle()`
   // entry stub (fired by `Application::toggleSettings()` for `SettingsToggle`
-  // events posted via `AppManager::queueSettingsToggle()`).
+  // events posted via `gea::geaos::queueSettingsToggle()`).
   static bool consumeBackButton();
 };
 

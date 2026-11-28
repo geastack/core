@@ -174,6 +174,10 @@ const rawGeaHostExternDeclarations: Record<string, string[]> = Object.fromEntrie
       [geaVirtualListRowHeightEmit, geaVirtualListDeclarations],
 
       ['gea::host::requestAnimationFrame', geaHostDeclarations],
+      ['gea::host::setTimeout', geaHostDeclarations],
+      ['gea::host::clearTimeout', geaHostDeclarations],
+      ['gea::host::setInterval', geaHostDeclarations],
+      ['gea::host::clearInterval', geaHostDeclarations],
       ['gea::host::fetch', geaHostDeclarations],
       ['gea::host::fetchAsync', geaHostDeclarations],
       ['gea::host::fetchUploadFileAsync', geaHostDeclarations],

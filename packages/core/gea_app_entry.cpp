@@ -3,11 +3,17 @@
 // TSX -> vite-plugin-gea JS -> geatsc C++.
 
 #include "app.h"
+#include "canvas.h"
+#include "display_underlay.h"
+#include "image.h"
+#include "program.h"
+#include "css/engine.h"
 #include "gea_perf_config.h"  // GEA_EMBEDDED_PERF master + per-subsystem perf flags
 #include "gea/embedded.h"
 #include "host/backends.h"
 #include "host/gpio.h"
 #include "host/worker.h"
+#include "ui/canvas_element.h"
 #include "ui/node_features.h"
 #include "ui/style.h"
 #include "ui/tree_internal.h"  // Tree::mount for the post-mount clean repaint in init()
@@ -45,10 +51,19 @@ void drainMicrotasks();
 extern "C" void gea_cycle_collection_defer_begin() GEA_PROGRAM_HOOK;
 extern "C" void gea_cycle_collection_defer_end() GEA_PROGRAM_HOOK;
 extern "C" bool gea_embedded_assets_prepare() GEA_PROGRAM_HOOK;
+// Releases every image decode of the outgoing program's bundled assets
+// (host/image.cpp). Weak: a host without the image service has none.
+extern "C" void gea_host_image_dispose_assets() __attribute__((weak));
 
 namespace gea::framework::app {
 
 namespace {
+
+void drainProgramMicrotasks()
+{
+	if (const auto *loaded = program::loaded()) loaded->drainMicrotasks();
+	else generated::drainMicrotasks();
+}
 
 // May be unused when all per-frame perf consumers are compiled out
 // (GEA_FRAME_PHASE_TIMING==0 and GEA_FRAME_PERF_LOG==0): phaseClockUs() returns
@@ -107,7 +122,11 @@ void Application::prepareMount(int width, int height, double devicePixelRatio)
 {
     // File-backed static symbols must be populated before generated code can
     // construct an image directly from them. Embedded assets need no hook.
-    if (gea_embedded_assets_prepare) gea_embedded_assets_prepare();
+    if (const auto *loaded = program::loaded()) {
+        if (loaded->assetsPrepare) loaded->assetsPrepare();
+    } else if (gea_embedded_assets_prepare) {
+        gea_embedded_assets_prepare();
+    }
 #if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 	(void)width;
 	(void)height;
@@ -173,8 +192,37 @@ void Application::init(int width, int height, double devicePixelRatio)
 {
 	FrameCycleCollectionDeferral deferCycleCollection;
 	prepareMount(width, height, devicePixelRatio);
-	__gea_top_level();
+	if (const auto *loaded = program::loaded()) loaded->topLevel();
+	else __gea_top_level();
 	finishMount(true);
+}
+
+void Application::unmount()
+{
+#if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
+	gea::host::resetAnimationFrameCallbacks();
+	gea::host::resetScheduledTimers();
+#else
+	gea::host::resetAnimationFrameCallbacks();
+	gea::host::resetScheduledTimers();
+	gea_cpp_clear_microtasks();
+	gea::css::AnimationEngine::instance().clear();
+	gea::embedded::ui::Document::instance().clear();
+	gea::embedded::ui::StyleSheet::instance().clear();
+	gea::embedded::ui::CanvasRenderingContext2D::releaseAllStates();
+#endif
+	gea::host::gpio::pendingCallbacks = nullptr;
+	gea::framework::display::Underlay::clear();
+	gea::framework::graphics::Canvas::invalidateTextRasterCache();
+	gea::framework::graphics::Canvas::releaseShapeCaches();
+	if (gea_host_image_dispose_assets) gea_host_image_dispose_assets();
+#if !defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) || !GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
+	// The app's tree is gone, and with it every node's pin on an image: what
+	// is still decoded is held only by the app's own objects, which go with it
+	// (a program loaded at runtime is freed next). Keeping those decodes would
+	// strand a full-screen image per app ever launched.
+	gea::framework::graphics::ImageStore::instance().disposeEverything();
+#endif
 }
 
 namespace {
@@ -294,12 +342,12 @@ void Application::frame(int timestampMs)
 	FrameCycleCollectionDeferral deferCycleCollection;
 #if defined(GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT) && GEA_EMBEDDED_DIRECT_CANVAS_CONTEXT
 	applicationFramePhaseSet(ApplicationFramePhase::DrainMicrotasks);
-	generated::drainMicrotasks();
+	drainProgramMicrotasks();
 	// Pin edges first, so state they change renders in this frame.
 	gea::host::gpio::runCallbacks();
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);
 	gea::host::runAnimationFrameCallbacks(timestampMs);
-	generated::drainMicrotasks();
+	drainProgramMicrotasks();
 	applicationFramePhaseSet(ApplicationFramePhase::Idle);
 #else
 #if GEA_FRAME_PERF_LOG
@@ -319,7 +367,7 @@ void Application::frame(int timestampMs)
 
 	int64_t startUs = phaseClockUs();
 	applicationFramePhaseSet(ApplicationFramePhase::DrainMicrotasks);
-	generated::drainMicrotasks();
+	drainProgramMicrotasks();
 	recordFramePhase(ApplicationFramePhase::DrainMicrotasks, phaseClockUs() - startUs);
 
 	// Pin edges (Gpio/Digital callbacks): after the microtasks, before rAF, so
@@ -330,7 +378,7 @@ void Application::frame(int timestampMs)
 	applicationFramePhaseSet(ApplicationFramePhase::AnimationFrameCallbacks);
 	gea::host::runAnimationFrameCallbacks(timestampMs);
 	applicationFramePhaseSet(ApplicationFramePhase::CallbackMicrotasks);
-	generated::drainMicrotasks();
+	drainProgramMicrotasks();
 	recordFramePhase(ApplicationFramePhase::AnimationFrameCallbacks, phaseClockUs() - startUs);
 	// The build already proves whether network services are reachable. Keep their
 	// callback pumps out of offline frame loops, while still servicing local workers.

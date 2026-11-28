@@ -202,6 +202,7 @@ public:
 	static std::shared_ptr<CanvasContextState> stateFor(int nodeId);
 	// Drops canvas `nodeId`'s state, so a node id reused later starts clean.
 	static void releaseState(int nodeId);
+	static void releaseAllStates();
 	static void materializeRetainedCanvas(int nodeId);
 	static bool replayRetainedCanvas(int nodeId, std::uint32_t identity, int x, int y, int width, int height);
 	static bool hasRetainedCanvas(int nodeId);

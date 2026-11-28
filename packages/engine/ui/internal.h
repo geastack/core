@@ -324,7 +324,7 @@ void rootScrollImageHoldTick();
 		// allowSkipStatic: caller guarantees this frame will use the direct
 		// (backdrop-blit) replay path, so recordNode may skip re-recording fully-static
 		// subtrees when the backdrop is baked. Must be false on the full-replay path.
-		void recordNode(int id, uint8_t parentAlpha, bool allowSkipStatic = false);
+		void recordNode(int id, uint8_t parentAlpha, bool allowSkipStatic = false, bool paintDocumentCanvas = true);
 		void recordNodeWithExpandedClip(int id, uint8_t parentAlpha, int clipNode,
 																		int clipX0, int clipY0, int clipX1, int clipY1);
 		void replay();

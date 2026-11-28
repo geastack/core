@@ -322,6 +322,9 @@ int Tree::cloneNode(int sourceId, bool deep)
 	// srcRd stays valid.)
 	if (const NodeRareData *srcRd = rareDataFor(sourceId)) {
 		NodeRareData &cloneRd = ensureRareData(id);
+		cloneRd.hasExplicitNamespace = srcRd->hasExplicitNamespace;
+		cloneRd.namespaceUri = srcRd->namespaceUri;
+		cloneRd.namespacePrefix = srcRd->namespacePrefix;
 		cloneRd.attributes = srcRd->attributes;
 		cloneRd.customProperties = srcRd->customProperties;
 		cloneRd.defaultStyles = srcRd->defaultStyles;

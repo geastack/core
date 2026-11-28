@@ -416,6 +416,10 @@ public:
   void clearWatch(double id) const { (void)id; }
 };
 
+struct NetworkInformation {
+  double downlink;
+};
+
 class Navigator {
 public:
   const char *userAgent = "gea-embedded";

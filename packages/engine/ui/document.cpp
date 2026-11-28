@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "document.h"
+#include "child_node_list.h"
 #include "selector.h"
 #include "tree_state.h"
 
@@ -12,11 +13,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <string>
+#include <string_view>
 
 namespace gea::embedded::ui {
 
@@ -63,6 +67,45 @@ ViewElement Document::body() const
 	if (tree.mountedRoot() >= 0) return ViewElement(tree.mountedRoot());
 	if (tree.nodeCount() > 0) return ViewElement(0);
 	return ViewElement();
+}
+
+NodeHandle Document::documentElement() const
+{
+	return NodeHandle(Tree::instance().mountedRoot());
+}
+
+int Document::viewportScrollX() const
+{
+	const auto &tree = Tree::instance();
+	return tree.scrollLeft(tree.mountedRoot());
+}
+
+int Document::viewportScrollY() const
+{
+	const auto &tree = Tree::instance();
+	return tree.scrollTop(tree.mountedRoot());
+}
+
+void Document::scrollViewportTo(double x, double y) const
+{
+	auto &tree = Tree::instance();
+	const int root = tree.mountedRoot();
+	if (root < 0) return;
+	const auto offset = [](double value) {
+		return std::isfinite(value) ? static_cast<int>(std::clamp(value, 0.0, static_cast<double>(std::numeric_limits<int>::max()))) : 0;
+	};
+	tree.setScrollLeft(root, offset(x));
+	tree.setScrollTop(root, offset(y));
+}
+
+NodeHandle Document::head() const
+{
+	const NodeHandle root = documentElement();
+	if (!root.valid() || std::strcmp(root.tagName(), "html") != 0) return {};
+	for (NodeHandle child = root.firstChildHandle(); child.valid(); child = child.nextSiblingHandle()) {
+		if (std::strcmp(child.tagName(), "head") == 0) return child;
+	}
+	return {};
 }
 
 ViewElement Document::createView() const
@@ -142,6 +185,23 @@ NodeHandle Document::activeElement() const {
  return node.valid()&&node.isConnected()?node:NodeHandle();
 }
 
+DocumentSelection Document::selection() const
+{
+	if (!selection_.anchorNode.isConnected() || !selection_.focusNode.isConnected()) selection_ = {};
+	return selection_;
+}
+
+void Document::selectAllChildren(const NodeHandle &node)
+{
+	if (!node.isConnected()) return;
+	selection_ = {node, node, 0, node.childNodesHandle().length()};
+}
+
+void Document::clearSelection()
+{
+	selection_ = {};
+}
+
 NodeHandle Document::createElement(const char *tag) const
 {
 	std::string lowered = tag ? tag : "";
@@ -155,6 +215,46 @@ NodeHandle Document::createElement(const char *tag) const
 	else if (lowered == "virtual-list") node = createVirtualList();
 	else node = createView();
 	if (!lowered.empty()) node.setTagName(lowered.c_str());
+	return node;
+}
+
+NodeHandle Document::createElementNS(const std::string &namespaceUri, const std::string &qualifiedName) const
+{
+	constexpr std::string_view html = "http://www.w3.org/1999/xhtml";
+	constexpr std::string_view xml = "http://www.w3.org/XML/1998/namespace";
+	constexpr std::string_view xmlns = "http://www.w3.org/2000/xmlns/";
+	const auto colon = qualifiedName.find(':');
+	const bool prefixed = colon != std::string::npos;
+	const auto prefix = prefixed ? qualifiedName.substr(0, colon) : std::string{};
+	const auto local = prefixed ? qualifiedName.substr(colon + 1) : qualifiedName;
+	const auto alpha = [](unsigned char ch) { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'); };
+	const auto nameStart = [&](unsigned char ch) { return alpha(ch) || ch == '_' || ch >= 0x80; };
+	const auto restrictedName = [&](unsigned char ch) {
+		return nameStart(ch) || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-';
+	};
+	constexpr std::string_view forbidden("\0\t\n\f\r />", 8);
+	const bool validPrefix = !prefixed || (!prefix.empty() && prefix.find_first_of(forbidden) == std::string::npos);
+	const bool validLocal = !local.empty() &&
+	    (alpha(local.front()) ? local.find_first_of(forbidden) == std::string::npos
+	                         : (nameStart(local.front()) || local.front() == ':') &&
+	                               std::all_of(local.begin(), local.end(), [&](unsigned char ch) { return restrictedName(ch) || ch == ':'; }));
+	if (!validPrefix || !validLocal) throw std::invalid_argument("InvalidCharacterError: invalid qualified element name");
+	if ((prefixed && namespaceUri.empty()) || (prefix == "xml" && namespaceUri != xml) ||
+	    ((prefix == "xmlns" || qualifiedName == "xmlns") != (namespaceUri == xmlns)))
+		throw std::invalid_argument("NamespaceError: invalid qualified element namespace");
+	const auto uriAtom = internCssAtom(namespaceUri);
+	const auto prefixAtom = internCssAtom(prefix);
+	if ((!namespaceUri.empty() && uriAtom == kInvalidCssAtom) || (prefixed && prefixAtom == kInvalidCssAtom))
+		throw std::length_error("Native namespace table exhausted");
+	auto node = namespaceUri == html && std::none_of(local.begin(), local.end(), [](char ch) { return ch >= 'A' && ch <= 'Z'; })
+	    ? createElement(local)
+	    : NodeHandle(createView());
+	if (!node.valid()) return node;
+	auto &metadata = ensureRareData(node.id());
+	metadata.hasExplicitNamespace = true;
+	metadata.namespaceUri = uriAtom;
+	metadata.namespacePrefix = prefixAtom;
+	node.setTagName(local.c_str());
 	return node;
 }
 
@@ -258,8 +358,22 @@ ViewElement Document::ensureAppRoot(const char *id) const
 	return root;
 }
 
+std::shared_ptr<void> Document::propertyStorage(const std::shared_ptr<void> &initial) const
+{
+	std::lock_guard lock(propertyStorageMutex_);
+	if (!propertyStorage_) propertyStorage_ = initial;
+	return propertyStorage_;
+}
+
 void Document::clear() const
 {
+	selection_ = {};
+	std::shared_ptr<void> retiredProperties;
+	{
+		std::lock_guard lock(propertyStorageMutex_);
+		retiredProperties.swap(propertyStorage_);
+	}
+	retiredProperties.reset();
 	g_direct_canvas_context_used = false;
 	Tree::instance().clear();
 }

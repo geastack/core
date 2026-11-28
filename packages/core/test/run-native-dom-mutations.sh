@@ -10,12 +10,13 @@ export GEA_NATIVE_JOBS="${GEA_NATIVE_JOBS:-2}"
 source "$ROOT/packages/core/test/native-test-common.sh"
 # Engine API regression only; no compiler emission is claimed.
 printf 'void __gea_top_level() {}\n' > "$BUILD_DIR/program.cpp"
-gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/native-dom-mutations-test" "$ROOT/packages/core/test/test_native_dom_mutations.cpp"
+gea_build_native_test "$BUILD_DIR" "$BUILD_DIR/native-dom-mutations-test" \
+  "$ROOT/packages/core/test/test_native_dom_mutations.cpp" "$ROOT/packages/core/program.cpp"
 printf '%s\n' "${GEA_NATIVE_OBJECTS[@]}" > "$BUILD_DIR/native-dom-mutations-test.objects.txt"
 printf '%s\n' "${GEA_NATIVE_CXXFLAGS[@]}" > "$BUILD_DIR/native-dom-mutations-test.cxx-flags.txt"
 printf '%s\n' "${GEA_NATIVE_LINK_FLAGS[@]}" > "$BUILD_DIR/native-dom-mutations-test.link-flags.txt"
 if [[ $# == 0 ]]; then
-  for mode in replace-retained foreign-reference remove-detach focus-detach focus-retained focus-refocus focus-reentrant focus-throw move-focus reference-aba replace-atomic fragment-reference fragment-repeat fragment-direct-first; do
+  for mode in namespace-creation named-style-write document-position replace-retained foreign-reference remove-detach focus-detach focus-retained focus-refocus focus-reentrant focus-throw move-focus reference-aba replace-atomic fragment-reference fragment-repeat fragment-direct-first; do
     "$BUILD_DIR/native-dom-mutations-test" "$mode"
   done
   : "${GEA_JSDOM_PACKAGE:?Set GEA_JSDOM_PACKAGE to the installed jsdom package directory}"

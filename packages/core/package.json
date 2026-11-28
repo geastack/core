@@ -1,6 +1,6 @@
 {
   "name": "@geastack/core",
-  "version": "0.1.66",
+  "version": "0.1.67",
   "description": "GeaStack app API, reactivity headers, runtime sources, and type declarations.",
   "license": "Apache-2.0",
   "repository": {
@@ -67,7 +67,7 @@
     "@geajs/core": "1.5.1",
     "@geajs/vite-plugin": "1.5.0",
     "@geastack/compiler": "^1.0.49",
-    "@geastack/geatsc-plugin-gea": "0.1.28",
+    "@geastack/geatsc-plugin-gea": "0.1.30",
     "opentype.js": "^2.0.0",
     "vite": "^8.0.0"
   },

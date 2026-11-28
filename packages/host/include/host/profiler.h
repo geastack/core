@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <string>
+#include <vector>
+
 #ifdef ESP_PLATFORM
 #include "esp_cpu.h"
 #include "esp_timer.h"
@@ -45,5 +48,27 @@ struct ProfilerFacade {
 };
 
 inline constexpr ProfilerFacade Profiler{};
+
+struct ResourceTiming {
+  double transferSize;
+  std::string initiatorType;
+  double duration;
+  double startTime;
+  double responseEnd;
+};
+
+struct PerformanceFacade {
+  double now() const {
+    static const double originUs = Profiler.nowUs();
+    return (Profiler.nowUs() - originUs) / 1000.0;
+  }
+
+  std::vector<ResourceTiming> getEntriesByType(const std::string&) const {
+    // The native host does not publish resource timing entries.
+    return {};
+  }
+};
+
+inline constexpr PerformanceFacade performance{};
 
 }  // namespace gea::host

@@ -22,6 +22,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "platform/file_cache.h"
+#include "program.h"
 
 // Optional build-embedded asset registry supplied by the native app pipeline.
 extern "C" bool gea_embedded_asset_lookup(const char*, const unsigned char**, unsigned long*)
@@ -977,8 +978,10 @@ bool audio::AudioSystem::playFile(const std::string &path) {
   // recording is tens of MB and would exhaust PSRAM).
   const unsigned char* embedded = nullptr;
   unsigned long embeddedBytes = 0;
-  if (gea_embedded_asset_lookup &&
-      gea_embedded_asset_lookup(path.c_str(), &embedded, &embeddedBytes)) {
+  const auto *loaded = gea::framework::program::loaded();
+  const bool bundled = loaded ? (loaded->assetLookup && loaded->assetLookup(path.c_str(), &embedded, &embeddedBytes))
+                              : (gea_embedded_asset_lookup && gea_embedded_asset_lookup(path.c_str(), &embedded, &embeddedBytes));
+  if (bundled) {
     return playEmbeddedWav(embedded, embeddedBytes);
   }
   if (!streamPcm16File(path)) {
