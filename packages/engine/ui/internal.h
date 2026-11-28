@@ -10,6 +10,10 @@
 #undef quad
 #endif
 
+// Linear-gradient commands that clip to their bounds: border-image tiles and
+// background layers clipped to the border area.
+#define GEA_GRADIENT_BOUNDS_CLIP (GEA_CSS_BORDER_IMAGE || GEA_CSS_BACKGROUND_LAYERS)
+
 namespace gea::embedded::ui
 {
 
@@ -78,6 +82,18 @@ void rootScrollImageHoldTick();
 		DrawSvg
 	};
 
+	// DrawText::blockEllipsis for the default ellipsis ("\u2026", or "...").
+	constexpr uint16_t kAutoBlockEllipsis = 0xFFFF;
+
+	// The block ellipsis in the clamp container's own font and colour, `inset`
+	// px past the run's last glyph (the right edges of the inline boxes it
+	// closes). fontSize 0: the ellipsis continues the run in the run's style.
+	struct BlockEllipsisStyle
+	{
+		int16_t fontId, fontSize, inset;
+		gea::framework::graphics::pixel::native_t color;
+	};
+
 	struct DisplayCommand
 	{
 		DisplayCommandType type;
@@ -95,6 +111,16 @@ void rootScrollImageHoldTick();
 				// range. Keep the owner so retained subtree translations can move the
 				// scope with the node (and undo the scroll viewport's own movement).
 				int16_t nodeId;
+				// A rounded or transformed overflow clip: the padding box lx/ly/lw/lh,
+				// with its CSS inner radii, mapped to the screen quad qx/qy. The rect
+				// above is its bounds; replay restores what the clipped content paints
+				// outside the shape. 0 for a plain rect clip.
+				uint8_t shaped;
+#if GEA_CSS_SHAPED_CLIPS
+				int16_t qx[4], qy[4];
+				int16_t lx, ly, lw, lh;
+				int16_t rx8[4], ry8[4];
+#endif
 			} clip;
 			struct
 			{
@@ -149,6 +175,15 @@ void rootScrollImageHoldTick();
 				uint8_t toAlpha;
 				uint16_t toStop;
 				uint8_t hasMid;
+				// background-blend-mode of the layer; 0 is normal (see BlendMode).
+				uint8_t blend;
+#if GEA_GRADIENT_BOUNDS_CLIP
+				// 1: the replay also clips the fill to the command bounds. A
+				// border-image tile's gradient box is the whole scaled image; its
+				// bounds are the tile, so it needs no PushClip/PopClip pair. A
+				// border-area layer's bounds are one side of the border.
+				uint8_t boundsClip;
+#endif
 			} gradient;
 			struct
 			{
@@ -161,6 +196,7 @@ void rootScrollImageHoldTick();
 				uint16_t stopPermille;
 				uint8_t fromAlpha;
 				uint8_t toAlpha;
+				uint8_t blend;
 			} radialGradient;
 			struct
 			{
@@ -183,23 +219,23 @@ void rootScrollImageHoldTick();
 				int16_t rx8[4], ry8[4];
 				uint8_t cssRadii;
 			} strokeRoundedRect;
+			// Fields in size order, so the struct keeps its size in every pixel
+			// format (native_t is two or four bytes).
 			struct
 			{
 				const char *text;
-				int16_t x, y, maxWidth;
-				gea::framework::graphics::pixel::native_t color;
 				float scale;
-				int8_t align;
-				int8_t textTransform;
+				gea::framework::graphics::pixel::native_t color;
+				// text-emphasis marks (ComputedStyle::text_emphasis bits, 0 = none),
+				// painted in emphasisColor unless the bits say transparent.
+				gea::framework::graphics::pixel::native_t emphasisColor;
+				// Aligned to native_t like the colours above.
+				BlockEllipsisStyle ellipsisStyle;
+				int16_t x, y, maxWidth;
 				int16_t lineHeight;
 				int16_t containerWidth;
 				int16_t fontId;
 				int16_t fontWeight,fontStretch;
-				// CSS white-space / text-overflow, carried so the deferred draw
-				// can reproduce single-line truncation. whiteSpace==1 => nowrap
-				// (no width-based wrapping); textOverflow==1 => ellipsis ("...").
-				int8_t whiteSpace;
-				int8_t textOverflow;
 				// Content-box height. With ellipsis on WRAPPED text this caps the
 				// line budget (height / line advance) and the last line ellipsizes
 				// — the multi-line clamp. 0 = unlimited (draw every line).
@@ -207,6 +243,34 @@ void rootScrollImageHoldTick();
 				// Inline continuation offset for the run's FIRST line only (see
 				// LayoutBox::inline_indent). 0 for every run that starts its own line.
 				int16_t firstLineIndent;
+				// line-clamp: paint at most this many lines (0 = all).
+				int16_t lineLimit;
+				// block-ellipsis on the last painted line: 0 = none,
+				// kAutoBlockEllipsis = the default, else a custom string's CSS atom.
+				// That line may use ellipsisWidth px from x, up to its line box end.
+				uint16_t blockEllipsis;
+				int16_t ellipsisWidth;
+				// strlen(text), saturated: part of the line-break cache key.
+				uint16_t textBytes;
+				int8_t align;
+				int8_t textTransform;
+				// CSS white-space / text-overflow, carried so the deferred draw
+				// can reproduce single-line truncation. whiteSpace==1 => nowrap
+				// (no width-based wrapping); textOverflow==1 => ellipsis ("...").
+				int8_t whiteSpace;
+				int8_t textOverflow;
+				// text-align-last: -1 when every line uses `align`. Otherwise bits 0-1
+				// align lines a forced break ends, and bit 2 marks a run whose final
+				// line also ends its paragraph.
+				int8_t alignLast;
+				uint8_t emphasis;
+				// NodeText::collapsible of the text: white-space collapsing may
+				// change it, so the draw normalizes a copy. 0 skips that outright.
+				uint8_t collapsible;
+				// RenderState::vertical_flow of the run: its lines are columns,
+				// left to right from x (1) or right to left from x (2), with the
+				// glyphs turned clockwise; maxWidth is then the content height.
+				uint8_t vertical;
 			} text;
 			struct
 			{
@@ -263,6 +327,10 @@ void rootScrollImageHoldTick();
 				int16_t blRx8, blRy8;
 				gea::framework::graphics::pixel::native_t color;
 				uint8_t backfaceHidden;
+				// Border widths (top, right, bottom, left) when this paints a border
+				// ring: the padding box, with its CSS inner radii, stays unpainted.
+				// All zero for a fill.
+				uint8_t ring[4];
 			} transformedRoundedRect;
 			struct
 			{
@@ -273,6 +341,9 @@ void rootScrollImageHoldTick();
 				// surface (2 px/byte on GRAY4, 4 px/byte on GRAY2) rather than an
 				// unpacked decoded image, so the blit must unpack it.
 				uint8_t sourcePacked;
+				// A background image tile: it also clips to bx/by/bw/bh, since
+				// dirty-region replays skip the layer's clip commands.
+				uint8_t boundsClip;
 			} blit;
 			struct
 			{
@@ -280,6 +351,7 @@ void rootScrollImageHoldTick();
 				const uint8_t *alpha;
 				int16_t sourceWidth, sourceHeight, dx, dy, dw, dh;
 				int16_t tl, tr, br, bl;
+				uint8_t boundsClip; // as blit.boundsClip
 			} scaledBlit;
 			struct
 			{
@@ -352,6 +424,14 @@ void rootScrollImageHoldTick();
 		bool canReplayDirectDirtyRegions(int width, int height) const;
 		void translateNodeCommands(int node, int dx, int dy);
 		void translateSubtreeCommands(int node, int dx, int dy);
+#if GEA_CSS_STICKY
+		// True when a replay of the region paints nothing that moves with
+		// `moving`'s content except `owner`'s subtree: an opaque cover hides
+		// everything drawn before it, and no node under `moving` outside `owner`
+		// draws into the region after it. Clip scopes and scrollbar thumbs,
+		// which live outside node paint ranges, are not considered.
+		bool regionPaintedOnlyBy(int x0, int y0, int x1, int y1, int owner, int moving) const;
+#endif
 		// After translating a subtree in place, content that was fully outside the
 		// record-time clip (culled: no commands recorded) may now overlap the
 		// viewport. The retained list is then incomplete — replay would paint stale
@@ -462,6 +542,10 @@ void rootScrollImageHoldTick();
 		bool scrollbarOverlapsRegion(int x0, int y0, int x1, int y1) const;
 		bool scrollbarThumbsPaintLast() const;
 		void replayScrollbarThumbsInRegion(int x0, int y0, int x1, int y1);
+		// True when the list holds multicol column copies (replicateColumns). In-place
+		// translation and re-recording do not update them, so callers fall back to a
+		// full record.
+		bool hasColumnCopies() const;
 		int nodeCommandCount(int node) const;
 		const DisplayCommand *nodeCommandAt(int node, int index) const;
 		bool nodeCommandBounds(int node, int *x0, int *y0, int *x1, int *y1) const;
@@ -477,6 +561,19 @@ void rootScrollImageHoldTick();
 		static int fixedContainingBlock(const Node &node);
 		static bool isViewportFixed(const Node &node);
 		static bool containsViewportFixed(int node);
+#if GEA_CSS_STICKY
+		// A pure scroll of `scrollNode` moves the content under it by the scroll
+		// delta. The placed sticky boxes whose scrollport is that node or above
+		// it change their offset with it: their TreeState::stickyBoxes slots go
+		// to `slots` and the count is returned. -1 when the fast path cannot
+		// re-stick them in place: more boxes than slots, a box moved since its
+		// pass placed it, or a sticky box inside one of those.
+		static int stickyBoxesScrolledBy(int scrollNode, int *slots);
+		// After that shift: re-apply the offset of the box in `slot` at the new
+		// scroll position and move its subtree with it. Returns the box's
+		// shift on top of the content's in *dx, *dy.
+		static void restickScrolledBox(int slot, int *dx, int *dy);
+#endif
 		static bool absoluteGridArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
 		static void absoluteContainingArea(const Node &parent, const Node &child, int &x, int &y, int &width, int &height);
 
@@ -519,6 +616,9 @@ void rootScrollImageHoldTick();
 		bool layoutNodeScoped(int scope, int treeRoot);
 		void repositionChildren(int id);
 		void resolveAbsoluteCoords(int id, int parentX, int parentY);
+		// resolveAbsoluteCoords below its entry: `scrollport` is the nearest
+		// scroll container's padding box (or the viewport) for sticky boxes.
+		void resolveAbsoluteCoordsIn(int id, int parentX, int parentY, const int *scrollport);
 		// True when `n` is an inline-level box (a span/text/image without an
 		// explicit block-level display) — the inline-formatting input that makes a
 		// plain block flow its children as a row (LayoutNodePass::
@@ -529,6 +629,15 @@ void rootScrollImageHoldTick();
 		// Inline-level boxes blockified by float, absolute/fixed positioning, or
 		// flex/grid-item status return false.
 		static bool isCssInlineLevelBox(const Node &n, bool hypothetical = false);
+		// True when the line box closes right after node `id`: a forced break, a
+		// block-level box, or the end of its block container follows it.
+		static bool endsFormattingLine(int id);
+		// A block container with a column count or width (CSS Multi-column).
+		static bool multicolContainer(const Node &node);
+		// Resolved direction: true for rtl.
+		static bool rightToLeftDirection(const Node &node);
+		// text-align as 0 left, 1 center, 2 right: start and end follow direction.
+		static int physicalTextAlign(const Node &node);
 	};
 
 	// Shared order for recording, retained transform replay, and hit testing.
@@ -542,9 +651,24 @@ void rootScrollImageHoldTick();
 		static std::vector<int> collectChildren(int node, bool groupRoot = true, bool includePositioned = true);
 	};
 
+	// The overflow clip of a node: screen bounds, and for a rounded or
+	// transformed clip the shape PushClip carries (see DisplayCommand::clip).
+	struct OverflowClipShape
+	{
+		int x, y, w, h;
+		bool shaped;
+#if GEA_CSS_SHAPED_CLIPS
+		int16_t qx[4], qy[4];
+		int16_t lx, ly, lw, lh;
+		int16_t rx8[4], ry8[4];
+#endif
+	};
+
 	class ViewRenderer
 	{
 	public:
+		// False when the clip cannot be recorded: a perspective-projected box.
+		static bool overflowClipShape(const Node &node, OverflowClipShape &out);
 		static bool recordClipBegin(const Node &node);
 		static void recordClipEnd(const Node &node);
 		static void recordBox(const Node &node, uint8_t parentAlpha = 255);
@@ -583,7 +707,9 @@ void rootScrollImageHoldTick();
 		// identically to deleting them — and keeps the run a single unmodified
 		// string for the display list.
 		int firstLineIndentAdjust = 0;
-
+		// The run ends with a preserved newline and inline content follows it:
+		// that content starts the next line box, not the run's last line.
+		bool endsWithBreak = false;
 	};
 
 	class TextRenderer
@@ -591,9 +717,15 @@ void rootScrollImageHoldTick();
 	public:
 		// Shared preparation for measuring and replaying authored text. Storage
 		// owns the result only when collapsing or case transformation is needed.
+		// For text that has no node (projected labels): scans it for collapsible
+		// whitespace, which a node's text carries (NodeText::collapsible).
 		static const char *prepareText(const char *text, int textTransform, int whiteSpace, std::string &storage);
 		static void layout(int id, int availableWidth);
 		static int baselineOffset(const Node &node, bool last);
+		// Font metrics vertical-align works with: the content area around the
+		// baseline, the x-height, and the strut (the line-height box) of `style`.
+		struct InlineFontMetrics { int ascent, descent, xHeight, fontSize, strutAscent, strutDescent; };
+		static InlineFontMetrics inlineFontMetrics(const ComputedStyle &style);
 		// True when a run's line breaking is reproducible from per-glyph advances,
 		// i.e. the same wrapper the draw path uses. A host that measures whole
 		// strings for us (CoreText on Apple targets) does its own breaking, which
@@ -606,11 +738,20 @@ void rootScrollImageHoldTick();
 		// `atLineStart`, as CSS does when a line box begins.
 		static InlineFlowMeasure measureInlineFlow(const Node &node, int firstAvail, int contentWidth, bool atLineStart);
 		static void record(const Node &node, uint8_t parentAlpha = 255);
+#if GEA_CSS_WRITING_MODE
+		// record() for a run its vertical flow laid out (RenderState::vertical_flow).
+		static void recordVertical(const Node &node, uint8_t parentAlpha = 255);
+#endif
 		static void unionCoverageRow(const DisplayCommand &command, int screenY, int screenX,
 		                             int width, uint8_t *outCoverage);
+		// Paints a DrawText command.
+		static void drawWrapped(const DisplayCommand &command);
+		// For callers that hold no command (tests): scans the text as record() would.
 		static void drawWrapped(const char *text, int x, int y, int maxWidth, gea::framework::graphics::pixel::native_t color, float scale, int textAlign,
 														int containerWidth, int fontId, int textTransform = 0, int lineHeight = 0, int whiteSpace = 0, int textOverflow = 0, int maxHeight = 0,
-														int firstLineIndent = 0, int fontWeight = 400, int fontStretch = 1000);
+														int firstLineIndent = 0, int fontWeight = 400, int fontStretch = 1000, int alignLast = -1, int lineLimit = 0, int blockEllipsis = 0, int ellipsisWidth = 0,
+														int emphasis = 0, gea::framework::graphics::pixel::native_t emphasisColor = 0,
+														const BlockEllipsisStyle *ellipsisStyle = nullptr);
 		// Single-line width measure for places that don't go through layout()
 		// — used by InputRenderer to position the caret at the end of the value.
 		static int measureWidth(const char *text, int fontId, int fontSize, int textTransform = 0);
@@ -649,8 +790,13 @@ void rootScrollImageHoldTick();
 	class ImageRenderer
 	{
 	public:
-		static void layout(int id);
+		// Sizes the box: an automatic axis takes the image's natural size, an
+		// explicit one keeps what the pass resolved.
+		static void layout(int id, bool autoWidth, bool autoHeight);
 		static void record(const Node &node);
+		// Natural width / height of a loaded image, 0 without one.
+		static double naturalRatio(const Node &node);
+		static int naturalSize(const Node &node, bool horizontal);
 	};
 
 	class CanvasRenderer

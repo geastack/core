@@ -193,6 +193,9 @@ public:
 
 private:
 	Tree() = default;
+	// restyleSiblings is false for the children of a node being removed: their
+	// siblings are removed next, so restyling them is wasted work.
+	void removeNode(int node, bool restyleSiblings);
 };
 
 // Legacy anonymous registration and native document-target producers. The

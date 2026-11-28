@@ -1475,7 +1475,8 @@ void record(const Node &node)
 	cmd->by = node.layout.y;
 	cmd->bw = node.layout.width;
 	cmd->bh = node.layout.height;
-	cmd->svg = {static_cast<std::int16_t>(id), node.layout.x, node.layout.y, node.layout.width, node.layout.height};
+	cmd->svg = {static_cast<std::int16_t>(id), node.layout.x, node.layout.y, static_cast<std::int16_t>(node.layout.width),
+	            static_cast<std::int16_t>(node.layout.height)};
 	scene.recorded = true;
 }
 

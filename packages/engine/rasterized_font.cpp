@@ -134,9 +134,11 @@ constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints)/sizeof(int);
 #else
 // The degree sign, and the bullet a password input draws for each hidden
 // character (lv_textarea's LV_TEXTAREA_PWD_BULLET_UNICODE): without it every
-// masked character fell back to nothing. Kept short: each entry costs a Glyph
-// in every one of the 64 cache slots, on boards with no PSRAM too.
-constexpr int kRuntimeExtraCodepoints[] = {0x00b0, 0x2022};
+// masked character fell back to nothing. The horizontal ellipsis is what the
+// block ellipsis of line-clamp and text-overflow draws when the font has it.
+// Kept short: each entry costs a Glyph in every one of the 64 cache slots, on
+// boards with no PSRAM too.
+constexpr int kRuntimeExtraCodepoints[] = {0x00b0, 0x2022, 0x2026};
 constexpr int kRuntimeExtraGlyphs = sizeof(kRuntimeExtraCodepoints) / sizeof(int);
 #endif
 // Room for the glyphs an app declares beyond the fixed set above: the build's
@@ -545,6 +547,11 @@ void ensureRuntimeGlyphCoverage(const RasterizedFontData *data, const Glyph &gly
 	    scale,
 	    slotGlyph.codepoint);
 #endif
+	// Without antialiasing a pixel is covered when most of it is inside the outline.
+	if (generated::runtimeTtfFontAntialiased(slot->familyId)) return;
+	std::uint8_t *pixels = slot->atlas + slotGlyph.sourceY * data->atlasWidth + slotGlyph.sourceX;
+	for (int row = 0; row < slotGlyph.height; row++)
+		for (int x = 0; x < slotGlyph.width; x++) pixels[row * data->atlasWidth + x] = pixels[row * data->atlasWidth + x] >= 128 ? 255 : 0;
 }
 
 const RasterizedFontData *runtimeTtfFontForFamily(int familyId, int sizePx, int weight, int stretch)
@@ -779,6 +786,12 @@ __attribute__((weak)) const int *runtimeTtfDeclaredCodepoints(int *count)
 {
 	if (count) *count = 0;
 	return nullptr;
+}
+
+__attribute__((weak)) bool runtimeTtfFontAntialiased(int familyId)
+{
+	(void)familyId;
+	return true;
 }
 
 }  // namespace generated

@@ -251,7 +251,7 @@ void InputRenderer::record(int id)
 			cmd->text.maxWidth = scrolled ? textW + 1 : contentW;
 			cmd->text.color = color;
 			cmd->text.scale = textScale;
-			cmd->text.align = scrolled ? 0 : style.text_align;
+			cmd->text.align = scrolled ? 0 : static_cast<int8_t>(LayoutEngine::physicalTextAlign(n));
 			cmd->text.textTransform = style.text_transform;
 			cmd->text.lineHeight = style.line_height;
 			cmd->text.containerWidth = scrolled ? textW + 1 : contentW;
@@ -263,6 +263,17 @@ void InputRenderer::record(int id)
 			cmd->text.textOverflow = scrolled ? 0 : style.text_overflow;
 			cmd->text.maxHeight = 0;
 			cmd->text.firstLineIndent = 0;
+			cmd->text.alignLast = -1;
+			cmd->text.lineLimit = 0;
+			cmd->text.blockEllipsis = 0;
+			cmd->text.ellipsisWidth = 0;
+			cmd->text.ellipsisStyle = {};
+			cmd->text.emphasis = 0;
+			cmd->text.emphasisColor = 0;
+			const std::size_t contentBytes = std::strlen(content);
+			cmd->text.textBytes = static_cast<uint16_t>(contentBytes > 65535 ? 65535 : contentBytes);
+			cmd->text.collapsible = hasCollapsibleWhitespace(content) ? 1 : 0;
+			cmd->text.vertical = 0;
 		}
 	}
 

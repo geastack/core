@@ -223,8 +223,43 @@ enum class Property : int {
 	SvgStrokeLinecap,
 	SvgStrokeLinejoin,
 	SvgFillRule,
+	TextAlignLast,
+	MaxLines,
+	LineClampContinue,
+	BlockEllipsis,
+	ColumnCountSet,
+	ColumnWidthSet,
+	VerticalAlign,
+	BlockEllipsisString,
+	ColumnCount,
+	ColumnWidth,
+	ColumnFillAuto,
+	LineClampDiscard,
+	ColumnSpanAll,
+	TextEmphasisStyle,
+	TextEmphasisPosition,
+	TextEmphasisColorMode,
+	TextEmphasisColor,
+	BackgroundBlendMode,
+	BorderImageSource,
+	BorderImageSlice,
+	BorderImageWidth,
+	BorderImageOutset,
+	BorderImageRepeat,
+	LineClampAuto,
+	BorderSpacing,  // horizontal px in the low 16 bits, vertical above
+	BorderCollapse,
 	Count
 };
+
+// Property -> bit in RareStyle::line_clamp_flags.
+inline int lineClampFlagBit(Property property)
+{
+	return property == Property::LineClampContinue ? 1 : property == Property::BlockEllipsis ? 2 :
+	       property == Property::ColumnCountSet ? 4 : property == Property::ColumnWidthSet ? 8 :
+	       property == Property::ColumnFillAuto ? 16 : property == Property::LineClampDiscard ? 32 :
+	       property == Property::LineClampAuto ? 128 : 64;
+}
 
 enum class StyleDeclaration : std::uint8_t {
 	Unknown,
@@ -366,7 +401,52 @@ enum class StyleDeclaration : std::uint8_t {
 	SvgStrokeOpacity,
 	SvgStrokeLinecap,
 	SvgStrokeLinejoin,
-	SvgFillRule
+	SvgFillRule,
+	TextAlignLast,
+	LineClamp,
+	WebkitLineClamp,
+	MaxLines,
+	Continue,
+	BlockEllipsis,
+	Columns,
+	ColumnCount,
+	ColumnWidth,
+	ColumnFill,
+	ColumnSpan,
+	BorderStyle,
+	BorderTopStyle,
+	BorderRightStyle,
+	BorderBottomStyle,
+	BorderLeftStyle,
+	TextEmphasis,
+	TextEmphasisStyleDeclaration,
+	TextEmphasisColorDeclaration,
+	TextEmphasisPositionDeclaration,
+	BackgroundBlendMode,
+	BorderImage,
+	BorderImageSourceDeclaration,
+	BorderImageSliceDeclaration,
+	BorderImageWidthDeclaration,
+	BorderImageOutsetDeclaration,
+	BorderImageRepeatDeclaration,
+	// Logical two-sided shorthands (see logicalPairFor in style.cpp).
+	MarginInline,
+	MarginBlock,
+	PaddingInline,
+	PaddingBlock,
+	InsetInline,
+	InsetBlock,
+	BorderInline,
+	BorderBlock,
+	BorderInlineWidth,
+	BorderBlockWidth,
+	BorderInlineColor,
+	BorderBlockColor,
+	BorderInlineStyle,
+	BorderBlockStyle,
+	VerticalAlign,
+	BorderSpacing,
+	BorderCollapse
 };
 
 class Style {
@@ -433,6 +513,8 @@ struct StaticStyleSimpleSelectorSpec {
 struct StaticStyleSelectorPartSpec {
 	StaticStyleSimpleSelectorSpec simple;
 	bool directParent = false;
+	// Relation to the part on its left: 1 next sibling (+), 2 any earlier sibling (~).
+	std::uint8_t sibling = 0;
 };
 
 enum class StaticStyleMediaFeatureKind : std::uint8_t {
@@ -886,6 +968,8 @@ public:
 		bool applyNumberProperty(const NodeHandle &node, const char *property, double value) const;
 		bool removeProperty(NodeHandle node, const std::string &property) const;
 	void recomputeSubtree(int nodeId) const;
+	// Restyles nodeId and the siblings after it when a + or ~ selector exists.
+	void recomputeSiblingsFrom(int nodeId) const;
 	void hoverChanged() const;
 	void startCssAnimations(std::uint32_t nowMs) const;
 
