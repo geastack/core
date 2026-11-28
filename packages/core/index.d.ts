@@ -2128,6 +2128,28 @@ export interface WiFiController {
 export declare const WiFi: WiFiController
 export declare const wifi: WiFiController
 
+/** Props for the reusable checkbox element. State is controlled by the caller. */
+export interface CheckboxProps {
+  /** Current checked state. Defaults to false. */
+  checked?: boolean
+  /** Displays a mixed state; activating it requests checked=true. */
+  indeterminate?: boolean
+  /** Prevents activation and suppresses all interaction callbacks. */
+  disabled?: boolean
+  /** Required, visible, non-empty label for the checkbox. */
+  label: string
+  /** Additional CSS class name(s) or conditional class map. */
+  class?: ClassValue
+  /** Inline styles applied to the checkbox row; overrides default styles. */
+  style?: Style
+  /** Called with the next checked value after an enabled activation. */
+  onChange?: (checked: boolean) => void
+  /** Called once on the native click path (including touch-generated clicks). */
+  onPress?: PressHandler
+  /** Called once on the native click path (including touch-generated clicks). */
+  onClick?: PressHandler
+}
+
 export interface ButtonProps {
   class?: ClassValue
   style?: Style

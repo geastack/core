@@ -7,6 +7,27 @@ native backend that renders it.
 npm install @geastack/elements
 ```
 
+## Checkbox
+
+`Checkbox` is exported from `@geastack/elements`. Its `checked` value is
+controlled by the caller; `onChange(nextChecked)` reports the value to render
+next. Activating an indeterminate checkbox requests `true`. A disabled
+checkbox ignores activation and does not call any interaction callback.
+
+The visible `label` is required and must not be empty. `class` accepts the
+framework's `ClassValue`, and `style` overrides the default row styling.
+`onPress` and `onClick` are callbacks invoked from the same native click path;
+only one native click listener is registered. If a touch gesture produces a
+native click, the callbacks therefore share that single activation path; actual
+device touch behavior has not been verified. The current native view layer has
+no accessibility or keyboard-focus implementation for a composite `div`, so
+keyboard activation and native assistive-technology semantics are not
+currently provided. Target status for this contribution is source-present; no
+hardware target has been validated as part of this change.
+
+A runnable app demonstrating this component is maintained separately in the
+[GeaStack Examples repository](https://github.com/KoHaRxnP/geastack-examples/tree/main/apps/checkbox).
+
 - `VirtualList`: a windowed list that materializes only the visible rows from
   an item template.
 - `CameraView`: a live camera preview bound to the host camera service. The
