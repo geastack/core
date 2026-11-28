@@ -201,7 +201,7 @@ gea_build_native_test() {
   # lld-link takes a second such unit's weak reference for a duplicate
   # definition unless the strong one has been seen before it (see
   # native_test_platform_display.cpp). Order does not matter elsewhere.
-  local -a platform_display_sources=()
+  local -a platform_display_sources=("$ROOT/packages/core/test/native_test_repaint_hook.cpp")
   if [[ "${GEA_NATIVE_TEST_INCLUDE_HOST:-1}" != "0" ]]; then
     test_host_sources+=("$ROOT/packages/core/test/native_test_host.cpp")
     platform_display_sources+=("$ROOT/packages/core/test/native_test_platform_display.cpp")

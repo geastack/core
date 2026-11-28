@@ -38,6 +38,9 @@ namespace svg = gea::embedded::ui::svg;
 
 namespace {
 
+// M_PI is POSIX, not C++: MSVC's <cmath> declares it only under _USE_MATH_DEFINES.
+constexpr double kPi = 3.14159265358979323846;
+
 int failures = 0;
 
 void check(bool ok, const char *what)
@@ -518,16 +521,16 @@ void bench()
 		stroke.setAttribute("d", d.c_str());
 		area.setAttribute("d", (d + "L300 140L0 140Z").c_str());
 		const double v = 50 + 45 * std::sin(t / 6.0);
-		const double a0 = 150 * M_PI / 180, a1 = a0 + v / 100 * 240 * M_PI / 180;
+		const double a0 = 150 * kPi / 180, a1 = a0 + v / 100 * 240 * kPi / 180;
 		char buf[160];
 		std::snprintf(buf, sizeof buf, "M%.1f %.1fA80 80 0 %d 1 %.1f %.1f", 100 + 80 * std::cos(a0), 100 + 80 * std::sin(a0),
-		              a1 - a0 > M_PI ? 1 : 0, 100 + 80 * std::cos(a1), 100 + 80 * std::sin(a1));
+		              a1 - a0 > kPi ? 1 : 0, 100 + 80 * std::cos(a1), 100 + 80 * std::sin(a1));
 		arc.setAttribute("d", buf);
 		std::snprintf(buf, sizeof buf, "rotate(%.1f 100 100)", -120 + v * 2.4);
 		needleG.setAttribute("transform", buf);
-		double angle = -M_PI / 2;
+		double angle = -kPi / 2;
 		for (int i = 0; i < 4; ++i) {
-			const double sweep = M_PI / 2 + 0.3 * std::sin((t + i) / 5.0) * (i % 2 ? 1 : -1);
+			const double sweep = kPi / 2 + 0.3 * std::sin((t + i) / 5.0) * (i % 2 ? 1 : -1);
 			const double e = angle + sweep - 0.03, s0 = angle + 0.03;
 			std::snprintf(buf, sizeof buf, "M%.1f %.1fA90 90 0 0 1 %.1f %.1fL%.1f %.1fA58 58 0 0 0 %.1f %.1fZ",
 			              100 + 90 * std::cos(s0), 100 + 90 * std::sin(s0), 100 + 90 * std::cos(e), 100 + 90 * std::sin(e),
@@ -548,7 +551,7 @@ void bench()
 // pixels the incremental frames leave match a fresh render of the last arc.
 std::string gaugeArc(double degrees)
 {
-	const double r = 82.5, a0 = 90 * M_PI / 180, a1 = degrees * M_PI / 180;
+	const double r = 82.5, a0 = 90 * kPi / 180, a1 = degrees * kPi / 180;
 	char buf[160];
 	std::snprintf(buf, sizeof buf, "M %.4f %.4f A %.1f %.1f 0 %d 1 %.4f %.4f", 100 + r * std::cos(a0), 100 + r * std::sin(a0), r, r,
 	              degrees - 90 > 180 ? 1 : 0, 100 + r * std::cos(a1), 100 + r * std::sin(a1));
